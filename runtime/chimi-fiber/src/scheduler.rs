@@ -147,6 +147,13 @@ pub const REQUEST_IO_WAIT: u32 = 48;
 /// the number woken in `value`. Never parks, and not a cancellation point,
 /// so a cancelled task can still close what it owns (`scheduler/reactor.rs`).
 pub const REQUEST_IO_WITHDRAW: u32 = 44;
+/// Waits for a `std/signal` signal: `value` holds up to eight signal codes
+/// (1 SIGHUP, 2 SIGUSR1, 3 SIGUSR2), one per byte from the lowest, ended by
+/// a zero byte. OK with the first listed code that is pending in `value`,
+/// consuming it; PENDING while none is, so reissue after every wake. ERROR
+/// for an empty list or another code. A cancellation point, withdrawn by a
+/// cancellation (`scheduler/signal.rs`).
+pub const REQUEST_SIGNAL_WAIT: u32 = 45;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -866,7 +873,9 @@ impl Scheduler {
         };
         let task = match target {
             TimerTarget::Wake(task) | TimerTarget::ScopeDeadline(task, _) => Some(task),
-            TimerTarget::ShutdownDeadline(_) | TimerTarget::Signal(_) => None,
+            TimerTarget::ShutdownDeadline(_)
+            | TimerTarget::Signal(_)
+            | TimerTarget::UserSignal(_) => None,
         };
         let now = self.clock.now();
         self.emit_timer(ClockEventKind::TimerCancelled, task, now);
@@ -975,6 +984,10 @@ impl Scheduler {
                     self.emit_timer(ClockEventKind::TimerFired, None, deadline);
                     self.fire_signal(signal);
                 }
+                TimerTarget::UserSignal(code) => {
+                    self.emit_timer(ClockEventKind::TimerFired, None, deadline);
+                    self.fire_user_signal(code);
+                }
             }
         }
     }
@@ -1042,10 +1055,12 @@ impl Scheduler {
     }
 
     pub fn drive(&mut self) {
+        self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
         while let Some(task) = self.runnable.pop_front() {
             self.run(task);
+            self.collect_user_signals();
             self.deliver_signal();
             resumes = resumes.wrapping_add(1);
             if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) && !self.reactor.is_empty() {
@@ -1661,8 +1676,14 @@ impl Scheduler {
         // leave its watchers and wake timer behind.
         self.clear_select(owner);
         self.clear_io_wait(owner);
+        // A reissued signal wait keeps the task's place among the waiters
+        // and any bit it was woken for; anything else leaves the wait.
+        if kind != REQUEST_SIGNAL_WAIT {
+            self.withdraw_signal_wait(owner);
+        }
         self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {
+            self.withdraw_signal_wait(owner);
             return;
         }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
@@ -1766,6 +1787,7 @@ impl Scheduler {
             REQUEST_SELECT => self.handle_select(owner, request),
             REQUEST_IO_WAIT => self.handle_io_wait(owner, request),
             REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
+            REQUEST_SIGNAL_WAIT => self.handle_signal_wait(owner, request),
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -2054,6 +2076,7 @@ impl Scheduler {
         }
         self.clear_select(task);
         self.clear_io_wait(task);
+        self.withdraw_signal_wait(task);
         self.clear_scopes(task);
         self.unroute_task(task);
 

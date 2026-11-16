@@ -145,6 +145,9 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 injected_signal: 0,
                 injected_signal_at: 0,
                 copy_channel_value: None,
+                user_signals: std::ptr::null_mut(),
+                injected_user_signals: std::ptr::null(),
+                injected_user_signal_count: 0,
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }

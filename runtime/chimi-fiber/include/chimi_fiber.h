@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 21u
+#define CHIMI_FIBER_ABI_VERSION 22u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -207,6 +207,15 @@ enum {
      it before closing that resource's descriptors. OK with the number woken
      in `value`; ERROR for key 0. Never parks, and not a cancellation point. */
   CHIMI_REQUEST_IO_WITHDRAW = 44,
+  /* ChimiSchedulerRequest: waits for a std/signal signal. `value` holds up to
+     eight signal codes (1 SIGHUP, 2 SIGUSR1, 3 SIGUSR2), one per byte from
+     the lowest, ended by a zero byte. OK with the first listed code that is
+     pending in `value`, which consumes it; PENDING while none is, so reissue
+     after every wake. ERROR for an empty list or another code. Signals
+     coalesce: one pending bit per code. One signal wakes one waiter, the
+     oldest that wants it. A cancellation point, withdrawn by a cancellation;
+     unlike an IO wait it does not hold virtual time. */
+  CHIMI_REQUEST_SIGNAL_WAIT = 45,
 };
 
 /* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR
@@ -314,6 +323,13 @@ enum {
   CHIMI_PROCESS_END_RETURNED = 0,
   CHIMI_PROCESS_END_FAILED = 1,
 };
+
+/* A std/signal signal the scheduler latches when the execution clock
+   reaches `at` nanoseconds: `code` 1 SIGHUP, 2 SIGUSR1, 3 SIGUSR2. */
+typedef struct {
+  uint32_t code;
+  int64_t at;
+} ChimiInjectedSignal;
 
 /* A process specification. `context` is passed to every incarnation's entry.
    The scheduler owns the context from the request that hands it over and
@@ -691,6 +707,14 @@ typedef struct {
   /* Copies a message for each broadcast or watch subscription past the
      first; may be null only when no program publishes to more than one. */
   ChimiValueCopy copy_channel_value;
+  /* The runner's std/signal word: its handler sets bit `code - 1` (see
+     CHIMI_REQUEST_SIGNAL_WAIT) with an atomic OR and writes a byte to
+     `signal_fd`; the scheduler takes the bits between resumes. May be null. */
+  volatile uint32_t *user_signals;
+  /* std/signal signals to latch at virtual instants (the runner's
+     --signal=HUP@... option); `count` entries, or null and 0. */
+  const ChimiInjectedSignal *injected_user_signals;
+  size_t injected_user_signal_count;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

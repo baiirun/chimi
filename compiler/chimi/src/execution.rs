@@ -1981,6 +1981,8 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::FsHostIsDirectory
             | StandardFunction::FsHostTemporaryDirectory
             | StandardFunction::FsTestRoot
+            | StandardFunction::SignalHostInstall
+            | StandardFunction::SignalHostWait
             => {
                 self.invoke_host_operation(function, arguments, call_node)
             }

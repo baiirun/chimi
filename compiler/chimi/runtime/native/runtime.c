@@ -238,6 +238,8 @@ typedef enum {
   ALLOCATION_KIND_COUNT,
 } AllocationKind;
 
+enum { CHIMI_MAX_INJECTED_SIGNALS = 64 };
+
 struct ChimiRuntime {
   const char *execution_id;
   /* The root computation's name: the program entry's, or under `--test=<k>`
@@ -268,6 +270,10 @@ struct ChimiRuntime {
      `injected_signal_at` nanoseconds; 0 for none. */
   int32_t injected_signal;
   int64_t injected_signal_at;
+  /* `--signal=HUP@...` and the user signals: std/signal signals the virtual
+     clock latches. */
+  ChimiInjectedSignal injected_user_signals[CHIMI_MAX_INJECTED_SIGNALS];
+  size_t injected_user_signal_count;
   bool silent;
   FILE *telemetry;
   FILE *outcome;
@@ -9710,6 +9716,9 @@ static bool fs_path_argument(ChimiValue *const *arguments, uint32_t argument_cou
   return at < argument_count && arguments[at]->kind == VALUE_TEXT;
 }
 
+static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
+                                             uint32_t argument_count, uint32_t call_node);
+
 static ChimiControl *invoke_fs_operation(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                          uint32_t argument_count, uint32_t call_node) {
   static const uint32_t arity[] = {1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1, 0, 1};
@@ -9855,6 +9864,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_host_operation(runtime, intrinsic, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_FS_HOST_OPEN && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
     return invoke_fs_operation(runtime, intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
+    return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -11264,6 +11275,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
     case CHIMI_REQUEST_SELECT: return "Select.first";
+    case CHIMI_REQUEST_SIGNAL_WAIT: return "Signal.next";
     default: return "a scheduler request";
   }
 }
@@ -11514,12 +11526,80 @@ static void install_stop_signals(ChimiRuntime *runtime) {
   sigaction(SIGTERM, &action, NULL);
 }
 
+/* std/signal (CHI-249): SIGHUP, SIGUSR1 and SIGUSR2 as events a task waits
+   for. Their handler never stops the program: it sets bit `code - 1` of
+   `user_signals` and wakes the scheduler through the stop signals' pipe; the
+   scheduler latches the bits and hands each to one CHIMI_REQUEST_SIGNAL_WAIT.
+   The handlers are installed when the program's `signals` provider is built,
+   before main's body, and never removed, so a program that does not need
+   `signals` keeps the default actions (SIGHUP ends it). */
+static volatile uint32_t user_signals = 0;
+static const int user_signal_numbers[] = {SIGHUP, SIGUSR1, SIGUSR2};
+
+static void on_user_signal(int number) {
+  for (uint32_t code = 1; code <= 3; ++code)
+    if (user_signal_numbers[code - 1] == number) __atomic_fetch_or(&user_signals, 1u << (code - 1), __ATOMIC_SEQ_CST);
+  int saved = errno;
+  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
+  errno = saved;
+}
+
+static void install_user_signals(void) {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_user_signal;
+  sigemptyset(&action.sa_mask);
+  for (size_t index = 0; index < 3; ++index) sigaddset(&action.sa_mask, user_signal_numbers[index]);
+  action.sa_flags = SA_RESTART;
+  for (size_t index = 0; index < 3; ++index) sigaction(user_signal_numbers[index], &action, NULL);
+}
+
+/* host_install() and host_wait(codes). The wait passes the distinct codes in
+   their listed order and returns the one the scheduler hands it. Programs
+   that reach either always run on the scheduler. */
+static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
+                                             uint32_t argument_count, uint32_t call_node) {
+  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    install_user_signals();
+    return success(void_value());
+  }
+  if (argument_count != 1 || arguments[0]->kind != VALUE_LIST || !CHIMI_REQUIRES_SCHEDULER)
+    return intrinsic_shape_defect(call_node);
+  uint64_t packed = 0;
+  uint32_t count = 0;
+  for (uint32_t index = 0; index < list_length(arguments[0]); ++index) {
+    ChimiValue *code = list_get(arguments[0], index);
+    if (code->kind != VALUE_INTEGER || code->as.integer < 1 || code->as.integer > 3)
+      return intrinsic_shape_defect(call_node);
+    bool seen = false;
+    for (uint32_t earlier = 0; earlier < count; ++earlier)
+      seen = seen || ((packed >> (8 * earlier)) & 0xff) == (uint64_t)code->as.integer;
+    if (!seen) packed |= (uint64_t)code->as.integer << (8 * count++);
+  }
+  if (count == 0) return defect("Signal.next needs at least one signal to wait for", call_node);
+  for (;;) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_SIGNAL_WAIT, .value = (int64_t)packed};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
+    if (request.status == CHIMI_RESPONSE_OK) return success(integer_value(request.value));
+    if (request.status != CHIMI_RESPONSE_PENDING) return intrinsic_shape_defect(call_node);
+  }
+}
+
 /* `--signal=TERM@2s`: a signal the virtual clock delivers at that instant.
-   The time is an integer with a unit of ns, us, ms, s, m, or h. */
+   The time is an integer with a unit of ns, us, ms, s, m, or h. INT and TERM
+   stop the program; HUP, USR1 and USR2 are std/signal's, latched for its
+   waiters, and may be given more than once. */
 static bool parse_injected_signal(const char *text, int32_t *signal_number, int64_t *at) {
   const char *rest;
   if (strncmp(text, "INT@", 4) == 0) { *signal_number = SIGINT; rest = text + 4; }
   else if (strncmp(text, "TERM@", 5) == 0) { *signal_number = SIGTERM; rest = text + 5; }
+  else if (strncmp(text, "HUP@", 4) == 0) { *signal_number = SIGHUP; rest = text + 4; }
+  else if (strncmp(text, "USR1@", 5) == 0) { *signal_number = SIGUSR1; rest = text + 5; }
+  else if (strncmp(text, "USR2@", 5) == 0) { *signal_number = SIGUSR2; rest = text + 5; }
   else return false;
   if (*rest < '0' || *rest > '9') return false;
   errno = 0;
@@ -11579,6 +11659,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .signal_fd = signal_pipe[0],
     .injected_signal = runtime->injected_signal,
     .injected_signal_at = runtime->injected_signal_at,
+    .user_signals = &user_signals,
+    .injected_user_signals = runtime->injected_user_signals,
+    .injected_user_signal_count = runtime->injected_user_signal_count,
   };
   channel_endpoints_reset();
   AllocationScope *entry_scope = main_heap.innermost;
@@ -11688,9 +11771,22 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       test_index = (int64_t)value;
     }
     else if (strncmp(argv[index], "--signal=", 9) == 0) {
-      if (!parse_injected_signal(argv[index] + 9, &runtime.injected_signal, &runtime.injected_signal_at)) {
-        fputs("--signal requires INT or TERM, @, and a time such as 2s or 150ms\n", stderr);
+      int32_t number = 0;
+      int64_t at = 0;
+      if (!parse_injected_signal(argv[index] + 9, &number, &at)) {
+        fputs("--signal requires INT, TERM, HUP, USR1 or USR2, @, and a time such as 2s or 150ms\n", stderr);
         return 64;
+      }
+      if (number == SIGINT || number == SIGTERM) {
+        runtime.injected_signal = number;
+        runtime.injected_signal_at = at;
+      } else if (runtime.injected_user_signal_count == CHIMI_MAX_INJECTED_SIGNALS) {
+        fputs("--signal is given too many times; at most 64 HUP, USR1 and USR2 signals\n", stderr);
+        return 64;
+      } else {
+        uint32_t code = number == SIGHUP ? 1 : number == SIGUSR1 ? 2 : 3;
+        runtime.injected_user_signals[runtime.injected_user_signal_count++] =
+            (ChimiInjectedSignal){.code = code, .at = at};
       }
     }
     else if (strncmp(argv[index], "--random-seed=", 14) == 0) {
@@ -11733,7 +11829,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       fputs("Chimi runner configuration must end with --\n", stderr);
       return 64;
     }
-    if (runtime.injected_signal && !runtime.virtual_clock) {
+    if ((runtime.injected_signal || runtime.injected_user_signal_count) && !runtime.virtual_clock) {
       fputs("--signal requires --clock=virtual; under the real clock, send the signal\n", stderr);
       return 64;
     }
