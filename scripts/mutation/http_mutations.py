@@ -142,6 +142,12 @@ MUTATIONS = [
     mutant("the query stays in the path",
            "    Some((path, query)) -> (path, query)",
            "    Some((path, query)) -> (target, query)"),
+    mutant("an empty content-length is no length",
+           "  case measured and List.is_empty(lengths) {",
+           "  case False {"),
+    mutant("chunk lines may hold control characters",
+           "    let length = chunk_length(refuse_controls(line))",
+           "    let length = chunk_length(line)"),
     # Reading.
     mutant("a head found in one read is not limited",
            "    (_, Some(at)) -> case at > limit {",

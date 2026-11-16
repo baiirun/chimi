@@ -418,6 +418,13 @@ test "hosts and transfer codings" {
   after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n")
     |> Test.assert_equal(refused(501, "Not Implemented", "not implemented: transfer codings other than chunked"))
   after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n") |> Test.assert_equal(bad("chunked is not the final transfer coding"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: \r\n\r\n") |> Test.assert_equal(bad("content-length is not a number"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: ,\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nZ\r\n0\r\n\r\n")
+    |> Test.assert_equal(bad("content-length is not a number"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;a\nb\r\nZ\r\n0\r\n\r\n")
+    |> Test.assert_equal(bad("a control character in a chunked body"))
+  after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nZ\r\n0\r\nX: a\rb\r\n\r\n")
+    |> Test.assert_equal(bad("a control character in a chunked body"))
   after("POST /echo HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") |> Test.assert_equal(bad("transfer-encoding in HTTP/1.0"))
   // The Kelvin sign lowercases to k in Unicode, not in HTTP.
   after("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chun\u{212A}ed\r\n\r\n")

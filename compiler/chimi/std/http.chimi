@@ -392,6 +392,14 @@ fn body_framing(head: Parsed) -> Framing {
     let (name, _) = header
     name == "transfer-encoding"
   })
+  let measured = List.any(head.headers, fn(header) {
+    let (name, _) = header
+    name == "content-length"
+  })
+  case measured and List.is_empty(lengths) {
+    True -> Failure(Refusal.Malformed("content-length is not a number"))
+    False -> Void
+  }
   case (encoded, lengths) {
     (True, [_, ..]) -> Failure(Refusal.Malformed("both content-length and transfer-encoding"))
     (True, []) -> case (head.minor == 1, codings, List.last(codings)) {
@@ -472,6 +480,17 @@ fn parse_head(bytes: Bytes, bounds: Limits) -> Parsed {
 // Bytes a head never holds outside its CRLF line ends: controls other than
 // HTAB, and DEL. Refusing them keeps a bare CR or a NUL from reaching a
 // handler, which could echo it into a response header.
+// A chunk line or trailer, refused when it holds a control character other
+// than HTAB: a bare CR or LF in one could end the line early for a proxy.
+fn refuse_controls(line: Bytes) -> Bytes {
+  case List.any(Bytes.to_list(line), fn(byte) {
+    is_control(byte) or byte == 10 or byte == 13
+  }) {
+    True -> Failure(Refusal.Malformed("a control character in a chunked body"))
+    False -> line
+  }
+}
+
 fn is_control(byte: Int) -> Bool {
   (byte < 32 and byte != 9 and byte != 10 and byte != 13) or byte == 127
 }
@@ -777,7 +796,7 @@ fn read_chunked(reader: Reader<NetError>, cursor: Cursor, bounds: Limits) -> (By
   loop state = ([], 0, cursor) {
     let (parts, used, here) = state
     let (line, after_line) = read_until(reader, here, crlf, smaller(1024, limit - used), Refusal.BodyTooLarge)
-    let length = chunk_length(line)
+    let length = chunk_length(refuse_controls(line))
     let framed = used + Bytes.length(line) + 2
     case (length == 0, framed + length + 2 > limit) {
       (True, _) -> break (Bytes.concat(parts), skip_trailers(reader, after_line, limit - framed, bounds.header_count))
@@ -798,7 +817,8 @@ fn skip_trailers(reader: Reader<NetError>, cursor: Cursor, budget: Int, count: I
   let crlf = Bytes.from_text("\r\n")
   loop state = (cursor, budget, 0) {
     let (here, left, lines) = state
-    let (line, next) = read_until(reader, here, crlf, left - 2, Refusal.BodyTooLarge)
+    let (found, next) = read_until(reader, here, crlf, left - 2, Refusal.BodyTooLarge)
+    let line = refuse_controls(found)
     case (Bytes.is_empty(line), lines >= count) {
       (True, _) -> break next
       (False, True) -> Failure(Refusal.HeadTooLarge)

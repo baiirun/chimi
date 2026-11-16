@@ -198,8 +198,9 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
   read; other codings before a final `chunked` are 501; a coding list that
   does not end in `chunked`, `transfer-encoding` together with
   `content-length`, `transfer-encoding` on HTTP/1.0, conflicting lengths, or a
-  length that is not digits is 400. A chunked body's extensions and trailers
-  are read and dropped.
+  length that is not digits (an empty one included) is 400. A chunked body's
+  extensions and trailers are read and dropped; a control character or a bare
+  CR or LF in a chunk line or trailer is 400.
 - An HTTP/1.1 request with `expect: 100-continue` gets `100 Continue` before its
   body is read; HTTP/1.0 has no such status, so it gets none.
 - Reading is linear in the bytes received however the client splits its
