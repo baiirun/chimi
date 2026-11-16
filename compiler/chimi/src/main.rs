@@ -17,7 +17,7 @@ const USAGE: &str = concat!(
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
     "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
-    "[--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+    "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
     "chimi std check; a compiler developer may put ",
     "--std-dir <directory> before inspect, check, run, build, test, or std check"
 );
@@ -66,6 +66,7 @@ struct TestOptions {
     backend: chimi::testing::Backend,
     virtual_clock: bool,
     clock_start: Option<String>,
+    seed: u64,
     time_limit: std::time::Duration,
     jobs: Option<usize>,
     show_output: bool,
@@ -79,6 +80,7 @@ impl Default for TestOptions {
             backend: chimi::testing::Backend::Native,
             virtual_clock: true,
             clock_start: None,
+            seed: 0,
             time_limit: std::time::Duration::from_secs(60),
             jobs: None,
             show_output: false,
@@ -137,6 +139,11 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
                 return usage("--time-limit must be a positive duration such as 60s");
             };
             options.time_limit = limit;
+        } else if let Some(seed) = argument.strip_prefix("--seed=") {
+            let Ok(seed) = seed.parse::<u64>() else {
+                return usage("--seed must be an integer from 0 through 18446744073709551615");
+            };
+            options.seed = seed;
         } else if let Some(jobs) = argument.strip_prefix("--jobs=") {
             match jobs.parse::<usize>() {
                 Ok(jobs) if jobs > 0 => options.jobs = Some(jobs),
@@ -640,6 +647,7 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
         filters: options.filters,
         virtual_clock: options.virtual_clock,
         clock_start: options.clock_start,
+        seed: options.seed,
         time_limit: options.time_limit,
         jobs: options.jobs.unwrap_or_else(|| {
             std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
@@ -657,11 +665,11 @@ fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode
         }
     };
     if options.json {
-        print!("{}", render_json(&suite, &selected, &results));
+        print!("{}", render_json(&suite, &selected, &results, options.seed));
     } else {
         print!(
             "{}",
-            render_report(&suite, &selected, &results, options.show_output)
+            render_report(&suite, &selected, &results, options.show_output, options.seed)
         );
     }
     if results.iter().all(|result| result.failure.is_none()) {

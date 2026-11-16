@@ -67,6 +67,7 @@ impl Operation {
                     HostFunction::ProcessUtf8Lines => "FileSystem.process_utf8_lines",
                     HostFunction::WriteLine => "Console.write_line",
                     HostFunction::WriteError => "Console.write_error",
+                    HostFunction::RandomNextInt => "Random.next_int",
                 }
                 .to_owned(),
             ),

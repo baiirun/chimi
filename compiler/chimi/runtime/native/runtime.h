@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 40
+#define CHIMI_RUNTIME_ABI_VERSION 43
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -62,6 +62,7 @@ enum {
   CHIMI_TYPE_SUPERVISOR_MANAGED_SUPERVISOR,
   CHIMI_TYPE_SUPERVISOR_START_ERROR,
   CHIMI_TYPE_CLOCK,
+  CHIMI_TYPE_RANDOM,
   CHIMI_TYPE_SET,
   CHIMI_TYPE_DECIMAL,
   CHIMI_TYPE_BYTES,

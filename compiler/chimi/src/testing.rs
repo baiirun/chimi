@@ -213,6 +213,9 @@ pub struct TestResult {
     /// What the test wrote to its console.
     pub output: String,
     pub wall_ns: u64,
+    /// Whether the test drew from its `random` provider, so a failure report
+    /// names the run seed that replays it.
+    pub random_read: bool,
 }
 
 /// An execution's outcome before classification, from either backend.
@@ -238,6 +241,9 @@ pub struct RunOptions {
     pub filters: Vec<String>,
     pub virtual_clock: bool,
     pub clock_start: Option<String>,
+    /// The run seed (`--seed`, default 0); each test's `random` provider is
+    /// seeded from it and the test's identity.
+    pub seed: u64,
     pub time_limit: Duration,
     pub jobs: usize,
 }
@@ -344,12 +350,20 @@ impl TestSuite {
     pub fn run_interpreted(&self, selected: &[usize], options: &RunOptions) -> Vec<TestResult> {
         run_parallel(selected, options.jobs, |index| {
             let started = Instant::now();
-            let (outcome, output) = self.interpret(index, options.time_limit);
-            self.result(outcome, output, started)
+            let (outcome, output, random_read) = self.interpret(index, options);
+            self.result(outcome, output, random_read, started)
         })
     }
 
-    fn interpret(&self, index: usize, limit: Duration) -> (RawOutcome, String) {
+    /// The seed of test `index`'s `random` provider (testing.md, Randomness).
+    fn random_seed(&self, index: usize, options: &RunOptions) -> u64 {
+        let case = &self.cases[index];
+        crate::random_source::test_seed(options.seed, &case.module, &case.name)
+    }
+
+    fn interpret(&self, index: usize, options: &RunOptions) -> (RawOutcome, String, bool) {
+        let limit = options.time_limit;
+        let seed = self.random_seed(index, options);
         let program = self.program.with_entry(self.program.core().tests[index]);
         let (sender, receiver) = mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -357,7 +371,8 @@ impl TestSuite {
             .stack_size(256 * 1024 * 1024)
             .spawn(move || {
                 let config = ExecutionConfig::new(format!("test-{index}"))
-                    .expect("a generated execution id is valid");
+                    .expect("a generated execution id is valid")
+                    .with_random_seed(seed);
                 let report = program.execute_oracle(config);
                 let outcome = match report.outcome {
                     ExecutionOutcome::Success(_) => RawOutcome::Success,
@@ -371,7 +386,7 @@ impl TestSuite {
                     ExecutionOutcome::Cancellation(_) => RawOutcome::Cancelled,
                 };
                 let output = report.application_stdout + &report.application_stderr;
-                let _ = sender.send((outcome, output));
+                let _ = sender.send((outcome, output, report.random_read));
             });
         if spawned.is_err() {
             return (
@@ -380,13 +395,14 @@ impl TestSuite {
                     node: None,
                 },
                 String::new(),
+                false,
             );
         }
         // A test past its limit keeps its thread; the run ends without it.
         match receiver.recv_timeout(limit) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                (RawOutcome::TimeLimit, String::new())
+                (RawOutcome::TimeLimit, String::new(), false)
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
                 RawOutcome::Defect {
@@ -395,15 +411,23 @@ impl TestSuite {
                     node: None,
                 },
                 String::new(),
+                false,
             ),
         }
     }
 
-    fn result(&self, outcome: RawOutcome, output: String, started: Instant) -> TestResult {
+    fn result(
+        &self,
+        outcome: RawOutcome,
+        output: String,
+        random_read: bool,
+        started: Instant,
+    ) -> TestResult {
         TestResult {
             failure: self.classify(outcome),
             output,
             wall_ns: u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            random_read,
         }
     }
 
@@ -478,8 +502,9 @@ impl TestSuite {
     ) -> Vec<TestResult> {
         run_parallel(selected, options.jobs, |index| {
             let started = Instant::now();
-            let (outcome, output) = self.run_process(executable, scratch, index, options);
-            self.result(outcome, output, started)
+            let (outcome, output, random_read) =
+                self.run_process(executable, scratch, index, options);
+            self.result(outcome, output, random_read, started)
         })
     }
 
@@ -489,7 +514,7 @@ impl TestSuite {
         scratch: &std::path::Path,
         index: usize,
         options: &RunOptions,
-    ) -> (RawOutcome, String) {
+    ) -> (RawOutcome, String, bool) {
         use std::process::{Command, Stdio};
         let outcome_path =
             scratch.join(format!("test-{}-{index}.outcome.json", std::process::id()));
@@ -504,6 +529,7 @@ impl TestSuite {
             command.arg(format!("--clock-start={start}"));
         }
         command
+            .arg(format!("--random-seed={}", self.random_seed(index, options)))
             .arg(format!("--outcome-file={}", outcome_path.display()))
             .arg(format!("--test={index}"))
             .arg("--")
@@ -517,6 +543,7 @@ impl TestSuite {
                     node: None,
                 },
                 String::new(),
+                false,
             )
         };
         let mut child = match command.spawn() {
@@ -557,20 +584,20 @@ impl TestSuite {
         let output = collect(stdout);
         let errors = collect(stderr);
         let Some(status) = status else {
-            return (RawOutcome::TimeLimit, output + &errors);
+            return (RawOutcome::TimeLimit, output + &errors, false);
         };
         match std::fs::read_to_string(&outcome_path)
             .ok()
             .and_then(|text| native_outcome(&text))
         {
-            Some(outcome) => (outcome, output + &errors),
+            Some((outcome, random_read)) => (outcome, output + &errors, random_read),
             None => {
-                let (outcome, _) = runner_defect(format!(
+                let (outcome, ..) = runner_defect(format!(
                     "the test process ended without an outcome ({status}){}{}",
                     if errors.is_empty() { "" } else { ": " },
                     errors.trim_end()
                 ));
-                (outcome, output)
+                (outcome, output, false)
             }
         }
     }
@@ -589,9 +616,10 @@ fn read_in_background(
     receiver
 }
 
-/// Reads a `chimi.runtime.v1` outcome record that a test process wrote.
+/// Reads a `chimi.runtime.v1` outcome record that a test process wrote, and
+/// whether the test drew from its `random` provider.
 #[cfg(feature = "native-backend")]
-fn native_outcome(text: &str) -> Option<RawOutcome> {
+fn native_outcome(text: &str) -> Option<(RawOutcome, bool)> {
     use crate::json::{JsonData, decode_json};
     let JsonData::Object(fields) = decode_json(text.trim_end()).ok()? else {
         return None;
@@ -606,7 +634,8 @@ fn native_outcome(text: &str) -> Option<RawOutcome> {
         Some(JsonData::Text(text)) => Some(text.clone()),
         _ => None,
     };
-    match text_field("outcome")?.as_str() {
+    let random_read = matches!(field("random_read"), Some(JsonData::Boolean(true)));
+    let outcome = match text_field("outcome")?.as_str() {
         "success" => Some(RawOutcome::Success),
         "expected_failure" => Some(RawOutcome::ExpectedFailure {
             rendering: text_field("rendering").unwrap_or_default(),
@@ -620,7 +649,8 @@ fn native_outcome(text: &str) -> Option<RawOutcome> {
         }),
         "cancellation" => Some(RawOutcome::Cancelled),
         _ => None,
-    }
+    }?;
+    Some((outcome, random_read))
 }
 
 /// The two renderings of a comparison assertion's defect message, which
@@ -678,6 +708,7 @@ pub fn render_report(
     selected: &[usize],
     results: &[TestResult],
     show_output: bool,
+    seed: u64,
 ) -> String {
     let mut output = String::new();
     for (index, result) in selected.iter().zip(results) {
@@ -690,6 +721,9 @@ pub fn render_report(
         writeln!(output, "test {} ... {verdict}", case.identity()).unwrap();
         if let Some(failure) = &result.failure {
             render_failure(&mut output, failure);
+            if result.random_read {
+                writeln!(output, "  random seed: {seed}; replay with --seed={seed}").unwrap();
+            }
         }
         if !result.output.is_empty() && (show_output || result.failure.is_some()) {
             output.push_str("  output:\n");
@@ -795,7 +829,12 @@ fn line_diff(actual: &str, expected: &str) -> String {
 
 /// The `--json` output: one `chimi.test.v1` record per test in report order,
 /// then the `run_finished` record (testing.md, Machine-readable output).
-pub fn render_json(suite: &TestSuite, selected: &[usize], results: &[TestResult]) -> String {
+pub fn render_json(
+    suite: &TestSuite,
+    selected: &[usize],
+    results: &[TestResult],
+    seed: u64,
+) -> String {
     let mut output = String::new();
     for (index, result) in selected.iter().zip(results) {
         let case = &suite.cases[*index];
@@ -840,7 +879,7 @@ pub fn render_json(suite: &TestSuite, selected: &[usize], results: &[TestResult]
             }
             write_json_string(&mut output, line);
         }
-        writeln!(output, "],\"wall_ns\":{}}}", result.wall_ns).unwrap();
+        writeln!(output, "],\"seed\":{seed},\"wall_ns\":{}}}", result.wall_ns).unwrap();
     }
     let failed = results
         .iter()
@@ -848,7 +887,7 @@ pub fn render_json(suite: &TestSuite, selected: &[usize], results: &[TestResult]
         .count();
     writeln!(
         output,
-        "{{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":{},\"failed\":{failed}}}",
+        "{{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":{},\"failed\":{failed},\"seed\":{seed}}}",
         results.len() - failed
     )
     .unwrap();

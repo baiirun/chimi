@@ -60,6 +60,9 @@ pub(crate) enum RuntimeIdentity {
     Constructor(StandardConstructor),
     /// A `native type`: opaque in source, represented by the runtime.
     NativeType(StandardType),
+    /// An `interface` written in source that the runner provides at the root,
+    /// as `std/random.Random`.
+    Interface(StandardType),
 }
 
 const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
@@ -289,6 +292,7 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_constructor("std/option.Option.None", StandardConstructor::OptionNone),
     known_constructor("std/option.Option.Some", StandardConstructor::OptionSome),
     known_type("std/order.Ordering", StandardType::Ordering),
+    known_interface("std/random.Random", StandardType::Random),
     known_constructor("std/order.Ordering.Less", StandardConstructor::OrderingLess),
     known_constructor(
         "std/order.Ordering.Equal",
@@ -417,6 +421,13 @@ const fn known_type(id: &'static str, kind: StandardType) -> RuntimeKnownDeclara
     }
 }
 
+const fn known_interface(id: &'static str, kind: StandardType) -> RuntimeKnownDeclaration {
+    RuntimeKnownDeclaration {
+        id,
+        identity: RuntimeIdentity::Interface(kind),
+    }
+}
+
 const fn known_constructor(
     id: &'static str,
     constructor: StandardConstructor,
@@ -529,7 +540,9 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
             continue;
         }
         let identity = match entry.identity {
-            RuntimeIdentity::Type(kind) | RuntimeIdentity::NativeType(kind) => {
+            RuntimeIdentity::Type(kind)
+            | RuntimeIdentity::NativeType(kind)
+            | RuntimeIdentity::Interface(kind) => {
                 StandardSymbol::Type(kind)
             }
             RuntimeIdentity::Constructor(constructor) => StandardSymbol::Constructor(constructor),

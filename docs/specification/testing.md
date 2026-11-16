@@ -11,8 +11,8 @@ Implemented: test declarations (they parse, format, and type-check, and
 builds drop them), the `chimi test` runner on both backends with the human
 report, `--json`, filters, jobs, the time limit, the clock options, and the
 exit status, the four `std/test` assertions, `capture_defect`, recorders
-and scripts, `T4401`, and `T4403`. Not implemented yet: `std/random` and
-`--seed`, fake mailboxes, `--trace`, directory inputs, doc-comment examples,
+and scripts, `T4401`, `T4403`, and `std/random` with `--seed`. Not
+implemented yet: fake mailboxes, `--trace`, directory inputs, doc-comment examples,
 and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.
 
@@ -391,8 +391,8 @@ fn slow_payments(delay: Duration) -> Payments needs { clock: Clock } {
 
 ## Randomness
 
-`std/random` does not exist yet. This section fixes the part of it that
-testing depends on; the rest of the module is specified with it.
+`std/random` is written in Chimi (`compiler/chimi/std/random.chimi`). This
+section fixes the part of it that testing depends on.
 
 `Random` is a structural interface in `std/random`, needed under the name
 `random`, as `Clock` is needed under `clock`:
@@ -415,7 +415,11 @@ over it declare `needs { random: Random }`. At least these exist:
 | `Random.shuffle` | `fn<T>(List<T>) -> List<T> needs { random: Random }` |
 
 Each of them is written in Chimi over `next_int`, so a seeded provider fixes
-their results on both backends.
+their results on both backends. `Random.int` also defects on a range that holds
+more values than an `Int` counts, as `Range.length` does, and draws again
+rather than favour low values when 2^63 does not divide evenly by the range's
+size; so a provided source that always returns the same bits can make it draw
+forever.
 
 Providers:
 
@@ -427,8 +431,11 @@ Providers:
   identity (module path and name), so a test draws the same numbers whether it
   runs alone, filtered, or among others, and adding a test does not change
   another test's numbers.
-- The run seed is 0 unless `--seed=<n>` sets it. A failure report of a test
-  that read its random source names the seed, so the failure can be replayed.
+- The run seed is 0 unless `--seed=<n>` sets it, from 0 through 2^64 - 1. A
+  test's seed is SplitMix64 applied to the run seed XOR the 64-bit FNV-1a hash
+  of the test's module path, a zero byte, and its name. A failure report of a
+  test that read its random source names the run seed, as `random seed: 7;
+  replay with --seed=7`, so the failure can be replayed.
 - Programs MAY supply another `Random` through `using`, as with `Clock`.
 
 ## Fakes
@@ -575,7 +582,7 @@ With `--json`, the runner writes one JSON object per line, schema
 - one `test_finished` record per test, in report order, with `module`,
   `name`, `line`, `outcome` (`passed` or `failed`), `kind` for a failure,
   `message`, `location` for an assertion, `actual` and `expected` renderings
-  for `assert_equal`, `output` (captured console lines), `seed`,
+  for `assert_equal`, `output` (captured console lines), `seed` (the run seed),
   `virtual_elapsed_ns`, and `wall_ns`;
 - one final `run_finished` record with `passed`, `failed`, and `seed`.
 
