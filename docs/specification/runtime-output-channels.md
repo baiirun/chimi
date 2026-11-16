@@ -75,6 +75,11 @@ An ordinary success exits zero, an expected failure exits 1, a defect exits 70,
 and cancellation exits 130. Sink failures exit 74 and invalid runner
 configuration exits 64. The terminal record remains available only through the
 outcome sink; exit status does not copy it into an application stream.
+A `main` that returns or fails with `std/cli`'s `Exit` ends with the status it
+names instead, applied after the outcome record: `Code(n)` exits `n` (0 to
+255, otherwise 70), `Help` writes its text to stdout and exits 0, and `Usage`
+writes its message to stderr and exits 2
+([system modules](system-modules.md#stdcli)).
 A native program cancelled by SIGINT or SIGTERM writes its outcome, then dies
 by that signal (a shell shows 130 or 143), and `--signal=INT@<duration>` or
 `--signal=TERM@<duration>` under `--clock=virtual` injects one at a virtual

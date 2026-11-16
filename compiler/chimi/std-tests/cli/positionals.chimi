@@ -1,0 +1,18 @@
+import std/cli as Cli
+import std/path as Path
+import std/test as Test
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const quiet = Cli.flag("quiet", "q", "Say less")
+const max = Cli.option("max", "m", "Stop after N", Cli.int)
+const output = Cli.option("output", "", "Where to write", Cli.path)
+const name = Cli.argument("name", "Who", Cli.text)
+const files = Cli.rest("file", "Files to read", Cli.path)
+const tool = Cli.command("tool", "A tool", [Cli.arg(verbose), Cli.arg(quiet), Cli.arg(max), Cli.arg(output), Cli.arg(name), Cli.arg(files)])
+
+test "positionals fill in order and rest takes what remains" {
+  let parsed = Cli.parse(tool, ["x", "a", "--quiet", "b"])
+  Test.assert_equal(Cli.get(parsed, name), "x")
+  Test.assert_equal(Cli.get(parsed, files), [Path.from("a"), Path.from("b")])
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["x"]), files), [])
+}

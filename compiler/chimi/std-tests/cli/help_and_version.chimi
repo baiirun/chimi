@@ -1,0 +1,45 @@
+import std/cli as Cli
+import std/cli.{CliError, Exit}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const quiet = Cli.flag("quiet", "q", "Say less")
+const max = Cli.option("max", "m", "Stop after N", Cli.int)
+const output = Cli.option("output", "", "Where to write", Cli.path)
+const name = Cli.argument("name", "Who", Cli.text)
+const files = Cli.rest("file", "Files to read", Cli.path)
+const tool = Cli.command("tool", "A tool", [Cli.arg(verbose), Cli.arg(quiet), Cli.arg(max), Cli.arg(output), Cli.arg(name), Cli.arg(files)])
+
+fn usage_error(arguments: List<Text>) -> CliError {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, _)) -> error
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+fn shown(command: Cli.Command, arguments: List<Text>) -> Text {
+  case Result.capture(fn() { Cli.parse(command, arguments) }) {
+    Err(Exit.Help(text)) -> text
+    _ -> Test.fail("expected help")
+  }
+}
+
+test "help and version are shown wherever they appear" {
+  Test.assert_equal(shown(tool, ["x", "--help"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["-h"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["--nope", "--help"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["--verbose=yes", "-h"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["-vh"]), Cli.usage(tool))
+  Test.assert_equal(shown(tool, ["--nope", "-qvh"]), Cli.usage(tool))
+  Test.assert_equal(usage_error(["--nope", "-mh"]), CliError.UnknownOption("--nope"))
+  Test.assert_equal(usage_error(["--nope", "--", "--help"]), CliError.UnknownOption("--nope"))
+  Test.assert_equal(usage_error(["--help=x"]), CliError.UnknownOption("--help"))
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["--", "--help"]), name), "--help")
+  let versioned = Cli.version(tool, "1.2.0")
+  Test.assert_equal(shown(versioned, ["x", "--version"]), "tool 1.2.0")
+  Test.assert_equal(shown(versioned, ["--nope", "--version"]), "tool 1.2.0")
+  Test.assert_equal(usage_error(["--version=2"]), CliError.UnknownOption("--version"))
+}

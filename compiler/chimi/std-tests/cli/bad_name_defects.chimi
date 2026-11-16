@@ -1,0 +1,16 @@
+import std/cli as Cli
+import std/test as Test
+
+const name = Cli.argument("name", "Who", Cli.text)
+
+test "a name that is not a long name and one letter defects" {
+  let message = Test.capture_defect(fn() { Cli.flag("--x", "", "") })
+  Test.assert_equal(message, "Cli: `--x` with short `` is not a long name and one short letter")
+  Test.capture_defect(fn() { Cli.flag("x", "ab", "") })
+  Test.capture_defect(fn() { Cli.flag("", "a", "") })
+  Test.capture_defect(fn() { Cli.option("a=b", "", "", Cli.text) })
+  Test.capture_defect(fn() { Cli.flag("five", "5", "") })
+  Test.capture_defect(fn() { Cli.flag("dash", "-", "") })
+  Test.capture_defect(fn() { Cli.flag("accent", "é", "") })
+  Void
+}

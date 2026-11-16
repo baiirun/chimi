@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 54
+#define CHIMI_RUNTIME_ABI_VERSION 55
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -509,6 +509,8 @@ typedef struct {
   int32_t outcome_success;
   /* Position among the type's variants in declaration order; derived order follows it. */
   uint32_t ordinal;
+  /* 1 for a variant of std/cli.Exit, which the runner applies as main's outcome. */
+  uint32_t program_exit;
 } ChimiConstructor;
 
 typedef struct {
