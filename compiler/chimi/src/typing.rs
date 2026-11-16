@@ -1423,7 +1423,19 @@ impl TypedProject {
         ValueProperties::SHAREABLE
     }
 
+    /// The generic parameters that `owner`'s fields and variant fields are
+    /// written in, in declaration order. `Ok` and `Err` keep the runtime's
+    /// registry contract, which is written in the standard generics, so
+    /// `Result` answers those rather than its source declaration's.
     fn type_generic_parameters(&self, owner: SymbolId) -> Vec<SymbolId> {
+        if self.resolved.standard_symbol(owner)
+            == Some(StandardSymbol::Type(StandardType::Result))
+        {
+            return [StandardGeneric::ResultValue, StandardGeneric::ResultError]
+                .into_iter()
+                .map(|generic| self.resolved.standard_generic(generic))
+                .collect();
+        }
         let owner = self.resolved.symbol(owner);
         let (Some(module_id), Some(semantic_id)) = (owner.module_id, owner.semantic_id) else {
             return Vec::new();

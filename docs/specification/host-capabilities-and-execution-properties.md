@@ -123,6 +123,69 @@ must remain bounded by runner configuration, and invalid text must not be
 silently truncated. The maintained ABI's reclamation scopes remain runtime
 ownership machinery, not regions or lifetimes in the language.
 
+## Waiting for descriptors (G21)
+
+A native host operation that reads or writes a file descriptor waits for it
+through the scheduler's IO reactor instead of blocking the scheduler thread.
+
+- **Request.** `CHIMI_REQUEST_IO_WAIT` (kind 48, `include/chimi_fiber.h`)
+  names a descriptor (`value`) and an interest (`token`: `CHIMI_IO_READABLE`,
+  `CHIMI_IO_WRITABLE`, or both). It answers OK with the ready conditions,
+  which may add `CHIMI_IO_HANGUP` or `CHIMI_IO_ERROR`, when the descriptor
+  is ready now. Otherwise the task parks and the answer is PENDING; the host
+  issues the request again after the wake. The wait is level-triggered and
+  consumes nothing: the host then does its own read or write. A negative or
+  closed descriptor, the runner's signal pipe, or any other interest
+  answers ERROR.
+- **Order.** An OK answer resumes the task before any other task runs, so
+  the read or write right after it sees the descriptor as reported. Another
+  OS process sharing the descriptor can still drain it first; the host then
+  waits again. Tasks ready together wake in the order they began waiting.
+- **Idle wait.** When nothing is runnable and some task waits on a
+  descriptor, the scheduler blocks in one wait on every such descriptor, the
+  runner's signal pipe, and, under the real clock, the earliest timer
+  deadline. While other tasks keep it busy, it checks the waits without
+  blocking every 64 resumes, so a ready descriptor is never starved.
+- **Virtual time.** A descriptor wait is a host operation in flight, so
+  virtual time does not advance while one exists ([virtual
+  time](time-and-outcomes.md#virtual-time)). Timeouts, `shutdown_within`
+  deadlines and `--signal` injections later than the current instant
+  therefore wait for the descriptor (one due at the current instant still
+  fires). A real signal still ends the wait while `main` runs, because the
+  signal pipe is in the same wait; once `main` has ended, signals are
+  retired, so a process body still draining in a descriptor wait under the
+  virtual clock ends only with a second signal. A parked task waiting on a
+  descriptor is never a deadlock.
+- **Cancellation.** The wait is a cancellation point. A cancellation, a
+  timeout scope's deadline, or a forced shutdown withdraws it.
+- **Closing.** Closing a descriptor while a task waits on it is a host bug.
+  The current poll(2) backend wakes the waiter, whose next request answers
+  ERROR, but an epoll or kqueue backend would not notice.
+- **Backend.** poll(2) on macOS and Linux. Each idle wait costs time linear
+  in the number of waits, which is fine until a server holds thousands of
+  connections; the reactor's wait is the one place an epoll or kqueue
+  backend replaces it.
+
+`process_utf8_lines` reads through this wait under the scheduler: while a
+read waits for input, the program's other tasks run, and the first SIGINT or
+SIGTERM ends the read as it cancels `main`. Standard input is read with
+read(2) into a process-wide buffer, so bytes read past an early exit wait
+for the next read of `"-"`. Regular files go through the same path, where
+the wait answers at once. Standard input is never made non-blocking,
+because its file description is shared with the parent; a descriptor a
+parent left non-blocking is waited on and read again.
+
+A reader whose input is always ready (`yes | program`) keeps the CPU as a
+busy loop does: each ready answer resumes it first, so other tasks run and
+timers fire only when its line callback parks or the input stalls. That is
+no worse than the blocking read it replaces.
+
+Not yet covered: writes to standard output and standard error still block
+the scheduler thread, so a program writing to a stalled pipe is ended only
+by a second signal. Phase 7b's sockets own their descriptors, make them
+non-blocking, and wait with the same request. Phase 7b decides whether an
+idle `accept` should hold virtual time.
+
 ## Cancellation and restricted contexts
 
 Cancellation is a runtime outcome, not an expected failure or callable row. A

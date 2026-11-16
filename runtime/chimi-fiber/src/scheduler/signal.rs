@@ -173,10 +173,20 @@ pub(super) fn wait_readable(fd: i32, timeout: Option<std::time::Duration>) {
     // SAFETY: one valid pollfd for the duration of the call.
     let ready = unsafe { libc::poll(&mut poll, 1, milliseconds) };
     if ready > 0 {
-        let mut buffer = [0_u8; 64];
-        // SAFETY: the runner opens the pipe non-blocking; this only drains it.
-        while unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
+        drain(fd);
     }
+}
+
+/// Empties the wake pipe, so the next wait blocks until a new signal.
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "linux"),
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+pub(super) fn drain(fd: i32) {
+    let mut buffer = [0_u8; 64];
+    // SAFETY: the runner opens the pipe non-blocking; this only drains it.
+    while unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
 }
 
 #[cfg(not(all(
