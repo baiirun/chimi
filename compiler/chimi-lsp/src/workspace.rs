@@ -113,6 +113,13 @@ pub struct HoverInfo {
     pub markdown: String,
 }
 
+/// An inferred type to show inline, as `: List<Int>` after `let items`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeHintInfo {
+    pub position: LinePosition,
+    pub label: String,
+}
+
 /// One name an editor can insert at the cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Completion {
@@ -421,8 +428,16 @@ impl Workspace {
     /// Ensures: `None` when nothing typed is under the cursor, the position is
     /// invalid, or the owning project's latest analysis failed to load.
     pub fn hover(&self, path: &DocumentPath, position: LinePosition) -> Option<HoverInfo> {
-        let (_, module, report) = self.inspect(path, position)?;
-        let markdown = hover_markdown(&report)?;
+        let (project, module, report) = self.inspect(path, position)?;
+        let doc = project
+            .report
+            .doc_comment_at(&module.module_path, report.offset() as usize);
+        let markdown = match (hover_markdown(&report), doc) {
+            (Some(markdown), Some(doc)) => format!("{markdown}\n\n---\n\n{doc}"),
+            (Some(markdown), None) => markdown,
+            (None, Some(doc)) => doc,
+            (None, None) => return None,
+        };
         let span = match (report.reference(), report.token()) {
             (Some(reference), _) => reference.range(),
             (None, Some(token)) => token.range(),
@@ -463,6 +478,36 @@ impl Workspace {
                     detail: item.signature().to_owned(),
                     documentation: item.doc().map(str::to_owned),
                 })
+                .collect(),
+        )
+    }
+
+    /// The inferred type of each `let` in `path` that states none, placed
+    /// after the binding's name, for the lines `first_line..=last_line`.
+    pub fn inlay_hints(
+        &self,
+        path: &DocumentPath,
+        first_line: u32,
+        last_line: u32,
+    ) -> Option<Vec<TypeHintInfo>> {
+        let project = self.latest_for(path)?;
+        let module = project.modules.get(path)?;
+        Some(
+            project
+                .report
+                .let_type_hints(&module.module_path)
+                .into_iter()
+                .map(|hint| TypeHintInfo {
+                    position: line_range(
+                        hint.offset(),
+                        hint.offset(),
+                        &module.lines,
+                        self.encoding,
+                    )
+                    .start,
+                    label: hint.label().to_owned(),
+                })
+                .filter(|hint| (first_line..=last_line).contains(&hint.position.line))
                 .collect(),
         )
     }
@@ -1089,6 +1134,86 @@ mod tests {
         assert_eq!(alias_before("  point.Lib.", 12), None);
         assert_eq!(alias_before("  1.", 4), None);
         assert_eq!(alias_before("  .x", 4), None);
+    }
+
+    /// Each `let` without an annotation shows its inferred type after the
+    /// name; an annotated one, and one whose type an error leaves unknown,
+    /// show none.
+    #[test]
+    fn inlay_hints_show_the_type_of_unannotated_lets() {
+        let fixture = Fixture::new("inlay");
+        let app = fixture.write(
+            "app.chimi",
+            "pub fn main() -> Int {\n  let items = [1, 2]\n  let total: Int = 3\n  let pair = (total, \"x\")\n  let broken = missing()\n  let wrapped = [missing()]\n  let open = fn(a) { 1 }\n  let generic = same\n  let double = fn(a: Int) { a * 2 }\n  total\n}\n\nfn same<T>(value: T) -> T { value }\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        let hints = workspace.inlay_hints(&app, 0, 10).expect("hints");
+        let shown: Vec<(u32, u32, &str)> = hints
+            .iter()
+            .map(|hint| {
+                (
+                    hint.position.line,
+                    hint.position.character,
+                    hint.label.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (1, 11, ": List<Int>"),
+                (3, 10, ": (Int, Text)"),
+                (8, 12, ": fn(Int) -> Int"),
+            ]
+        );
+        // Only the lines asked for.
+        assert_eq!(
+            workspace.inlay_hints(&app, 2, 3).map(|hints| hints.len()),
+            Some(1)
+        );
+    }
+
+    /// Hover shows the item's doc comment under its contract, at a use in
+    /// another module and at the declaration.
+    #[test]
+    fn hover_shows_the_doc_comment() {
+        let fixture = Fixture::new("hover-doc");
+        let lib = fixture.write(
+            "lib.chimi",
+            "/// Adds one.\npub fn bump(value: Int) -> Int { value + 1 }\n\npub fn plain() -> Int { 0 }\n\n/// Adds one.\npub fn keep<T>(value: T) -> T { value }\n",
+        );
+        let app = fixture.write(
+            "app.chimi",
+            "import lib as Lib\n\npub fn main() -> Int {\n  Lib.bump(Lib.plain())\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        let used = workspace.hover(&app, at(3, 7)).expect("hovers `bump`");
+        assert!(
+            used.markdown.ends_with("\n\n---\n\nAdds one."),
+            "{}",
+            used.markdown
+        );
+        assert!(
+            used.markdown.starts_with("```chimi\nbump: "),
+            "{}",
+            used.markdown
+        );
+        let plain = workspace.hover(&app, at(3, 16)).expect("hovers `plain`");
+        assert!(!plain.markdown.contains("---"), "{}", plain.markdown);
+        // A type parameter shares its function's id, not its doc.
+        assert!(
+            workspace
+                .hover(&lib, at(6, 22))
+                .is_none_or(|hover| !hover.markdown.contains("Adds one."))
+        );
+        let declared = workspace.hover(&lib, at(1, 8));
+        assert!(declared.is_some_and(|hover| hover.markdown.contains("Adds one.")),);
     }
 
     /// Guards that a failed load never answers from an older report, whose

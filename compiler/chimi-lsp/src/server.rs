@@ -16,16 +16,18 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, Formatting, GotoDefinition, HoverRequest, References, Rename, Request as _,
+    Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Rename,
+    Request as _,
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, Diagnostic,
     DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, Documentation,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
-    SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    InitializeParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Location,
+    MarkupContent, MarkupKind, NumberOrString, Position, PositionEncodingKind,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SaveOptions,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use std::error::Error;
@@ -58,6 +60,7 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         rename_provider: Some(lsp_types::OneOf::Left(true)),
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_owned()]),
             ..CompletionOptions::default()
@@ -150,6 +153,36 @@ impl Server<'_> {
                         })
                     });
                 Response::new_ok(id, location)
+            }
+            InlayHintRequest::METHOD => {
+                let (id, params) = request.extract::<InlayHintParams>(InlayHintRequest::METHOD)?;
+                let hints = document(&params.text_document.uri)
+                    .and_then(|path| {
+                        self.workspace.inlay_hints(
+                            &path,
+                            params.range.start.line,
+                            params.range.end.line,
+                        )
+                    })
+                    .map(|hints| {
+                        hints
+                            .into_iter()
+                            .map(|hint| InlayHint {
+                                position: Position::new(
+                                    hint.position.line,
+                                    hint.position.character,
+                                ),
+                                label: InlayHintLabel::String(hint.label),
+                                kind: Some(InlayHintKind::TYPE),
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: None,
+                                data: None,
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                Response::new_ok(id, hints)
             }
             Completion::METHOD => {
                 let (id, params) = request.extract::<CompletionParams>(Completion::METHOD)?;

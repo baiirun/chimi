@@ -85,6 +85,17 @@ impl IncrementalTypeReport {
         crate::doc::alias_members(&self.types.typed, module_path, alias, offset)
     }
 
+    /// The inferred type of each `let` in `module_path` that states none,
+    /// to show after the binding's name.
+    pub fn let_type_hints(&self, module_path: &str) -> Vec<crate::TypeHint> {
+        crate::hints::let_type_hints(&self.types.typed, module_path)
+    }
+
+    /// The `///` doc comment of the item named at `offset` in `module_path`.
+    pub fn doc_comment_at(&self, module_path: &str, offset: usize) -> Option<String> {
+        crate::doc::doc_comment_at(&self.types.typed, module_path, offset)
+    }
+
     /// Groups this report's diagnostics by owning module.
     ///
     /// Ensures: exactly one entry per analyzed module in module-path order,
