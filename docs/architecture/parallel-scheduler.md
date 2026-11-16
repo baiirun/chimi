@@ -284,6 +284,72 @@ keeps its observable meaning through a different mechanism.
 4. Shard the kernel and the channel registry by owner, and add stealing.
 5. Publish multi-core baselines next to the single-thread ones (R2).
 
+## Step 3 plan
+
+Step 3 lands as six pull requests. Each one is green on its own, and the first
+four keep one carrier.
+
+1. **Atomic select commit (one carrier).** When `handle_select` answers
+   Ready on a receiver, it takes the value under the same scheduler step and
+   stores it in the task's `Operation::ReceiveReady` slot. The follow-up
+   `REQUEST_CHANNEL_RECEIVE` already reads that slot first, so the ABI does
+   not change. A stored value is released if its task dies first.
+   `SelectCommitted` is still emitted before the take, so lab transcripts do
+   not change.
+2. **Split `Scheduler` into a `Kernel` and a carrier loop (one carrier, no
+   lock).**
+   - Adds a `Running` task phase, because today a running task stays
+     `Runnable`, and cancel, force and defect paths need a rule for a task
+     running elsewhere.
+   - Adds a `PinnedFiber { home, fiber }` that asserts it is resumed and
+     dropped on its home carrier.
+   - Adds a per-carrier ready queue held in the kernel.
+   - Adds a jobs path for the two places that resume another task's fiber
+     inline: `begin_terminal`'s terminal resume, and `await_incarnation`
+     from `force`, `begin_shutdown`, `shutdown_processes` and the shutdown
+     deadline. Those jobs run on the fiber's home carrier, inline when that
+     carrier is the current one.
+3. **C side.**
+   - `carrier` becomes a no-inline accessor.
+   - A per-carrier drain hook issues queued releases before the carrier
+     idles and when it stops. It replaces `carrier_with_releases`.
+   - The host stack limit is kept per carrier.
+   - The memory counters become signed per-carrier deltas.
+   - New test: a count reaches zero inside a release hook, on a carrier
+     where no fiber requests again.
+4. **One `Mutex` around the kernel (one carrier).** The lock is held except
+   while a fiber runs and while the carrier waits. This PR shows the lock
+   discipline and measures its cost against the performance gates. Lock
+   order is the kernel lock first, then `handle_table`, never the reverse.
+5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
+   - Each carrier has a wake descriptor. The carrier loop polls it, and
+     carrier 0 also polls the signal pipe.
+   - A fiber stays on the carrier of its first resume. Corosensei's
+     coroutine is not `Send`, so an unstarted fiber is handed over through a
+     narrow wrapper.
+   - Placement: `Task.start` runs on the parent's carrier. A process
+     incarnation runs on membership id modulo N.
+   - Carrier 0 owns signals, stdin and the root.
+   - Global idle means every carrier is idle, every ready queue is empty, no
+     timer is due and no IO wait is pending, all checked under the lock.
+     That check is what decides a deadlock.
+   - Timers stay in the kernel. Any carrier fires due timers.
+   - `--carriers` above 1 together with `--clock=virtual` exits 64, as
+     `--signal` does.
+   - Tests:
+     - ThreadSanitizer on the Rust tests.
+     - Looped stress programs at 2 to 8 carriers: process ping-pong; a select
+       racing a plain receive on one queue, with no value lost or doubled; a
+       restart storm with shutdown deadlines; handle churn.
+6. **Measure, then choose the default.** Changing the default to one carrier
+   per core changes the interleavings of real-clock programs and the seeded
+   `random` stream, so that change is the project owner's decision, made with
+   the measurements in hand. The meaning of the memory report's peak fields
+   is decided in the same pull request.
+
+After step 5, `Task.start` fan-out still runs on one carrier. Only processes
+spread out until step 4 of "Order of work" adds stealing.
+
 ## Risks
 
 - Signal delivery and the reactor need one owner per descriptor. The simplest
