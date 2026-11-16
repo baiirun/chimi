@@ -620,23 +620,25 @@ static bool reap_if_exited(ChildProcess *child) {
   return child->reaped;
 }
 
+/* How a stop's wait ended. */
+typedef enum { STOP_EXITED, STOP_DEADLINE, STOP_CANCELLED } StopWait;
+
 /* Waits, letting other tasks run, until the child is reaped or `deadline`
-   (monotonic ms) passes; false when the deadline passed or the wait cannot
-   go on (cancelled). */
-static bool await_exit_until(ChimiBindingCall *call, int ticker, int64_t deadline) {
+   (monotonic ms) passes. */
+static StopWait await_exit_until(ChimiBindingCall *call, int ticker, int64_t deadline) {
   for (;;) {
     ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
-    if (child == NULL || reap_if_exited(child)) return true;
-    if (monotonic_ms() >= deadline) return false;
+    if (child == NULL || reap_if_exited(child)) return STOP_EXITED;
+    if (monotonic_ms() >= deadline) return STOP_DEADLINE;
     if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)
-      return false;
+      return STOP_CANCELLED;
     drain_ticker(ticker);
   }
 }
 
 /* Waits, letting other tasks run, until the child is reaped. It wakes at the
-   exit, so no ticker is needed. A cancelled wait leaves the reap to the
-   release that follows. */
+   exit, so no ticker is needed. A wait that does not finish leaves the reap
+   to the release that follows. */
 static void await_exit(ChimiBindingCall *call) {
   for (;;) {
     ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
@@ -653,8 +655,10 @@ static void await_exit(ChimiBindingCall *call) {
    SIGTERM and `milliseconds` to exit, then SIGKILL, and is reaped; zero
    sends SIGKILL at once, and so does any grace when no ticker can be opened
    (a SIGTERM cut short at once is worse than none). Other tasks run while it
-   waits. If the wait cannot go on, the release that follows kills and reaps
-   the child itself. */
+   waits. A cancelled wait (a stop signal ending main, which no release
+   masks) must not be followed by another, which would park a task that is
+   unwinding: the child gets SIGKILL, the stop answers cancelled, and the
+   handle's release at the program's end reaps it. */
 ChimiBindingResult *chimi_exec_stop(ChimiBindingCall *call) {
   int64_t grace;
   if (!chimi_binding_integer(call, 1, &grace) || grace < 0)
@@ -662,16 +666,17 @@ ChimiBindingResult *chimi_exec_stop(ChimiBindingCall *call) {
   if (grace > STOP_GRACE_LIMIT_MS) grace = STOP_GRACE_LIMIT_MS;
   ChildProcess *child = chimi_binding_handle(call, 0, &CHILD);
   if (child == NULL || reap_if_exited(child)) return chimi_binding_success(call, chimi_binding_void(call));
-  bool ended = false;
+  StopWait waited = STOP_DEADLINE;
   int ticker = grace > 0 ? open_ticker() : -1;
   if (ticker >= 0) {
     kill(child->pid, SIGTERM);
-    ended = await_exit_until(call, ticker, monotonic_ms() + grace);
+    waited = await_exit_until(call, ticker, monotonic_ms() + grace);
     close(ticker);
   }
   child = chimi_binding_handle(call, 0, &CHILD);
-  if (!ended && child != NULL && !child->reaped) {
+  if (waited != STOP_EXITED && child != NULL && !child->reaped) {
     kill(child->pid, SIGKILL);
+    if (waited == STOP_CANCELLED) return chimi_binding_cancelled(call);
     await_exit(call);
   }
   return chimi_binding_success(call, chimi_binding_void(call));

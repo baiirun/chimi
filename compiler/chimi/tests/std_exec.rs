@@ -69,6 +69,8 @@ import std/bytes as Bytes
 import std/duration as Duration
 import std/exec as Exec
 import std/exec.{Commands, ExecError, Status, Stdio}
+import std/int as Int
+import std/list as List
 import std/map as Map
 import std/option as Option
 import std/path as Path
@@ -77,6 +79,7 @@ import std/result.{Err, Ok}
 import std/stream as Stream
 import std/task as Task
 import std/test as Test
+import std/text as Text
 
 fn attempt<T, E, R>(operation: fn() -> T errors E needs R) -> Text needs R {
   case Result.capture(operation) {
@@ -741,12 +744,18 @@ test "pipes are closed with the child" {
   let counted = (fn() {
     let before = Exec.capture(Exec.command("/bin/sh", ["-c", "ls /proc/$PPID/fd | wc -l"]))
     let piped = Exec.stderr(Exec.stdout(Exec.stdin(Exec.command("/bin/sh", ["-c", "exit 0"]), Stdio.Pipe), Stdio.Pipe), Stdio.Pipe)
-    Exec.start(piped, fn(child) { Exec.wait(child) })
+    let _ = List.map([1, 2, 3, 4], fn(_) { Exec.start(piped, fn(child) { Exec.wait(child) }) })
     let after = Exec.capture(Exec.command("/bin/sh", ["-c", "ls /proc/$PPID/fd | wc -l"]))
-    (Bytes.to_text(before.output), Bytes.to_text(after.output))
+    (count(before.output), count(after.output))
   })() using { commands: Exec.host_for_tests() }
+  // A leak of even one end per start shows as 4 more; a pipe pair open for
+  // a moment elsewhere in the runner (seen in full runs) as at most 2.
   let (before, after) = counted
-  after |> Test.assert_equal(before)
+  (after - before <= 2) |> Test.assert_equal(True)
+}
+
+fn count(listing: Bytes.Bytes) -> Int {
+  Int.parse(Text.trim(Bytes.to_text(listing)))
 }
 "#,
     );
@@ -970,8 +979,52 @@ test "other tasks run while a child is stopped" {
     );
 }
 
+// Rejects a stop that waits again after a stop signal ends `main` while main
+// itself is stopping a child: the unwinding task would park, and the runner
+// would report a scheduler defect (exit 70) instead of ending by the signal.
+// The child is gone either way.
+#[test]
+fn a_stop_signal_during_a_stop_ends_the_program_by_it() {
+    use std::os::unix::process::ExitStatusExt;
+    let scratch = build_main(
+        "stop_signal_mid_stop",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let command = Exec.stdout(Exec.command("/bin/sh", ["-c", "trap '' TERM; echo $$ > child.pid; echo ready; while :; do sleep 0.02; done"]), Stdio.Pipe)
+  Exec.start(Exec.stop_within(command, Duration.seconds(5)), fn(child) {
+    let _ = Stream.read(Exec.output(child))
+    let _ = sh("touch released")
+    Void
+  })
+}
+"#,
+    );
+    let mut runner = Command::new(scratch.0.join("runner"))
+        .current_dir(&scratch.0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the program");
+    let started = Instant::now();
+    while !scratch.0.join("released").exists() {
+        assert!(started.elapsed() < Duration::from_secs(10), "the program never reached its release");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = Command::new("kill").args(["-TERM", &runner.id().to_string()]).status().expect("run kill");
+    assert!(sent.success());
+    let output = runner.wait_with_output().expect("wait for the program");
+    assert_eq!(output.status.signal(), Some(libc_sigterm()), "{:?} {}", output.status, String::from_utf8_lossy(&output.stderr));
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
+    assert!(!exists(pid), "the child {pid} outlived the program");
+}
+
+fn libc_sigterm() -> i32 {
+    15
+}
+
 // Rejects a runner that leaves a child behind when the program dies: a
-// defect inside `use` still stops the child, and a child the program holds
+// defect inside `use` still stops the child gently (SIGTERM first), and a child the program holds
 // outside any `Exec.start` (its provider called directly) is killed at the
 // program's end. Each child's process is gone once the runner has exited.
 #[test]
@@ -979,7 +1032,7 @@ fn no_child_outlives_the_program() {
     let scratch = build_main(
         "backstop",
         r#"pub fn main() -> Void needs { commands: Commands } {
-  Exec.start(Exec.command("/bin/sh", ["-c", "echo $$ > child.pid; exec sleep 30"]), fn(child) {
+  Exec.start(Exec.command("/bin/sh", ["-c", "trap 'echo bye > term.txt; exit 0' TERM; echo $$ > child.pid; while :; do sleep 0.02; done"]), fn(child) {
     let waited = sh("while ! test -s child.pid; do sleep 0.01; done")
     case Exec.succeeded(waited) {
       True -> Debug.crash("a defect with a child running")
@@ -994,6 +1047,7 @@ fn no_child_outlives_the_program() {
     assert_ne!(output.status.code(), Some(0));
     let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
     assert!(!exists(pid), "the child {pid} outlived the program's defect");
+    assert!(scratch.0.join("term.txt").exists(), "a defect in `use` skipped the graceful stop");
 
     let scratch = build_main(
         "backstop_unscoped",

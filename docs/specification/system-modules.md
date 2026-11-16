@@ -348,9 +348,13 @@ pub fn host_for_tests() -> Commands                      // test-only
   does not cut short, so a `Task.timeout` around `start` can take up to
   `stop_within` longer than its own time. When the program ends normally or
   by a defect, any child still held, even outside a `start`, is killed with
-  SIGKILL and reaped. A program killed by SIGKILL, or by a second stop
-  signal (which ends it at once), runs no release, and its children
-  outlive it. A
+  SIGKILL and reaped. A stop signal ends `main` without running `main`'s
+  own releases, as for every `Resource.scoped` there, so a `start` in `main`
+  itself skips the graceful stop: its child is killed with SIGKILL and
+  reaped as the program ends, and a stop already under way sends SIGKILL at
+  once. A `start` in a task `main` started stops gracefully. A program
+  killed by SIGKILL, or by a second stop signal (which ends it at once),
+  runs no release, and its children outlive it. A
   `Child` used after that answers `Closed` from `wait`. The child's own
   children are not stopped: a program that leaves its children running when
   it dies leaves them to outlive the `start`. The child stays in the
@@ -474,6 +478,7 @@ pub fn host_for_tests() -> Commands                      // test-only
 | `capture` returns both streams and the status; more than a pipe holds on both at once; no input | `tests/std_exec.rs` `capture_collects_both_streams_and_the_status` |
 | A round trip through `cat`; `wait` leaves the input to a writer task; a cancelled read; `BrokenPipe` without SIGPIPE; `Closed` after close; a stopped output ends the child with SIGPIPE; a sibling does not hold a child's pipe | `tests/std_exec.rs` `pipes_carry_a_childs_input_and_output` |
 | A child left running gets SIGTERM and exits; one that ignores it is killed after `stop_within`; zero kills at once; a piped input is closed before SIGTERM; a cancelled start stops its child gently; other tasks run meanwhile; a negative `stop_within` is a defect | `tests/std_exec.rs` `a_child_left_running_gets_sigterm_then_sigkill` |
+| A stop signal during a stop in `main` ends the program by the signal (not a scheduler defect) and the child is gone | `tests/std_exec.rs` `a_stop_signal_during_a_stop_ends_the_program_by_it` |
 | A defect in `use` stops and reaps its child; a child held outside any `start` is killed and reaped at the program's end | `tests/std_exec.rs` `no_child_outlives_the_program` |
 | A released child leaves no descriptor open (Linux) | `tests/std_exec.rs` `a_released_child_leaves_no_descriptor_open` |
 | A fake's piped streams through `capture`; a fake round trip with a writer task; a fake read after a stop is `Closed`; a fake input whose reader stopped is `BrokenPipe` (a fake also gives `BrokenPipe` for a write after close); an unpiped stream is a defect (native: std/stream needs the bounded channel runtime) | `tests/std_exec.rs` `a_fake_child_pipes_streams` |
