@@ -9,7 +9,7 @@
 //! through a channel, and folds the log, the elapsed seconds, and the outcome
 //! into one number, so an assertion names every fact it guards.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 const PRELUDE: &str = r#"import std/channel as Channel

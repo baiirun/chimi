@@ -1,0 +1,33 @@
+# mutation run at 3c94fa4f32ed360be3ed34560eb5e89ce47c16c7
+# select_mutations.py: 23 mutants against compiler/chimi
+BASELINE ok  [select] (21s)
+KILLED       sources are polled last to first [select] (8s)
+KILLED       the reply names the first source [select] (7s)
+KILLED       the wake timer is the latest deadline [select] (7s)
+KILLED       a parked select arms no wake timer [select] (8s)
+KILLED       a passed deadline is not ready [select] (42s)
+KILLED       a closed or aborted channel is not ready [select] (23s)
+KILLED       a waiting sender does not make a channel ready [select] (23s)
+KILLED       a queued value does not wake the watcher [select] (8s)
+KILLED       a parked sender does not wake the watcher [select] (7s)
+KILLED       an inbox select registers no wake [select] (9s)
+KILLED       a finished child does not wake a selecting parent [select] (18s)
+KILLED       a task source is ready before its child ends [select] (16s)
+KILLED       a firing scope cannot withdraw a select [select] (7s)
+SURVIVED     user timers are never cancelled [select] (11s)
+KILLED       a user clock timer uses the execution clock [select] (11s)
+KILLED       a committed receive skips the mapping function [select] (12s)
+KILLED       losing user timers are cancelled before the take [select] (11s)
+KILLED       Select.first accepts an empty list at run time [select] (11s)
+KILLED       an empty list literal is accepted [select] (21s)
+KILLED       a receive event cannot fail with Aborted [select] (15s)
+KILLED       a task event drops the task's failures [select] (16s)
+KILLED       an event is not task-local [select] (21s)
+KILLED       event failure sets do not join [select] (20s)
+# select_fiber_mutations.py: 1 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- select_tests] (14s)
+KILLED       a request leaves an abandoned select registered [lib -- select_tests] (5s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# rerun at the next commit after a stronger test:
+KILLED       user timers are never cancelled [select]
+# result: every mutant killed

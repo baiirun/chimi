@@ -1,0 +1,64 @@
+// A failure converted in a failure arm links its cause to the matched one;
+// re-raising the bound variable keeps the cause and adds no link.
+// Cause.context adds a frame and the variant stays matchable.
+import std/cause as Cause
+import std/cause.{Cause}
+import std/result as Result
+import std/text as Text
+
+enum HttpError {
+  Status(code: Int)
+}
+
+enum JobError {
+  Transient(reason: Text)
+}
+
+fn fetch() -> Int {
+  Failure(HttpError.Status(503))
+}
+
+fn converted() -> Int {
+  case fetch() {
+    Success(value) -> value
+    Failure(_) -> Failure(JobError.Transient("payments returned 503"))
+  }
+}
+
+fn reraised() -> Int {
+  case fetch() {
+    Success(value) -> value
+    Failure(error) -> Failure(error)
+  }
+}
+
+fn depth(cause: Cause) -> Int {
+  case Cause.caused_by(cause) {
+    Some(below) -> 1 + depth(below)
+    None -> 0
+  }
+}
+
+fn describe(operation: fn() -> Int errors HttpError | JobError) -> Text {
+  case Cause.of(Result.capture(operation)) {
+    Some(cause) -> "${Cause.summary(cause)} links=${depth(cause)} frames=${Text.join(Cause.frames(cause), "|")}"
+    None -> "no cause"
+  }
+}
+
+fn matched() -> Text {
+  case fetch |> Cause.context("fetching the price") {
+    Success(_) -> "ok"
+    Failure(HttpError.Status(code)) -> "still Status(${code})"
+  }
+}
+
+pub fn main() -> Text {
+  let contexted = fn() { converted |> Cause.context("charging job 42") }
+  let twice = fn() { contexted |> Cause.context("running the worker") }
+  let tree = case Cause.of(Result.capture(twice)) {
+    Some(cause) -> Cause.to_text(cause)
+    None -> "no cause"
+  }
+  [describe(converted), describe(reraised), describe(twice), matched(), tree] |> Text.join("\n")
+}

@@ -1,0 +1,41 @@
+import std/channel as Channel
+import std/channel.{ChannelError, Receive, Receiver}
+import std/duration as Duration
+import std/process as Process
+import std/process.{HandoffSpec, Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError, Running}
+
+enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, requests: Receiver<Int>) -> Void {
+  let got = Channel.receive(requests)
+  case got {
+    Receive.Received(_) -> Void
+    Receive.Drained -> Void
+  }
+}
+
+// A handoff spec is shareable, so a module constant may hold it, even though
+// its argument type is exclusive.
+const connection: HandoffSpec<Receiver<Int>, Message, ChannelError> = Process.handoff_spec(serve, 4, Duration.seconds(1))
+
+fn accept(root: Running, requests: Receiver<Int>) -> Int {
+  case Supervisor.start_handoff(root, connection, requests) {
+    Success(_) -> 0
+    Failure(HandoffError.CapacityReached(back)) -> {
+      Channel.abort(back)
+      1
+    }
+    Failure(HandoffError.Stopped(back)) -> {
+      Channel.abort(back)
+      2
+    }
+  }
+}
+
+pub fn main() -> Int {
+  0
+}

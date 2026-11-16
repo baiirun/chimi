@@ -615,6 +615,11 @@ impl ProjectResolver {
             (StandardType::ProcessSendError, StandardModule::Process),
             (StandardType::ProcessMonitor, StandardModule::Process),
             (StandardType::ProcessDown, StandardModule::Process),
+            (StandardType::ProcessHandoffSpec, StandardModule::Process),
+            (
+                StandardType::SupervisorHandoffError,
+                StandardModule::Supervisor,
+            ),
             (StandardType::SupervisorMember, StandardModule::Supervisor),
             (StandardType::SupervisorPolicy, StandardModule::Supervisor),
             (StandardType::SupervisorRestarts, StandardModule::Supervisor),
@@ -636,6 +641,7 @@ impl ProjectResolver {
             (StandardType::Instant, StandardModule::Clock),
             (StandardType::Timestamp, StandardModule::Clock),
             (StandardType::Timeout, StandardModule::Task),
+            (StandardType::SelectEvent, StandardModule::Select),
         ] {
             if self.declared_in_source(StandardSymbol::Type(kind)) {
                 continue;
@@ -830,8 +836,13 @@ impl ProjectResolver {
         ]
         .into_iter()
         .chain(self.process_callable_parameters())
-        .chain([StandardFunction::TaskTimeout, StandardFunction::TaskDeadline].map(
-            |function| {
+        .chain(self.select_callable_parameters())
+        .chain(
+            [
+                StandardFunction::TaskTimeout,
+                StandardFunction::TaskDeadline,
+            ]
+            .map(|function| {
                 (
                     self.standard_function_symbol(function),
                     vec![
@@ -851,6 +862,51 @@ impl ProjectResolver {
                     .collect(),
             );
         }
+    }
+
+    /// The generic parameters of each `std/select` function, in contract order.
+    fn select_callable_parameters(&self) -> Vec<(SymbolId, Vec<StandardGeneric>)> {
+        use StandardGeneric as G;
+        let function = |function| self.standard_function_symbol(function);
+        vec![
+            (
+                function(StandardFunction::SelectReceive),
+                vec![
+                    G::SelectSource,
+                    G::SelectValue,
+                    G::SelectFailures,
+                    G::SelectNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SelectInbox),
+                vec![
+                    G::SelectSource,
+                    G::SelectValue,
+                    G::SelectFailures,
+                    G::SelectNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SelectTask),
+                vec![
+                    G::SelectSource,
+                    G::SelectTaskFailures,
+                    G::SelectValue,
+                    G::SelectFailures,
+                    G::SelectNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SelectAfter),
+                vec![G::SelectValue],
+            ),
+            (function(StandardFunction::SelectAt), vec![G::SelectValue]),
+            (
+                function(StandardFunction::SelectFirst),
+                vec![G::SelectValue, G::SelectFailures],
+            ),
+        ]
     }
 
     /// The generic parameters of each `std/process` and `std/supervisor` callable,
@@ -907,6 +963,31 @@ impl ProjectResolver {
             (
                 function(StandardFunction::ProcessUnmonitor),
                 vec![G::ProcessUnmonitorMessage],
+            ),
+            (
+                function(StandardFunction::ProcessHandoffSpec),
+                vec![
+                    G::ProcessHandoffSpecArgument,
+                    G::ProcessHandoffSpecMessage,
+                    G::ProcessHandoffSpecFailures,
+                    G::ProcessHandoffSpecNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SupervisorStartHandoff),
+                vec![
+                    G::SupervisorStartHandoffArgument,
+                    G::SupervisorStartHandoffMessage,
+                    G::SupervisorStartHandoffFailures,
+                ],
+            ),
+            (
+                constructor(StandardConstructor::HandoffCapacityReached),
+                vec![G::SupervisorStartHandoffArgument],
+            ),
+            (
+                constructor(StandardConstructor::HandoffStopped),
+                vec![G::SupervisorStartHandoffArgument],
             ),
             (
                 function(StandardFunction::SupervisorProcess),

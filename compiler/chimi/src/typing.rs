@@ -22,6 +22,7 @@ mod constants;
 pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
+mod select;
 
 mod properties;
 
@@ -1191,7 +1192,9 @@ impl TypedProject {
         visiting: &mut HashSet<TypeId>,
     ) -> ValueProperties {
         match self.resolved.standard_symbol(symbol) {
-            Some(StandardSymbol::Type(StandardType::Task)) => {
+            // An event is task-local like the handle or inbox it may hold
+            // (time-and-outcomes.md, "Events").
+            Some(StandardSymbol::Type(StandardType::Task | StandardType::SelectEvent)) => {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
@@ -1214,6 +1217,7 @@ impl TypedProject {
             Some(StandardSymbol::Type(
                 StandardType::ProcessAddress
                 | StandardType::ProcessSpec
+                | StandardType::ProcessHandoffSpec
                 | StandardType::ProcessMonitor
                 | StandardType::ProcessDown
                 | StandardType::SupervisorMember
@@ -1225,11 +1229,13 @@ impl TypedProject {
             )) => {
                 return ValueProperties::SHAREABLE;
             }
-            // `Process.SendError<M>` and `Channel.SendError<T>` hand the refused value
-            // back, and `Channel.Receive<T>` holds the received value, so each is what
-            // its argument is.
+            // `Process.SendError<M>`, `Channel.SendError<T>`, and
+            // `Supervisor.HandoffError<A>` hand the refused value back, and
+            // `Channel.Receive<T>` holds the received value, so each is what its
+            // argument is.
             Some(StandardSymbol::Type(
                 StandardType::ProcessSendError
+                | StandardType::SupervisorHandoffError
                 | StandardType::ChannelSendError
                 | StandardType::ChannelReceive,
             )) => {
@@ -1653,6 +1659,7 @@ impl ProjectTypeChecker {
 
         self.index_process_contracts();
         self.index_clock_contracts();
+        self.index_select_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -2258,7 +2265,9 @@ impl ProjectTypeChecker {
             | StandardConstructor::DownFailed
             | StandardConstructor::DownDefected
             | StandardConstructor::DownStopped
-            | StandardConstructor::DownUnavailable => self.process_constructor_shape(constructor),
+            | StandardConstructor::DownUnavailable
+            | StandardConstructor::HandoffCapacityReached
+            | StandardConstructor::HandoffStopped => self.process_constructor_shape(constructor),
             StandardConstructor::TimeoutTimedOut => self.timeout_constructor_shape(),
             StandardConstructor::DurationParseEmpty
             | StandardConstructor::DurationParseInvalid
@@ -3348,6 +3357,7 @@ impl ProjectTypeChecker {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
                 let labelled_order =
                     self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
+                self.reject_empty_event_list(module_id, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
                         || self.is_builtin_value(symbol, "Failure")
@@ -6393,6 +6403,7 @@ impl ProjectTypeChecker {
                     | StandardType::ProcessDown
                     | StandardType::SupervisorRestart
                     | StandardType::SupervisorStartError
+                    | StandardType::SupervisorHandoffError
                     | StandardType::ChannelReceive
                     | StandardType::ChannelError
                     | StandardType::IntParseError
@@ -7858,16 +7869,21 @@ impl ProjectTypeChecker {
                                 .collect::<Vec<_>>();
                             // `E` in `Task<T, E>` is a failure set: a generic
                             // there also denotes the task's failure row.
-                            if matches!(
-                                self.resolved.standard_symbol(symbol),
+                            let failures_index = match self.resolved.standard_symbol(symbol) {
                                 Some(StandardSymbol::Type(
-                                    StandardType::Task | StandardType::ProcessSpec
-                                ))
-                            ) && let Some(TypeUse::Named {
+                                    StandardType::Task | StandardType::ProcessSpec | StandardType::SelectEvent,
+                                )) => Some(1),
+                                Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
+                                    Some(2)
+                                }
+                                _ => None,
+                            };
+                            if let Some(index) = failures_index
+                                && let Some(TypeUse::Named {
                                 semantic_id: failures_id,
                                 path: failures_path,
                                 ..
-                            }) = arguments.get(1)
+                            }) = arguments.get(index)
                                 && let (Some(name), Some(failures)) = (
                                     failures_path.last(),
                                     self.resolved_type_symbol(module_id, *failures_id),

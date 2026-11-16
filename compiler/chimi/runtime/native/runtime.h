@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 26
+#define CHIMI_RUNTIME_ABI_VERSION 29
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -68,6 +68,7 @@ enum {
   CHIMI_TYPE_INSTANT,
   CHIMI_TYPE_TIMESTAMP,
   CHIMI_TYPE_TIMEOUT,
+  CHIMI_TYPE_CAUSE,
 };
 
 enum {
@@ -145,6 +146,13 @@ enum {
   CHIMI_INTRINSIC_CLOCK_STARTING_AT,
   CHIMI_INTRINSIC_TASK_TIMEOUT,
   CHIMI_INTRINSIC_TASK_DEADLINE,
+  /* std/select. */
+  CHIMI_INTRINSIC_SELECT_RECEIVE,
+  CHIMI_INTRINSIC_SELECT_INBOX,
+  CHIMI_INTRINSIC_SELECT_TASK,
+  CHIMI_INTRINSIC_SELECT_AFTER,
+  CHIMI_INTRINSIC_SELECT_AT,
+  CHIMI_INTRINSIC_SELECT_FIRST,
   /* The process intrinsics follow StandardFunction's declaration order. */
   CHIMI_INTRINSIC_PROCESS_SPEC,
   CHIMI_INTRINSIC_PROCESS_REGISTER,
@@ -155,6 +163,7 @@ enum {
   CHIMI_INTRINSIC_PROCESS_CAPACITY,
   CHIMI_INTRINSIC_PROCESS_MONITOR,
   CHIMI_INTRINSIC_PROCESS_UNMONITOR,
+  CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC,
   CHIMI_INTRINSIC_SUPERVISOR_PROCESS,
   CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR,
   CHIMI_INTRINSIC_SUPERVISOR_POLICY,
@@ -162,6 +171,7 @@ enum {
   CHIMI_INTRINSIC_SUPERVISOR_START,
   CHIMI_INTRINSIC_SUPERVISOR_START_PROCESS,
   CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR,
+  CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF,
   CHIMI_INTRINSIC_SUPERVISOR_ADDRESS,
   CHIMI_INTRINSIC_SUPERVISOR_REMOVE_PROCESS,
   CHIMI_INTRINSIC_SUPERVISOR_REMOVE_SUPERVISOR,
@@ -226,6 +236,16 @@ enum {
   /* std/embed: lowering put the file's contents (text) or their hex (bytes) in the argument. */
   CHIMI_INTRINSIC_EMBED_TEXT,
   CHIMI_INTRINSIC_EMBED_BYTES,
+  /* The native core of std/cause; contiguous. */
+  CHIMI_INTRINSIC_CAUSE_CONTEXT,
+  CHIMI_INTRINSIC_CAUSE_OF,
+  CHIMI_INTRINSIC_CAUSE_KIND_CODE,
+  CHIMI_INTRINSIC_CAUSE_SUMMARY,
+  CHIMI_INTRINSIC_CAUSE_FRAMES,
+  CHIMI_INTRINSIC_CAUSE_CAUSED_BY,
+  CHIMI_INTRINSIC_CAUSE_SUPPRESSED,
+  CHIMI_INTRINSIC_CAUSE_REASON_CODE,
+  CHIMI_INTRINSIC_CAUSE_TO_TEXT,
   /* std/resource.scoped: acquire, use, release with release masked. */
   CHIMI_INTRINSIC_RESOURCE_SCOPED,
 };
@@ -280,6 +300,8 @@ enum {
   CHIMI_CONSTRUCTOR_DOWN_DEFECTED,
   CHIMI_CONSTRUCTOR_DOWN_STOPPED,
   CHIMI_CONSTRUCTOR_DOWN_UNAVAILABLE,
+  CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED,
+  CHIMI_CONSTRUCTOR_HANDOFF_STOPPED,
 };
 
 enum {
@@ -326,6 +348,8 @@ typedef struct {
   uint32_t semantic_id;
   uint32_t start;
   uint32_t end;
+  /* The string `module/path.chimi:line` that causes show for it. */
+  uint32_t location;
 } ChimiOrigin;
 
 typedef struct {
@@ -431,11 +455,15 @@ typedef struct {
   uint32_t node;
 } ChimiStep;
 
+/* When the arm matches, the cause of subject `cause_subject` is bound to the
+   local symbol `cause_local` (both UINT32_MAX when the arm binds none). */
 typedef struct {
   uint32_t patterns_offset;
   uint32_t patterns_length;
   uint32_t guard;
   uint32_t body;
+  uint32_t cause_subject;
+  uint32_t cause_local;
 } ChimiArm;
 
 typedef struct {

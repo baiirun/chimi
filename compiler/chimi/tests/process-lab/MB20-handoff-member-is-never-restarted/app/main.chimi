@@ -1,0 +1,56 @@
+import std/channel as Channel
+import std/channel.{Receive, Receiver}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError}
+
+// MB20: a handoff member is never restarted, and its slot is free once it
+// ends. The first connection defects after taking its Receiver; the ended
+// incarnation's cleanup aborts that channel, so main's send fails (1). No
+// replacement starts (the transcript has one process_terminated and no
+// restart), and a second start on the capacity-1 supervisor succeeds (0)
+// with a fresh Receiver.
+
+pub enum Message {
+  Stop
+}
+
+fn serve(inbox: Inbox<Message>, requests: Receiver<Int>) -> Void {
+  let zero = 0
+  let crash = 1 / zero
+  Void
+}
+
+const connection = Process.handoff_spec(serve, 1, Duration.seconds(1))
+
+pub fn main() -> Int needs { clock: Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(5, Duration.seconds(30))))
+  let first = Channel.bounded(1)
+  let started = case Supervisor.start_handoff(root, connection, first.receiver) {
+    Success(_) -> 0
+    Failure(_) -> 100
+  }
+  Clock.sleep(Duration.milliseconds(1))
+  let written = case Channel.send(first.sender, 5) {
+    Success(_) -> 0
+    Failure(_) -> 1
+  }
+  let second = Channel.bounded(1)
+  let again = case Supervisor.start_handoff(root, connection, second.receiver) {
+    Success(_) -> 0
+    Failure(HandoffError.CapacityReached(back)) -> {
+      Channel.abort(back)
+      10
+    }
+    Failure(HandoffError.Stopped(back)) -> {
+      Channel.abort(back)
+      20
+    }
+  }
+  Supervisor.stop(root)
+  started + written + again
+}

@@ -47,6 +47,8 @@ enum TransferBoundary {
     ProcessSend,
     /// The notice of `Process.monitor`, kept by the monitor until it is delivered.
     ProcessMonitor,
+    /// The argument of `Supervisor.start_handoff`, which the new incarnation owns.
+    StartHandoff,
     ProcessRemoval,
     SupervisorRemoval,
     /// A `let` or loop state binding took the value that carried it.
@@ -64,6 +66,7 @@ impl TransferBoundary {
             Self::ChannelSend => "by Channel.send".to_owned(),
             Self::ProcessSend => "by Process.send".to_owned(),
             Self::ProcessMonitor => "by Process.monitor".to_owned(),
+            Self::StartHandoff => "by Supervisor.start_handoff".to_owned(),
             Self::ProcessRemoval => "by Supervisor.remove_process".to_owned(),
             Self::SupervisorRemoval => "by Supervisor.remove_supervisor".to_owned(),
             Self::IntoBinding(owner) => format!("into `{}`", typed.resolved.symbol(owner).name),
@@ -397,9 +400,23 @@ impl CapabilityChecker<'_> {
                             );
                         }
                     }
-                    Some(StandardFunction::ProcessSpec) => {
+                    Some(StandardFunction::SupervisorStartHandoff) => {
+                        if let Some((argument, start)) = arguments.get(2) {
+                            self.check_message_transfer(
+                                module_id,
+                                argument,
+                                start,
+                                TransferBoundary::StartHandoff,
+                                environment,
+                            );
+                        }
+                    }
+                    Some(
+                        function @ (StandardFunction::ProcessSpec
+                        | StandardFunction::ProcessHandoffSpec),
+                    ) => {
                         if let Some((argument, body)) = arguments.first() {
-                            self.check_spec_body(module_id, argument, body);
+                            self.check_spec_body(module_id, function, argument, body);
                         }
                     }
                     Some(
@@ -742,6 +759,7 @@ impl CapabilityChecker<'_> {
 
     /// `Channel.send` and `Process.send`: the payload moves to the receiver.
     /// `Process.monitor`: the notice moves into the monitor, which runs it at most once.
+    /// `Supervisor.start_handoff`: the argument moves into the new incarnation.
     ///
     /// Ensures: `T4243` when the payload is never transferable; otherwise every
     /// exclusive binding the payload carries is transferred, so a later use is `T4241`.
@@ -756,6 +774,7 @@ impl CapabilityChecker<'_> {
         let operation = match boundary {
             TransferBoundary::ProcessSend => "Process.send",
             TransferBoundary::ProcessMonitor => "Process.monitor",
+            TransferBoundary::StartHandoff => "Supervisor.start_handoff",
             _ => "Channel.send",
         };
         if payload.properties.transferable == PropertyDerivation::Never {
@@ -774,12 +793,14 @@ impl CapabilityChecker<'_> {
         self.transfer_carried(payload, argument.range(), boundary, environment);
     }
 
-    /// `T4260` for a `Process.spec` body: every incarnation runs it again, so its
+    /// `T4260` for a `Process.spec` or `Process.handoff_spec` body: every
+    /// incarnation, or every handoff start, runs it again, so its
     /// captures and the providers bound to it must be shareable. Records the needs that
     /// flow out of the call, for an enclosing `using` to check.
     fn check_spec_body(
         &mut self,
         module_id: ModuleId,
+        function: StandardFunction,
         argument: &ModuleExpression,
         body: &FlowValue,
     ) {
@@ -794,8 +815,13 @@ impl CapabilityChecker<'_> {
                 self.file_id(module_id),
                 argument.range(),
                 format!(
-                    "a Process.spec body must be shareable, because every incarnation runs it \
-                     again, but {unshared_by} is not shareable"
+                    "a Process.{} body must be shareable, because {}, but {unshared_by} is \
+                     not shareable",
+                    function.name(),
+                    match function {
+                        StandardFunction::ProcessHandoffSpec => "every start of the spec runs it",
+                        _ => "every incarnation runs it again",
+                    }
                 ),
             ));
         }

@@ -190,8 +190,13 @@ with that call's span.
   after the scope's entry. A child's result handed back to its parent is
   stamped with the child's start, so it counts as gained when the child was
   started.
-- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 10 and the native runtime ABI is 26.
+- **ABI.** `CHIMI_FIBER_ABI_VERSION` is 12 and the native runtime ABI is 29.
 - **Not covered yet.** A supervisor started inside a scope is not stopped
-  when the scope is cancelled (follow-up ticket). `Process.send` does not
-  transfer capabilities (CHI-213), so a capability sent to a process is
-  outside this rule.
+  when the scope is cancelled (follow-up ticket).
+- **Causes.** The outcome that loses under the order above is not yet
+  attached to the winner's cause as a `Displaced` or `Cleanup` suppressed
+  cause ([failure context](time-and-outcomes.md#failure-context)); a
+  follow-up ticket adds it on both backends.
+- **Process messages.** A receiver or completion carried by a `Process.send`
+  message (G28, CHI-213) is stamped when it lands, like a channel message's,
+  so the rule covers it too.

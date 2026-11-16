@@ -133,8 +133,8 @@ impl ProjectTypeChecker {
     /// Whether the type parameter at `index` of the data type `owner` occurs only
     /// in covariant positions (fields and success types, never a function input),
     /// so two instances whose arguments there are failure sets may join by union
-    /// ("Joins"). Inferred from the declaration; `List`, `Option`, and `Task`
-    /// only hand their arguments out.
+    /// ("Joins"). Inferred from the declaration; `List`, `Option`, `Task`, and
+    /// `Select.Event` only hand their arguments out.
     pub(crate) fn type_parameter_is_covariant(&self, owner: SymbolId, index: usize) -> bool {
         self.parameter_is_covariant_within(owner, index, 0)
     }
@@ -151,7 +151,7 @@ impl ProjectTypeChecker {
             || matches!(
                 self.resolved.standard_symbol(owner),
                 Some(StandardSymbol::Type(
-                    StandardType::Option | StandardType::Task
+                    StandardType::Option | StandardType::Task | StandardType::SelectEvent
                 ))
             )
         {

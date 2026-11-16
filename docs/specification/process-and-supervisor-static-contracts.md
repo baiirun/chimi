@@ -85,6 +85,7 @@ functions below.
 | `Process.Address<M>` | shareable |
 | `Process.Inbox<M>` | task-local |
 | `Process.Spec<M, E>` | shareable, enforced by `Process.spec` |
+| `Process.HandoffSpec<A, M, E>` | shareable, enforced by `Process.handoff_spec` |
 | `Process.SendError<M>`: `Full(message: M)`, `Unavailable(message: M)` | that of `M` |
 | `Supervisor.Member` | shareable |
 | `Supervisor.Policy` | shareable |
@@ -94,6 +95,7 @@ functions below.
 | `Supervisor.ManagedProcess<M>` | exclusive, transferable |
 | `Supervisor.ManagedSupervisor` | exclusive, transferable |
 | `Supervisor.StartError`: `CapacityReached`, `NameTaken(name: Text)`, `Stopped` | shareable |
+| `Supervisor.HandoffError<A>`: `CapacityReached(argument: A)`, `Stopped(argument: A)` | that of `A` |
 
 - **Task-local** is the existing parent-local capability class that
   `Task<T, F>` uses: the value may be passed to ordinary calls within the
@@ -123,6 +125,10 @@ Process.spec:
   fn<M, E, R>(fn(Inbox<M>) -> Void errors E needs R, Int, Duration)
     -> Process.Spec<M, E>
     needs R
+Process.handoff_spec:
+  fn<A, M, E, R>(fn(Inbox<M>, A) -> Void errors E needs R, Int, Duration)
+    -> Process.HandoffSpec<A, M, E>
+    needs R
 Process.register:    fn<M, E>(Process.Spec<M, E>, Address<M>) -> Process.Spec<M, E>
 Process.receive:     fn<M>(Inbox<M>) -> M
 Process.send:        fn<M>(Address<M>, M) -> Void errors SendError<M>
@@ -139,6 +145,9 @@ Supervisor.start_process:
 Supervisor.start_supervisor:
   fn(Running, Policy, Restart) -> ManagedSupervisor
     errors StartError.CapacityReached | StartError.NameTaken | StartError.Stopped
+Supervisor.start_handoff:
+  fn<A, M, E>(Running, Process.HandoffSpec<A, M, E>, A) -> ManagedProcess<M>
+    errors HandoffError<A>
 Supervisor.address:  fn<M>(ManagedProcess<M>) -> Address<M>
 Supervisor.remove_process:    fn<M>(Running, ManagedProcess<M>) -> Void
 Supervisor.remove_supervisor: fn(Running, ManagedSupervisor) -> Void
@@ -170,20 +179,73 @@ Supervisor.wait:     fn(Running) -> Void
   declaration, the same label traces use.
 - `Stopped` is returned when the supervisor has stopped or been replaced.
   Removing from or stopping a stopped supervisor returns `Void`.
+- `Process.handoff_spec` and `Supervisor.start_handoff` are described in
+  [handoff starts](#handoff-starts).
 - A process started from a policy has no `Running` handle of its own
   supervisor. Adding dynamic members to a nested supervisor is out of scope
   for the first kernel.
+
+## Handoff starts
+
+A handoff start begins one process that owns a value from the start, such as
+an accepted connection's socket or a `Channel.Receiver` (G28, CHI-213). An
+ordinary spec cannot carry one: its body must be shareable (`T4260`), because
+a supervisor runs it again for every incarnation.
+
+<!-- chimi: fragment -->
+```chimi
+const connection = Process.handoff_spec(serve, 16, Duration.seconds(5))
+
+fn accept(connections: Running, socket: Socket) -> Void {
+  case Supervisor.start_handoff(connections, connection, socket) {
+    Success(_) -> Void
+    Failure(HandoffError.CapacityReached(socket)) -> refuse(socket)
+    Failure(HandoffError.Stopped(socket)) -> refuse(socket)
+  }
+}
+```
+
+- The body takes its inbox and then the start argument. The spec stays
+  shareable, so a module constant may hold it and one spec may start many
+  incarnations, each with its own argument. `T4260`, `T4261`, and `T4240`
+  apply to the body as they do to a `Process.spec` body. `T4261` also covers
+  the argument type `A`, which moves into another process.
+- `A` may be any transferable type, shareable ones too, such as a
+  per-connection configuration record. An exclusive `A` is the reason the
+  operation exists.
+- A handoff member is never restarted, because its argument is consumed. It
+  behaves as `Restart.Never`: when it ends, its slot is free, so an acceptor
+  does not call `remove_process` per connection. It has no `process name`:
+  `Process.register` takes only a `Process.Spec`, so a handoff start never
+  fails with `NameTaken`. A dynamic member does not survive its supervisor's
+  replacement, so no other path runs the body twice.
+- `start_handoff` transfers every exclusive binding its argument carries, as
+  `Process.send` does for its message: a later use is `T4241`, and a start
+  inside a loop of a binding bound outside it is `T4250`. A helper that calls
+  `start_handoff` on its parameter is caught at run time by the owner token,
+  as every flow across a function boundary is.
+- A refused start hands the argument back in `HandoffError`, with ownership
+  restored, the way `Process.SendError` hands back a message.
+- At run time the argument travels like a `Process.send` message (see
+  [handing a capability back](task-and-channel-capabilities.md#handing-a-capability-back)).
+  The start is accepted or refused in one scheduler step, before the caller
+  can be cancelled. On acceptance its Receivers and Completions are in
+  flight, and the new incarnation owns them once its body starts, before the
+  body runs any code. A successful start never hands the argument back. An
+  incarnation stopped or removed before its body starts discards the
+  argument, which aborts open channels as an owner's exit would. One that
+  ends after taking it cleans the argument up as any owner does.
 
 ## Compile-time rejections
 
 | Code | Rejected program |
 | --- | --- |
-| `T4260` | A `Process.spec` body that is not shareable: it captures an exclusive or task-local value, or needs a provider that is not shareable. The diagnostic names the capture or provider. |
-| `T4261` | A `process name` or `Process.spec` body whose message type is not transferable. |
+| `T4260` | A `Process.spec` or `Process.handoff_spec` body that is not shareable: it captures an exclusive or task-local value, or needs a provider that is not shareable. The diagnostic names the capture or provider. |
+| `T4261` | A `process name`, `Process.spec` body, or `Process.handoff_spec` body whose message type is not transferable, or a handoff body whose start argument type is not transferable. |
 | `T4262` | `Process.register(spec, x)` where `x` is not a direct reference to a `process name` declaration, for example a local variable or `Supervisor.address(...)`. |
 | `T4263` | A literal mailbox capacity below 1, a literal policy capacity below 1, a literal restart limit below 0, a literal negative `shutdown_within` duration, a literal restart window of zero or less, or a members list literal longer than a literal policy capacity. |
 | `T4264` | One `Supervisor.policy` call whose members list literal registers the same `process name` twice. |
-| `T4241` | Using a managed handle after `remove_process` or `remove_supervisor` consumed it, or a message after `Process.send` transferred an exclusive value. |
+| `T4241` | Using a managed handle after `remove_process` or `remove_supervisor` consumed it, a message after `Process.send` transferred an exclusive value, or an argument after `Supervisor.start_handoff` transferred one. |
 | `T4240`, `T4243` | Capturing an inbox into `Task.start`, or sending an inbox through `Channel.send` or `Process.send`. |
 | `T4250` | A loop pass that removes a managed handle bound outside the loop. |
 | type mismatch | Sending a message whose type differs from the address's `M`; registering a name whose message type differs from the body's `M`; putting a `Process.Spec` directly in the members list instead of `Supervisor.process(...)`. |
@@ -258,6 +320,10 @@ capability and supervisor identity, never as expected failures:
 | `case Supervisor.start(policy)` matching `CapacityReached` | unreachable arm |
 | `Running` sent to a process in a message and used there to start a sibling | Compiles |
 | `ManagedProcess` sent through a channel to another task, removed there | Compiles |
+| A module constant `HandoffSpec<Receiver<Int>, Message, ChannelError>`, and a `case` on `start_handoff` matching both `HandoffError` variants | Compiles |
+| A `Receiver` used after `Supervisor.start_handoff(root, spec, receiver)` | `T4241` |
+| A `Process.handoff_spec` body that captures a `Receiver` | `T4260` |
+| A handoff body whose start argument is a `Task` | `T4261` |
 
 ## Implementation status
 
@@ -317,6 +383,8 @@ capability and supervisor identity, never as expected failures:
   constructors, blocks, `case` arms, or a call whose result type can hold the
   binding's type, and through a `let` that bound such a value (`ts-184972`).
   A shareable value in a message (a `Running`, an `Address`) stays usable.
+- `Supervisor.start_handoff` moves every exclusive binding its argument
+  carries, by the same rule.
 - `Supervisor.remove_process` and `remove_supervisor` consume a handle passed
   as a binding: a later use is `T4241`, and a removal inside a loop of a
   handle bound outside it is `T4250`.

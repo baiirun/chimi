@@ -255,6 +255,10 @@ struct Channel {
     /// capability in flight has no owner.
     receiver_parcel: Option<usize>,
     completion_parcel: Option<usize>,
+    /// The receiver's owner while it waits in `Select.first` with an event
+    /// on this channel. It is woken, not answered, when the channel turns
+    /// ready to receive, and it receives only when it polls again.
+    select_watcher: Option<TaskId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,6 +318,7 @@ impl ChannelRegistry {
                 completion_since: self.arrivals + 1,
                 receiver_parcel: None,
                 completion_parcel: None,
+                select_watcher: None,
             },
         );
         self.arrivals += 1;
@@ -375,6 +380,45 @@ impl ChannelRegistry {
         Ok(transition)
     }
 
+    /// Checks that every capability in `carried` is `task`'s current copy,
+    /// before a message that holds them leaves `task` outside a channel (a
+    /// process mailbox, or a process start's argument). Changes nothing.
+    pub fn check_carried(&self, task: TaskId, carried: &[Carried]) -> Result<(), ChannelError> {
+        self.validate_carried(task, carried).map(|_| ())
+    }
+
+    /// Puts `carried`, already checked by `check_carried`, in flight in
+    /// `value`'s parcel once something other than a channel has accepted
+    /// `value` from `task`. `deliver_parcel` or `discard_parcel` settles
+    /// it.
+    pub fn dispatch_carried(&mut self, task: TaskId, value: usize, carried: &[Carried]) {
+        let carried = self
+            .validate_carried(task, carried)
+            .expect("check_carried accepted these capabilities");
+        if !carried.is_empty() {
+            self.dispatch_parcel(task, value, carried);
+        }
+    }
+
+    /// Gives the capabilities `value` carries to `receiver`.
+    pub fn deliver_parcel(&mut self, value: usize, receiver: TaskId) {
+        let mut transition = Transition::default();
+        transition.delivered.push((value, receiver));
+        self.settle_parcels(&mut transition);
+    }
+
+    /// Ends the capabilities `value` carries, which was dropped unread, as
+    /// their owner's exit would: open channels abort.
+    pub fn discard_parcel(&mut self, value: usize) -> Transition {
+        let mut transition = Transition::default();
+        transition.discarded.push(value);
+        self.settle_parcels(&mut transition);
+        // `value` is not a channel's, so its owner releases it; values the
+        // aborts discarded follow it and are the channels' to release.
+        transition.discarded.remove(0);
+        transition
+    }
+
     fn send_value(
         &mut self,
         task: TaskId,
@@ -416,11 +460,13 @@ impl ChannelRegistry {
                 } else if channel.queue.len() < channel.capacity {
                     debug_assert!(channel.waiting_senders.is_empty());
                     channel.queue.push_back(value);
+                    transition.wakes.extend(channel.select_watcher.take());
                     SendResult::Accepted
                 } else {
                     channel
                         .waiting_senders
                         .push_back(WaitingSend { task, value });
+                    transition.wakes.extend(channel.select_watcher.take());
                     self.operations.insert(
                         task,
                         Operation::Sending {
@@ -609,6 +655,7 @@ impl ChannelRegistry {
             return Ok(transition);
         }
         channel.lifecycle = Lifecycle::Closed;
+        transition.wakes.extend(channel.select_watcher.take());
         while let Some(waiter) = channel.waiting_senders.pop_front() {
             self.operations.insert(
                 waiter.task,
@@ -792,6 +839,36 @@ impl ChannelRegistry {
 
     /// True while the task has a send or receive registered, pending or with
     /// a ready result it has not collected.
+    /// One receive event of `Select.first`: true when a receive by `task`
+    /// would answer at once (a value, a parked rendezvous sender, `Drained`,
+    /// or `Aborted`). Otherwise `task` becomes the channel's select watcher,
+    /// woken when that changes. Consumes nothing either way. The receiver
+    /// must be `task`'s current copy, as for a receive.
+    pub fn select_receive(&mut self, task: TaskId, receiver: Receiver) -> Result<bool, ChannelError> {
+        self.begin_operation(task)?;
+        let channel = self
+            .channels
+            .get_mut(&receiver.channel)
+            .ok_or(ChannelError::UnknownChannel(receiver.channel))?;
+        validate_receiver(channel, receiver, task)?;
+        let ready = channel.lifecycle != Lifecycle::Open
+            || !channel.queue.is_empty()
+            || !channel.waiting_senders.is_empty();
+        if !ready {
+            channel.select_watcher = Some(task);
+        }
+        Ok(ready)
+    }
+
+    /// Removes `task` as the select watcher of `channel`, if it still is.
+    pub fn unwatch(&mut self, task: TaskId, channel: ChannelId) {
+        if let Some(channel) = self.channels.get_mut(&channel)
+            && channel.select_watcher == Some(task)
+        {
+            channel.select_watcher = None;
+        }
+    }
+
     pub fn has_operation(&self, task: TaskId) -> bool {
         self.operations.contains_key(&task)
     }
@@ -1220,6 +1297,7 @@ impl ChannelRegistry {
             return transition;
         }
         channel.lifecycle = Lifecycle::Aborted;
+        transition.wakes.extend(channel.select_watcher.take());
         let discard_count = channel.queue.len();
         transition.discarded.extend(channel.queue.drain(..));
         while let Some(waiter) = channel.waiting_senders.pop_front() {

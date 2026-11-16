@@ -42,8 +42,8 @@ fn after_release(used: Control, released: Control) -> Control {
     match (used, released) {
         (used @ Control::Defect { .. }, _) => used,
         (_, released @ Control::Defect { .. }) => released,
-        (used @ Control::Cancellation, _) => used,
-        (_, released @ (Control::Failure(_) | Control::Cancellation)) => released,
+        (used @ Control::Cancellation(_), _) => used,
+        (_, released @ (Control::Failure(..) | Control::Cancellation(_))) => released,
         (used, _) => used,
     }
 }

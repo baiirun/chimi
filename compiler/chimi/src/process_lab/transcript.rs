@@ -64,6 +64,8 @@ const CLOCK_EVENTS: &[&str] = &[
     "clock_timer_cancelled",
     "clock_deadlock_waiter",
     "clock_scope_fired",
+    "clock_select_parked",
+    "clock_select_committed",
 ];
 
 /// Projects telemetry onto the transcript lines the lab compares.
