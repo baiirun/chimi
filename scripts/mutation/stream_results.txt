@@ -1,0 +1,23 @@
+# mutation run at 1f2e846020930fc9b4ec9f32fd16f25db8894ec9
+# stream_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok  [streams] (37s)
+BASELINE ok  [language streams] (58s)
+KILLED       an empty write hands out an empty chunk [streams] (20s)
+KILLED       read_all has no limit [streams] (24s)
+KILLED       read_all leaves the reader running past its limit [streams] (19s)
+KILLED       read_all rejects a stream of exactly its limit [streams] (19s)
+KILLED       a producer's failure is lost [streams] (20s)
+KILLED       a producer's failure leaves the stream open [streams] (20s)
+KILLED       a vanished writer reads as a clean end [streams] (19s)
+KILLED       stop does not reach the producer [streams] (19s)
+KILLED       produce never closes the writer [streams] (19s)
+KILLED       produce ignores its capacity [streams] (19s)
+KILLED       a host reader hands out empty chunks [streams] (19s)
+KILLED       copy counts chunks, not bytes [streams] (18s)
+KILLED       a struct's type argument does not make a generic a failure set [language streams] (83s)
+KILLED       a field call does not read failures from the type argument [language streams] (78s)
+KILLED       signatures are checked before the types they name [language streams] (84s)
+KILLED       a type named before its declaration settles in one round [language streams] (88s)
+KILLED       a constructor does not bind a failure-row parameter [language streams] (77s)
+# result: every mutant killed
+MUT EXIT 0

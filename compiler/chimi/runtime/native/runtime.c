@@ -8313,6 +8313,246 @@ static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, Chi
   return defect("unknown standard intrinsic", call_node);
 }
 
+/* Starts `callable` as a child of the calling task (Task.start's contract) and
+   returns its handle. */
+static ChimiControl *start_task(ChimiRuntime *runtime, ChimiValue *callable, uint64_t span,
+                                uint32_t call_node, ChimiEnvironment *environment) {
+  /* The child runs in its own heap, so it gets a copy of what it captured. */
+  void *roots[] = {callable, capture_requirements(environment)};
+  AllocationKind kinds[] = {ALLOCATION_VALUE, ALLOCATION_ENVIRONMENT};
+  RuntimeFragment *captures = NULL;
+  if (fragment_copy(roots, kinds, 2, &captures) != HEAP_OK)
+    return defect(FOREIGN_POINTER_DEFECT, call_node);
+  ChimiTaskContext *context = malloc(sizeof(*context));
+  if (!context) exhausted_memory();
+  *context = (ChimiTaskContext){.runtime = runtime, .captures = captures, .span = span};
+  ChimiSchedulerRequest request = {
+    .kind = CHIMI_REQUEST_TASK_START,
+    .entry = chimi_task_entry,
+    .context = context,
+  };
+  ChimiFiberCommand command = scheduler_request(&request);
+  if (request.status != CHIMI_RESPONSE_OK) {
+    fragment_free(captures);
+    free(context);
+    if (command == CHIMI_FIBER_CANCEL) return cancelled();
+    return defect("Task.start scheduler request failed", call_node);
+  }
+  if (command == CHIMI_FIBER_CANCEL) return cancelled();
+  /* The child has not run yet: it adopts the fragment when it first runs, so the
+     transfer below rewrites the capabilities in the child's copy, and the
+     context is still the child's to read. */
+  context->parent = request.owner;
+  CapabilityTransfer transfer = {.child = request.task};
+  bool transferred = transfer_captures(&transfer, captures->roots[0]);
+  if (!transferred) {
+    if (transfer.cancelled) return cancelled();
+    return defect("Task.start could not transfer an exclusive capture", call_node);
+  }
+  return success(task_value(request.task));
+}
+
+/* Task.all, Task.results and Task.race (time-and-outcomes.md, "Task combinators").
+
+   Each operation runs as a child of the calling task. The children still running
+   are `waiting[0, live)`, and `positions` holds each one's index in the input list.
+   TASK_ANY answers with the child that terminated first, in termination order, and
+   reports its outcome without applying it to the caller.
+
+   Once the outcome is decided (Task.all's first expected failure, Task.race's
+   first success or failure, or a child cancelled or overflowing), the rest are
+   cancelled and drained with TASK_DRAIN, which is not a cancellation point: a scope
+   that fires meanwhile cannot replace the decided outcome. Task.all keeps the
+   failures of siblings that terminated before their cancellation took effect as
+   suppressed causes with reason Sibling, in termination order.
+
+   A child defect needs no code here: the scheduler unwinds this task's containment
+   when the child terminates, which resumes this fiber with a terminal cancel. */
+typedef struct {
+  uint64_t *waiting;
+  uint32_t *positions;
+  uint32_t live;
+} CombinatorChildren;
+
+enum { CAUSE_REASON_SIBLING = 1 };
+
+static void combinator_children_free(CombinatorChildren *children) {
+  free(children->waiting);
+  free(children->positions);
+}
+
+/* Waits for the first live child to terminate and removes it. Returns its outcome
+   (NULL when it was cancelled) and sets `*position`, or sets `*interrupted` to the
+   control this task must return at once. */
+static ChimiControl *combinator_next(CombinatorChildren *children, bool drain, uint32_t *position,
+                                     ChimiControl **interrupted, bool *child_cancelled,
+                                     uint32_t call_node) {
+  *child_cancelled = false;
+  for (;;) {
+    ChimiSchedulerRequest request = {
+      .kind = drain ? CHIMI_REQUEST_TASK_DRAIN : CHIMI_REQUEST_TASK_ANY,
+      .value = children->live,
+      .context = children->waiting,
+    };
+    ChimiFiberCommand command = scheduler_request(&request);
+    if (command == CHIMI_FIBER_CANCEL) { *interrupted = cancelled(); return NULL; }
+    if (request.status == CHIMI_RESPONSE_PENDING) continue;
+    uint32_t found = 0;
+    while (found < children->live && children->waiting[found] != request.task) ++found;
+    if (found == children->live || request.status == CHIMI_RESPONSE_ERROR ||
+        request.status == CHIMI_RESPONSE_UNSET) {
+      *interrupted = defect("Task combinator scheduler request failed", call_node);
+      return NULL;
+    }
+    *position = children->positions[found];
+    --children->live;
+    children->waiting[found] = children->waiting[children->live];
+    children->positions[found] = children->positions[children->live];
+    switch (request.status) {
+      case CHIMI_RESPONSE_SUCCEEDED: return task_reply(request.value);
+      case CHIMI_RESPONSE_CANCELLED: *child_cancelled = true; return NULL;
+      case CHIMI_RESPONSE_DEFECTED:
+        if (request.value > 0) return task_reply(request.value);
+        *interrupted = defect("Task combinator child defected", call_node);
+        return NULL;
+      case CHIMI_RESPONSE_STACK_OVERFLOW: return defect("Task stack overflow", call_node);
+      default:
+        *interrupted = defect("Task combinator scheduler request failed", call_node);
+        return NULL;
+    }
+  }
+}
+
+/* `cause` with `sibling` appended to its suppressed causes, marked Sibling. */
+static ChimiValue *cause_with_sibling(const ChimiValue *cause, const ChimiValue *sibling) {
+  ChimiValue *marked = cause_copy(sibling);
+  cause_set(marked, CAUSE_REASON, integer_value(CAUSE_REASON_SIBLING));
+  ChimiValue *copy = cause_copy(cause);
+  bool dropped = false;
+  cause_set(copy, CAUSE_SUPPRESSED, cause_push_bounded(cause_field(cause, CAUSE_SUPPRESSED), marked,
+                                                       CAUSE_SUPPRESSED_LIMIT, &dropped));
+  if (dropped)
+    cause_set(copy, CAUSE_DROPPED_SUPPRESSED,
+              integer_value(cause_integer(cause, CAUSE_DROPPED_SUPPRESSED) + 1));
+  return copy;
+}
+
+/* `Ok(value)`, or `Err(error)` keeping the failure's cause, as Result.capture
+   builds them. */
+static ChimiControl *stored_outcome(ChimiControl *outcome, uint32_t call_node) {
+  bool failed = outcome->kind == CONTROL_FAILURE;
+  ChimiValue *fields[] = {outcome->value};
+  ChimiValue *stored = standard_value(failed ? CHIMI_CONSTRUCTOR_RESULT_ERR : CHIMI_CONSTRUCTOR_RESULT_OK,
+                                      fields, 1);
+  if (!stored) return defect("Result is missing from the program", call_node);
+  return success(failed ? with_stored_cause(stored, control_cause(outcome)) : stored);
+}
+
+/* Cancels every child still live; false when this task was cancelled meanwhile. */
+static bool cancel_live_children(const CombinatorChildren *children) {
+  for (uint32_t index = 0; index < children->live; ++index) {
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children->waiting[index]};
+    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return false;
+  }
+  return true;
+}
+
+static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue *operations,
+                                    uint64_t span, uint32_t call_node,
+                                    ChimiEnvironment *environment) {
+  uint32_t count = list_length(operations);
+  if (count == 0) {
+    if (intrinsic == CHIMI_INTRINSIC_TASK_RACE)
+      return defect("Task.race needs at least one operation", call_node);
+    return success(list_from_values(NULL, 0));
+  }
+  CombinatorChildren children = {
+    .waiting = malloc(count * sizeof(uint64_t)),
+    .positions = malloc(count * sizeof(uint32_t)),
+  };
+  if (!children.waiting || !children.positions) exhausted_memory();
+  for (uint32_t index = 0; index < count; ++index) {
+    ChimiValue *operation = list_get(operations, index);
+    if (operation->kind != VALUE_CALLABLE) {
+      combinator_children_free(&children);
+      return intrinsic_shape_defect(call_node);
+    }
+    /* A child that cannot start ends this call; the ones already started are
+       this task's children, which its unwinding cancels and drains. */
+    ChimiControl *started = start_task(runtime, operation, span, call_node, environment);
+    if (started->kind != CONTROL_SUCCESS) {
+      combinator_children_free(&children);
+      return started;
+    }
+    children.waiting[children.live] = started->value->as.task;
+    children.positions[children.live] = index;
+    ++children.live;
+  }
+
+  ChimiValue **values = new_value_slots(count);
+  ChimiControl *decided = NULL;
+  while (children.live > 0 && !decided) {
+    uint32_t position = 0;
+    ChimiControl *interrupted = NULL;
+    bool child_cancelled = false;
+    ChimiControl *outcome =
+      combinator_next(&children, false, &position, &interrupted, &child_cancelled, call_node);
+    if (interrupted) {
+      /* A child defect reaches here only when this task absorbs it (a process
+         body that is shutting down); the siblings stop now, not when the body
+         ends. */
+      cancel_live_children(&children);
+      combinator_children_free(&children);
+      return interrupted;
+    }
+    if (child_cancelled) {
+      /* A child that ends cancelled cancels this call, as `Task.result` of it
+         would: a scope or shutdown cancelled this task too, or the child ran
+         `Task.result` on a task it cancelled itself. */
+      decided = cancelled();
+    } else if (outcome->kind != CONTROL_SUCCESS && outcome->kind != CONTROL_FAILURE) {
+      decided = outcome;
+    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RESULTS) {
+      ChimiControl *stored = stored_outcome(outcome, call_node);
+      if (stored->kind != CONTROL_SUCCESS) decided = stored;
+      else values[position] = stored->value;
+    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RACE || outcome->kind == CONTROL_FAILURE) {
+      decided = outcome;
+    } else {
+      values[position] = outcome->value;
+    }
+  }
+
+  if (children.live > 0) {
+    if (!cancel_live_children(&children)) {
+      combinator_children_free(&children);
+      return cancelled();
+    }
+    bool collect_siblings = intrinsic == CHIMI_INTRINSIC_TASK_ALL && decided->kind == CONTROL_FAILURE;
+    ChimiValue *cause = collect_siblings ? control_cause(decided) : NULL;
+    bool suppressed = false;
+    while (children.live > 0) {
+      uint32_t position = 0;
+      ChimiControl *interrupted = NULL;
+      bool child_cancelled = false;
+      ChimiControl *outcome =
+        combinator_next(&children, true, &position, &interrupted, &child_cancelled, call_node);
+      if (interrupted) {
+        combinator_children_free(&children);
+        return interrupted;
+      }
+      if (collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {
+        cause = cause_with_sibling(cause, control_cause(outcome));
+        suppressed = true;
+      }
+    }
+    if (suppressed) decided = control_with_cause(decided, cause);
+  }
+  combinator_children_free(&children);
+  if (decided) return decided;
+  return success(list_from_values(values, count));
+}
+
 /* std/select (time-and-outcomes.md, "Choosing among events"). An Event is a record
    that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
    receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
@@ -8726,43 +8966,16 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                                                       : parse_float_text(arguments[0]->as.text.bytes, &value);
       return error ? failure(standard_value(error, NULL, 0)) : success(float_value(value));
     }
-    case CHIMI_INTRINSIC_TASK_START: {
+    case CHIMI_INTRINSIC_TASK_START:
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);
-      /* The child runs in its own heap, so it gets a copy of what it captured. */
-      void *roots[] = {arguments[0], capture_requirements(environment)};
-      AllocationKind kinds[] = {ALLOCATION_VALUE, ALLOCATION_ENVIRONMENT};
-      RuntimeFragment *captures = NULL;
-      if (fragment_copy(roots, kinds, 2, &captures) != HEAP_OK)
-        return defect(FOREIGN_POINTER_DEFECT, call_node);
-      ChimiTaskContext *context = malloc(sizeof(*context));
-      if (!context) exhausted_memory();
-      *context = (ChimiTaskContext){.runtime = runtime, .captures = captures, .span = span};
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_TASK_START,
-        .entry = chimi_task_entry,
-        .context = context,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (request.status != CHIMI_RESPONSE_OK) {
-        fragment_free(captures);
-        free(context);
-        if (command == CHIMI_FIBER_CANCEL) return cancelled();
-        return defect("Task.start scheduler request failed", call_node);
-      }
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      /* The child has not run yet: it adopts the fragment when it first runs, so the
-         transfer below rewrites the capabilities in the child's copy, and the
-         context is still the child's to read. */
-      context->parent = request.owner;
-      CapabilityTransfer transfer = {.child = request.task};
-      bool transferred = transfer_captures(&transfer, captures->roots[0]);
-      if (!transferred) {
-        if (transfer.cancelled) return cancelled();
-        return defect("Task.start could not transfer an exclusive capture", call_node);
-      }
-      return success(task_value(request.task));
-    }
+      return start_task(runtime, arguments[0], span, call_node, environment);
+    case CHIMI_INTRINSIC_TASK_ALL:
+    case CHIMI_INTRINSIC_TASK_RESULTS:
+    case CHIMI_INTRINSIC_TASK_RACE:
+      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
+        return intrinsic_shape_defect(call_node);
+      return run_combinator(runtime, intrinsic, arguments[0], span, call_node, environment);
     case CHIMI_INTRINSIC_TASK_RESULT: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_TASK)
         return intrinsic_shape_defect(call_node);
@@ -9998,6 +10211,8 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
 static const char *waited_operation(uint32_t request_kind) {
   switch (request_kind) {
     case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
+    case CHIMI_REQUEST_TASK_ANY: return "Task.all, Task.results or Task.race";
+    case CHIMI_REQUEST_TASK_DRAIN: return "draining a Task combinator's children";
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
     case CHIMI_REQUEST_SELECT: return "Select.first";

@@ -2146,7 +2146,10 @@ impl<'core> Evaluator<'core> {
             }
             StandardFunction::TaskStart
             | StandardFunction::TaskResult
-            | StandardFunction::TaskCancel => Control::Defect {
+            | StandardFunction::TaskCancel
+            | StandardFunction::TaskAll
+            | StandardFunction::TaskResults
+            | StandardFunction::TaskRace => Control::Defect {
                 message: format!(
                     "standard function {} requires the finite Task runtime",
                     function.name()

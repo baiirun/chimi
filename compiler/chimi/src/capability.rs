@@ -383,9 +383,22 @@ impl CapabilityChecker<'_> {
                             self.check_test_log_value(module_id, "Test.script", argument, replies);
                         }
                     }
-                    Some(StandardFunction::TaskStart) => {
+                    Some(
+                        function @ (StandardFunction::TaskStart
+                        | StandardFunction::TaskAll
+                        | StandardFunction::TaskResults
+                        | StandardFunction::TaskRace),
+                    ) => {
+                        // A combinator starts every thunk of its list as a
+                        // child, so the list carries what its thunks capture.
                         if let Some((argument, thunk)) = arguments.first() {
-                            self.check_task_transfer(module_id, argument, thunk, environment);
+                            self.check_task_transfer(
+                                module_id,
+                                function,
+                                argument,
+                                thunk,
+                                environment,
+                            );
                         }
                     }
                     Some(StandardFunction::ChannelSend) => {
@@ -770,6 +783,7 @@ impl CapabilityChecker<'_> {
     fn check_task_transfer(
         &mut self,
         module_id: ModuleId,
+        function: StandardFunction,
         argument: &ModuleExpression,
         thunk: &FlowValue,
         environment: &mut FlowEnvironment,
@@ -780,7 +794,10 @@ impl CapabilityChecker<'_> {
                 "T4242",
                 self.file_id(module_id),
                 argument.range(),
-                format!("Task.start requires provider `{provider}` to be shareable across tasks"),
+                format!(
+                    "Task.{} requires provider `{provider}` to be shareable across tasks",
+                    function.name()
+                ),
             ));
             return;
         }
@@ -791,7 +808,13 @@ impl CapabilityChecker<'_> {
                 self.file_id(module_id),
                 argument.range(),
                 format!(
-                    "Task.start cannot transfer thunk because {} is parent-local",
+                    "Task.{} cannot transfer {} because {} is parent-local",
+                    function.name(),
+                    if function == StandardFunction::TaskStart {
+                        "thunk"
+                    } else {
+                        "its thunks"
+                    },
                     thunk.blocked_by.as_deref().unwrap_or("a captured value")
                 ),
             ));

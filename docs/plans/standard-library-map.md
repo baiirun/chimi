@@ -69,6 +69,7 @@ which language gaps matter for a module.
 | | `std/channel` (`select`, multi-producer helpers) | D | bounded MPSC | G14 |
 | | `std/process`, `std/supervisor` | D | in progress (`ep-f29d47`) | G14 (Duration) |
 | Resources | `std/resource` (scope-owned acquire/use/release) | D | done: `Resource.scoped` (G12) | G11, G12 |
+| | `std/stream` (bounded byte readers and writers, pipes, producers) | D | done: `std/stream` (G18) | G12, G18 |
 | IO and host | `std/io` (binary read/write, directories, metadata, atomic write) | C | UTF-8 line processing and console | G6, G11, G12 |
 | | `std/env` (environment variables, arguments, exit status) | C | arguments only, as `List<Text>` | — |
 | | `std/random` (seeded test provider) | C | missing | G6 for bytes |
@@ -239,6 +240,10 @@ operation attached to the current computation context (ambient, but already
 structured).
 
 ### G18. Byte streams
+
+Done (Phase 6b): `std/stream`, specified in
+[byte streams](../specification/byte-streams.md). File, socket, and
+subprocess streams come with `std/io`, `std/net`, and `std/exec`.
 
 Go's `io.Reader` and `io.Writer` are what connect HTTP bodies, compression,
 subprocess pipes, TLS, and files to each other. Chimi has no equivalent. The
