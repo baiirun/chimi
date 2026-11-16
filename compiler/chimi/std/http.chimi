@@ -27,7 +27,7 @@
 ///
 /// A server takes its settings as a record: start from `Http.defaults` and
 /// name what differs, as `Http.serve(listener, { ..Http.defaults,
-/// idle_timeout: Duration.seconds(5) }, handle)`. The request shape is
+/// request_timeout: Duration.seconds(5) }, handle)`. The request shape is
 /// provisional (decisions.md, 2026-11-16).
 
 import std/bytes as Bytes
@@ -187,16 +187,18 @@ pub fn response_body(response: Response) -> Bytes {
 
 /// A server's settings, to update with what differs: requests whose head
 /// (request line and headers) passes `max_head_bytes` get 431, as do those
-/// with more than `max_headers` headers; a body over `max_body_bytes` gets
-/// 413; a connection closes when the next request takes longer than
-/// `idle_timeout` to arrive (counted from the end of the previous answer,
-/// body included), or a response longer than `write_timeout` to send. The
-/// defaults are 64 KiB, 100 headers, 8 MiB, 60 s and 60 s.
-pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration } = {
+/// with more than `max_headers` headers or chunked-body trailer lines; a body
+/// over `max_body_bytes` gets 413; a connection closes when the next request
+/// takes longer than `request_timeout` to arrive (counted from the end of the
+/// previous answer, body included), or a response longer than
+/// `write_timeout` to send. The defaults are 64 KiB, 100 headers, 8 MiB, 60 s
+/// and 60 s. `max_body_bytes` may be 0 (no bodies); the others must be
+/// positive, and `Http.serve` and `Http.serve_connection` defect otherwise.
+pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration } = {
   max_head_bytes: 65536,
   max_headers: 100,
   max_body_bytes: 8388608,
-  idle_timeout: Duration.seconds(60),
+  request_timeout: Duration.seconds(60),
   write_timeout: Duration.seconds(60),
 }
 
@@ -210,9 +212,10 @@ pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int
 ///
 /// Fails with: nothing; only closing the listener ends serving.
 /// Defects when: `handle` defects.
-pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
+  let _ = limits(settings)
   loop pause = 10 {
     case Result.capture(fn() { Net.accept(listener) }) {
       Err(NetError.Closed) -> break Void
@@ -239,7 +242,7 @@ pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_head
 ///
 /// Fails with: nothing; a failure of the connection ends it.
 /// Defects when: `handle` defects.
-pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   Resource.scoped(fn() { connection }, Net.close, fn(open) {
@@ -261,8 +264,17 @@ struct Limits {
   write: Duration,
 }
 
-fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }) -> Limits {
-  Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.idle_timeout, settings.write_timeout)
+fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }) -> Limits {
+  case (settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0, positive(settings.request_timeout) and positive(settings.write_timeout)) {
+    (True, True) -> Void
+    (False, _) -> Debug.crash("Http: max_head_bytes and max_headers must be positive, and max_body_bytes not negative")
+    (_, False) -> Debug.crash("Http: request_timeout and write_timeout must be positive")
+  }
+  Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.request_timeout, settings.write_timeout)
+}
+
+fn positive(duration: Duration) -> Bool {
+  duration > Duration.zero
 }
 
 // Why a request cannot be answered; each has its status.

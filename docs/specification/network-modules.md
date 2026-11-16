@@ -157,7 +157,7 @@ open decision card (a handler is a function from `Request` to `Response`,
 routed with `case`). The wire behaviour below does not depend on the answer.
 
 A server takes its settings as an anonymous record, `Http.defaults` updated
-with what differs: `Http.serve(listener, { ..Http.defaults, idle_timeout:
+with what differs: `Http.serve(listener, { ..Http.defaults, request_timeout:
 Duration.seconds(5) }, handle)` (Byron, 2026-11-16). A record rather than a
 struct, because a struct's fields are private outside its module, so only a
 record can be updated at the call site.
@@ -171,7 +171,7 @@ pub fn request(method, path, query, headers, body) -> Request        // for test
 pub fn response(status: Int, headers, body: Bytes) -> Response
 pub fn text(status: Int, text: Text) -> Response
 pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int,
-  idle_timeout: Duration, write_timeout: Duration }
+  request_timeout: Duration, write_timeout: Duration }
 pub fn serve(listener: Listener, settings, handle: fn(Request) -> Response errors E needs R)
   -> Void needs R + { clock: Clock }
 pub fn serve_connection(connection: Connection, settings, handle) -> Void needs R + { clock: Clock }
@@ -220,7 +220,7 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 | header lines | `max_headers` | 100 | 431 |
 | body; for a chunked body, its framing and trailers count too | `max_body_bytes` | 8 MiB | 413 |
 | trailer lines of a chunked body | `max_headers` | 100 | 431 |
-| time for a request to arrive, body included, counted from the previous answer | `idle_timeout` | 60 s | the connection closes without an answer |
+| time for a request to arrive, body included, counted from the previous answer | `request_timeout` | 60 s | the connection closes without an answer |
 | time to send one response | `write_timeout` | 60 s | the connection closes |
 
 ### Responses and connections

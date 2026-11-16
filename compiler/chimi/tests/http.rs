@@ -114,7 +114,7 @@ fn exchange(raw: Text) -> Text {
 }
 
 // `exchange` with settings other than the defaults.
-fn exchange_with(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, idle_timeout: Duration, write_timeout: Duration }, raw: Text) -> Text {
+fn exchange_with(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, raw: Text) -> Text {
   let (client, server) = Net.pair(64)
   let serving = Task.start(fn() { Http.serve_connection(server, settings, handle) })
   Stream.write(Net.writer(client), Bytes.from_text(raw))
@@ -330,7 +330,7 @@ test "an idle client is closed after a minute" {
 
 test "a server applies the settings it is given" {
   let (client, server) = Net.pair(64)
-  let settings = { ..Http.defaults, max_headers: 1, idle_timeout: Duration.seconds(5) }
+  let settings = { ..Http.defaults, max_headers: 1, request_timeout: Duration.seconds(5) }
   let serving = Task.start(fn() { Http.serve_connection(server, settings, handle) })
   let start = Clock.now()
   Stream.write(Net.writer(client), Bytes.from_text("GET /health HTTP/1.1\r\nHost: x\r\n\r\n"))
@@ -340,6 +340,19 @@ test "a server applies the settings it is given" {
   Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
   exchange_with(settings, "GET /health HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n\r\n")
     |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
+  exchange_with({ ..Http.defaults, max_body_bytes: 3 }, "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd")
+    |> Test.assert_equal(refused(413, "Content Too Large", "content too large"))
+  exchange_with({ ..Http.defaults, max_head_bytes: 20 }, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal(refused(431, "Request Header Fields Too Large", "request header fields too large"))
+}
+
+test "settings that cannot work are a defect" {
+  let (_, server) = Net.pair(64)
+  Test.capture_defect(fn() { Http.serve_connection(server, { ..Http.defaults, max_headers: 0 }, handle) })
+    |> Test.assert_equal("Http: max_head_bytes and max_headers must be positive, and max_body_bytes not negative")
+  let (_, other) = Net.pair(64)
+  Test.capture_defect(fn() { Http.serve_connection(other, { ..Http.defaults, write_timeout: Duration.zero }, handle) })
+    |> Test.assert_equal("Http: request_timeout and write_timeout must be positive")
 }
 
 test "a status outside 200 to 599 is a defect" {
@@ -368,7 +381,7 @@ test "a handler can be tested without a connection" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 6);
+    assert_passed(&run, 7);
 }
 
 // Rejects a server that serves one client at a time or never stops: two

@@ -56,6 +56,7 @@ struct Run {
 /// rows, `select two` two rows, `fail` a constraint failure, and any other
 /// statement changes as many rows as it has parameters.
 const PRELUDE: &str = r#"import std/bytes as Bytes
+import std/channel as Channel
 import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
@@ -318,6 +319,35 @@ test "a pool applies the settings it is given" {
   List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") }) |> Test.assert_equal(2)
 }
 
+test "a reset slower than its timeout drops the connection" {
+  let calls = Test.recorder()
+  // A reset that never finishes: it waits on a channel nothing sends to.
+  let never = Channel.bounded(1)
+  let stuck = never.receiver
+  let driver = Sql.driver(fn(target) {
+    Test.record(calls, Call.Connected(target))
+    Sql.connection(fn(_, _) { Sql.done() }, fn() { Void }, fn() { Void }, fn() { Void }, fn() {
+      let _ = Result.capture(fn() { Channel.receive(stuck) })
+      Void
+    }, fn() { Void })
+  })
+  let start = Clock.now()
+  Sql.open(driver, "app.db", { ..Sql.defaults, reset_timeout: Duration.seconds(1) }, fn(db) {
+    let _ = Sql.execute(db, "a", [])
+    Sql.execute(db, "b", [])
+  })
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(2))
+  let _ = never.sender
+  List.count(Test.recorded(calls), fn(call) { call == Call.Connected("app.db") }) |> Test.assert_equal(2)
+}
+
+test "settings that cannot work are a defect" {
+  Test.capture_defect(fn() { Sql.open(recording(Test.recorder()), "app.db", { ..Sql.defaults, max_connections: 0 }, fn(_) { Void }) })
+    |> Test.assert_equal("Sql: max_connections, wait_timeout and reset_timeout must be positive")
+  Test.capture_defect(fn() { Sql.open(recording(Test.recorder()), "app.db", { ..Sql.defaults, wait_timeout: Duration.zero }, fn(_) { Void }) })
+    |> Test.assert_equal("Sql: max_connections, wait_timeout and reset_timeout must be positive")
+}
+
 test "waiting statements are served in the order they asked" {
   let calls = Test.recorder()
   Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
@@ -384,7 +414,7 @@ test "statements waiting when the pool closes fail at once" {
 }
 "#,
     );
-    assert_passed(&run, 7);
+    assert_passed(&run, 9);
 }
 
 // Rejects a transaction that commits after a failure, leaves one open after
