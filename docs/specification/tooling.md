@@ -1,9 +1,10 @@
 # Tooling
 
 Status: implemented in part (Phase 9). This page is the contract for the
-commands that sit around the compiler: the documentation generator, the linter and editor
-references, rename, completion, inlay types and hover
-documentation now, and more editor features, cross-compilation and debugging as they land.
+commands that sit around the compiler: the documentation generator and its
+static pages, the linter, the post-mortem trace viewer, and editor
+references, rename, completion, inlay types and hover documentation now, and
+more editor features and cross-compilation as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -225,3 +226,60 @@ Implementation: `compiler/chimi/src/hints.rs`
 `compiler/chimi/src/doc.rs`, and `Workspace::inlay_hints` and
 `Workspace::hover`. Tests: the workspace unit tests and
 `compiler/chimi-lsp/tests/protocol.rs`.
+
+## Post-mortem traces: `chimi trace show`
+
+Purpose: answer "what went wrong in that run" from the telemetry a run
+already wrote (`runtime-output-channels.md`), without rerunning it or reading
+raw JSON Lines.
+
+```text
+chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]
+chimi trace show [--all] - ...                 the trace on standard input
+```
+
+Rules:
+
+- The trace is `chimi.runtime.v1` JSON Lines: a run's telemetry, optionally
+  followed by its outcome record (`cat telemetry.jsonl outcome.jsonl`), or a
+  `chimi test --trace` file. Any other record, or a line that is not a JSON
+  object, MUST fail naming its line, and print nothing.
+- For each `execution_id`, in the order first seen, the report MUST give the
+  outcome (`none recorded` without one; a failure's message and cause when
+  the record has them), the number of events, and the computation tree.
+  An outcome record belongs to the execution whose event came just before
+  it.
+- In the tree, each operation shows its kind, its source location and its
+  outcome when that is not success. An operation that did not succeed and
+  none of whose children failed is marked `<- started here`, since that is
+  where the failure began; one that started but never completed says
+  `(did not finish)`. A dependency call shows as
+  `dependency <requirement>.<method>`.
+- By default only operations that did not succeed are listed, with each
+  parent's succeeded children folded into a count, so the failure path
+  stays readable in a long run. `--all` lists every operation.
+- Indentation stops growing 24 levels deep, and deeper lines carry
+  `[depth N]`, so a deep recursion in the program gives a report linear in
+  the trace's size. The tree is walked without recursion, so no depth
+  overflows the viewer.
+- With the program's source (the same file, directory or project and entry
+  the run was built from; a directory for `chimi test <directory>` traces),
+  a location is `path:line:column`; without it, `file <id> at <offset>`.
+  The source is loaded only to name places, so it need not type-check.
+  When a place in the trace is not in the given source, the report still
+  prints and a warning on standard error says the source is likely not the
+  one the run was built from, since its other locations may be wrong too.
+- After the tree come the process incarnations that ended other than by
+  returning, with their cause and defect message, and the tasks that never
+  ended, with the channel a parked task waits on (from the
+  `channel_receive_parked` or `channel_send_parked` event after its
+  `task_parked`): the usual reasons a concurrent run stops or hangs.
+
+Not yet: timing (the telemetry carries none), channel and clock event
+detail, linking a process's spans to its entry in the process list, telling
+apart two runs concatenated under the same `--execution-id` (their events
+merge), and a browsable or interactive view. A REPL waits on Byron's
+decision.
+
+Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
+`LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
