@@ -1,0 +1,10 @@
+# mutation run at 9f925064bb293a5c82b7204cc781076575d57c9b
+# format_examples_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [lib -- formatter::tests::doc_comment_examples] (19s)
+KILLED       examples are not formatted [lib -- formatter::tests::doc_comment_examples] (10s)
+KILLED       an unparsable example is formatted anyway [lib -- formatter::tests::doc_comment_examples] (10s)
+KILLED       no blank line after the imports [lib -- formatter::tests::doc_comment_examples] (18s)
+KILLED       the body keeps the test indentation [lib -- formatter::tests::doc_comment_examples] (18s)
+KILLED       empty lines keep a trailing space [lib -- formatter::tests::doc_comment_examples] (18s)
+KILLED       fragment blocks are formatted [lib -- formatter::tests::doc_comment_examples] (17s)
+# result: every mutant killed

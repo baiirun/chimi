@@ -23,6 +23,14 @@ pub fn is_empty<T>(list: List<T>) -> Bool {
 /// Returns the element at `index`, or `None` when `index` is negative or not
 /// less than the length.
 ///
+/// ```chimi
+/// import std/list as List
+/// import std/test as Test
+///
+/// Test.assert_equal(List.get(["a", "b"], 1), Some("b"))
+/// Test.assert_equal(List.get(["a", "b"], 2), None)
+/// ```
+///
 /// Cost: O(log n).
 pub native fn get<T>(list: List<T>, index: Int) -> Option<T>
 
@@ -65,6 +73,14 @@ pub fn min<T>(list: List<T>) -> Option<T> {
 
 /// Returns the largest element of `list` in structural order, the first of
 /// equal ones, or `None` when it is empty.
+///
+/// ```chimi
+/// import std/list as List
+/// import std/test as Test
+///
+/// Test.assert_equal(List.max([3, 9, 4]), Some(9))
+/// Test.assert_equal(List.max([]), None)
+/// ```
 ///
 /// Cost: O(n).
 pub fn max<T>(list: List<T>) -> Option<T> {

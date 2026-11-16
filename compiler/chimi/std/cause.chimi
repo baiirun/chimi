@@ -46,21 +46,16 @@ pub enum Suppression {
 ///
 /// ```chimi
 /// import std/cause as Cause
+/// import std/int as Int
+/// import std/int.{ParseError}
+/// import std/test as Test
 ///
-/// enum LoadError {
-///   Missing
+/// let read_port = fn() { Int.parse("80x") }
+/// let port = case Cause.context(read_port, "reading the port") {
+///   Success(value) -> value
+///   Failure(ParseError.InvalidDigit) -> 8080
 /// }
-///
-/// fn load() -> Int {
-///   Failure(LoadError.Missing)
-/// }
-///
-/// pub fn main() -> Int {
-///   case load |> Cause.context("loading the config") {
-///     Success(value) -> value
-///     Failure(LoadError.Missing) -> 0
-///   }
-/// }
+/// Test.assert_equal(port, 8080)
 /// ```
 ///
 /// Calls: `operation` once.

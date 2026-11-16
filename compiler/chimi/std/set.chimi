@@ -21,6 +21,14 @@ pub native fn empty<T>() -> Set<T>
 
 /// Returns the distinct items of `items`.
 ///
+/// ```chimi
+/// import std/set as Set
+/// import std/test as Test
+///
+/// let tags = Set.from(["b", "a", "b"])
+/// Test.assert_equal(Set.to_list(tags), ["a", "b"])
+/// ```
+///
 /// Cost: O(n log n).
 pub fn from<T>(items: List<T>) -> Set<T> {
   List.reduce(items, empty(), add)

@@ -1462,11 +1462,14 @@ program.
   clock `timestamp` is the host's wall time, so the flag would be ignored.
   It takes `Z` or a `±HH:MM` offset, a fraction of at most nine digits, and
   years 1678 to 2262, and rejects a leap second. A bad value exits 64.
-- **Real time source.** The real `Instant` is Rust's `std::time::Instant`
-  (`CLOCK_MONOTONIC` on Linux, `mach_absolute_time` on macOS). Neither
-  counts time the host spends suspended, which the SHOULD in
-  [Instant](#instant) asks for; switching to `CLOCK_BOOTTIME` and
-  `mach_continuous_time` is a follow-up ticket.
+- **Real time source.** The real `Instant` reads `CLOCK_BOOTTIME` on Linux
+  and `CLOCK_MONOTONIC` on macOS, which Apple backs with
+  `mach_continuous_time`. Both count time the host spends suspended, as the
+  SHOULD in [Instant](#instant) asks. The host's sleep timers do not, so a
+  real-clock idle wait lasts at most one second (`MAX_REAL_WAIT` in
+  `scheduler/clock.rs`) while a timer is pending, and a deadline that passed
+  during a suspend fires within a second of the host resuming. Other targets
+  fall back to Rust's `std::time::Instant`.
 - **Scopes.** `Task.timeout` runs the thunk in the calling task. The
   scheduler keeps a stack of scopes per task (`scheduler/scope.rs`):
   `REQUEST_SCOPE_ENTER` pushes one with its deadline timer,

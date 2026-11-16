@@ -22,8 +22,13 @@ impl FormatReport {
             };
         }
 
+        let formatted = crate::doc_examples::format_examples(&format_parse(&parsed), |code| {
+            let example = SourceSnapshot::from_text(source.path(), code.to_owned());
+            let parsed = parse(&example);
+            parsed.diagnostics().is_empty().then(|| format_parse(&parsed))
+        });
         Self {
-            formatted: format_parse(&parsed),
+            formatted,
             diagnostics: Vec::new(),
             source,
         }
@@ -746,6 +751,101 @@ mod tests {
 
     fn format(source: &str) -> FormatReport {
         FormatReport::new(SourceSnapshot::from_text("format.chimi", source))
+    }
+
+    /// Example code in a doc comment is formatted as the module it runs as;
+    /// an example that does not parse, and a non-Chimi or fragment block, keep
+    /// their text.
+    #[test]
+    fn doc_comment_examples_are_formatted() {
+        let source = concat!(
+            "/// Adds.\n",
+            "///\n",
+            "/// ```chimi\n",
+            "/// import std/test as Test\n",
+            "/// Test.assert_equal(  add(1,2) ,3 )\n",
+            "///     let x=add(2,2)\n",
+            "/// Test.assert_equal(x,4)\n",
+            "/// ```\n",
+            "///\n",
+            "/// ```chimi\n",
+            "/// add(  1,\n",
+            "/// ```\n",
+            "///\n",
+            "/// ```text\n",
+            "/// add(  1,2)\n",
+            "/// ```\n",
+            "///\n",
+            "/// ```chimi fragment\n",
+            "/// add(  1,2)\n",
+            "/// ```\n",
+            "pub fn add(left:Int,right:Int)->Int{left+right}\n",
+        );
+        let first = format(source);
+        assert!(!first.is_blocked());
+        assert_eq!(
+            first.text(),
+            concat!(
+                "/// Adds.\n",
+                "///\n",
+                "/// ```chimi\n",
+                "/// import std/test as Test\n",
+                "///\n",
+                "/// Test.assert_equal(add(1, 2), 3)\n",
+                "/// let x = add(2, 2)\n",
+                "/// Test.assert_equal(x, 4)\n",
+                "/// ```\n",
+                "///\n",
+                "/// ```chimi\n",
+                "/// add(  1,\n",
+                "/// ```\n",
+                "///\n",
+                "/// ```text\n",
+                "/// add(  1,2)\n",
+                "/// ```\n",
+                "///\n",
+                "/// ```chimi fragment\n",
+                "/// add(  1,2)\n",
+                "/// ```\n",
+                "pub fn add(left: Int, right: Int) -> Int {\n",
+                "  left + right\n",
+                "}\n",
+            )
+        );
+        assert_eq!(format(first.text()).text(), first.text());
+        let examples = crate::doc_examples::examples(first.text());
+        assert_eq!(examples.len(), 2, "both chimi blocks are still examples");
+        assert_eq!(
+            examples[0].text.lines().count(),
+            first.text().lines().count(),
+            "an example keeps the documented file's layout"
+        );
+    }
+
+    /// An example without imports is formatted as a body alone, and one that
+    /// closes the test early to declare its own items keeps its text.
+    #[test]
+    fn doc_comment_examples_without_imports_or_with_items() {
+        let source = concat!(
+            "/// ```chimi\n",
+            "/// let x=add(1,2)\n",
+            "/// ```\n",
+            "///\n",
+            "/// ```chimi\n",
+            "/// let a=1\n",
+            "/// }\n",
+            "/// fn g()->Int{2}\n",
+            "/// test \"t\" {\n",
+            "/// let b=2\n",
+            "/// ```\n",
+            "pub fn add(left: Int, right: Int) -> Int {\n",
+            "  left + right\n",
+            "}\n",
+        );
+        let formatted = format(source);
+        assert!(!formatted.is_blocked());
+        assert!(formatted.text().starts_with("/// ```chimi\n/// let x = add(1, 2)\n/// ```\n"));
+        assert!(formatted.text().contains("/// let a=1\n/// }\n/// fn g()->Int{2}\n"));
     }
 
     #[test]

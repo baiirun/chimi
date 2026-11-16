@@ -23,6 +23,15 @@ pub native fn empty<K, V>() -> Map<K, V>
 /// Returns a map of the `(key, value)` pairs; a later pair wins over an
 /// earlier one with an equal key.
 ///
+/// ```chimi
+/// import std/map as Map
+/// import std/test as Test
+///
+/// let ages = Map.from([("ada", 36), ("bo", 2), ("ada", 37)])
+/// Test.assert_equal(Map.get(ages, "ada"), Some(37))
+/// Test.assert_equal(Map.size(ages), 2)
+/// ```
+///
 /// Cost: O(n log n).
 pub fn from<K, V>(pairs: List<(K, V)>) -> Map<K, V> {
   List.reduce(pairs, empty(), fn(map, pair) {
@@ -75,6 +84,15 @@ pub native fn remove<K, V>(map: Map<K, V>, key: K) -> Map<K, V>
 
 /// Returns the entries of `map` and `overrides`; for a key in both, the value
 /// in `overrides` wins.
+///
+/// ```chimi
+/// import std/map as Map
+/// import std/test as Test
+///
+/// let defaults = Map.from([("port", 80), ("workers", 4)])
+/// let merged = Map.merge(defaults, Map.from([("port", 8080)]))
+/// Test.assert_equal(Map.entries(merged), [("port", 8080), ("workers", 4)])
+/// ```
 ///
 /// Cost: O(m log (n + m)) in the size `m` of `overrides`.
 pub fn merge<K, V>(map: Map<K, V>, overrides: Map<K, V>) -> Map<K, V> {

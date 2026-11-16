@@ -405,9 +405,7 @@ native fn native_allow_real_network() -> Void
 
 // The provider the runner binds to `main`'s `network` need (operations.rs
 // `RUNNER_PROVIDERS`). Private, so no other code can take the capability
-// without declaring the need. It and `host_for_tests` come last, after every
-// function they reach: an unannotated result is inferred in declaration order
-// (CHI-260).
+// without declaring the need.
 fn system() {
   { connect: host_connect, listen: host_listen }
 }

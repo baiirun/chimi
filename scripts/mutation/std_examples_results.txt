@@ -1,0 +1,10 @@
+# mutation run at 945e8fa330df9ee75560547091f1b55bc9f6edb7
+# std_examples_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [testing -- std_test] (58s)
+BASELINE ok  [testing -- doc_comment_examples] (0s)
+KILLED       std test reads project examples [testing -- std_test] (4s)
+KILLED       project test reads std examples [testing -- doc_comment_examples] (5s)
+KILLED       std examples keep the std/ prefix [testing -- std_test] (11s)
+KILLED       std test accepts a path [testing -- std_test] (12s)
+KILLED       std test reports example modules [testing -- std_test] (1s)
+# result: every mutant killed

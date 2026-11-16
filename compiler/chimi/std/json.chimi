@@ -97,6 +97,15 @@ pub native fn decode(text: Text) -> Value errors DecodeError
 /// Text is written as UTF-8 with only quotes, backslashes, and control
 /// characters escaped.
 ///
+/// ```chimi
+/// import std/json as Json
+/// import std/map as Map
+/// import std/test as Test
+///
+/// let value = Json.object(Map.from([("ok", Json.boolean(True)), ("n", Json.int(2))]))
+/// Test.assert_equal(Json.encode(value), "{\"n\":2,\"ok\":true}")
+/// ```
+///
 /// Cost: O(n log n) in the largest object's member count, O(n) otherwise.
 pub native fn encode(value: Value) -> Text
 

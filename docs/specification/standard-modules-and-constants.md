@@ -309,8 +309,9 @@ Most files there hold `test` items, which `chimi test --json` runs on both
 backends; a Rust integration test fails when any test fails on either
 backend or the two ran different tests. The rest are expected-output
 programs, kept where the point is the runner's own outcome record or report,
-and for checks not converted yet. Before the test runner, every file was such
-a program:
+and for checks not converted yet. The `///` examples in `std/` itself run with
+`chimi std test` on both backends too. Before the test runner, every file was
+such a program:
 
 - Each standard module has a directory `compiler/chimi/std-tests/<module>/`.
   Each `.chimi` file there is a program with `pub fn main()`, and a sibling
