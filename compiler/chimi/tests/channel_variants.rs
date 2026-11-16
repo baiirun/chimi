@@ -500,6 +500,29 @@ fn an_exclusive_value_cannot_be_published() {
     assert_eq!(codes, ["T4244", "T4244", "T4244"]);
 }
 
+// A `Result` is what its arguments are, though `Ok` and `Err` are written in
+// the runtime's own generics: one that holds a Receiver is exclusive and
+// `T4244`, and one that holds plain data is published freely. Rejects a
+// `Result` whose arguments are never read, which hid the Receiver and left
+// only the run-time backstop.
+#[test]
+fn a_result_is_as_shareable_as_its_arguments() {
+    let codes = type_codes(concat!(
+        "import std/result as Result\n",
+        "import std/result.{Result}\n",
+        "enum Lost {\n  Gone\n}\n",
+        "pub fn main() -> Int {\n",
+        "  let plain_news = Broadcast.bounded(2)\n",
+        "  let held_news = Broadcast.bounded(2)\n",
+        "  let inner = Channel.bounded(1)\n",
+        "  let held: Result<Receiver<Int>, Lost> = Result.Ok(inner.receiver)\n",
+        "  let plain: Result<Int, Lost> = Result.Ok(1)\n",
+        "  Broadcast.publish(plain_news.publisher, plain) + Broadcast.publish(held_news.publisher, held)\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4244"]);
+}
+
 // A receive or watch event used after its receiver left the task is `T4241`
 // at the event, for both kinds of event and for a receiver read from a field
 // (CHI-224). A select's answer borrows nothing, and moving the receiver into

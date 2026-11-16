@@ -2087,6 +2087,78 @@ fn native_concurrency_pipeline_forces_the_connected_runtime() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The Phase 3 forcing program (CHI-207): a checkout service that combines
+/// failure-set types, `std/result`, causes, retry, timeouts and deadlines,
+/// `Task.all`, `Task.results`, `Task.race`, `Select.first`, a broadcast, and a
+/// watch. Under the virtual clock its report, outcome, and select and scope
+/// trace events are exact, and its own `chimi test` suite passes.
+#[test]
+fn native_checkout_service_forces_the_phase_3_surface() {
+    let scratch = scratch_directory("native-checkout-service");
+    let executable = scratch.join("checkout-service");
+    let root = repository_path("programs/checkout-service");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "--root"])
+        .arg(&root)
+        .args(["app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .expect("build the checkout-service forcing program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "native-checkout-service",
+        "boundaries",
+        &["--clock=virtual"],
+    );
+    assert!(
+        execution.process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&execution.process.stdout),
+        std::fs::read_to_string(root.join("expected.stdout")).unwrap()
+    );
+    assert_eq!(
+        execution.outcome,
+        std::fs::read_to_string(root.join("expected.outcome")).unwrap()
+    );
+    for event in [
+        "clock_select_parked",
+        "clock_select_committed",
+        "clock_scope_fired",
+        "channel_receiver_transferred",
+    ] {
+        assert!(
+            execution
+                .telemetry
+                .contains(&format!("\"event\":\"{event}\"")),
+            "missing {event} in {}",
+            execution.telemetry
+        );
+    }
+
+    let tests = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["test", "--root"])
+        .arg(&root)
+        .arg("app/checkout_test")
+        .output()
+        .expect("run the checkout-service tests");
+    let report = String::from_utf8_lossy(&tests.stdout);
+    assert!(tests.status.success(), "{report}{}", String::from_utf8_lossy(&tests.stderr));
+    assert!(report.ends_with("7 passed, 0 failed\n"), "{report}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_json_decode_reports_malformed_input_as_an_expected_failure() {
     let scratch = scratch_directory("stdlib-malformed-json");

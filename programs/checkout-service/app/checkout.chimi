@@ -1,0 +1,225 @@
+import std/cause as Cause
+import std/clock as Clock
+import std/clock.{Clock, Instant}
+import std/debug as Debug
+import std/duration as Duration
+import std/list as List
+import std/result as Result
+import std/result.{Result}
+import std/retry as Retry
+import std/schedule as Schedule
+import std/task as Task
+import std/task.{Timeout}
+
+// One checkout: reserve stock and score fraud at once, charge the card with
+// a per-attempt timeout and backoff, ask two carriers for a quote and take
+// the first, and send the confirmation by email and SMS without letting a
+// notification failure fail the order. The whole checkout runs under the
+// order's deadline.
+
+pub enum StockError {
+  OutOfStock(sku: Text)
+}
+
+pub enum FraudError {
+  Flagged(score: Int)
+  Unreachable
+}
+
+pub enum PaymentError {
+  Declined(reason: Text)
+  Unavailable(status: Int)
+}
+
+pub enum ShippingError {
+  NoRoute(carrier: Text)
+}
+
+pub enum NotifyError {
+  Bounced(channel: Text)
+}
+
+pub struct Order {
+  id: Int,
+  sku: Text,
+  cents: Int,
+}
+
+pub struct Reservation {
+  sku: Text,
+  hold: Int,
+}
+
+pub struct Receipt {
+  order: Int,
+  hold: Int,
+  charge: Text,
+  carrier: Text,
+  notified: Int,
+}
+
+pub interface Inventory {
+  reserve: fn(Text) -> Reservation errors StockError
+}
+
+pub interface Fraud {
+  score: fn(Order) -> Int errors FraudError
+}
+
+pub interface Payments {
+  charge: fn(Order) -> Text errors PaymentError
+}
+
+pub interface Carriers {
+  ground: fn(Order) -> Text errors ShippingError
+  express: fn(Order) -> Text errors ShippingError
+}
+
+pub interface Notifier {
+  email: fn(Order) -> Void errors NotifyError
+  sms: fn(Order) -> Void errors NotifyError
+}
+
+pub fn order(id: Int, sku: Text, cents: Int) -> Order {
+  Order(id, sku, cents)
+}
+
+pub fn id(order: Order) -> Int {
+  order.id
+}
+
+pub fn sku(order: Order) -> Text {
+  order.sku
+}
+
+pub fn cents(order: Order) -> Int {
+  order.cents
+}
+
+pub fn reservation(sku: Text, hold: Int) -> Reservation {
+  Reservation(sku, hold)
+}
+
+pub fn describe(receipt: Receipt) -> Text {
+  "hold ${receipt.hold}, ${receipt.charge}, ${receipt.carrier}, ${receipt.notified} of 2 notices"
+}
+
+/// `Task.all` takes one success type, so two checks with different results
+/// share a wrapper enum and are taken apart again afterwards.
+enum Check {
+  Reserved(reservation: Reservation)
+  Scored(score: Int)
+}
+
+const fraud_limit = 80
+
+fn checks(order: Order) -> Reservation needs {
+  inventory: Inventory,
+  fraud: Fraud,
+} {
+  let reserve = fn() {
+    Check.Reserved(inventory.reserve(order.sku))
+  }
+  let score = fn() { Check.Scored(score_or_review(order)) }
+  let both = Task.all([reserve, score])
+  case both {
+    [Check.Reserved(reservation), Check.Scored(score)] -> case score > fraud_limit {
+      True -> Failure(FraudError.Flagged(score))
+      False -> reservation
+    }
+    _ -> Debug.crash("Task.all returns its results in input order")
+  }
+}
+
+/// An unreachable fraud service does not stop a sale: the order is scored
+/// as needing review, below the limit. Every other failure passes on.
+fn score_or_review(order: Order) -> Int needs {
+  fraud: Fraud
+} {
+  case fraud.score(order) {
+    Success(score) -> score
+    Failure(FraudError.Unreachable) -> fraud_review_score
+  }
+}
+
+const fraud_review_score = 50
+
+fn retryable(error: PaymentError | Timeout) -> Bool {
+  case error {
+    PaymentError.Unavailable(_) -> True
+    Timeout.TimedOut(_) -> True
+    PaymentError.Declined(_) -> False
+  }
+}
+
+const payment_retry = Retry.policy(
+  Schedule.exponential(4, Duration.milliseconds(50), Duration.milliseconds(400)),
+  retryable,
+)
+
+fn charge(order: Order) -> Text needs {
+  payments: Payments, clock: Clock
+} {
+  let call = fn() { payments.charge(order) }
+  let attempt = fn() {
+    call
+    |> Task.timeout(Duration.milliseconds(200))
+  }
+  attempt
+  |> Retry.run(payment_retry)
+}
+
+fn ship(order: Order) -> Text needs {
+  carriers: Carriers
+} {
+  let ground = fn() { carriers.ground(order) }
+  let express = fn() { carriers.express(order) }
+  Task.race([ground, express])
+}
+
+fn notify(order: Order) -> Int needs {
+  notifier: Notifier
+} {
+  let email = fn() { notifier.email(order) }
+  let sms = fn() { notifier.sms(order) }
+  let sent = Task.results([email, sms])
+  List.count(sent, fn(outcome) {
+    case outcome {
+      Result.Ok(_) -> True
+      Result.Err(_) -> False
+    }
+  })
+}
+
+fn checkout(order: Order) -> Receipt needs {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+} {
+  let reservation = fn() { checks(order) }
+  |> Cause.context("checking order ${order.id}")
+  let charged = fn() { charge(order) }
+  |> Cause.context("charging order ${order.id}")
+  let carrier = ship(order)
+  Receipt(order.id, reservation.hold, charged, carrier, notify(order))
+}
+
+/// Runs one checkout under `deadline` and stores its outcome, so a worker can
+/// send it on as a value.
+pub fn run(order: Order, deadline: Instant) needs {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+} {
+  let bounded = fn() {
+    fn() { checkout(order) }
+    |> Task.deadline(deadline)
+  }
+  Result.capture(bounded)
+}
