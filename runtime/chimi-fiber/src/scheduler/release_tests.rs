@@ -144,10 +144,7 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 signal_fd: -1,
                 injected_signal: 0,
                 injected_signal_at: 0,
-<<<<<<< HEAD
                 copy_channel_value: None,
-=======
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }

@@ -66,15 +66,10 @@ escalation, or its supervisor's own stop) has two phases.
 
 Three cases skip the drain:
 
-<<<<<<< HEAD
 - a body that has not run yet and has no accepted messages is cancelled at
   once, since nothing is in flight (a body that has not run but already
   accepted messages or monitor notices runs and drains them, like any
   other);
-=======
-- a body that has not run yet is cancelled at once, since nothing is in
-  flight;
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 - `shutdown_within = Duration.zero` forces at once;
 - a supervisor operation the process (or one of its tasks) is parked in that
   waits on its own shutdown, such as `Supervisor.stop` of its own root, is

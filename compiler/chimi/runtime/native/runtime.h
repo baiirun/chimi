@@ -3,11 +3,7 @@
 
 #include <stdint.h>
 
-<<<<<<< HEAD
 #define CHIMI_RUNTIME_ABI_VERSION 33
-=======
-#define CHIMI_RUNTIME_ABI_VERSION 32
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;

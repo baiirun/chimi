@@ -2541,10 +2541,7 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         signal_fd: -1,
         injected_signal: 0,
         injected_signal_at: 0,
-<<<<<<< HEAD
         copy_channel_value: None,
-=======
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2711,10 +2708,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, signal_fd),
         offset_of!(ChimiSchedulerConfig, injected_signal),
         offset_of!(ChimiSchedulerConfig, injected_signal_at),
-<<<<<<< HEAD
         offset_of!(ChimiSchedulerConfig, copy_channel_value),
-=======
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
         size_of::<ChimiProcessTermination>(),
         offset_of!(ChimiProcessTermination, incarnation),
         offset_of!(ChimiProcessTermination, cause),
@@ -2775,11 +2769,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         VIOLATION_WRONG_KIND as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-<<<<<<< HEAD
     assert_eq!(crate::chimi_fiber_abi_version(), 15);
-=======
-    assert_eq!(crate::chimi_fiber_abi_version(), 14);
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
@@ -4242,14 +4232,9 @@ unsafe extern "C" fn sleeps_before_receiving(_context: *mut c_void) -> ChimiFibe
     ended(PROCESS_END_RETURNED)
 }
 
-<<<<<<< HEAD
 // A body stopped before its first run, with nothing in its mailbox, has
 // nothing in flight to drain, so it is cancelled at once: none of its code
 // runs and time does not move.
-=======
-// A body stopped before its first run has nothing in flight to drain, so it
-// is cancelled at once: none of its code runs and time does not move.
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 #[test]
 fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
     let mut lab = Lab::new();
@@ -4273,7 +4258,6 @@ fn a_body_stopped_before_its_first_run_is_cancelled_without_running() {
     );
 }
 
-<<<<<<< HEAD
 // Messages a process accepted before its first run are work: a stop that
 // arrives before the body runs still lets it drain them (CHI-243).
 #[test]
@@ -4292,8 +4276,6 @@ fn a_body_stopped_before_its_first_run_still_drains_the_messages_it_accepted() {
     assert_eq!(timed_terminations(&lab), [(0, TerminalCause::Cancelled)]);
 }
 
-=======
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 /// Sleeps 1 s, then stops the supervisor named by its context and logs the
 /// reply.
 unsafe extern "C" fn sleeps_then_stops(context: *mut c_void) -> ChimiFiberResult {

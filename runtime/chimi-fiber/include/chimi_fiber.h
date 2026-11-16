@@ -4,11 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-<<<<<<< HEAD
 #define CHIMI_FIBER_ABI_VERSION 15u
-=======
-#define CHIMI_FIBER_ABI_VERSION 14u
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -638,12 +634,9 @@ typedef struct {
      `injected_signal_at` nanoseconds (the runner's --signal option). */
   int32_t injected_signal;
   int64_t injected_signal_at;
-<<<<<<< HEAD
   /* Copies a message for each broadcast or watch subscription past the
      first; may be null only when no program publishes to more than one. */
   ChimiValueCopy copy_channel_value;
-=======
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

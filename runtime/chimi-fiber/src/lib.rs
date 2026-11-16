@@ -17,11 +17,7 @@ pub mod scheduler;
 ))]
 mod stack_overflow;
 
-<<<<<<< HEAD
 pub const ABI_VERSION: u32 = 15;
-=======
-pub const ABI_VERSION: u32 = 14;
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
 pub const MIN_STACK_BYTES: usize = 32 * 1024;
 pub const MAX_STACK_BYTES: usize = 8 * 1024 * 1024;
 const PANIC_DEFECT_CODE: i64 = -1;

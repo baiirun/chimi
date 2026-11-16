@@ -140,13 +140,9 @@ const counting = Process.spec(counter, 64, Duration.seconds(5))
   message accepted before the request, and once the mailbox is empty it
   returns cancellation immediately, every time it is called, without parking.
 - At the deadline the body is forced and runs no more code; unread messages
-<<<<<<< HEAD
   are discarded. A body that has not run yet and has nothing in its mailbox is
   cancelled at once (one that already accepted messages, or monitor
   notices, runs and drains them), and a zero
-=======
-  are discarded. A body that has not run yet is cancelled at once, and a zero
->>>>>>> fe9d0e1c916c5fe4904dda0e63dd426b47cdbdef
   `shutdown_within` forces at once. See
   [application lifecycle](application-lifecycle.md) (G22).
 
