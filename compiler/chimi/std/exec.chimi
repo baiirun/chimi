@@ -285,7 +285,7 @@ pub fn run(command: Command) -> Status needs {
 /// Fails with: `ExecError.NotFound`, `PermissionDenied`, `InvalidDirectory`
 /// or `Failed` when the command cannot start or a read fails.
 /// Cost: O(n) in the bytes written, all held in memory.
-pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes }needs {
+pub fn capture(command: Command) -> { status: Status, output: Bytes, error_output: Bytes } needs {
   commands: Commands
 } {
   let piped = stderr(stdout(stdin(command, Stdio.Null), Stdio.Pipe), Stdio.Pipe)
