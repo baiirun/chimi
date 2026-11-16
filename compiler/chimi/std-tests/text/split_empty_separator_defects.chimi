@@ -1,7 +1,12 @@
 // An empty separator has no meaning for Text.split; it defects naming the
 // function.
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> List<Text> {
+fn run() -> List<Text> {
   Text.split("abc", "")
+}
+
+test "split empty separator defects" {
+  Test.assert_equal(Test.capture_defect(run), "Text.split: separator must not be empty")
 }

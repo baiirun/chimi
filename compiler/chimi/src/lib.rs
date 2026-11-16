@@ -5,6 +5,7 @@ mod compiler;
 #[doc(hidden)]
 pub mod concurrency_lab;
 mod decimal;
+mod doc_examples;
 pub mod diagnostic;
 mod duration;
 mod executable;

@@ -2,8 +2,13 @@
 // checks it: a negative wait defects there instead of reaching a sleep.
 import std/duration as Duration
 import std/schedule as Schedule
+import std/test as Test
 
-pub fn main() -> Bool {
+fn run() -> Bool {
   let broken = Schedule.Schedule.Fixed(3, Duration.seconds(-5))
   Schedule.delay(broken, 1) == None
+}
+
+test "variant built directly" {
+  Test.assert_equal(Test.capture_defect(run), "Schedule waits must not be negative, got -5s")
 }

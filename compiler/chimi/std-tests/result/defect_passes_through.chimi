@@ -2,14 +2,19 @@
 // `divide` cannot fail, so its Result has no Err to match.
 import std/result as Result
 import std/result.{Ok}
+import std/test as Test
 
 fn divide(left: Int, right: Int) -> Int {
   left / right
 }
 
-pub fn main() -> Int {
+fn run() -> Int {
   let stored = Result.capture(fn() { divide(1, 0) })
   case stored {
     Ok(value) -> value
   }
+}
+
+test "defect passes through" {
+  Test.assert_equal(Test.capture_defect(run), "integer division by zero in `/`: 1 / 0")
 }

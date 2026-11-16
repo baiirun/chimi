@@ -2,6 +2,7 @@
 // text round trip.
 import std/debug as Debug
 import std/int as Int
+import std/test as Test
 
 const largest = 9223372036854775807
 const smallest = -9223372036854775807 - 1
@@ -15,7 +16,7 @@ fn parsed(text: Text) -> Int {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Int.add_checked(largest, 1), Int.add_checked(40, 2)]),
     Debug.render([Int.subtract_checked(smallest, 1), Int.subtract_checked(5, 7)]),
@@ -28,5 +29,9 @@ pub fn main() -> Text {
     Debug.render([parsed("-17"), parsed(""), parsed("+1"), parsed("12a"), parsed("9223372036854775808")]),
     Debug.render(Int.parse(Int.to_text(largest)) == largest),
   ]
-  Debug.render(results)
+  results
+}
+
+test "arithmetic and text" {
+  Test.assert_equal(run(), ["[None, Some(42)]", "[None, Some(-2)]", "[None, Some(-42)]", "[None, None, Some(-3)]", "[None, Some(-1)]", "[2, -2]", "[0, 2]", "[\"-9223372036854775808\", \"0\"]", "[-17, -1, -2, -2, -3]", "True"])
 }

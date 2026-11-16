@@ -3,6 +3,7 @@
 import std/debug as Debug
 import std/decimal as Decimal
 import std/decimal.{Decimal}
+import std/test as Test
 
 const price = Decimal.of(1999, 2)
 const total = price * Decimal.of(3, 0)
@@ -10,7 +11,7 @@ const total = price * Decimal.of(3, 0)
 const one_fifty_constant = Decimal.of(150, 2)
 const one_fifty_text = Decimal.to_text(Decimal.of(150, 2))
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let one_fifty = Decimal.of(150, 2)
   let one_five = Decimal.of(15, 1)
   let results = [
@@ -35,5 +36,9 @@ pub fn main() -> Text {
     Debug.render([one_fifty, one_five, Decimal.of(100, 0), Decimal.of(-500, 3), Decimal.of(0, 2)]),
     Debug.render(Decimal.to_float(Decimal.of(-1999, 2))),
   ]
-  Debug.render(results)
+  results
+}
+
+test "conformance" {
+  Test.assert_equal(run(), ["True", "1.50", "1.50", "1.50", "59.97", "59.97", "2.50", "-0.50", "1.00", "-19.99", "-0.005", "[True, True, True]", "[True, False, True, True]", "[1.5, 1.5, 100, -0.5, 0]", "-19.99"])
 }

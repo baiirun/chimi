@@ -1,7 +1,12 @@
 // An empty fill cannot pad; Text.pad_start defects naming itself, even when
 // no padding is needed.
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   Text.pad_start("abc", 1, "")
+}
+
+test "pad empty fill defects" {
+  Test.assert_equal(Test.capture_defect(run), "Text.pad_start: fill must not be empty")
 }

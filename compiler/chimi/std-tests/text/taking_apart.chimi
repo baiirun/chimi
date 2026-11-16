@@ -1,8 +1,9 @@
 // std/text functions that take text apart and change it.
 import std/debug as Debug
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Text.split("a,b,,c,", ","), Text.split("", ","), Text.split("a--b", "--")]),
     Debug.render([Text.split_once("key=value=more", "="), Text.split_once("plain", "=")]),
@@ -13,5 +14,9 @@ pub fn main() -> Text {
     Debug.render([Text.trim(" \t a b \n"), Text.trim_start("\u{3000}\u{a0}x "), Text.trim_end(" x\u{2029}\u{85}"), Text.trim("")]),
     Debug.render([Text.replace("a-b-c", "-", "+"), Text.replace("aaa", "aa", "b"), Text.replace("abc", "x", "y")]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "taking apart" {
+  Test.assert_equal(run(), ["[[\"a\", \"b\", \"\", \"c\", \"\"], [\"\"], [\"a\", \"b\"]]", "[Some((\"key\", \"value=more\")), None]", "[[\"one\", \"two\", \"\", \"three\"], [], [\"\"]]", "[Some(\"llo\"), None]", "[Some(\"file\"), None]", "[\"h\", \"é\", \"llo\", \"h\", \"\"]", "[\"a b\", \"x \", \" x\", \"\"]", "[\"a+b+c\", \"ba\", \"abc\"]"])
 }

@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"success","value":"(Result.Err(StreamError.TooLarge(5)), Result.Err(HostError.Full), Result.Err(HostError.Broke), Result.Ok(0), Result.Ok(0))"}

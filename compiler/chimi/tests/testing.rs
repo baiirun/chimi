@@ -1228,3 +1228,93 @@ fn a_directory_without_modules_or_with_a_bad_name_fails_the_run() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// Doc-comment examples run as tests named after the item they document,
+/// under that item's module, and report locations in the doc comment.
+const DOCUMENTED: &str = r#"/// Doubles `value`.
+///
+/// ```chimi
+/// import main as Main
+/// import std/test as Test
+///
+/// Test.assert_equal(Main.double(2), 4)
+/// ```
+pub fn double(value: Int) -> Int {
+  value * 2
+}
+
+/// Halves `value`, rounding toward zero.
+///
+/// ```chimi
+/// import main as Main
+/// import std/test as Test
+///
+/// Test.assert_equal(Main.half(7), 4)
+/// ```
+///
+/// ```chimi fragment
+/// Main.half(
+/// ```
+///
+/// ```text
+/// not code
+/// ```
+pub fn half(value: Int) -> Int {
+  value / 2
+}
+
+fn secret() -> Int {
+  1
+}
+"#;
+
+#[test]
+fn doc_comment_examples_run_as_tests_on_both_backends() {
+    for backend in ["--backend=native", "--backend=interpreter"] {
+        let run = chimi_test("doc-examples", DOCUMENTED, &[backend]);
+        assert_eq!(run.status, Some(1), "{backend}: {}{}", run.stdout, run.stderr);
+        assert_eq!(
+            run.stdout,
+            concat!(
+                "test main \"double example 1\" ... ok\n",
+                "test main \"half example 1\" ... FAILED\n",
+                "  assertion failed at cases.chimi:19:5\n",
+                "  actual:\n",
+                "    3\n",
+                "  expected:\n",
+                "    4\n",
+                "\n",
+                "1 passed, 1 failed\n",
+            ),
+            "{backend}"
+        );
+    }
+    let run = chimi_test("doc-examples-filter", DOCUMENTED, &["--filter=double example"]);
+    assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn a_doc_example_sees_only_public_items_and_chimi_check_reads_it() {
+    let source = DOCUMENTED.replace(
+        "/// Test.assert_equal(Main.double(2), 4)",
+        "/// Test.assert_equal(Main.secret(), 1)",
+    );
+    let expected = "cases.chimi:7:28: error[E_PRIVATE_SYMBOL] name: Main.secret is module-private";
+    let run = chimi_test("doc-examples-private", &source, &[]);
+    assert_eq!(run.status, Some(2), "{}", run.stdout);
+    assert!(run.stderr.contains(expected), "{}", run.stderr);
+    let run = chimi("doc-examples-check", &source, &["check", "cases.chimi"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(run.stderr.contains(expected), "{}", run.stderr);
+    // JSON names the documented module and offsets into its own text.
+    let start = source.find("secret(), 1)").unwrap();
+    let run = chimi("doc-examples-json", &source, &["check", "--json", "cases.chimi"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(
+        run.stdout.contains(&format!(
+            "\"primary\":{{\"module\":\"main\",\"path\":\"cases.chimi\",\"start\":{start},"
+        )),
+        "{}",
+        run.stdout
+    );
+}

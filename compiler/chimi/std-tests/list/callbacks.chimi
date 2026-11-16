@@ -3,6 +3,7 @@
 import std/debug as Debug
 import std/list as List
 import std/order.{Ordering}
+import std/test as Test
 
 struct Person {
   name: Text,
@@ -19,7 +20,7 @@ fn by_age(left: Person, right: Person) -> Ordering {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let xs = [5, 2, 8, 2, 7]
   let people = [Person("ada", 36), Person("bo", 25), Person("cy", 36), Person("di", 25)]
   let results = [
@@ -49,5 +50,9 @@ pub fn main() -> Text {
     Debug.render(List.map(List.sort_by(people, by_age), fn(person) { person.name })),
     Debug.render([List.min_by(people, by_age), List.max_by(people, by_age)]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "callbacks" {
+  Test.assert_equal(run(), ["[50, 20, 80, 20, 70]", "[5, 8, 7]", "[1, 4, 1]", "[1, 2, 2, 3, 3, 3]", "\"5,2,8,2,7,\"", "[Some(8), None]", "[Some(1), None]", "Some(800)", "[True, False, True, False, True]", "2", "([5, 2, 2], [8, 7])", "[2, 2, 5, 7, 8]", "[\"apple\", \"fig\", \"pear\"]", "[\"bo\", \"di\", \"ada\", \"cy\"]", "[Some(Person { name: \"bo\", age: 25 }), Some(Person { name: \"ada\", age: 36 })]"])
 }

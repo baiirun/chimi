@@ -2,8 +2,9 @@
 // from character counts.
 import std/debug as Debug
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Text.concat([]), Text.concat(["a", "é", "b"]), Text.append("x", "y")]),
     Debug.render([Text.join([], ", "), Text.join(["one"], ", "), Text.join(["a", "b", "c"], ", ")]),
@@ -14,5 +15,9 @@ pub fn main() -> Text {
     Debug.render([Text.starts_with("héllo", "hé"), Text.starts_with("héllo", ""), Text.starts_with("h", "hé")]),
     Debug.render([Text.ends_with("héllo", "llo"), Text.ends_with("héllo", ""), Text.ends_with("o", "lo")]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "building and queries" {
+  Test.assert_equal(run(), ["[\"\", \"aéb\", \"xy\"]", "[\"\", \"one\", \"a, b, c\"]", "[\"ababab\", \"\", \"\"]", "[True, False]", "[0, 6, 6]", "[True, False]", "[True, True, False]", "[True, True, False]"])
 }
