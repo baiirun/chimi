@@ -169,10 +169,10 @@ enum {
      outcome is only reported: a cancelled child cancels nothing. ERROR for an
      empty list or a task the caller does not own. A cancellation point that
      a firing scope withdraws. */
-  CHIMI_REQUEST_TASK_ANY = 40,
+  CHIMI_REQUEST_TASK_ANY = 42,
   /* TASK_ANY for children the caller already cancelled: neither a
      cancellation point nor withdrawn by a firing scope. */
-  CHIMI_REQUEST_TASK_DRAIN = 41,
+  CHIMI_REQUEST_TASK_DRAIN = 43,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

@@ -121,11 +121,11 @@ pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
 /// first in termination order; PENDING while none has. The child's outcome is
 /// only reported: a cancelled child does not cancel the caller. A
 /// cancellation point, and a firing scope withdraws it.
-pub const REQUEST_TASK_ANY: u32 = 40;
+pub const REQUEST_TASK_ANY: u32 = 42;
 /// `REQUEST_TASK_ANY` for draining children a combinator already cancelled:
 /// neither a cancellation point nor withdrawn by a scope, so a scope that
 /// fires meanwhile cannot replace the outcome the combinator already chose.
-pub const REQUEST_TASK_DRAIN: u32 = 41;
+pub const REQUEST_TASK_DRAIN: u32 = 43;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
