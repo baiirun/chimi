@@ -13,6 +13,7 @@
 //! primitive has differential coverage.
 
 use chimi::project::{LoadedProject, StandardTree};
+use std::ffi::OsStr;
 use chimi::{Compiler, ProjectSource};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -62,15 +63,20 @@ fn test_modules() -> Vec<PathBuf> {
 /// --json` on `std-tests` under `backend`, in report order.
 fn test_outcomes(backend: &str) -> Vec<(String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("std-tests");
+    runner_outcomes("std-tests", &[OsStr::new("test"), root.as_os_str()], backend)
+}
+
+/// `chimi <command> --backend=<backend> --json`, run from a scratch directory:
+/// each test's identity and `passed`, or `failed: <record>`.
+fn runner_outcomes(name: &str, command: &[&OsStr], backend: &str) -> Vec<(String, String)> {
     let scratch = std::env::temp_dir().join(format!(
-        "chimi-std-tests-{}-runner-{backend}",
+        "chimi-{name}-{}-runner-{backend}",
         std::process::id()
     ));
     std::fs::create_dir_all(&scratch).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
-        .arg("test")
-        .arg(&root)
+        .args(command)
         .arg(format!("--backend={backend}"))
         .arg("--json")
         .output()
@@ -245,6 +251,23 @@ fn standard_tests_pass_on_both_backends() {
         interpreted.iter().map(|(identity, _)| identity).collect::<Vec<_>>(),
         "the backends ran different tests"
     );
+}
+
+/// The doc-comment examples in `std/` (`chimi std test`) pass on both backends.
+#[test]
+fn standard_doc_examples_pass_on_both_backends() {
+    let command = [OsStr::new("std"), OsStr::new("test")];
+    let native = runner_outcomes("std-examples", &command, "native");
+    let interpreted = runner_outcomes("std-examples", &command, "interpreter");
+    assert!(native.len() >= 16, "the std/ examples ran: {native:?}");
+    let failures: Vec<String> = native
+        .iter()
+        .chain(&interpreted)
+        .filter(|(_, outcome)| outcome != "passed")
+        .map(|(identity, outcome)| format!("{identity}: {outcome}"))
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(native, interpreted, "the backends ran different examples");
 }
 
 #[test]

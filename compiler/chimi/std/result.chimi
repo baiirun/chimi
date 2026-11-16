@@ -21,6 +21,17 @@ pub enum Result<T, E> {
 /// its expected failure. A defect or cancellation inside `operation` is not
 /// stored; it passes through.
 ///
+/// ```chimi
+/// import std/int as Int
+/// import std/int.{ParseError}
+/// import std/result as Result
+/// import std/result.{Ok, Err}
+/// import std/test as Test
+///
+/// Test.assert_equal(Result.capture(fn() { Int.parse("42") }), Ok(42))
+/// Test.assert_equal(Result.capture(fn() { Int.parse("4x") }), Err(ParseError.InvalidDigit))
+/// ```
+///
 /// Calls: `operation` once.
 /// Cost: O(1) plus `operation`.
 pub fn capture<T, E, R>(operation: fn() -> T errors E needs R) -> Result<T, E> needs R {
