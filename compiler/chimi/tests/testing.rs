@@ -256,6 +256,9 @@ fn filters_select_tests_by_module_and_name() {
     let run = both_backends("filter", LISTS, &["--filter=main \"pa"]);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     assert_eq!(run.stdout, "test main \"passes\" ... ok\n\n1 passed, 0 failed\n");
+    // The spec's form is `<module> <name>`, without the quotes reports print.
+    let plain = both_backends("filter-plain", LISTS, &["--filter=main pa"]);
+    assert_eq!(plain.stdout, run.stdout, "{}", plain.stderr);
 }
 
 #[test]
@@ -265,6 +268,17 @@ fn the_exit_status_is_two_when_the_run_cannot_start() {
     assert!(unmatched.stderr.contains("no test matches the filter"));
     let option = chimi_test("option", LISTS, &["--jobs=0"]);
     assert_eq!(option.status, Some(2));
+    for start in ["garbage", "2026-02-30T00:00:00Z", "2263-01-01T00:00:00Z"] {
+        let clock = chimi_test("clock-start", LISTS, &[&format!("--clock-start={start}")]);
+        assert_eq!(clock.status, Some(2), "{start}: {}", clock.stdout);
+        assert!(clock.stderr.contains("RFC 3339"), "{}", clock.stderr);
+    }
+    let interpreted = chimi_test(
+        "clock-start-interpreter",
+        LISTS,
+        &["--backend=interpreter", "--clock-start=2026-11-10T09:30:00Z"],
+    );
+    assert_eq!(interpreted.status, Some(2));
     let broken = chimi_test(
         "broken",
         "import std/test as Test\n\ntest \"typed\" {\n  Test.assert_equal(1, \"one\")\n}\n",
@@ -382,6 +396,39 @@ fn a_test_past_its_time_limit_fails_without_stopping_the_run() {
             "  exceeded the time limit\n",
             "test main \"finishes\" ... ok\n",
             "\n1 passed, 1 failed\n",
+        )
+    );
+}
+
+#[test]
+fn assert_not_equal_fails_on_equal_values_on_both_backends() {
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "test \"differs\" {\n",
+        "  Test.assert_not_equal([1, 2], [1, 2])\n",
+        "}\n",
+    );
+    let run = both_backends("not-equal", source, &[]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "test main \"differs\" ... FAILED\n",
+            "  assertion failed at cases.chimi:4:3\n",
+            "  Test.assert_not_equal: the values are equal\n",
+            "  actual:\n",
+            "    [\n",
+            "      1,\n",
+            "      2,\n",
+            "    ]\n",
+            "  expected:\n",
+            "    [\n",
+            "      1,\n",
+            "      2,\n",
+            "    ]\n",
+            "\n",
+            "0 passed, 1 failed\n",
         )
     );
 }

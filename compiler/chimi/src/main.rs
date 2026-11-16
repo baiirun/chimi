@@ -126,6 +126,11 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
                 _ => return usage("--clock must be virtual or real"),
             };
         } else if let Some(start) = argument.strip_prefix("--clock-start=") {
+            if !chimi::testing::valid_clock_start(start) {
+                return usage(
+                    "--clock-start requires an RFC 3339 timestamp from 1678 through 2262, such as 2026-11-10T09:30:00Z",
+                );
+            }
             options.clock_start = Some(start.to_owned());
         } else if let Some(limit) = argument.strip_prefix("--time-limit=") {
             let Some(limit) = chimi::testing::parse_time_limit(limit) else {
@@ -153,6 +158,9 @@ fn parse_test_command(arguments: impl Iterator<Item = OsString>) -> Result<Comma
     }
     if options.clock_start.is_some() && !options.virtual_clock {
         return usage("--clock-start requires --clock=virtual");
+    }
+    if options.clock_start.is_some() && options.backend == chimi::testing::Backend::Interpreter {
+        return usage("--clock-start requires --backend=native");
     }
     let Some(input) = input else {
         return usage("test requires a source path or project root");

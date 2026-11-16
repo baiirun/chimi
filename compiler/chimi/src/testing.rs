@@ -27,6 +27,99 @@ use std::time::{Duration, Instant};
 
 /// A `--time-limit` value in the `Duration` text form (`60s`, `1m30s`); `None`
 /// unless it is positive.
+/// Whether `text` is a `--clock-start` the native runtime accepts: RFC 3339
+/// with an offset, years 1678 through 2262, and a result that fits Unix
+/// nanoseconds in an `i64`. Mirrors `parse_timestamp` in runtime.c, so a bad
+/// value is a usage error (exit 2) rather than a failure in every test.
+pub fn valid_clock_start(text: &str) -> bool {
+    clock_start_nanoseconds(text).is_some()
+}
+
+fn clock_start_nanoseconds(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let separator = |at: &mut usize, allowed: &[u8]| -> Option<()> {
+        let byte = *bytes.get(*at)?;
+        allowed.contains(&byte).then(|| *at += 1)
+    };
+    let number = |at: &mut usize, count: usize| -> Option<i64> {
+        let slice = bytes.get(*at..*at + count)?;
+        if !slice.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        *at += count;
+        Some(slice.iter().fold(0, |value, digit| value * 10 + i64::from(digit - b'0')))
+    };
+    let mut at = 0;
+    let year = number(&mut at, 4)?;
+    separator(&mut at, b"-")?;
+    let month = number(&mut at, 2)?;
+    separator(&mut at, b"-")?;
+    let day = number(&mut at, 2)?;
+    separator(&mut at, b"Tt")?;
+    let hour = number(&mut at, 2)?;
+    separator(&mut at, b":")?;
+    let minute = number(&mut at, 2)?;
+    separator(&mut at, b":")?;
+    let second = number(&mut at, 2)?;
+    let mut fraction = 0;
+    if separator(&mut at, b".").is_some() {
+        let start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        let count = at - start;
+        if count == 0 || count > 9 {
+            return None;
+        }
+        fraction = number(&mut { start }, count)? * 10_i64.pow(u32::try_from(9 - count).ok()?);
+    }
+    let offset = match bytes.get(at)? {
+        b'Z' | b'z' => {
+            at += 1;
+            0
+        }
+        sign @ (b'+' | b'-') => {
+            let sign = if *sign == b'-' { -1 } else { 1 };
+            at += 1;
+            let hours = number(&mut at, 2)?;
+            separator(&mut at, b":")?;
+            let minutes = number(&mut at, 2)?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            sign * (hours * 3600 + minutes * 60)
+        }
+        _ => return None,
+    };
+    if at != bytes.len() {
+        return None;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1678..=2262).contains(&year)
+        || !(1..=12).contains(&month)
+        || day < 1
+        || day > month_days[usize::try_from(month - 1).ok()?]
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
+    seconds.checked_mul(1_000_000_000)?.checked_add(fraction)
+}
+
+/// Days since 1970-01-01 in the proleptic Gregorian calendar.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 pub fn parse_time_limit(text: &str) -> Option<Duration> {
     let nanoseconds = crate::duration::parse(text).ok()?;
     u64::try_from(nanoseconds)
@@ -217,8 +310,14 @@ impl TestSuite {
     pub fn select(&self, filters: &[String]) -> Vec<usize> {
         (0..self.cases.len())
             .filter(|index| {
-                let identity = self.cases[*index].identity();
-                filters.is_empty() || filters.iter().any(|filter| identity.contains(filter))
+                let case = &self.cases[*index];
+                // The spec's `<module> <name>`, and the quoted form reports print.
+                let plain = format!("{} {}", case.module, case.name);
+                let quoted = case.identity();
+                filters.is_empty()
+                    || filters
+                        .iter()
+                        .any(|filter| plain.contains(filter) || quoted.contains(filter))
             })
             .collect()
     }
@@ -254,7 +353,8 @@ impl TestSuite {
                     },
                     ExecutionOutcome::Cancellation(_) => RawOutcome::Cancelled,
                 };
-                let _ = sender.send((outcome, report.application_stdout));
+                let output = report.application_stdout + &report.application_stderr;
+                let _ = sender.send((outcome, output));
             });
         if spawned.is_err() {
             return (
@@ -266,9 +366,17 @@ impl TestSuite {
             );
         }
         // A test past its limit keeps its thread; the run ends without it.
-        receiver
-            .recv_timeout(limit)
-            .unwrap_or((RawOutcome::TimeLimit, String::new()))
+        match receiver.recv_timeout(limit) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (RawOutcome::TimeLimit, String::new()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
+                RawOutcome::Defect {
+                    message: "the interpreter stopped without an outcome (internal error)".to_owned(),
+                    node: None,
+                },
+                String::new(),
+            ),
+        }
     }
 
     fn result(&self, outcome: RawOutcome, output: String, started: Instant) -> TestResult {
@@ -361,7 +469,7 @@ impl TestSuite {
         options: &RunOptions,
     ) -> (RawOutcome, String) {
         use std::process::{Command, Stdio};
-        let outcome_path = scratch.join(format!("test-{index}.outcome.json"));
+        let outcome_path = scratch.join(format!("test-{}-{index}.outcome.json", std::process::id()));
         let _ = std::fs::remove_file(&outcome_path);
         let mut command = Command::new(executable);
         command.arg("--chimi-runner").arg(if options.virtual_clock {
@@ -404,23 +512,35 @@ impl TestSuite {
                     break None;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(2)),
-                Err(error) => return runner_defect(format!("could not wait for the test: {error}")),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return runner_defect(format!("could not wait for the test: {error}"));
+                }
             }
         };
-        let output = stdout
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
-        let errors = stderr
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
+        // A process the test started may still hold the pipes open, so the
+        // readers get a short grace period rather than an unbounded join.
+        let grace = Instant::now() + Duration::from_secs(1);
+        let collect = |reader: Option<std::sync::mpsc::Receiver<String>>| {
+            reader
+                .and_then(|reader| {
+                    reader
+                        .recv_timeout(grace.saturating_duration_since(Instant::now()))
+                        .ok()
+                })
+                .unwrap_or_default()
+        };
+        let output = collect(stdout);
+        let errors = collect(stderr);
         let Some(status) = status else {
-            return (RawOutcome::TimeLimit, output);
+            return (RawOutcome::TimeLimit, output + &errors);
         };
         match std::fs::read_to_string(&outcome_path)
             .ok()
             .and_then(|text| native_outcome(&text))
         {
-            Some(outcome) => (outcome, output),
+            Some(outcome) => (outcome, output + &errors),
             None => {
                 let (outcome, _) = runner_defect(format!(
                     "the test process ended without an outcome ({status}){}{}",
@@ -436,12 +556,14 @@ impl TestSuite {
 #[cfg(feature = "native-backend")]
 fn read_in_background(
     mut stream: impl std::io::Read + Send + 'static,
-) -> std::thread::JoinHandle<String> {
+) -> std::sync::mpsc::Receiver<String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         let _ = stream.read_to_end(&mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    receiver
 }
 
 /// Reads a `chimi.runtime.v1` outcome record that a test process wrote.
@@ -721,7 +843,32 @@ pub fn render_json(suite: &TestSuite, selected: &[usize], results: &[TestResult]
 
 #[cfg(test)]
 mod tests {
-    use super::{comparison, line_diff};
+    use super::{clock_start_nanoseconds, comparison, line_diff};
+
+    #[test]
+    fn clock_start_accepts_what_the_native_runtime_accepts() {
+        assert_eq!(clock_start_nanoseconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            clock_start_nanoseconds("2026-11-10T09:30:00.5+01:00"),
+            Some(1_794_299_400_500_000_000)
+        );
+        assert_eq!(clock_start_nanoseconds("2024-02-29t00:00:00z"), Some(1_709_164_800_000_000_000));
+        for rejected in [
+            "",
+            "2026-11-10",
+            "2026-11-10T09:30:00",
+            "2026-11-10T09:30:00.Z",
+            "2026-11-10T09:30:00.1234567890Z",
+            "2026-11-10T24:00:00Z",
+            "2026-11-10T09:30:00+24:00",
+            "2025-02-29T00:00:00Z",
+            "1677-12-31T23:59:59Z",
+            "2262-04-12T00:00:00Z",
+            "2026-11-10T09:30:00Zjunk",
+        ] {
+            assert_eq!(clock_start_nanoseconds(rejected), None, "{rejected}");
+        }
+    }
 
     #[test]
     fn line_diff_marks_only_the_lines_that_differ() {
