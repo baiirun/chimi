@@ -17,13 +17,14 @@
 /// }
 /// ```
 ///
-/// Each connection runs in its own task and keeps its connection open between
-/// requests (keep-alive) unless the client or the handler asks to close it.
-/// A request's body is read whole before the handler runs, up to a limit.
-/// A malformed request gets the matching error status (400, 413, 431, 501 or
-/// 505) and its connection is closed; a handler's expected failure answers 500.
-/// A handler's defect is not contained: it ends `serve`, as any defect ends
-/// its task, so a supervisor restarts the server.
+/// Each connection runs in its own process and keeps its connection open
+/// between requests (keep-alive) unless the client or the handler asks to
+/// close it. A request's body is read whole before the handler runs, up to a
+/// limit. A malformed request gets the matching error status (400, 413, 431,
+/// 501 or 505) and its connection is closed; a handler's expected failure
+/// answers 500.
+/// A handler's defect ends only its own connection, which closes without an
+/// answer; the server and its other connections carry on.
 ///
 /// A server takes its settings as a record: start from `Http.defaults` and
 /// name what differs, as `Http.serve(listener, { ..Http.defaults,
@@ -41,11 +42,16 @@ import std/int as Int
 import std/list as List
 import std/net as Net
 import std/net.{Connection, Listener, NetError}
+import std/process as Process
+import std/process.{HandoffSpec, Inbox}
 import std/resource as Resource
 import std/result as Result
+import std/select as Select
 import std/result.{Err, Ok}
 import std/stream as Stream
 import std/stream.{Reader, Writer}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError, Running}
 import std/task as Task
 import std/text as Text
 
@@ -191,43 +197,85 @@ pub fn response_body(response: Response) -> Bytes {
 /// over `max_body_bytes` gets 413; a connection closes when the next request
 /// takes longer than `request_timeout` to arrive (counted from the end of the
 /// previous answer, body included), or a response longer than
-/// `write_timeout` to send. The defaults are 64 KiB, 100 headers, 8 MiB, 60 s
-/// and 60 s. `max_body_bytes` may be 0 (no bodies); the others must be
-/// positive, and `Http.serve` and `Http.serve_connection` defect otherwise.
-pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration } = {
+/// `write_timeout` to send. At most `max_connections` connections are served
+/// at once; past that, `Http.serve` accepts no more until one closes. The
+/// defaults are 64 KiB, 100 headers, 8 MiB, 60 s, 60 s and 512 connections.
+/// `max_body_bytes` may be 0 (no bodies); the others must be positive, and
+/// `Http.serve` and `Http.serve_connection` defect otherwise.
+pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int } = {
   max_head_bytes: 65536,
   max_headers: 100,
   max_body_bytes: 8388608,
   request_timeout: Duration.seconds(60),
   write_timeout: Duration.seconds(60),
+  max_connections: 512,
 }
 
 /// Accepts connections on `listener` and answers each request on them with
-/// `handle`, each connection in its own task, until the listener is closed.
-/// A failed accept, such as running out of file descriptors or a client that
-/// reset before it was accepted, is retried after a pause that grows from
-/// 10 ms to 1 s, so a burst of failures neither ends serving nor spins.
-/// Connections still open when the task that called `serve` ends are
-/// cancelled, which closes them.
+/// `handle`, until the listener is closed. Each connection runs in its own
+/// process under a supervisor that never restarts one, so a defect in
+/// `handle` closes only the connection it happened on. While
+/// `max_connections` are open, an accepted connection waits for one to
+/// close, checking after a pause that grows from 1 ms to 100 ms, and the
+/// next stay in the listener's backlog. A failed accept, such as running out
+/// of file descriptors or a client that reset before it was accepted, is
+/// retried after a pause that grows from 10 ms to 1 s, so a burst of failures
+/// neither ends serving nor spins. When serving ends, by the listener
+/// closing or the calling task being cancelled, the connections still open
+/// are stopped, which closes them.
 ///
 /// Fails with: nothing; only closing the listener ends serving.
-/// Defects when: `handle` defects.
-pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+/// Defects when: never because of `handle`.
+pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   let _ = limits(settings)
-  loop pause = 10 {
-    case Result.capture(fn() { Net.accept(listener) }) {
-      Err(NetError.Closed) -> break Void
-      Err(_) -> {
-        Clock.sleep(Duration.milliseconds(pause))
-        smaller(pause * 2, 1000)
+  // The connection is served in a task the process waits on. When serving
+  // ends, the supervisor's stop makes the inbox ready, so the process ends
+  // and cancels that task, which closes the connection. A forced stop runs
+  // no more of the process's code, so it would leave the connection open.
+  let connection = Process.handoff_spec(fn(inbox: Inbox<Unused>, accepted: Connection) {
+    let serving = Task.start(fn() { serve_connection(accepted, settings, handle) })
+    Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])
+  }, 1, Duration.seconds(1))
+  Resource.scoped(fn() {
+    Supervisor.start(Supervisor.policy([], settings.max_connections, Supervisor.restarts(0, Duration.seconds(1))))
+  }, Supervisor.stop, fn(connections) {
+    loop pause = 10 {
+      case Result.capture(fn() { Net.accept(listener) }) {
+        Err(NetError.Closed) -> break Void
+        Err(_) -> {
+          Clock.sleep(Duration.milliseconds(pause))
+          smaller(pause * 2, 1000)
+        }
+        Ok(accepted) -> {
+          admit(connections, connection, accepted)
+          10
+        }
       }
-      Ok(connection) -> {
-        let _connection = Task.start(fn() {
-          serve_connection(connection, settings, handle)
-        })
-        10
+    }
+  })
+}
+
+// A connection process's mailbox, which nothing sends to.
+enum Unused {
+  Unused
+}
+
+// Starts `accepted`'s process, waiting while the server is at its cap.
+fn admit<E>(connections: Running, spec: HandoffSpec<Connection, Unused, E>, accepted: Connection) -> Void needs {
+  clock: Clock
+} {
+  loop (waiting, pause) = (accepted, 1) {
+    case Supervisor.start_handoff(connections, spec, waiting) {
+      Success(_) -> break Void
+      Failure(HandoffError.CapacityReached(back)) -> {
+        Clock.sleep(Duration.milliseconds(pause))
+        (back, smaller(pause * 2, 100))
+      }
+      Failure(HandoffError.Stopped(back)) -> {
+        Net.close(back)
+        break Void
       }
     }
   }
@@ -242,7 +290,7 @@ pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_head
 ///
 /// Fails with: nothing; a failure of the connection ends it.
 /// Defects when: `handle` defects.
-pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   Resource.scoped(fn() { connection }, Net.close, fn(open) {
@@ -264,10 +312,10 @@ struct Limits {
   write: Duration,
 }
 
-fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration }) -> Limits {
-  case (settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0, positive(settings.request_timeout) and positive(settings.write_timeout)) {
+fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }) -> Limits {
+  case (settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0 and settings.max_connections > 0, positive(settings.request_timeout) and positive(settings.write_timeout)) {
     (True, True) -> Void
-    (False, _) -> Debug.crash("Http: max_head_bytes and max_headers must be positive, and max_body_bytes not negative")
+    (False, _) -> Debug.crash("Http: max_head_bytes, max_headers and max_connections must be positive, and max_body_bytes not negative")
     (_, False) -> Debug.crash("Http: request_timeout and write_timeout must be positive")
   }
   Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.request_timeout, settings.write_timeout)

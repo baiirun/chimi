@@ -1,9 +1,9 @@
 """Mutants of the std/http server (CHI-257): keep-alive and closing, framing,
 the error statuses and limits, reading split and pipelined input, the
 refusals that stop request smuggling, the idle and write limits, handler
-failures and defects, header checks, accept retries, and serving connections
-at once. A mutant that makes a wait hang shows as TIMEOUT, which counts as
-caught.
+failures and defects, header checks, accept retries, serving connections at
+once, containing a handler's defect, and the connection cap. A mutant that
+makes a wait hang shows as TIMEOUT, which counts as caught.
 
 Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/http_mutations.py
 Results: scripts/mutation/http_results.txt.
@@ -65,15 +65,35 @@ MUTATIONS = [
            "    (True, True) -> Void\n",
            "    _ -> Void\n"),
     # Serving.
-    mutant("connections are served one at a time",
-           "        let _connection = Task.start(fn() {\n          serve_connection(connection, settings, handle)\n        })",
-           "        serve_connection(connection, settings, handle)"),
+    mutant("connections are served one at a time, in the server's own process",
+           "          admit(connections, connection, accepted)",
+           "          serve_connection(accepted, settings, handle)"),
     mutant("a failed accept ends serving",
-           "      Err(_) -> {\n        Clock.sleep(Duration.milliseconds(pause))",
-           "      Err(error) -> {\n        Failure(error)"),
+           "        Err(_) -> {\n          Clock.sleep(Duration.milliseconds(pause))",
+           "        Err(error) -> {\n          Failure(error)"),
     mutant("the accept pause does not grow",
-           "        smaller(pause * 2, 1000)",
-           "        smaller(pause, 1000)"),
+           "          smaller(pause * 2, 1000)",
+           "          smaller(pause, 1000)"),
+    mutant("the connection cap is one more than asked",
+           "Supervisor.policy([], settings.max_connections,",
+           "Supervisor.policy([], settings.max_connections + 1,"),
+    mutant("a connection past the cap is dropped",
+           "      Failure(HandoffError.CapacityReached(back)) -> {\n        Clock.sleep(Duration.milliseconds(pause))\n        (back, smaller(pause * 2, 100))\n      }",
+           "      Failure(HandoffError.CapacityReached(back)) -> {\n        Net.close(back)\n        break Void\n      }"),
+    mutant("open connections outlive serving",
+           "  }, Supervisor.stop, fn(connections) {",
+           "  }, fn(_) { Void }, fn(connections) {"),
+    mutant("a connection's process waits only for its task",
+           "    Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])",
+           "    let _ = Task.result(serving)\n    Void"),
+    dict(name="the verifier counts a body closure's own locals as captures",
+         file="src/executable/verify.rs",
+         edits=[("captures.iter().filter(|capture| !own.contains(capture))",
+                 "captures.iter().filter(|_| !own.is_empty())")],
+         targets=["language"], filter="a_process_body_closure"),
+    mutant("a cap of zero is accepted",
+           " and settings.max_connections > 0, positive",
+           ", positive"),
     # Framing.
     mutant("HEAD sends its body",
            "case head_only or response.status == 204 or response.status == 304 {",

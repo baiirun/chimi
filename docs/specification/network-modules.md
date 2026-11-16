@@ -171,7 +171,7 @@ pub fn request(method, path, query, headers, body) -> Request        // for test
 pub fn response(status: Int, headers, body: Bytes) -> Response
 pub fn text(status: Int, text: Text) -> Response
 pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int,
-  request_timeout: Duration, write_timeout: Duration }
+  request_timeout: Duration, write_timeout: Duration, max_connections: Int }
 pub fn serve(listener: Listener, settings, handle: fn(Request) -> Response errors E needs R)
   -> Void needs R + { clock: Clock }
 pub fn serve_connection(connection: Connection, settings, handle) -> Void needs R + { clock: Clock }
@@ -222,6 +222,7 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 | trailer lines of a chunked body | `max_headers` | 100 | 431 |
 | time for a request to arrive, body included, counted from the previous answer | `request_timeout` | 60 s | the connection closes without an answer |
 | time to send one response | `write_timeout` | 60 s | the connection closes |
+| connections served at once | `max_connections` | 512 | `serve` accepts no more until one closes |
 
 ### Responses and connections
 
@@ -243,22 +244,26 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 - A malformed request gets its status with `connection: close`, and the
   connection closes, so nothing after it is read.
 - A handler's expected failure answers 500 and the connection carries on.
-  A handler's defect is not contained: it ends the connection's task and so
-  `serve`, as any defect ends its task; a supervisor restarts the server.
+  A handler's defect closes its connection without an answer, and the server
+  and its other connections carry on (as Go's `net/http` does with a panic).
 - `serve_connection` closes its connection however it ends, including by
   cancellation or a defect.
-- `serve` runs each connection in its own task. A failed accept (out of file
-  descriptors, a client that reset before it was accepted) is retried after a
-  pause that grows from 10 ms to 1 s and starts again at 10 ms after a
-  success; only closing the listener ends serving. Connections still open
-  when the task that called `serve` ends are cancelled, which closes them.
+- `serve` runs each connection in its own process, started with
+  `Supervisor.start_handoff` under a supervisor of its own that never
+  restarts one and whose capacity is `max_connections`. At the cap, the
+  accepted connection waits for a slot, checking after a pause that grows
+  from 1 ms to 100 ms, and later clients wait in the listener's backlog (as
+  Go's `netutil.LimitListener` does). The handler's needs are captured into
+  the process, so their providers MUST be shareable.
+- A failed accept (out of file descriptors, a client that reset before it
+  was accepted) is retried after a pause that grows from 10 ms to 1 s and
+  starts again at 10 ms after a success; only closing the listener ends
+  serving. When serving ends, by the listener closing or the calling task
+  being cancelled, the supervisor is stopped and the connections still open
+  are closed at once.
 
 ### Not yet
 
-- A cap on open connections, and containing a handler's defect to its
-  connection (CHI-262). Each connection is a task, and a finished task's
-  record is not yet released by the runtime, so a long-running server holds
-  one record per connection it ever served until that is fixed (CHI-264).
 - `Date` headers, streamed request and response bodies, a graceful drain of
   open connections when serving stops, and a close that drains unread input
   before it closes (so a peer that is still sending does not see a reset).
@@ -393,7 +398,7 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
 | HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
-| HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
+| HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` and closes open connections; a handler's defect closes only its connection; past `max_connections` a client waits | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | SQL: rows read by name, each typed accessor, nulls, missing columns, wrong kinds, `one` and `first` | `tests/sql.rs` `rows_are_read_by_column_name_with_typed_accessors` |
 | SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
