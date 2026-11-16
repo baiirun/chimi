@@ -68,8 +68,9 @@ pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
 }
 
 /// The C flags a binding package adds to `RUNTIME_C_FLAGS`, after the
-/// `-I` of its own directory: only `-I<directory>` (relative to the package
-/// directory, which the compile makes absolute) and `-D<definition>`, which a
+/// `-I` of its own directory: only `-I<directory>` (inside the package
+/// directory, since only the package's files are in its key; the compile
+/// makes it absolute) and `-D<definition>`, which a
 /// test checks, so no flag resolves against the current directory. A vendored library keeps its upstream layout
 /// and is configured here rather than by editing it.
 pub const BINDING_PACKAGE_FLAGS: &[(&str, &[&str])] =
@@ -148,6 +149,15 @@ pub fn compile_binding_archive(
 ) -> Result<(), String> {
     // A fresh directory, so a file removed from the package is not compiled.
     let _ = std::fs::remove_dir_all(directory);
+    // On a case-insensitive filesystem the second write would replace the first.
+    let mut names = std::collections::BTreeSet::new();
+    for (name, _) in sources {
+        if !names.insert(name.to_lowercase()) {
+            return Err(format!(
+                "binding package {package}: two sources differ only in case: {name}"
+            ));
+        }
+    }
     for (name, text) in sources {
         let path = directory.join(name);
         if let Some(parent) = path.parent() {

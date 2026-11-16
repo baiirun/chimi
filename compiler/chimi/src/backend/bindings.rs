@@ -103,12 +103,14 @@ mod tests {
         use crate::backend::runtime_archive_key::BINDING_PACKAGE_FLAGS;
         for (package, flags) in BINDING_PACKAGE_FLAGS {
             for flag in *flags {
-                let include = flag
-                    .strip_prefix("-I")
-                    .is_some_and(|path| !path.is_empty() && !path.starts_with('/'));
+                let include = flag.strip_prefix("-I").is_some_and(|path| {
+                    !path.is_empty()
+                        && !path.starts_with('/')
+                        && path.split('/').all(|part| part != "..")
+                });
                 assert!(
                     include || (flag.starts_with("-D") && flag.len() > 2),
-                    "package {package}: flag {flag:?} is neither -I<relative> nor -D<definition>"
+                    "package {package}: flag {flag:?} is neither -I<path inside the package> nor -D<definition>"
                 );
                 assert!(
                     !flag.contains(' '),
@@ -135,6 +137,27 @@ mod tests {
             refused
                 .as_ref()
                 .is_err_and(|error| error.contains("two sources map to the object")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn two_sources_that_differ_only_in_case_are_refused() {
+        use crate::backend::runtime_archive_key::compile_binding_archive;
+        let directory =
+            std::env::temp_dir().join(format!("chimi-binding-case-{}", std::process::id()));
+        let refused = compile_binding_archive(
+            "p",
+            &[("Include/x.h", ""), ("include/x.h", "")],
+            &directory,
+            &directory.join("package"),
+            &directory.join("p.a"),
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("differ only in case")),
             "{refused:?}"
         );
     }
