@@ -49,14 +49,15 @@ pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
 const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 
 /// OB07: the scheduler the compiler links and the header the runtime is built
-/// against both state ABI version 26 (5, plus the capability-violation hook in
+/// against both state ABI version 27 (5, plus the capability-violation hook in
 /// 6, the process-defect hook in 7, cancellation scopes in 8, the monitor and
 /// mailbox requests in 9, the carried capabilities and start argument of
 /// G28 in 10, the select request in 11, the resource requests in 13,
 /// drain-before-cancel in 14, the channel variants in 15, the scope
 /// cancel request in 18, the task combinators in 19, the descriptor wait in
 /// 20, the descriptor withdraw in 21, the signal wait in 22, task release and
-/// the own-receiver violation in 23 to 25, and the child wait in 26), and the runner writes process events with their own
+/// the own-receiver violation in 23 to 25, the child wait in 26, and the
+/// masked acquire's use request in 27), and the runner writes process events with their own
 /// identity fields: SV01's three `process_started` events each name
 /// an incarnation and that incarnation's task, which differ (the root is task
 /// 1, so the first incarnation runs as task 2).
@@ -66,9 +67,9 @@ pub(super) fn trace_abi_version() -> Result<(), String> {
         .find_map(|line| line.strip_prefix("#define CHIMI_FIBER_ABI_VERSION "))
         .map(|value| value.trim().trim_end_matches('u'))
         .ok_or("chimi_fiber.h does not define CHIMI_FIBER_ABI_VERSION")?;
-    if header != "26" || chimi_fiber::ABI_VERSION != 26 {
+    if header != "27" || chimi_fiber::ABI_VERSION != 27 {
         return Err(format!(
-            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 26",
+            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 27",
             header,
             chimi_fiber::ABI_VERSION
         ));

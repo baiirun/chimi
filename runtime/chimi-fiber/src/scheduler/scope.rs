@@ -28,11 +28,16 @@
 //! without mutation they were the only way to reach them.
 //!
 //! `Resource.scoped` (`std/resource.chimi`) puts a resource entry on the same
-//! stack: `REQUEST_RESOURCE_ENTER` before acquire, `REQUEST_RESOURCE_RELEASE`
-//! before release, which *masks* the entry, and `REQUEST_RESOURCE_EXIT` after
-//! release. Only scopes above the innermost masked entry are deliverable, so a
-//! scope that fires outside a release waits until the release returns, and a
-//! timeout written inside the release still works. Children started while
+//! stack: `REQUEST_RESOURCE_ENTER` before acquire, which pushes it *masked*;
+//! `REQUEST_RESOURCE_USE` after acquire succeeds, which unmasks it;
+//! `REQUEST_RESOURCE_RELEASE` before release, which masks it again; and
+//! `REQUEST_RESOURCE_EXIT` after release. Only scopes above the innermost
+//! masked entry are deliverable, so a scope that fires during a release waits
+//! until it returns, and a timeout written inside it still works. An acquire
+//! is masked too, except while it waits: a cancellation can end the wait,
+//! when nothing is acquired yet, but not land after the wait ends, when the
+//! acquire may hold what it waited for. One held off that way is delivered
+//! when use begins, and release then runs. Children started while
 //! masked are tagged with the masked entry, so a firing outer scope leaves
 //! them alone.
 //!
@@ -93,16 +98,46 @@ pub(super) struct Scope {
 pub(super) enum ScopeKind {
     /// `Task.timeout` or `Task.deadline`, with a deadline timer.
     Timeout,
-    /// A `Resource.scoped` call; `masked` once its release has begun.
-    Resource { masked: bool },
+    /// A `Resource.scoped` call, with how far it holds off cancellation.
+    Resource { mask: Mask },
     /// The task's own cancellation while it holds a resource; always fired,
     /// always the bottom entry.
     Root,
 }
 
+/// How far a `Resource.scoped` entry holds off the cancellation of the
+/// scopes beneath it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Mask {
+    /// `use` runs: nothing is held off.
+    Open,
+    /// `acquire` runs: held off except while it waits (a park a firing scope
+    /// can withdraw), since nothing is acquired until the wait ends.
+    Acquiring,
+    /// `release` runs: held off entirely.
+    Releasing,
+}
+
 impl Scope {
+    /// True for a resource entry that is acquiring or releasing: a firing
+    /// scope beneath it leaves the children started above it alone.
     fn is_mask(&self) -> bool {
-        self.kind == ScopeKind::Resource { masked: true }
+        matches!(
+            self.kind,
+            ScopeKind::Resource {
+                mask: Mask::Acquiring | Mask::Releasing
+            }
+        )
+    }
+
+    /// True when this entry holds off the scopes beneath it; `waiting` is
+    /// whether the task is at a wait.
+    fn holds_off(&self, waiting: bool) -> bool {
+        match self.kind {
+            ScopeKind::Resource { mask: Mask::Releasing } => true,
+            ScopeKind::Resource { mask: Mask::Acquiring } => !waiting,
+            _ => false,
+        }
     }
 }
 
@@ -259,11 +294,35 @@ impl Scheduler {
         id
     }
 
-    /// Pushes an unmasked resource entry: `Resource.scoped` is about to
-    /// acquire.
+    /// Pushes a masked resource entry: `Resource.scoped` is about to acquire,
+    /// and a cancellation must not land between acquire succeeding and the
+    /// entry owning what it returned.
     pub(super) fn enter_resource(&mut self, task: TaskId) -> ScopeId {
         let now = self.clock.now();
-        self.push_entry(task, ScopeKind::Resource { masked: false }, now, None)
+        self.push_entry(
+            task,
+            ScopeKind::Resource {
+                mask: Mask::Acquiring,
+            },
+            now,
+            None,
+        )
+    }
+
+    /// Unmasks the resource entry `scope`: acquire returned and use begins.
+    /// Entries above it are stale and go. Returns `None` when the task holds
+    /// no such entry, and otherwise whether a cancellation the acquire held
+    /// off is now delivered, in which case use does not run.
+    pub(super) fn use_resource(&mut self, task: TaskId, scope: ScopeId) -> Option<bool> {
+        let index = self.entry_index(task, scope, true)?;
+        self.pop_entries(task, index + 1);
+        let record = self.tasks.get_mut(&task).expect("live task");
+        record.scopes[index].kind = ScopeKind::Resource { mask: Mask::Open };
+        if let Some(deliverable) = Self::deliverable_in(&record.scopes, false) {
+            record.scopes[deliverable].delivered = true;
+            return Some(true);
+        }
+        Some(false)
     }
 
     /// Masks the resource entry `scope`: its release begins. Entries above it
@@ -274,7 +333,9 @@ impl Scheduler {
         };
         self.pop_entries(task, index + 1);
         self.tasks.get_mut(&task).expect("live task").scopes[index].kind =
-            ScopeKind::Resource { masked: true };
+            ScopeKind::Resource {
+                mask: Mask::Releasing,
+            };
         true
     }
 
@@ -284,9 +345,9 @@ impl Scheduler {
     pub(super) fn exit_resource(&mut self, task: TaskId, scope: ScopeId) -> Option<bool> {
         let index = self.entry_index(task, scope, true)?;
         self.pop_entries(task, index);
-        if self.deliverable_scope(task).is_some() {
+        if self.deliverable_scope(task, false).is_some() {
             let record = self.tasks.get_mut(&task).expect("live task");
-            let index = Self::deliverable_in(&record.scopes).expect("checked");
+            let index = Self::deliverable_in(&record.scopes, false).expect("checked");
             record.scopes[index].delivered = true;
             return Some(true);
         }
@@ -434,10 +495,11 @@ impl Scheduler {
         if withdraw
             && self.tasks[&task].phase == TaskPhase::Parked
             && is_withdrawable(self.parked_kind(task))
-            && self.deliverable_scope(task).is_some()
+            && self.deliverable_scope(task, self.parked_kind(task) != 0).is_some()
         {
+            let waiting = self.parked_kind(task) != 0;
             self.disarm_wake_sources(task);
-            self.deliver_scope_cancel(task);
+            self.deliver_scope_cancel(task, waiting);
         }
         let children: Vec<TaskId> = self.tasks[&task]
             .children
@@ -591,8 +653,9 @@ impl Scheduler {
     /// Answers a cancellation-point request with a pending scope cancellation
     /// instead of serving it. Returns true when it did.
     pub(super) fn refuse_for_scope(&mut self, task: TaskId, kind: u32) -> bool {
+        let waiting = kind != 0 && is_withdrawable(kind);
         if !is_cancellation_point(kind)
-            || self.deliverable_scope(task).is_none()
+            || self.deliverable_scope(task, waiting).is_none()
             || self.is_forced(task)
         {
             return false;
@@ -606,26 +669,27 @@ impl Scheduler {
         {
             return false;
         }
-        self.deliver_scope_cancel(task);
+        self.deliver_scope_cancel(task, waiting);
         true
     }
 
     /// True when a fired scope of `task` waits for its next cancellation point.
     pub(super) fn scope_cancel_pending(&self, task: TaskId) -> bool {
-        self.deliverable_scope(task).is_some()
+        self.deliverable_scope(task, false).is_some()
     }
 
     /// The outermost fired scope whose cancellation has not been delivered, if
     /// no cancellation is already unwinding the task. Only entries above the
-    /// innermost masked resource entry count: a release holds the rest off.
-    fn deliverable_scope(&self, task: TaskId) -> Option<usize> {
-        Self::deliverable_in(&self.tasks.get(&task)?.scopes)
+    /// innermost resource entry that holds them off count: a release always
+    /// does, an acquire unless the task is `waiting`.
+    fn deliverable_scope(&self, task: TaskId, waiting: bool) -> Option<usize> {
+        Self::deliverable_in(&self.tasks.get(&task)?.scopes, waiting)
     }
 
-    fn deliverable_in(scopes: &[Scope]) -> Option<usize> {
+    fn deliverable_in(scopes: &[Scope], waiting: bool) -> Option<usize> {
         let base = scopes
             .iter()
-            .rposition(Scope::is_mask)
+            .rposition(|entry| entry.holds_off(waiting))
             .map_or(0, |index| index + 1);
         let open = &scopes[base..];
         if open.iter().any(|entry| entry.delivered) {
@@ -639,8 +703,8 @@ impl Scheduler {
     /// Resumes `task` with the outermost fired scope's cancellation. Its
     /// parked request keeps its status, so a withdrawn send's value is
     /// released once, by the scheduler.
-    fn deliver_scope_cancel(&mut self, task: TaskId) {
-        let Some(index) = self.deliverable_scope(task) else {
+    fn deliver_scope_cancel(&mut self, task: TaskId, waiting: bool) {
+        let Some(index) = self.deliverable_scope(task, waiting) else {
             return;
         };
         let record = self.tasks.get_mut(&task).expect("live task");

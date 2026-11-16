@@ -926,3 +926,80 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
     );
     assert_eq!(result.outcome, success("1"), "{}", result.outcome);
 }
+
+// Rejects an acquire that a cancellation can leave after its wait ended: the
+// grant reaches the acquiring task just before `Task.cancel`, and the
+// cancellation is held off past the acquire's later `Clock.now` until use
+// begins, so use does not run and release logs 7 at once, at 1 s (CHI-268).
+#[test]
+fn a_cancel_after_acquire_stops_waiting_still_runs_the_release() {
+    let result = run_virtual(
+        "a_cancel_after_acquire_stops_waiting_still_runs_the_release",
+        r#"pub fn main() -> Int {
+  let log = Channel.bounded(4)
+  let sender = log.sender
+  let grants = Channel.bounded(1)
+  let receiver = grants.receiver
+  let child = Task.start(fn() {
+    Resource.scoped(
+      fn() {
+        let granted = take(receiver)
+        let _ = Clock.now()
+        granted
+      },
+      fn(held) { Channel.send(sender, held) },
+      fn(held) {
+        Clock.sleep(Duration.seconds(10))
+        held
+      },
+    )
+  })
+  let start = Clock.now()
+  Clock.sleep(Duration.seconds(1))
+  Channel.send(grants.sender, 7)
+  Task.cancel(child)
+  take(log.receiver) + Duration.to_seconds(Clock.since(start)) * 1000
+}
+"#,
+    );
+    assert_eq!(result.outcome, success("1007"), "{}", result.outcome);
+}
+
+// Rejects an acquire masked even while it waits: a timeout written around the
+// whole call still ends a wait inside acquire, at 1 s rather than 10 s, and no
+// release runs because nothing was acquired (code 100, nothing logged, 2 s
+// with the 1 s wait for the log).
+#[test]
+fn a_timeout_ends_a_wait_inside_acquire() {
+    let result = run_virtual(
+        "a_timeout_ends_a_wait_inside_acquire",
+        r#"fn operation(sender: Channel.Sender<Int>) -> Int {
+  Resource.scoped(
+    fn() {
+      Clock.sleep(Duration.seconds(10))
+      3
+    },
+    fn(held) { Channel.send(sender, held) },
+    fn(held) { held },
+  )
+}
+
+pub fn main() -> Int {
+  let log = Channel.bounded(4)
+  let sender = log.sender
+  let start = Clock.now()
+  let code = case fn() { operation(sender) } |> Task.timeout(Duration.seconds(1)) {
+    Success(value) -> value
+    Failure(Timeout.TimedOut(limit)) -> 100
+  }
+  let receiver = log.receiver
+  let logged = case fn() { take(receiver) } |> Task.timeout(Duration.seconds(1)) {
+    Success(value) -> value
+    Failure(Timeout.TimedOut(limit)) -> 0
+  }
+  code + logged * 10 + Duration.to_seconds(Clock.since(start)) * 1000
+}
+"#,
+    );
+    assert_eq!(result.outcome, success("2100"), "{}", result.outcome);
+}
