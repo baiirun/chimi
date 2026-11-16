@@ -77,3 +77,5 @@ KILLED       a refusal does not linger [http] (36s)
 KILLED       lingering keeps the writing side open [http] (36s)
 KILLED       lingering has no time limit [http] (37s)
 # result: every mutant killed
+
+# a72a822: floor division rounds a negative quotient toward zero: KILLED
