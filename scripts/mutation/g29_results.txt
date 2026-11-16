@@ -1,0 +1,33 @@
+# mutation run at ee243b64de1710cf7c1598401977eb4ece0afbf0
+# g29_mutations.py: 19 mutants against compiler/chimi
+BASELINE ok  [channel_variants] (98s)
+KILLED       an added receiver reads its own empty entry [channel_variants] (7s)
+KILLED       ending any receiver aborts the queue [channel_variants] (10s)
+KILLED       a receiver added through an ended one is live [channel_variants] (10s)
+KILLED       a publish waits only for some subscription to have room [channel_variants] (7s)
+KILLED       a publish counts at most one subscription [channel_variants] (7s)
+KILLED       a publish with no subscriptions claims one [channel_variants] (7s)
+KILLED       a subscription made after the close is open [channel_variants] (7s)
+KILLED       closing a broadcast leaves its subscriptions open [channel_variants] (10s)
+KILLED       a receive does not admit a parked publish [channel_variants] (8s)
+KILLED       publish returns no count [channel_variants] (13s)
+KILLED       a zero capacity broadcast is not rejected by name [channel_variants] (13s)
+KILLED       a new watch subscription has not got the current value [channel_variants] (13s)
+KILLED       a watch publish keeps the old current value [channel_variants] (9s)
+KILLED       add_receiver moves its argument [channel_variants] (19s)
+KILLED       an exclusive value can be published [channel_variants] (16s)
+KILLED       an event does not borrow its receiver [channel_variants] (23s)
+KILLED       a read never checks what its value borrows [channel_variants] (16s)
+KILLED       every call result keeps its arguments' borrows [channel_variants] (24s)
+# g29_fiber_mutations.py: 5 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- variant_tests] (16s)
+KILLED       parked receivers are served newest first [lib -- variant_tests] (5s)
+KILLED       a subscription that ends does not admit a parked publish [lib -- variant_tests] (7s)
+KILLED       every subscription shares one value [lib -- variant_tests] (6s)
+# reruns after fixes at 78df9e39025753670898fdf6a40870ad2b14b363
+KILLED       added receivers do not keep the queue alive [channel_variants] (after adding an_added_receiver_outlives_the_first_one)
+KILLED       a select on a shared queue wakes only one watcher [lib -- variant_tests]
+KILLED       an event read through a field borrows nothing [channel_variants]
+KILLED       a move within the task counts as leaving it [channel_variants]
+# dropped as equivalent: "a new publish overtakes a parked one" (see g29_fiber_mutations.py)
+# result: 25 of 25 listed mutants killed

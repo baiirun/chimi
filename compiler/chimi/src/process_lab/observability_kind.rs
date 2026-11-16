@@ -49,10 +49,10 @@ pub(super) fn transcripts_are_deterministic() -> Result<(), String> {
 const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 
 /// OB07: the scheduler the compiler links and the header the runtime is built
-/// against both state ABI version 13 (5, plus the capability-violation hook in
+/// against both state ABI version 15 (5, plus the capability-violation hook in
 /// 6, the process-defect hook in 7, cancellation scopes in 8, the monitor and
 /// mailbox requests in 9, the carried capabilities and start argument of
-/// G28 in 10, the select request in 11, and the resource requests in 13), and the runner writes process events with
+/// G28 in 10, the select request in 11, the resource requests in 13, and the channel variants in 15), and the runner writes process events with
 /// their own identity fields: SV01's three `process_started` events each name
 /// an incarnation and that incarnation's task, which differ (the root is task
 /// 1, so the first incarnation runs as task 2).
