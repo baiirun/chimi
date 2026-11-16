@@ -99,9 +99,10 @@ function-local static, so new state gets an owner when it is added.
   - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner`,
     `shared_values`, `constant_values`, `host_stack_limit`.
   - `next_mark_epoch`. Mark epochs are stamped into allocation headers that
-    move with a heap, so a per-carrier counter could repeat an epoch a stale
-    header still holds and treat a dead allocation as marked. It becomes a
-    per-heap counter, not a per-carrier one.
+    move with a heap, so a per-carrier counter could repeat an epoch that a
+    stale header still holds, and treat a dead allocation as marked. It is one
+    process-wide atomic counter, so every pass anywhere gets a fresh epoch.
+    That is one relaxed fetch-add per collection pass.
   - The handle-count table (`handle_table`, "Handle counts" below). Its
     release queue is carrier state (`released_handles`).
   - Tables whose ids travel inside values: binding handles, open files, test
@@ -140,9 +141,9 @@ Rules for the steps that run more than one carrier:
   resumes on the other of two carriers from the one it parked on, each with
   its own scratch and caches. It is the only check that catches a field filed as carrier state
   that must in fact follow the fiber.
-- The lazily created shared values (`shared_values`, the module constants) are
-  a race once two carriers can create them; create them before the carriers
-  start.
+- The shared values (`shared_values`, the module constants) live in the
+  static area. `decode_constants` creates all of them at startup, so nothing
+  appends to the static area once carriers run.
 
 ## Handle counts
 
@@ -276,9 +277,10 @@ keeps its observable meaning through a different mechanism.
      carriers");
    - have each carrier loop drain its own release queue, replacing
      `carrier_with_releases`;
-   - turn `carrier` into the accessor;
-   - make `next_mark_epoch` per heap;
-   - create the lazily created shared values before the carriers start.
+   - turn `carrier` into the accessor.
+
+   Epochs are already process-wide and atomic, and the shared values are
+   already created at startup.
 4. Shard the kernel and the channel registry by owner, and add stealing.
 5. Publish multi-core baselines next to the single-thread ones (R2).
 
