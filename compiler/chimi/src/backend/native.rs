@@ -487,6 +487,9 @@ const RUNTIME_SOURCE: &str = include_str!("../../runtime/native/runtime.c");
 const RUNTIME_HEADER: &str = include_str!("../../runtime/native/runtime.h");
 const FIBER_RUNTIME_HEADER: &str =
     include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
+/// The runtime test builds `CHIMI_TEST_RUNTIME_DEFINES` may name.
+const TEST_RUNTIME_DEFINES: [&str; 1] = ["-DCHIMI_CARRIER_SIMULATION"];
+
 // Written by `build.rs`; each is empty when the compiler was built without it.
 const PREBUILT_RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_rt.a"));
 const PREBUILT_RUNTIME_KEY: &str = include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt.key"));
@@ -495,12 +498,9 @@ const PREBUILT_PROCESS_RUNTIME_ARCHIVE: &[u8] =
 const PREBUILT_PROCESS_RUNTIME_KEY: &str =
     include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt_process.key"));
 
-/// The archive of the variant `build.rs` compiled, when it was compiled from
-/// exactly the inputs `key` names (the embedded sources and today's `cc`);
-/// otherwise `None`, and the caller compiles the runtime into the project cache.
 /// Test builds of the runtime: in a debug build of the compiler,
-/// `CHIMI_TEST_RUNTIME_DEFINES` names `-D` flags (space-separated, each
-/// `-DCHIMI_` and an upper-case name) added to the runtime's compile, such as
+/// `CHIMI_TEST_RUNTIME_DEFINES` names `-D` flags (space-separated, each one of
+/// `TEST_RUNTIME_DEFINES`) added to the runtime's compile, such as
 /// `-DCHIMI_CARRIER_SIMULATION` (parallel-scheduler.md). They change the
 /// archive's key, so a test build never reuses the prebuilt runtime. A
 /// release build ignores the variable.
@@ -514,16 +514,20 @@ fn test_runtime_defines() -> Result<Vec<String>, String> {
     value
         .split_whitespace()
         .map(|define| {
-            let name = define.strip_prefix("-DCHIMI_").unwrap_or("");
-            if !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            if TEST_RUNTIME_DEFINES.contains(&define) {
                 Ok(define.to_owned())
             } else {
-                Err(format!("CHIMI_TEST_RUNTIME_DEFINES: `{define}` is not -DCHIMI_<NAME>"))
+                Err(format!(
+                    "CHIMI_TEST_RUNTIME_DEFINES: `{define}` is not one of {TEST_RUNTIME_DEFINES:?}"
+                ))
             }
         })
         .collect()
 }
 
+/// The archive of the variant `build.rs` compiled, when it was compiled from
+/// exactly the inputs `key` names (the embedded sources and today's `cc`);
+/// otherwise `None`, and the caller compiles the runtime into the project cache.
 fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static [u8]> {
     let (archive, prebuilt_key) = if process_kernel {
         (

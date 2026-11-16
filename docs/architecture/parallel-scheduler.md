@@ -136,9 +136,9 @@ Rules for the steps that run more than one carrier:
   peak either, so decide what the peak fields mean before step 3 changes the
   numbers.
 - Run the carrier simulation build (`CHIMI_CARRIER_SIMULATION`, "Handle
-  counts") over the suite before each step that moves state. Every resume
-  switches to the other of two carriers, each with its own scratch and
-  caches. It is the only check that catches a field filed as carrier state
+  counts") over the suite before each step that moves state. Every fiber
+  resumes on the other of two carriers from the one it parked on, each with
+  its own scratch and caches. It is the only check that catches a field filed as carrier state
   that must in fact follow the fiber.
 - The lazily created shared values (`shared_values`, the module constants) are
   a race once two carriers can create them; create them before the carriers
@@ -174,14 +174,20 @@ no longer be split.
 
 Step 3 must also drain a carrier's release queue from its own loop before it
 idles and when it stops. Otherwise a zero reached in a release hook, on a
-carrier where no fiber makes another request, strands the release.
+carrier where no fiber makes another request, strands the release. The
+simulation build showed this: before its flush drained every carrier's queue,
+a dropped channel's buffered messages outlived it and a fragment-peak test
+failed. Today a flush drains the running carrier's queue first and then any
+other carrier's, in place of that loop.
 
 Two tests check this step:
 - `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
   references from one thread to another under ThreadSanitizer.
-- The `CHIMI_CARRIER_SIMULATION` test build switches carriers on every resume
+- The `CHIMI_CARRIER_SIMULATION` test build resumes every fiber on the other
+  of two carriers from the one it parked on
   (`CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION` with a debug
-  compiler).
+  compiler). The whole `chimi` suite passes under it, except the test that
+  checks the prebuilt runtime is used, which a test build never uses.
 
 ## Alternatives considered
 

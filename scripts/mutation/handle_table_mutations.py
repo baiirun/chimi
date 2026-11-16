@@ -13,9 +13,7 @@ R = "runtime/native/runtime.c"
 
 SIMULATED = ["env", "CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION",
              "cargo", "test", "-q", "--test", "task_release", "--test", "cli",
-             "--", "release", "channel", "handle",
-             # Split allocator caches move this peak (handle_table_results.txt).
-             "--skip", "native_dropping_a_channel_frees_its_queued_messages"]
+             "--", "release", "channel", "handle", "forced"]
 
 
 def m(name, edits, targets, filter=""):
@@ -35,19 +33,19 @@ MUTATIONS = [
         "  ++slots[slot].endpoints;\n")],
       ["runtime_state"], "the_handle_table_counts_across_threads"),
     m("drop does not take the table's lock",
-      [("  pthread_mutex_lock(&handle_table.lock);\n  bool last = handle_table_drop(channel);\n  pthread_mutex_unlock(&handle_table.lock);",
-        "  bool last = handle_table_drop(channel);")],
+      [("  pthread_mutex_lock(&handle_table.lock);\n  bool last = handle_table_drop(channel);\n  pthread_mutex_unlock(&handle_table.lock);\n  return last;",
+        "  return handle_table_drop(channel);")],
       ["runtime_state"], "the_handle_table_counts_across_threads"),
     m("a drop reports the last reference one early",
       [("  if (--slots[slot].endpoints != 0) return false;",
         "  if (--slots[slot].endpoints > 1) return false;")],
       ["runtime_state", "task_release"]),
     m("a key at zero is never queued",
-      [("  if (last) release_queue_push(channel);\n", "  (void)last;\n")],
+      [("  if (handle_table_release(channel)) release_queue_push(channel);\n", "  (void)handle_table_release(channel);\n")],
       ["task_release", "cli"], "release"),
-    simulated("the flush drains the queue of the carrier it started on",
-      [("  while (carrier->released_handle_count) {\n    uint64_t key = carrier->released_handles[--carrier->released_handle_count];",
-        "  Carrier *start = carrier;\n  while (start->released_handle_count) {\n    uint64_t key = start->released_handles[--start->released_handle_count];")]),
+    simulated("a carrier's queue is drained only by a fiber that requests there",
+      [("  if (carrier->released_handle_count) return carrier;\n  for (size_t index = 0; index < CARRIER_COUNT; ++index)\n    if (carrier_states[index].released_handle_count) return &carrier_states[index];\n  return NULL;",
+        "  return carrier->released_handle_count ? carrier : NULL;")]),
     simulated("a park keeps the caller's fiber context on the old carrier",
       [("  FiberContext fiber = carrier->fiber;\n  ChimiFiberCommand command = flush_channel_releases();\n  if (command != CHIMI_FIBER_CANCEL) command = carrier_request(request);\n  carrier->fiber = fiber;",
         "  Carrier *start = carrier;\n  FiberContext fiber = carrier->fiber;\n  ChimiFiberCommand command = flush_channel_releases();\n  if (command != CHIMI_FIBER_CANCEL) command = carrier_request(request);\n  start->fiber = fiber;")]),

@@ -23,7 +23,7 @@ use std::process::Command;
 /// Writable process-wide globals, each owned as the design note says.
 const SHARED: &[&str] = &[
     // The carrier, which holds every per-thread field.
-    "carrier_state",
+    "carrier_states",
     // Heaps and constants every fiber shares.
     "main_heap",
     "next_heap_owner",
@@ -130,7 +130,7 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
     for process_kernel in [false, true] {
         let symbols = writable_symbols(process_kernel);
         // An nm format this test cannot read would otherwise pass vacuously.
-        for expected in ["carrier_state", "main_heap"] {
+        for expected in ["carrier_states", "main_heap"] {
             assert!(
                 symbols.iter().any(|symbol| symbol.trim_start_matches('_') == expected),
                 "{expected} missing from {symbols:?}"
@@ -174,7 +174,10 @@ fn the_handle_table_counts_across_threads() {
             .output()
             .expect("run cc")
     };
-    if !compile(&["-fsanitize=thread"]).status.success() {
+    if compile(&["-fsanitize=thread"]).status.success() {
+        eprintln!("handle table stress: built with ThreadSanitizer");
+    } else {
+        eprintln!("handle table stress: ThreadSanitizer unavailable, plain build");
         let plain = compile(&[]);
         assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
     }

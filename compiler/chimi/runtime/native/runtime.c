@@ -562,34 +562,40 @@ typedef struct {
 } Carrier;
 
 #ifdef CHIMI_CARRIER_SIMULATION
-/* A test build (parallel-scheduler.md, "Runtime state by owner"): every resume
-   continues on the other of two carriers, each with its own scratch, caches and
-   release queue, the way a fiber migrates once N carriers run. It finds a
-   pointer into a carrier kept across a park, a field filed as carrier state
-   that must follow the fiber, and a release stranded on a carrier no fiber
-   returns to. The memory report's counters are handed over at each switch,
-   since they are process totals that a later step makes shared. */
-static Carrier carrier_states[2] = {{.fiber = {.heap = &main_heap}},
-                                    {.fiber = {.heap = &main_heap}}};
+/* A test build (parallel-scheduler.md, "Runtime state by owner"): every fiber
+   resumes on the other of two carriers from the one it parked on, each with its
+   own scratch, caches and release queue, the way a fiber migrates once N
+   carriers run. It finds a pointer into a carrier kept across a park and a field
+   filed as carrier state that must follow the fiber. The memory report's
+   counters are handed over at each switch, since they are process totals that a
+   later step makes shared. */
+#define CARRIER_COUNT 2
+static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}},
+                                                {.fiber = {.heap = &main_heap}}};
 static Carrier *carrier = &carrier_states[0];
 
-static void carrier_switch(void) {
+/* Continues on the carrier other than `parked`, carrying the counters over from
+   the one that ran last. */
+static void carrier_migrate(Carrier *parked) {
   Carrier *from = carrier;
-  Carrier *to = &carrier_states[from == &carrier_states[0]];
-  to->heap_totals = from->heap_totals;
-  to->pending_footprint_bytes = from->pending_footprint_bytes;
-  to->unscoped_allocated_bytes = from->unscoped_allocated_bytes;
-  to->capture_transfer_probes = from->capture_transfer_probes;
-  to->process_heap_peak_value_bytes = from->process_heap_peak_value_bytes;
-  to->copied_values = from->copied_values;
-  to->copied_bytes = from->copied_bytes;
+  Carrier *to = &carrier_states[parked == &carrier_states[0]];
+  if (to != from) {
+    to->heap_totals = from->heap_totals;
+    to->pending_footprint_bytes = from->pending_footprint_bytes;
+    to->unscoped_allocated_bytes = from->unscoped_allocated_bytes;
+    to->capture_transfer_probes = from->capture_transfer_probes;
+    to->process_heap_peak_value_bytes = from->process_heap_peak_value_bytes;
+    to->copied_values = from->copied_values;
+    to->copied_bytes = from->copied_bytes;
+  }
   carrier = to;
 }
 #else
-static Carrier carrier_state = {.fiber = {.heap = &main_heap}};
-static Carrier *const carrier = &carrier_state;
+#define CARRIER_COUNT 1
+static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}}};
+static Carrier *const carrier = &carrier_states[0];
 
-static void carrier_switch(void) {}
+static void carrier_migrate(Carrier *parked) { (void)parked; }
 #endif
 
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
@@ -881,7 +887,9 @@ static size_t channel_slot(uint64_t channel, size_t capacity) {
   return (size_t)((channel * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & (capacity - 1);
 }
 
-/* Requires: handle_table.lock held. */
+/* Requires: handle_table.lock held. Nothing that runs under the lock retains,
+   drops, parks or runs a hook; exhausted_memory exits with it held, which is
+   safe while no atexit handler touches the table. */
 static void handle_table_grow(void) {
   size_t capacity = handle_table.capacity ? handle_table.capacity * 2 : 64;
   ChannelEndpoints *table = calloc(capacity, sizeof(*table));
@@ -918,7 +926,9 @@ static void channel_endpoint_retain(uint64_t channel) {
 }
 
 /* Removes one reference to `channel`. Ensures: true exactly when this removed the
-   last one, so the caller owns the key's release. Requires: handle_table.lock. */
+   last one, so the caller owns the key's release. Requires: handle_table.lock.
+   No other thread can queue the same key meanwhile: once the count is zero, no
+   value names the key, so none can retain or drop it. */
 static bool handle_table_drop(uint64_t channel) {
   ChannelEndpoints *slots = handle_table.slots;
   if (!slots) return false;
@@ -957,11 +967,16 @@ static void release_queue_push(uint64_t key) {
   here->released_handles[here->released_handle_count++] = key;
 }
 
-static void channel_endpoint_drop(uint64_t channel) {
+/* handle_table_drop under the table's lock. */
+static bool handle_table_release(uint64_t channel) {
   pthread_mutex_lock(&handle_table.lock);
   bool last = handle_table_drop(channel);
   pthread_mutex_unlock(&handle_table.lock);
-  if (last) release_queue_push(channel);
+  return last;
+}
+
+static void channel_endpoint_drop(uint64_t channel) {
+  if (handle_table_release(channel)) release_queue_push(channel);
 }
 
 /* Each execution starts a new scheduler, whose channel ids start over. Runs
@@ -972,7 +987,8 @@ static void channel_endpoints_reset(void) {
     memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
   handle_table_set_count(0);
   pthread_mutex_unlock(&handle_table.lock);
-  carrier->released_handle_count = 0;
+  for (size_t index = 0; index < CARRIER_COUNT; ++index)
+    carrier_states[index].released_handle_count = 0;
 }
 
 /* Frees one allocation that its area has already unlinked. */
@@ -2840,9 +2856,21 @@ static ChimiValue *publisher_bundle_value(uint64_t channel, uint64_t owner, uint
 /* Parks the running fiber with `request`. The fiber may resume on another
    carrier, so nothing read through `carrier` before this call is used after it. */
 static ChimiFiberCommand carrier_request(void *request) {
+  Carrier *parked = carrier;
   ChimiFiberCommand command = chimi_fiber_request(request, NULL);
-  carrier_switch();
+  carrier_migrate(parked);
   return command;
+}
+
+/* A carrier whose release queue holds a key, the running one first. With more
+   than one carrier this stands in for each carrier's loop draining its own
+   queue, which step 3 adds: without it a key queued where no fiber requests
+   again would wait for ever. */
+static Carrier *carrier_with_releases(void) {
+  if (carrier->released_handle_count) return carrier;
+  for (size_t index = 0; index < CARRIER_COUNT; ++index)
+    if (carrier_states[index].released_handle_count) return &carrier_states[index];
+  return NULL;
 }
 
 /* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
@@ -2850,10 +2878,10 @@ static ChimiFiberCommand carrier_request(void *request) {
    was. The scheduler serves a request as soon as the task parks, so a release is
    done even when the task resumes with CHIMI_FIBER_CANCEL. */
 static ChimiFiberCommand flush_channel_releases(void) {
-  /* `carrier` is read again on every pass: the request below parks, and the
-     fiber may resume on another carrier, whose own queue it then drains. */
-  while (carrier->released_handle_count) {
-    uint64_t key = carrier->released_handles[--carrier->released_handle_count];
+  /* The queue is found again on every pass: the request below parks, and the
+     fiber may resume on another carrier. */
+  for (Carrier *queue; (queue = carrier_with_releases());) {
+    uint64_t key = queue->released_handles[--queue->released_handle_count];
     ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHANNEL_RELEASE, .channel = key};
     if (key & TASK_HANDLE_KEY)
       request = (ChimiSchedulerRequest){.kind = CHIMI_REQUEST_TASK_RELEASE,

@@ -1,8 +1,9 @@
 /* Two-thread stress of the shared handle table (parallel-scheduler.md,
    "Handle counts"). Thread A holds one anchor reference to each key, retains a
    further reference, and hands it to thread B, which drops it, the way a copy
-   made on one carrier is freed on another. B also retains and drops keys of its
-   own, so the table grows and deletes while A works. A drop that removes the last
+   made on one carrier is freed on another. Each thread also keeps a
+   sliding window of keys of its own, inserted and deleted as it goes, so the
+   table grows several times and shifts entries while the other thread probes it. A drop that removes the last
    reference while the anchor is still held would be a premature release: B
    checks that none happens, and A checks that dropping each anchor at the end is
    the last reference. Built with ThreadSanitizer when the compiler supports it,
@@ -50,7 +51,7 @@ const uint32_t CHIMI_BINDING_COUNT = 0;
     }                                                                               \
   } while (0)
 
-enum { KEYS = 512, ROUNDS = 200, OWN_KEYS = 4096 };
+enum { KEYS = 512, ROUNDS = 200, WINDOW = 3000 };
 
 /* A single-producer, single-consumer ring of handed-over keys. */
 static uint64_t ring[1024];
@@ -58,17 +59,36 @@ static _Atomic size_t ring_head;
 static _Atomic size_t ring_tail;
 static _Atomic bool producer_done;
 
-static bool locked_drop(uint64_t key) {
-  pthread_mutex_lock(&handle_table.lock);
-  bool last = handle_table_drop(key);
-  pthread_mutex_unlock(&handle_table.lock);
-  return last;
+/* channel_endpoint_drop without its release queue, which is carrier state and
+   so not shared by the two threads. */
+static bool locked_drop(uint64_t key) { return handle_table_release(key); }
+
+/* Thread `thread`'s own key number `index`, far from the anchored keys. */
+static uint64_t own_key(int thread, uint64_t index) {
+  return ((uint64_t)(thread + 1) << 40) + index + 1;
+}
+
+/* Inserts own key `index` and deletes the one WINDOW keys before it, so about
+   WINDOW of the thread's keys are live at a time. */
+static void slide_window(int thread, uint64_t index) {
+  channel_endpoint_retain(own_key(thread, index));
+  if (index >= WINDOW)
+    CHECK(locked_drop(own_key(thread, index - WINDOW)), "own key %" PRIu64 " kept a reference",
+          own_key(thread, index - WINDOW));
+}
+
+static void close_window(int thread, uint64_t next) {
+  for (uint64_t index = next >= WINDOW ? next - WINDOW : 0; index < next; ++index)
+    CHECK(locked_drop(own_key(thread, index)), "own key %" PRIu64 " kept a reference",
+          own_key(thread, index));
 }
 
 static void *producer(void *unused) {
   (void)unused;
+  uint64_t own = 0;
   for (int round = 0; round < ROUNDS; ++round) {
     for (uint64_t key = 1; key <= KEYS; ++key) {
+      if (key % 16 == 0) slide_window(0, own++);
       channel_endpoint_retain(key);
       size_t head = atomic_load_explicit(&ring_head, memory_order_relaxed);
       while (head - atomic_load_explicit(&ring_tail, memory_order_acquire) == 1024) {}
@@ -76,6 +96,7 @@ static void *producer(void *unused) {
       atomic_store_explicit(&ring_head, head + 1, memory_order_release);
     }
   }
+  close_window(0, own);
   atomic_store_explicit(&producer_done, true, memory_order_release);
   return NULL;
 }
@@ -94,13 +115,9 @@ static void *consumer(void *unused) {
     uint64_t key = ring[tail % 1024];
     atomic_store_explicit(&ring_tail, tail + 1, memory_order_release);
     CHECK(!locked_drop(key), "key %" PRIu64 " reached zero while its anchor was held", key);
-    /* Keys of B's own, far from A's, retained twice and dropped twice. */
-    uint64_t mine = (UINT64_C(1) << 40) + (own++ % OWN_KEYS) + 1;
-    channel_endpoint_retain(mine);
-    channel_endpoint_retain(mine);
-    CHECK(!locked_drop(mine), "own key %" PRIu64 " reached zero early", mine);
-    CHECK(locked_drop(mine), "own key %" PRIu64 " kept a reference", mine);
+    if (key % 16 == 0) slide_window(1, own++);
   }
+  close_window(1, own);
   return NULL;
 }
 
@@ -114,6 +131,7 @@ int main(void) {
   for (uint64_t key = 1; key <= KEYS; ++key)
     CHECK(locked_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
   CHECK(!handles_live(), "%zu keys left in the table", (size_t)handle_table.count);
+  CHECK(handle_table.capacity >= 8192, "the table grew to only %zu slots", handle_table.capacity);
   puts("ok");
   return 0;
 }

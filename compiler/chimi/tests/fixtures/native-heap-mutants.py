@@ -103,7 +103,7 @@ MUTANTS = [
     ("endpoint-copy-not-counted", "an endpoint copy in transit is a reference",
      "    channel_endpoint_retain(((ChimiValue *)duplicate)->as.capability.channel);\n", "    (void)0;\n", RELEASE),
     ("never-queue-release", "dropped channels free their queued messages",
-     "  if (last) release_queue_push(channel);\n", "\n", RELEASE),
+     "  if (handle_table_release(channel)) release_queue_push(channel);\n", "  (void)handle_table_release(channel);\n", RELEASE),
     ("endpoint-free-not-counted", "dropped channels free their queued messages",
      "    if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);\n",
      "    (void)value;\n", RELEASE),
