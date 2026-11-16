@@ -5256,6 +5256,59 @@ fn native_backstop_a_stale_capability_whose_owner_has_ended_defects() {
     );
 }
 
+// A root task that overflows its guarded fiber stack while inside a loop region
+// ends with the "Task stack overflow" defect. The region's scope lived in the
+// root's abandoned frames, and building the defect allocated through it, so
+// before the fix the program crashed with SIGSEGV instead. Recursing 20,000
+// calls deep overflows the 1 MiB root stack whatever a frame costs, and the
+// Task in the loop is what puts main on a fiber.
+#[test]
+fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
+    let scratch = scratch_directory("native-root-overflow-in-loop");
+    let executable = build_native(
+        &scratch,
+        "root-overflow",
+        concat!(
+            "import std/list as List\n",
+            "import std/task as Task\n",
+            "fn build(n: Int, acc: List<Int>) -> List<Int> {\n",
+            "  case n {\n",
+            "    0 -> acc\n",
+            "    _ -> build(n - 1, List.push(acc, n))\n",
+            "  }\n",
+            "}\n",
+            "struct Round { left: Int, total: Int }\n",
+            "pub fn main() -> Int {\n",
+            "  loop state = Round(2, 0) {\n",
+            "    case state.left {\n",
+            "      0 -> break state.total\n",
+            "      _ -> {\n",
+            "        let items = build(20000, [])\n",
+            "        let child = Task.start(fn() -> Int { List.length(items) })\n",
+            "        Round(state.left - 1, state.total + Task.result(child))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let execution = execute_native(&executable, &scratch, "root-overflow", "off");
+    assert_eq!(
+        execution.process.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&execution.process.stderr)
+    );
+    assert!(
+        execution
+            .outcome
+            .contains(r#""outcome":"defect","message":"Task stack overflow""#),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // E18 across tasks and channels on native, where each task runs on a 64 KiB fiber
 // stack. A child task captures a value 100,000 levels deep, renders it with
 // `Debug.render`, encodes a Json.Value as deep with `Json.encode`, and sends a

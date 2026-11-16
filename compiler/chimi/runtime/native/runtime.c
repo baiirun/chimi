@@ -9377,8 +9377,14 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 #endif
   };
   channel_endpoints_reset();
+  AllocationScope *entry_scope = main_heap.innermost;
   ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
   current_heap = &main_heap;
+  /* The root runs on main_heap, and each region it enters records its scope in
+     its own fiber frame. A root that overflowed, parked or was ended by the
+     scheduler never closed those regions, and its stack is gone, so drop them
+     before the outcome below allocates. Their allocations are left to exit. */
+  main_heap.innermost = entry_scope;
   /* The outcome's word is ours: copy a child's result fragment, then free it. */
   if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
     int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
