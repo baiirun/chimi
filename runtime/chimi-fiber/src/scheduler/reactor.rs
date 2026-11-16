@@ -26,8 +26,8 @@
 //!   descriptor closes and its number can be reused. Closing a descriptor
 //!   a task waits on without withdrawing first is a host bug: poll(2) only
 //!   reports it while the number stays unused.
-//! - A failed poll(2) (not an interruption) wakes every waiter, and each
-//!   one's reissue answers ERROR, so a reactor that cannot wait never spins.
+//! - A failed poll(2) (not an interruption) wakes every waiter with its
+//!   parked wait answered ERROR, so a reactor that cannot wait never spins.
 //!
 //! Backend: poll(2) on macOS and Linux, one code path. It costs O(n) in the
 //! registrations per idle wait, which is fine until servers hold thousands
@@ -35,7 +35,7 @@
 //! backend would go.
 
 use super::{RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler, SchedulerRequest, TaskId};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// Interest and ready bit: reading will not block.
@@ -68,8 +68,6 @@ struct IoWait {
 pub(super) struct Reactor {
     next: u64,
     waits: BTreeMap<IoWaitId, IoWait>,
-    /// Tasks a failed poll woke; their next wait answers ERROR.
-    failed: BTreeSet<TaskId>,
 }
 
 /// What an idle or non-blocking wait found.
@@ -223,8 +221,12 @@ mod sys {
         }
         // A timeout or EINTR leaves every revents zero: the caller fires due
         // timers and delivers the signal, then waits again.
+        // EAGAIN is transient (macOS documents it for poll); retry as EINTR.
         if poll(&mut polls, timeout) < 0
-            && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+            && !matches!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINTR | libc::EAGAIN)
+            )
         {
             return None;
         }
@@ -301,13 +303,13 @@ impl Scheduler {
     /// Serves an IO wait: `value` is the descriptor, `token` the interest,
     /// `channel` the resource key or 0. Ensures: OK with the ready
     /// conditions in `value`; PENDING with the task registered and parked;
-    /// ERROR for a closed or negative descriptor, an interest outside
-    /// `IO_READABLE | IO_WRITABLE`, or the first wait after a failed poll.
+    /// ERROR for a closed or negative descriptor or an interest outside
+    /// `IO_READABLE | IO_WRITABLE`; a parked wait a failed poll ends answers
+    /// ERROR too.
     pub(super) fn handle_io_wait(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         let fd = i32::try_from(request.value).unwrap_or(-1);
         let interest = u32::try_from(request.token).unwrap_or(0);
-        if self.reactor.failed.remove(&owner)
-            || fd < 0
+        if fd < 0
             || Some(fd) == self.signals.wake_fd()
             || interest == 0
             || interest & !INTEREST != 0
@@ -352,17 +354,17 @@ impl Scheduler {
         let _ = self.wake_front(owner);
     }
 
-    /// Forgets a task that ends, so a later task never inherits its mark.
-    pub(super) fn forget_io_failure(&mut self, task: TaskId) {
-        self.reactor.failed.remove(&task);
-    }
-
-    /// Wakes the tasks `woken` names; after a failed poll each one's next
-    /// wait answers ERROR.
+    /// Wakes the tasks `woken` names; after a failed poll each one's parked
+    /// wait answers ERROR instead of PENDING, so the host stops waiting.
     fn wake_io(&mut self, woken: Woken) {
         for task in woken.tasks {
-            if woken.failed {
-                self.reactor.failed.insert(task);
+            if woken.failed
+                && let Some(record) = self.tasks.get(&task)
+                && !record.request.is_null()
+            {
+                // SAFETY: a registration exists only while its task is parked
+                // in an IO wait, whose request outlives the park.
+                unsafe { (*record.request.cast::<super::RequestHeader>()).status = RESPONSE_ERROR };
             }
             self.clear_io_wait(task);
             let _ = self.wake(task);

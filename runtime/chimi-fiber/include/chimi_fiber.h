@@ -197,9 +197,10 @@ enum {
      `channel` is 0 or a nonzero key naming the host resource the
      descriptor belongs to, for CHIMI_REQUEST_IO_WITHDRAW. Closing a
      descriptor a task waits on without withdrawing first is a host bug.
-     After a failed poll(2) every waiter wakes and its reissue answers
+     After a failed poll(2) every waiter wakes with its wait answered
      ERROR. Kinds 36 to 39 are the channel-variant requests, 41 cancels a
-     scope, and 42 and 43 are the task combinators'. */
+     scope, 42 and 43 are the task combinators', and 44 withdraws IO
+     waits. */
   CHIMI_REQUEST_IO_WAIT = 48,
   /* ChimiSchedulerRequest: wakes every task whose IO wait names the
      resource key in `channel` (nonzero), so each reissues its wait; issue

@@ -169,9 +169,11 @@ through the scheduler's IO reactor instead of blocking the scheduler thread.
   is a host bug: poll(2) reports the closed descriptor only while its number
   stays unused, and an epoll or kqueue backend would not report it at all.
 - **Poll failure.** When the reactor's poll(2) fails other than by an
-  interruption (too many descriptors, no memory), every waiting task wakes
-  and its reissued wait answers ERROR, instead of the scheduler retrying a
-  wait that cannot succeed.
+  interruption or a transient `EAGAIN` (too many descriptors, no memory),
+  every waiting task wakes with its wait answered ERROR, instead of the
+  scheduler retrying a wait that cannot succeed. A host treats ERROR as a
+  failed read or write, never as ready: reading then could block the
+  scheduler thread.
 - **Backend.** poll(2) on macOS and Linux. Each idle wait costs time linear
   in the number of waits, which is fine until a server holds thousands of
   connections; the reactor's wait is the one place an epoll or kqueue
