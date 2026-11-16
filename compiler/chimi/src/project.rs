@@ -107,31 +107,49 @@ fn read_standard_module(
 /// The module path of each `.chimi` file under `directory`, as `std/list` for
 /// `list.chimi`, in ascending order.
 fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadError> {
-    let read_error = |path: &Path, source| ProjectLoadError::ReadStandardDirectory {
-        path: path.to_owned(),
-        source,
-    };
+    let paths = module_paths_under(directory, |_| true)
+        .map_err(|(path, source)| ProjectLoadError::ReadStandardDirectory { path, source })?;
+    Ok(paths.into_iter().map(|path| format!("std/{path}")).collect())
+}
+
+/// The path from `directory` of each `.chimi` file under it, without the
+/// extension and joined with `/`, in ascending order. It skips symbolic links
+/// and hidden files, and descends only into subdirectories whose name
+/// `accept` takes. An error names the directory it could not read.
+fn module_paths_under(
+    directory: &Path,
+    accept: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, (PathBuf, io::Error)> {
     let mut paths = Vec::new();
     let mut pending = vec![directory.to_owned()];
     while let Some(current) = pending.pop() {
-        for entry in std::fs::read_dir(&current).map_err(|source| read_error(&current, source))? {
-            let path = entry.map_err(|source| read_error(&current, source))?.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "chimi")
+        let failed = |source| (current.clone(), source);
+        for entry in std::fs::read_dir(&current).map_err(failed)? {
+            let entry = entry.map_err(failed)?;
+            let kind = entry.file_type().map_err(failed)?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if kind.is_dir() {
+                if accept(&name) {
+                    pending.push(path);
+                }
+            } else if kind.is_file()
+                && !name.starts_with('.')
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "chimi")
             {
                 let relative = path
                     .strip_prefix(directory)
                     .expect("walked paths are inside the directory")
                     .with_extension("");
-                let module_path = relative
-                    .components()
-                    .map(|component| component.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                paths.push(format!("std/{module_path}"));
+                paths.push(
+                    relative
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
             }
         }
     }
@@ -219,6 +237,50 @@ impl LoadedProject {
             modules: Vec::new(),
         };
         loader.load_module(&entry_module)?;
+        let mut modules = loader.modules;
+        standard.add_imported_modules(&mut modules)?;
+        Ok(Self { modules })
+    }
+
+    /// Every module under `root`, as `chimi test <directory>` reads it: each
+    /// `.chimi` file is a module named by its path from `root`, loaded with its
+    /// imports. Hidden files and directories, `target` (where builds write),
+    /// and symbolic links are skipped. A file whose path is not a valid module
+    /// path is an error, as an import of it would be.
+    pub fn load_directory(
+        root: impl AsRef<Path>,
+        standard: &StandardTree,
+    ) -> Result<Self, ProjectLoadError> {
+        let requested_root = root.as_ref();
+        let root = requested_root
+            .canonicalize()
+            .map_err(|source| ProjectLoadError::ReadRoot {
+                path: requested_root.to_owned(),
+                source,
+            })?;
+        if !root.is_dir() {
+            return Err(ProjectLoadError::RootNotDirectory { path: root });
+        }
+        let module_paths = module_paths_under(&root, |name| {
+            !name.starts_with('.') && name != "target"
+        })
+        .map_err(|(path, source)| ProjectLoadError::ReadDirectory { path, source })?;
+        if module_paths.is_empty() {
+            return Err(ProjectLoadError::NoModules {
+                path: requested_root.to_owned(),
+            });
+        }
+        let mut loader = Loader {
+            root,
+            reader: &FileSystemReader,
+            states: HashMap::new(),
+            files: HashMap::new(),
+            stack: Vec::new(),
+            modules: Vec::new(),
+        };
+        for module_path in &module_paths {
+            loader.load_module(module_path)?;
+        }
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
         Ok(Self { modules })
@@ -389,6 +451,14 @@ pub enum ProjectLoadError {
     RootNotDirectory {
         path: PathBuf,
     },
+    /// `chimi test <directory>` found no `.chimi` file to load.
+    NoModules {
+        path: PathBuf,
+    },
+    ReadDirectory {
+        path: PathBuf,
+        source: io::Error,
+    },
     ReadStandardDirectory {
         path: PathBuf,
         source: io::Error,
@@ -430,6 +500,12 @@ impl fmt::Display for ProjectLoadError {
                     "project root is not a directory: {}",
                     path.display()
                 )
+            }
+            Self::NoModules { path } => {
+                write!(formatter, "no .chimi modules under {}", path.display())
+            }
+            Self::ReadDirectory { path, source } => {
+                write!(formatter, "cannot read directory {}: {source}", path.display())
             }
             Self::ReadStandardDirectory { path, source } => write!(
                 formatter,
