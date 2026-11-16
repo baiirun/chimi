@@ -1,5 +1,6 @@
 //! Conformance for `chimi test` and `std/test` (testing.md, conformance matrix
-//! rows Pass and fail, Escaped failure, Assertion in a fake, Virtual clock,
+//! rows Pass and fail, Escaped failure, Assertion in a fake, Capture defect,
+//! Test-only from main, Virtual clock,
 //! Deadlock, Isolation, Report order, Exit status, and JSON).
 //!
 //! Each test writes a module to a scratch directory and runs the CLI there, so
@@ -28,6 +29,13 @@ struct Run {
 }
 
 fn chimi_test(name: &str, source: &str, arguments: &[&str]) -> Run {
+    let mut command = vec!["test", "cases.chimi"];
+    command.extend_from_slice(arguments);
+    chimi(name, source, &command)
+}
+
+/// Runs `chimi <arguments>` in a scratch directory holding `source` as `cases.chimi`.
+fn chimi(name: &str, source: &str, arguments: &[&str]) -> Run {
     let scratch = scratch_directory(name);
     std::fs::write(scratch.join("cases.chimi"), source).unwrap();
     let Output {
@@ -36,11 +44,9 @@ fn chimi_test(name: &str, source: &str, arguments: &[&str]) -> Run {
         stderr,
     } = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
-        .arg("test")
-        .arg("cases.chimi")
         .args(arguments)
         .output()
-        .expect("run chimi test");
+        .expect("run chimi");
     std::fs::remove_dir_all(scratch).unwrap();
     Run {
         status: status.code(),
@@ -451,4 +457,227 @@ fn assert_not_equal_fails_on_equal_values_on_both_backends() {
             "0 passed, 1 failed\n",
         )
     );
+}
+
+const CAPTURES: &str = concat!(
+    "import std/clock as Clock\n",
+    "import std/clock.{Clock}\n",
+    "import std/debug as Debug\n",
+    "import std/duration as Duration\n",
+    "import std/int as Int\n",
+    "import std/io.{Console}\n",
+    "import std/task as Task\n",
+    "import std/test as Test\n",
+    "\n",
+    "fn checkout(cents: Int) -> Int {\n",
+    "  case cents > 0 {\n",
+    "    True -> cents\n",
+    "    False -> Debug.crash(\"checkout: cents must be positive, got ${cents}\")\n",
+    "  }\n",
+    "}\n",
+    "\n",
+    "test \"captures a precondition\" {\n",
+    "  Test.capture_defect(fn() { checkout(0) })\n",
+    "  |> Test.assert_equal(\"checkout: cents must be positive, got 0\")\n",
+    "}\n",
+    "\n",
+    "test \"a success fails the test\" {\n",
+    "  Test.capture_defect(fn() { checkout(5) }) |> Test.assert_equal(\"\")\n",
+    "}\n",
+    "\n",
+    "test \"an expected failure fails the test\" {\n",
+    "  Test.capture_defect(fn() { Int.parse(\"x\") }) |> Test.assert_equal(\"\")\n",
+    "}\n",
+    "\n",
+    "test \"an inner assertion is not captured\" {\n",
+    "  Test.capture_defect(fn() { Test.assert_equal(1, 2) }) |> Test.assert_equal(\"\")\n",
+    "}\n",
+);
+
+#[test]
+fn capture_defect_returns_the_message_and_fails_on_any_other_outcome() {
+    let run = both_backends("capture", CAPTURES, &[]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "test main \"captures a precondition\" ... ok\n",
+            "test main \"a success fails the test\" ... FAILED\n",
+            "  assertion failed at cases.chimi:23:3\n",
+            "  Test.capture_defect: the operation returned instead of defecting:\n",
+            "  5\n",
+            "test main \"an expected failure fails the test\" ... FAILED\n",
+            "  assertion failed at cases.chimi:27:3\n",
+            "  Test.capture_defect: the operation failed with an expected failure instead of defecting:\n",
+            "  ParseError.InvalidDigit\n",
+            "test main \"an inner assertion is not captured\" ... FAILED\n",
+            "  assertion failed at cases.chimi:31:30\n",
+            "  actual:\n",
+            "    1\n",
+            "  expected:\n",
+            "    2\n",
+            "\n",
+            "1 passed, 3 failed\n",
+        )
+    );
+}
+
+/// Native only, as tasks are: the child would print after 10 virtual seconds
+/// if the defect left it running.
+#[test]
+fn capture_defect_cancels_the_tasks_its_operation_started() {
+    let source = format!(
+        "{CAPTURES}{}",
+        concat!(
+            "\n",
+            "fn start_then_crash() -> Int needs { clock: Clock, console: Console } {\n",
+            "  let child = Task.start(fn() -> Int {\n",
+            "    Clock.sleep(Duration.seconds(10))\n",
+            "    console.write_line(\"the child outlived the defect\")\n",
+            "    1\n",
+            "  })\n",
+            "  Debug.crash(\"crashed with a child running\")\n",
+            "}\n",
+            "\n",
+            "test \"cancels the operation's tasks\" {\n",
+            "  let start = Clock.now()\n",
+            "  Test.capture_defect(fn() { start_then_crash() })\n",
+            "  |> Test.assert_equal(\"crashed with a child running\")\n",
+            "  Clock.sleep(Duration.seconds(20))\n",
+            "  Test.assert_equal(Clock.since(start), Duration.seconds(20))\n",
+            "}\n",
+        )
+    );
+    let run = chimi_test("capture-tasks", &source, &["--filter=tasks", "--show-output"]);
+    assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.stdout,
+        "test main \"cancels the operation's tasks\" ... ok\n\n1 passed, 0 failed\n"
+    );
+}
+
+/// The helper's call is the last assertion node of the program, which a
+/// lookup of the native table must still find.
+#[test]
+fn an_assertion_in_a_later_helper_is_not_captured_either() {
+    let source = concat!(
+        "import std/test as Test\n",
+        "\n",
+        "test \"a lone inner assertion\" {\n",
+        "  let message = Test.capture_defect(fn() { check() })\n",
+        "  Void\n",
+        "}\n",
+        "\n",
+        "fn check() -> Void {\n",
+        "  Test.fail(\"inner\")\n",
+        "}\n",
+    );
+    let run = both_backends("capture-last", source, &[]);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "test main \"a lone inner assertion\" ... FAILED\n",
+            "  assertion failed at cases.chimi:9:3\n",
+            "  inner\n",
+            "\n",
+            "0 passed, 1 failed\n",
+        )
+    );
+}
+
+/// Constant evaluation reports its own stops as defects, so a constant may not
+/// capture one (`E5201`, as for any operation that needs the running program).
+#[test]
+fn a_constant_cannot_capture_a_defect() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/test as Test\n",
+        "\n",
+        "const CAUGHT: Text = Test.capture_defect(fn() { Debug.crash(\"boom\") })\n",
+        "\n",
+        "test \"reads a constant\" {\n",
+        "  Test.assert_equal(CAUGHT, \"boom\")\n",
+        "}\n",
+    );
+    let run = chimi_test("capture-constant", source, &[]);
+    assert_eq!(run.status, Some(2));
+    assert!(
+        run.stderr.contains("error[E5201]") && run.stderr.contains("`Test.capture_defect`"),
+        "{}",
+        run.stderr
+    );
+}
+
+/// A native defect message is a C string; both backends capture it up to the
+/// first NUL, so a test sees the same value on each.
+#[test]
+fn a_captured_message_is_the_same_on_both_backends_when_it_holds_a_nul() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"keeps the text before a NUL\" {\n",
+        "  Test.capture_defect(fn() { Debug.crash(\"a\\u{0}b\") }) |> Test.assert_equal(\"a\")\n",
+        "}\n",
+    );
+    let run = both_backends("capture-nul", source, &[]);
+    assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
+}
+
+/// With no deadline, the scope adds no timer for virtual time to jump to.
+#[test]
+fn a_deadlock_inside_capture_defect_is_still_a_deadlock() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"waits forever\" {\n",
+        "  Test.capture_defect(fn() {\n",
+        "    let channel = Channel.bounded(1)\n",
+        "    Channel.receive(channel.receiver)\n",
+        "  })\n",
+        "  |> Test.assert_equal(\"\")\n",
+        "}\n",
+    );
+    let run = chimi_test("capture-deadlock", source, &["--json"]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert!(run.stdout.contains("\"kind\":\"deadlock\""), "{}", run.stdout);
+}
+
+const TEST_ONLY: &str = concat!(
+    "import std/debug as Debug\n",
+    "import std/test as Test\n",
+    "\n",
+    "fn guarded() -> Text {\n",
+    "  Test.capture_defect(fn() { Debug.crash(\"boom\") })\n",
+    "}\n",
+    "\n",
+    "fn helper() -> Text {\n",
+    "  guarded()\n",
+    "}\n",
+    "\n",
+    "pub fn main() -> Int {\n",
+    "  let message = helper()\n",
+    "  0\n",
+    "}\n",
+    "\n",
+    "test \"helpers may use it\" {\n",
+    "  guarded() |> Test.assert_equal(\"boom\")\n",
+    "}\n",
+);
+
+#[test]
+fn a_test_only_operation_reachable_from_main_fails_the_build_but_not_the_tests() {
+    let expected = concat!(
+        "cases.chimi:5:8: error[T4401] execution-setup: `Test.capture_defect` is test-only, ",
+        "but the program reaches it: main -> helper -> guarded -> Test.capture_defect; ",
+        "call it only from `test` items and the helpers they use\n",
+    );
+    for command in [&["build", "cases.chimi", "-o", "program"][..], &["run", "cases.chimi"]] {
+        let run = chimi("test-only", TEST_ONLY, command);
+        assert_eq!(run.status, Some(1), "{command:?}: {}", run.stdout);
+        assert_eq!(run.stderr, expected, "{command:?}");
+    }
+    let tests = both_backends("test-only-tests", TEST_ONLY, &[]);
+    assert_eq!(tests.status, Some(0), "{}", tests.stderr);
 }

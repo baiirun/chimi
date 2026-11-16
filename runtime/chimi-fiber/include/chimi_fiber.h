@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 16u
+#define CHIMI_FIBER_ABI_VERSION 19u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -100,7 +100,9 @@ enum {
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
   /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
      whose deadline Instant is `value`; the reply's `token` is the scope id.
-     A cancellation point (see chimi_fiber_scope_cancel_pending). */
+     INT64_MAX means no deadline: the scope has no timer and is cancelled
+     only from outside. A cancellation point (see
+     chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
      scope nested in it; `value` is 1 when the operation ended in a
@@ -162,6 +164,14 @@ enum {
   /* `channel` names a broadcast or watch. OK with a new subscription, a
      receiver owned by the caller, in `channel`, `owner`, `token`. */
   CHIMI_REQUEST_CHANNEL_SUBSCRIBE = 39,
+  /* ChimiSchedulerRequest: cancels the live child tasks started in the
+     scope whose id is `token`, or in a scope nested in it, but not the
+     caller (Test.capture_defect after its operation defected). A later
+     SCOPE_EXIT is PENDING until they drain. A child started in the scope
+     after the cancel is not cancelled, so the caller starts none before it
+     leaves. ERROR when the task is not inside the scope. Never a
+     cancellation point. */
+  CHIMI_REQUEST_SCOPE_CANCEL = 41,
   /* ChimiSchedulerRequest: `context` points to `value` uint64_t ids of the
      caller's children. Replies like a ready TASK_RESULT (SUCCEEDED, CANCELLED,
      DEFECTED or STACK_OVERFLOW) with `task` set to the listed child that

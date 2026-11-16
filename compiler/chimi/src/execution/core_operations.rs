@@ -46,7 +46,54 @@ pub(crate) fn comparison_message(heading: &str, actual: &str, expected: &str) ->
 pub(crate) const ASSERT_EQUAL_HEADING: &str = "Test.assert_equal: the values differ";
 pub(crate) const ASSERT_NOT_EQUAL_HEADING: &str = "Test.assert_not_equal: the values are equal";
 
+pub(crate) const CAPTURE_RETURNED_HEADING: &str =
+    "Test.capture_defect: the operation returned instead of defecting:";
+pub(crate) const CAPTURE_FAILED_HEADING: &str =
+    "Test.capture_defect: the operation failed with an expected failure instead of defecting:";
+
 impl Evaluator<'_> {
+    /// `std/test.capture_defect`: runs `operation` and returns its defect's
+    /// message. A defect raised at an assertion call (`CoreProgram::
+    /// assertion_calls`) passes through, and an outcome that is not a defect
+    /// fails the test at `call_node`. The interpreter has no child tasks, so
+    /// there is nothing to cancel; `runtime.c` cancels the scope's children.
+    pub(super) fn invoke_capture_defect(
+        &mut self,
+        arguments: Vec<RuntimeValue>,
+        span: u64,
+        call_node: CoreNodeId,
+        environment: super::Environment,
+    ) -> Control {
+        let [RuntimeValue::Callable(operation)] = arguments.as_slice() else {
+            return self.intrinsic_shape_defect(StandardFunction::TestCaptureDefect, call_node);
+        };
+        let control = self.invoke(operation.clone(), Vec::new(), span, call_node, environment);
+        let not_a_defect = |heading: &str, value: &RuntimeValue| Control::Defect {
+            message: format!("{heading}\n{}", debug::render(self.core, value, true)),
+            node: Some(call_node),
+            cause: None,
+        };
+        match control {
+            Control::Defect { message, node, .. }
+                if !node.is_some_and(|node| self.is_assertion_call(node)) =>
+            {
+                // Native defect messages are C strings, so the text ends at the
+                // first NUL there; cutting it here keeps both backends' values equal.
+                let message = message.split('\0').next().unwrap_or_default().to_owned();
+                Control::Success(RuntimeValue::Text(message))
+            }
+            Control::Success(value) => not_a_defect(CAPTURE_RETURNED_HEADING, &value),
+            Control::Failure(value, _) => not_a_defect(CAPTURE_FAILED_HEADING, &value),
+            other => other,
+        }
+    }
+
+    fn is_assertion_call(&self, node: CoreNodeId) -> bool {
+        self.assertion_calls
+            .get_or_init(|| self.core.assertion_calls())
+            .contains(&node.raw())
+    }
+
     /// `std/test`: each assertion defects at `call_node`, the caller's call.
     pub(super) fn invoke_assertion(
         &self,

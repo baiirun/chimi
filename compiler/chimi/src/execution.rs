@@ -917,6 +917,8 @@ struct Evaluator<'core> {
     constant_evaluation: Option<constants::ConstantEvaluation>,
     application_stdout: String,
     application_stderr: String,
+    /// `CoreProgram::assertion_calls`, computed on the first `capture_defect`.
+    assertion_calls: std::cell::OnceCell<std::collections::HashSet<u32>>,
 }
 
 impl<'core> Evaluator<'core> {
@@ -940,6 +942,7 @@ impl<'core> Evaluator<'core> {
             constant_evaluation: None,
             application_stdout: String::new(),
             application_stderr: String::new(),
+            assertion_calls: std::cell::OnceCell::new(),
         }
     }
 
@@ -1815,6 +1818,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::TestAssertNotEqual
             | StandardFunction::TestAssert
             | StandardFunction::TestFail => self.invoke_assertion(function, arguments, call_node),
+            StandardFunction::TestCaptureDefect => {
+                self.invoke_capture_defect(arguments, span, call_node, environment)
+            }
             StandardFunction::DebugCrash
             | StandardFunction::OptionUnwrapOrFail
             | StandardFunction::TextConcat

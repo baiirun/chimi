@@ -423,3 +423,97 @@ fn a_select_a_scope_refuses_leaves_no_registration_behind() {
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen, [-1, 1, 3]);
 }
+
+// ----- Scopes without a deadline, and REQUEST_SCOPE_CANCEL ------------------
+// (`Test.capture_defect`, testing.md "Defects").
+
+/// Sleeps an hour unless cancelled first, then notes 99.
+unsafe extern "C" fn sleep_until_cancelled(_context: *mut c_void) -> ChimiFiberResult {
+    let mut request = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    request.value = now() + 3_600_000_000_000;
+    if call(&mut request) {
+        return succeeded(0);
+    }
+    note(99);
+    cancelled()
+}
+
+fn enter_without_deadline() -> u64 {
+    let mut enter = blank(REQUEST_SCOPE_ENTER);
+    enter.value = i64::MAX;
+    call(&mut enter);
+    assert_eq!(enter.status, RESPONSE_OK);
+    enter.token
+}
+
+fn exit(scope: u64) -> i64 {
+    let mut exit = blank(REQUEST_SCOPE_EXIT);
+    exit.token = scope;
+    call(&mut exit);
+    assert_eq!(exit.status, RESPONSE_OK);
+    exit.value
+}
+
+unsafe extern "C" fn cancel_drains_the_scope_children(_context: *mut c_void) -> ChimiFiberResult {
+    let scope = enter_without_deadline();
+    start(sleep_until_cancelled, ptr::null_mut());
+    // Let the child park first.
+    let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    sleep.value = now() + 1_000;
+    call(&mut sleep);
+    let mut cancel = blank(REQUEST_SCOPE_CANCEL);
+    cancel.token = scope;
+    call(&mut cancel);
+    note(i64::from(cancel.status == RESPONSE_OK));
+    // The cancelled child unwinds (99) before leaving returns, and the
+    // scope's own cancellation is not the one unwinding this task (0).
+    note(exit(scope));
+    succeeded(0)
+}
+
+#[test]
+fn a_scope_cancel_stops_the_scope_children_and_not_the_caller() {
+    let (outcome, seen) = run(cancel_drains_the_scope_children);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [99, 1, 0]);
+}
+
+unsafe extern "C" fn sleep_inside_a_scope_without_deadline(_context: *mut c_void) -> ChimiFiberResult {
+    let start_time = now();
+    let scope = enter_without_deadline();
+    let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    sleep.value = start_time + 30_000_000_000;
+    note(i64::from(call(&mut sleep)));
+    note(exit(scope));
+    note(now() - start_time);
+    let mut cancel = blank(REQUEST_SCOPE_CANCEL);
+    cancel.token = scope;
+    call(&mut cancel);
+    note(i64::from(cancel.status == RESPONSE_ERROR));
+    succeeded(0)
+}
+
+#[test]
+fn a_scope_without_a_deadline_has_no_timer_and_a_stale_cancel_is_an_error() {
+    let (outcome, seen) = run(sleep_inside_a_scope_without_deadline);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [1, 0, 30_000_000_000, 1]);
+}
+
+unsafe extern "C" fn park_forever_inside_a_scope_without_deadline(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
+    let parked = bounded(1);
+    let _scope = enter_without_deadline();
+    receive(parked);
+    succeeded(0)
+}
+
+/// With no timer, a task parked forever inside the scope is a deadlock under
+/// virtual time rather than a jump to the end of the clock.
+#[test]
+fn a_scope_without_a_deadline_leaves_a_deadlock_a_deadlock() {
+    let (outcome, _) = run(park_forever_inside_a_scope_without_deadline);
+    assert_ne!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_ne!(outcome.state, ChimiFiberState::Cancelled as u32);
+}
