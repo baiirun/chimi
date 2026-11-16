@@ -738,6 +738,16 @@ pub extern "C" fn chimi_scheduler_live_memberships() -> usize {
     LAST_RUN_MEMBERSHIPS.load(Ordering::Relaxed)
 }
 
+/// See `chimi_scheduler_peak_task_records`.
+static LAST_RUN_PEAK_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+#[unsafe(no_mangle)]
+/// The most task records the scheduler held at once during the last
+/// `chimi_scheduler_run`, the root included. Zero before any run.
+pub extern "C" fn chimi_scheduler_peak_task_records() -> usize {
+    LAST_RUN_PEAK_TASKS.load(Ordering::Relaxed)
+}
+
 #[unsafe(no_mangle)]
 /// Executes one root with the configured clock, trace sink, and release
 /// hooks, then stops every supervisor still running.
@@ -817,6 +827,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     };
     let run = scheduler.run_root(root, DEADLOCK_DEFECT_CODE);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
+    LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
     if let Some(report) = config.deadlock_report
         && !run.deadlock.is_empty()
     {
