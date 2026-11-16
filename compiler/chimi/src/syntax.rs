@@ -823,6 +823,24 @@ pub(crate) fn parse(source: &SourceSnapshot) -> ParseResult {
     Parser::new(source, tokens, diagnostics).parse()
 }
 
+/// Whether `offset` is inside a comment or a text literal, where an editor
+/// should not offer code. A literal that is not closed yet runs to its line's
+/// end, so the end of a `"Lib.` being typed is inside it.
+pub(crate) fn is_comment_or_text_at(source: &SourceSnapshot, offset: usize) -> bool {
+    let (tokens, _) = lex(source);
+    tokens.iter().any(|token| {
+        let (start, end) = (token.range.start() as usize, token.range.end() as usize);
+        match token.kind {
+            TokenKind::Comment
+            | TokenKind::InvalidText
+            | TokenKind::TextStart
+            | TokenKind::TextMiddle => start < offset && offset <= end,
+            TokenKind::Text | TokenKind::TextEnd => start < offset && offset < end,
+            _ => false,
+        }
+    })
+}
+
 fn lex(source: &SourceSnapshot) -> (Vec<LexedToken>, Vec<Diagnostic>) {
     let text = source.text();
     let bytes = text.as_bytes();

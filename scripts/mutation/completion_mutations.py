@@ -2,6 +2,10 @@
 text counts as an alias and a dot, and which items the module offers.
 
 Run: scripts/mutation/mutate.py scripts/mutation/completion_mutations.py
+
+Equivalent, so not listed: dropping the `strip_suffix('.')` check in
+`alias_before`. Without a dot the text before the partial name ends in a
+character that is not a name's, so the alias comes out empty and is refused.
 """
 
 CRATE = "compiler/chimi-lsp"
@@ -9,6 +13,7 @@ CRATE = "compiler/chimi-lsp"
 D = "../chimi/src/doc.rs"
 W = "src/workspace.rs"
 S = "src/server.rs"
+X = "../chimi/src/syntax.rs"
 
 
 def mutant(name, file, edits, targets=("lib", "protocol"), filter=""):
@@ -23,10 +28,6 @@ MUTATIONS = [
     mutant("a partial name blocks completion", W, [(
         "    let partial_start = before.trim_end_matches(is_name).len();",
         "    let partial_start = before.len();",
-    )]),
-    mutant("no dot is needed", W, [(
-        "    let dotted = before[..partial_start].strip_suffix('.')?;",
-        "    let dotted = before[..partial_start].strip_suffix('.').unwrap_or(&before[..partial_start]);",
     )]),
     mutant("a digit can start an alias", W, [(
         "        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic());",
@@ -47,5 +48,21 @@ MUTATIONS = [
     mutant("completion kinds are all classes", S, [(
         "        \"fn\" => CompletionItemKind::FUNCTION,",
         "        \"fn\" => CompletionItemKind::CLASS,",
+    )]),
+    mutant("completion inside comments and text", D, [(
+        "    if is_comment_or_text_at(&module.source, offset) {",
+        "    if false {",
+    )]),
+    mutant("an unclosed text literal is code", X, [(
+        "            | TokenKind::InvalidText\n",
+        "",
+    )]),
+    mutant("a closed text literal is code", X, [(
+        "            TokenKind::Text | TokenKind::TextEnd => start < offset && offset < end,",
+        "            TokenKind::TextEnd => start < offset && offset < end,",
+    )]),
+    mutant("the end of a line comment is code", X, [(
+        "            TokenKind::Comment\n",
+        "",
     )]),
 ]

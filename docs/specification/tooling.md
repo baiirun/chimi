@@ -164,7 +164,8 @@ Rules:
 - The alias MUST be looked up in the file's latest analysis, so a `Lib.`
   that does not parse yet still completes.
 - After anything else the answer MUST be empty. A path such as
-  `point.Lib.` is not an alias.
+  `point.Lib.` is not an alias, and `Lib.` inside a comment or a text
+  literal, closed or still being typed, is not code.
 
 Not yet covered: names in scope where no alias comes first (locals, the
 module's own items and imported members), and a struct's fields after a

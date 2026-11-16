@@ -450,7 +450,9 @@ impl Workspace {
         let module = project.modules.get(path)?;
         let offset = module.lines.offset(position, self.encoding).ok()? as usize;
         let alias = alias_before(module.lines.text(), offset)?;
-        let members = project.report.alias_members(&module.module_path, alias)?;
+        let members = project
+            .report
+            .alias_members(&module.module_path, alias, offset)?;
         Some(
             members
                 .items()
@@ -747,11 +749,6 @@ impl Workspace {
     }
 }
 
-/// Renders hover text: the callable contract when the cursor names a function,
-/// as instantiated at this call when the function is generic, otherwise the
-/// inferred type, headed by the referenced name.
-///
-/// Ensures: `None` when the report has neither a contract nor a type.
 /// The alias in `Alias.partial` that ends at `offset`, where `partial` is
 /// the start of a name, possibly empty. `None` for a longer path such as
 /// `a.Alias.`, whose first segment is not an alias.
@@ -769,6 +766,11 @@ fn alias_before(text: &str, offset: usize) -> Option<&str> {
     (starts_name && !dotted[..alias_start].ends_with('.')).then_some(alias)
 }
 
+/// Renders hover text: the callable contract when the cursor names a function,
+/// as instantiated at this call when the function is generic, otherwise the
+/// inferred type, headed by the referenced name.
+///
+/// Ensures: `None` when the report has neither a contract nor a type.
 fn hover_markdown(report: &InspectionReport) -> Option<String> {
     let description = report
         .instantiated_callable()
@@ -1040,7 +1042,7 @@ mod tests {
         workspace.open(
             app.clone(),
             DocumentVersion(2),
-            "import lib as Lib\nimport std/list as List\n\npub fn main() -> Int {\n  Lib.to\n  List.\n}\n".into(),
+            "import lib as Lib\nimport std/list as List\n\npub fn main() -> Int {\n  Lib.to\n  List.\n  // Lib.\n  let a = \"Lib.\n  let b = \"Lib.x\"\n}\n".into(),
         );
         workspace.analyze(&app);
 
@@ -1072,8 +1074,11 @@ mod tests {
             .completion(&app, at(5, 7))
             .expect("completes `List.`");
         assert!(standard.iter().any(|item| item.label == "length"));
-        // Not after an alias.
+        // Not after an alias, nor inside a comment or a text literal.
         assert_eq!(workspace.completion(&app, at(3, 4)), None);
+        assert_eq!(workspace.completion(&app, at(6, 9)), None);
+        assert_eq!(workspace.completion(&app, at(7, 15)), None);
+        assert_eq!(workspace.completion(&app, at(8, 15)), None);
     }
 
     #[test]
