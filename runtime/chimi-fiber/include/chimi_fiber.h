@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 14u
+#define CHIMI_FIBER_ABI_VERSION 15u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -144,6 +144,24 @@ enum {
   CHIMI_REQUEST_RESOURCE_ENTER = 33,
   CHIMI_REQUEST_RESOURCE_RELEASE = 34,
   CHIMI_REQUEST_RESOURCE_EXIT = 35,
+  /* ChimiSchedulerRequest: `channel`, `owner`, `token` name one of the
+     caller's receivers. OK with another receiver of the same queue, owned by
+     the caller, in `channel`, `owner`, `token` (Channel.add_receiver). */
+  CHIMI_REQUEST_CHANNEL_ADD_RECEIVER = 36,
+  /* `value` is a positive capacity per subscription. OK with the
+     broadcast's id in `channel`: a SENDER of that id publishes, and
+     `owner`, `token` name its completion. ERROR for a capacity below 1. */
+  CHIMI_REQUEST_CHANNEL_BROADCAST = 37,
+  /* `value` is the watch's initial value, a message the scheduler takes on
+     OK (and releases through release_channel_value). Replies as for
+     CHIMI_REQUEST_CHANNEL_BROADCAST. A send to a broadcast or watch id
+     publishes, and its message must carry no capability. For a broadcast,
+     OK carries the number of subscriptions reached in `value`; for a watch,
+     `value` is left as the host wrote it, as for a plain send. */
+  CHIMI_REQUEST_CHANNEL_WATCH = 38,
+  /* `channel` names a broadcast or watch. OK with a new subscription, a
+     receiver owned by the caller, in `channel`, `owner`, `token`. */
+  CHIMI_REQUEST_CHANNEL_SUBSCRIBE = 39,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */
@@ -425,6 +443,12 @@ enum {
   /* The capability travels in a sent message no task has received yet, so
      the copy used is stale. */
   CHIMI_VIOLATION_IN_FLIGHT = 6,
+  /* A broadcast or watch message held a Receiver or Completion, which every
+     subscriber's copy would duplicate. */
+  CHIMI_VIOLATION_PUBLISHED_CAPABILITY = 7,
+  /* The request named a channel of another kind (a subscribe to a plain
+     channel, a send to a subscription). */
+  CHIMI_VIOLATION_WRONG_KIND = 8,
 };
 
 enum {
@@ -547,6 +571,10 @@ enum {
    running, so it must not assume any task's heap is current. It must not
    call back into the scheduler. */
 typedef void (*ChimiValueRelease)(void *context, int64_t value);
+/* Returns a copy of the channel message `value` for another broadcast or
+   watch subscription; the scheduler then holds the copy like any accepted
+   message. Receives `release_context`. */
+typedef int64_t (*ChimiValueCopy)(void *context, int64_t value);
 
 /* Releases the `context` of a CHIMI_REQUEST_TASK_START whose task never runs
    its entry.
@@ -606,6 +634,9 @@ typedef struct {
      `injected_signal_at` nanoseconds (the runner's --signal option). */
   int32_t injected_signal;
   int64_t injected_signal_at;
+  /* Copies a message for each broadcast or watch subscription past the
+     first; may be null only when no program publishes to more than one. */
+  ChimiValueCopy copy_channel_value;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

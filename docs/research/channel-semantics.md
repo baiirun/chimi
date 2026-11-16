@@ -202,6 +202,9 @@ channel.
   is not implied by this channel.
 - Dropping, conflation, broadcast, and unbounded buffering need distinct names
   and types so callers and tooling can see their loss and memory behavior.
+  Several receivers, broadcast and watch (a conflating latest value) are now
+  specified this way, in `std/broadcast` and `std/watch`
+  ([channel variants](../specification/task-and-channel-capabilities.md#channel-variants)).
 
 ## Observability
 

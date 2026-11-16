@@ -642,6 +642,9 @@ impl ProjectResolver {
             (StandardType::Timestamp, StandardModule::Clock),
             (StandardType::Timeout, StandardModule::Task),
             (StandardType::SelectEvent, StandardModule::Select),
+            (StandardType::BroadcastPublisher, StandardModule::Broadcast),
+            (StandardType::WatchPublisher, StandardModule::Watch),
+            (StandardType::WatchSubscription, StandardModule::Watch),
         ] {
             if self.declared_in_source(StandardSymbol::Type(kind)) {
                 continue;
@@ -818,6 +821,38 @@ impl ProjectResolver {
                 vec![StandardGeneric::ChannelValue],
             ),
             (
+                self.standard_function_symbol(StandardFunction::ChannelAddReceiver),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::BroadcastBounded),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::BroadcastPublish),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::BroadcastSubscribe),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::WatchStartingWith),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::WatchPublish),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::WatchSubscribe),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
+                self.standard_function_symbol(StandardFunction::WatchReceive),
+                vec![StandardGeneric::ChannelValue],
+            ),
+            (
                 self.standard_constructor_symbol(StandardConstructor::ChannelSendClosed),
                 vec![StandardGeneric::ChannelValue],
             ),
@@ -870,6 +905,15 @@ impl ProjectResolver {
         vec![
             (
                 function(StandardFunction::SelectReceive),
+                vec![
+                    G::SelectSource,
+                    G::SelectValue,
+                    G::SelectFailures,
+                    G::SelectNeeds,
+                ],
+            ),
+            (
+                function(StandardFunction::SelectWatch),
                 vec![
                     G::SelectSource,
                     G::SelectValue,

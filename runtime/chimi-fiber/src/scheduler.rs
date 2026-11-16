@@ -35,7 +35,7 @@ pub use self::select::{
 };
 pub use crate::channel::{
     CapabilityKind, Carried, ChannelCapabilities, ChannelError, ChannelEventKind, ChannelId,
-    ChannelMetrics, Completion, ReceiveResult, Receiver, SendResult, Sender,
+    ChannelMetrics, Completion, HubKind, ReceiveResult, Receiver, SendResult, Sender,
 };
 use crate::channel::{ChannelRegistry, Observation, Transition};
 use crate::{
@@ -103,6 +103,18 @@ pub const REQUEST_SELECT: u32 = 32;
 pub const REQUEST_RESOURCE_ENTER: u32 = 33;
 pub const REQUEST_RESOURCE_RELEASE: u32 = 34;
 pub const REQUEST_RESOURCE_EXIT: u32 = 35;
+/// `channel`, `owner`, `token`: one of the caller's receivers. OK with
+/// another receiver of the same queue in `channel`, `owner`, `token`.
+pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
+/// `value`: a positive capacity per subscription. OK with the broadcast's
+/// id in `channel` (its publisher and completion) and the caller as owner.
+pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
+/// `value`: the initial value, which the scheduler takes on OK. OK with the
+/// watch's id in `channel` and the caller as owner.
+pub const REQUEST_CHANNEL_WATCH: u32 = 38;
+/// `channel`: a broadcast or watch. OK with a new subscription receiver in
+/// `channel`, `owner`, `token`.
+pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -213,6 +225,10 @@ pub type SchedulerTraceSink = unsafe extern "C" fn(*mut c_void, *const Scheduler
 /// a value a task's fiber ended with, or a value a sender handed to a
 /// channel. See `ChimiValueRelease` in `include/chimi_fiber.h`.
 pub type ValueRelease = unsafe extern "C" fn(*mut c_void, i64);
+/// Duplicates a channel value for another broadcast or watch subscription,
+/// returning the copy, which the scheduler then holds like any accepted
+/// value. Receives `release_context`.
+pub type ValueCopy = unsafe extern "C" fn(*mut c_void, i64) -> i64;
 
 /// Releases the entry context of a started task whose entry never ran. See
 /// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
@@ -226,6 +242,8 @@ pub const VIOLATION_PENDING_OPERATION: u32 = 3;
 pub const VIOLATION_UNKNOWN_CHANNEL: u32 = 4;
 pub const VIOLATION_CHANNEL_STILL_LIVE: u32 = 5;
 pub const VIOLATION_IN_FLIGHT: u32 = 6;
+pub const VIOLATION_PUBLISHED_CAPABILITY: u32 = 7;
+pub const VIOLATION_WRONG_KIND: u32 = 8;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
@@ -286,6 +304,18 @@ impl ChimiCapabilityViolation {
             ),
             ChannelError::ChannelStillLive(channel) => (
                 VIOLATION_CHANNEL_STILL_LIVE,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::PublishedCapability(channel) => (
+                VIOLATION_PUBLISHED_CAPABILITY,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
+            ChannelError::WrongKind(channel) => (
+                VIOLATION_WRONG_KIND,
                 CAPABILITY_NONE,
                 Some(channel),
                 None,
@@ -558,6 +588,9 @@ pub struct SchedulerOptions {
     /// Called once for every value the scheduler accepted from a sender and
     /// discards instead of delivering it or handing it back.
     pub release_channel_value: Option<ValueRelease>,
+    /// Copies a value for each broadcast or watch subscription past the
+    /// first. Without it, every subscription holds the same value.
+    pub copy_channel_value: Option<ValueCopy>,
     /// Called once for the context of every task a `REQUEST_TASK_START`
     /// started whose entry never runs.
     pub release_task_context: Option<TaskContextRelease>,
@@ -578,6 +611,7 @@ impl SchedulerOptions {
             release_spec_context: None,
             release_task_value: None,
             release_channel_value: None,
+            copy_channel_value: None,
             release_task_context: None,
             release_context: std::ptr::null_mut(),
             capability_violation_report: None,
@@ -662,11 +696,21 @@ impl Scheduler {
             release_spec_context,
             release_task_value,
             release_channel_value,
+            copy_channel_value,
             release_task_context,
             release_context,
             capability_violation_report,
             violation_context,
         } = options;
+        let mut channels =
+            ChannelRegistry::new(trace_mode != TraceMode::Off, trace_mode == TraceMode::Full);
+        if let Some(copy) = copy_channel_value {
+            channels.set_copier(Box::new(move |value| {
+                // SAFETY: the configuring caller keeps the hook and its
+                // context valid until execution returns.
+                unsafe { copy(release_context, value as i64) as usize }
+            }));
+        }
         let kernel = ProcessKernel::new(
             release_message.map(|release| (release, release_context)),
             release_spec_context.map(|release| (release, release_context)),
@@ -678,10 +722,7 @@ impl Scheduler {
             stack_bytes,
             trace_mode,
             events: Vec::new(),
-            channels: ChannelRegistry::new(
-                trace_mode != TraceMode::Off,
-                trace_mode == TraceMode::Full,
-            ),
+            channels,
             channel_events: Vec::new(),
             constructed_events: 0,
             trace_sink: None,
@@ -1041,6 +1082,57 @@ impl Scheduler {
         let (capabilities, transition) = self.channels.create(owner, capacity);
         self.apply_channel_transition(transition);
         Ok(capabilities)
+    }
+
+    /// A broadcast (`initial` is None) or a watch owned by `owner`. Returns
+    /// its completion, whose channel id is also the publisher's.
+    pub fn create_hub(
+        &mut self,
+        owner: TaskId,
+        kind: HubKind,
+        capacity: usize,
+        initial: Option<usize>,
+    ) -> Result<Completion, SchedulerError> {
+        self.require_live_task(owner)?;
+        let (_, completion, transition) = self.channels.create_hub(owner, kind, capacity, initial);
+        self.apply_channel_transition(transition);
+        Ok(completion)
+    }
+
+    /// A new subscription of the broadcast or watch `publisher` names.
+    pub fn channel_subscribe(
+        &mut self,
+        task: TaskId,
+        publisher: Sender,
+    ) -> Result<Receiver, SchedulerError> {
+        self.require_live_task(task)?;
+        match self.channels.subscribe(task, publisher) {
+            Ok((receiver, transition)) => {
+                self.apply_channel_transition(transition);
+                Ok(receiver)
+            }
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None)
+            }
+        }
+    }
+
+    /// Another receiver of the queue `receiver` receives from.
+    pub fn channel_add_receiver(
+        &mut self,
+        task: TaskId,
+        receiver: Receiver,
+    ) -> Result<Receiver, SchedulerError> {
+        self.require_live_task(task)?;
+        match self.channels.add_receiver(task, receiver) {
+            Ok((added, transition)) => {
+                self.apply_channel_transition(transition);
+                Ok(added)
+            }
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None)
+            }
+        }
     }
 
     pub fn channel_send(
@@ -1672,6 +1764,12 @@ impl Scheduler {
                         request.status = RESPONSE_OK;
                         let _ = self.wake(owner);
                     }
+                    Some(SendResult::Published(reached)) => {
+                        let _ = self.take_send_result(owner);
+                        request.value = reached as i64;
+                        request.status = RESPONSE_OK;
+                        let _ = self.wake(owner);
+                    }
                     Some(SendResult::Closed(value)) => {
                         let _ = self.take_send_result(owner);
                         request.value = value as i64;
@@ -1749,6 +1847,55 @@ impl Scheduler {
                     Ok(receiver) => {
                         request.owner = receiver.owner().get();
                         request.token = receiver.token();
+                        request.status = RESPONSE_OK;
+                    }
+                    Err(_) => request.status = RESPONSE_ERROR,
+                }
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_CHANNEL_ADD_RECEIVER => {
+                let receiver = Receiver::from_raw(request.channel, request.owner, request.token);
+                match self.channel_add_receiver(owner, receiver) {
+                    Ok(added) => {
+                        request.channel = added.channel().get();
+                        request.owner = added.owner().get();
+                        request.token = added.token();
+                        request.status = RESPONSE_OK;
+                    }
+                    Err(_) => request.status = RESPONSE_ERROR,
+                }
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_CHANNEL_BROADCAST | REQUEST_CHANNEL_WATCH => {
+                let (kind, capacity, initial) = if request.kind == REQUEST_CHANNEL_BROADCAST {
+                    match usize::try_from(request.value) {
+                        Ok(capacity) if capacity > 0 => (HubKind::Broadcast, capacity, None),
+                        _ => (HubKind::Broadcast, 0, None),
+                    }
+                } else {
+                    (HubKind::Watch, 1, Some(request.value as usize))
+                };
+                if capacity == 0 {
+                    request.status = RESPONSE_ERROR;
+                } else {
+                    match self.create_hub(owner, kind, capacity, initial) {
+                        Ok(completion) => {
+                            request.channel = completion.channel().get();
+                            request.owner = owner.get();
+                            request.token = completion.token();
+                            request.status = RESPONSE_OK;
+                        }
+                        Err(_) => request.status = RESPONSE_ERROR,
+                    }
+                }
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_CHANNEL_SUBSCRIBE => {
+                match self.channel_subscribe(owner, Sender::from_raw(request.channel)) {
+                    Ok(subscription) => {
+                        request.channel = subscription.channel().get();
+                        request.owner = subscription.owner().get();
+                        request.token = subscription.token();
                         request.status = RESPONSE_OK;
                     }
                     Err(_) => request.status = RESPONSE_ERROR,

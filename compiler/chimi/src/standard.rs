@@ -12,10 +12,12 @@ pub(crate) enum StandardModule {
     Supervisor,
     Clock,
     Select,
+    Broadcast,
+    Watch,
 }
 
 impl StandardModule {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Channel,
         Self::Io,
         Self::Task,
@@ -28,6 +30,8 @@ impl StandardModule {
         Self::Supervisor,
         Self::Clock,
         Self::Select,
+        Self::Broadcast,
+        Self::Watch,
     ];
 
     pub(crate) const fn path(self) -> &'static str {
@@ -44,6 +48,8 @@ impl StandardModule {
             Self::Supervisor => "std/supervisor",
             Self::Clock => "std/clock",
             Self::Select => "std/select",
+            Self::Broadcast => "std/broadcast",
+            Self::Watch => "std/watch",
         }
     }
 
@@ -134,6 +140,15 @@ pub(crate) enum StandardType {
     /// `std/cause.Cause`: the diagnostic record beside a failure, a defect, or a
     /// cancellation.
     Cause,
+    /// `std/broadcast.Publisher<T>`: publishes to and subscribes to one
+    /// broadcast; shareable.
+    BroadcastPublisher,
+    /// `std/watch.Publisher<T>`: publishes to and subscribes to one watch;
+    /// shareable.
+    WatchPublisher,
+    /// `std/watch.Subscription<T>`: receives a watch's latest unseen value;
+    /// exclusive, like a Receiver.
+    WatchSubscription,
 }
 
 impl StandardType {
@@ -210,6 +225,8 @@ impl StandardType {
             Self::ProcessHandoffSpec => "HandoffSpec",
             Self::SupervisorHandoffError => "HandoffError",
             Self::Cause => "Cause",
+            Self::BroadcastPublisher | Self::WatchPublisher => "Publisher",
+            Self::WatchSubscription => "Subscription",
         }
     }
 
@@ -235,9 +252,12 @@ impl StandardType {
             }
             Self::Task => StandardProperties::Opaque("a `Task` capability"),
             Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
-            Self::ChannelSender | Self::ChannelReceiver | Self::ChannelCompletion => {
-                StandardProperties::Opaque("a channel capability")
-            }
+            Self::ChannelSender
+            | Self::ChannelReceiver
+            | Self::ChannelCompletion
+            | Self::BroadcastPublisher
+            | Self::WatchPublisher
+            | Self::WatchSubscription => StandardProperties::Opaque("a channel capability"),
             Self::Map | Self::Set => StandardProperties::Unordered,
             Self::JsonValue => StandardProperties::EquatableOnly(
                 "`Value`, which is not ordered because an `Object` holds a `Map`",
@@ -405,6 +425,18 @@ pub(crate) enum StandardFunction {
     SelectAfter,
     SelectAt,
     SelectFirst,
+    // The channel variants (G29), in `CHIMI_INTRINSIC_*` order.
+    /// `Channel.add_receiver(receiver)`: another receiver of the same queue.
+    ChannelAddReceiver,
+    BroadcastBounded,
+    /// Returns how many subscriptions the publish reached.
+    BroadcastPublish,
+    BroadcastSubscribe,
+    WatchStartingWith,
+    WatchPublish,
+    WatchSubscribe,
+    WatchReceive,
+    SelectWatch,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -523,7 +555,7 @@ pub(crate) enum StandardFunction {
 }
 
 impl StandardFunction {
-    pub(crate) const ALL: [Self; 93] = [
+    pub(crate) const ALL: [Self; 102] = [
         Self::IntParse,
         Self::IntToText,
         Self::IntAddChecked,
@@ -617,10 +649,28 @@ impl StandardFunction {
         Self::SelectAfter,
         Self::SelectAt,
         Self::SelectFirst,
+        Self::ChannelAddReceiver,
+        Self::BroadcastBounded,
+        Self::BroadcastPublish,
+        Self::BroadcastSubscribe,
+        Self::WatchStartingWith,
+        Self::WatchPublish,
+        Self::WatchSubscribe,
+        Self::WatchReceive,
+        Self::SelectWatch,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
         match self {
+            Self::BroadcastBounded | Self::BroadcastPublish | Self::BroadcastSubscribe => {
+                Some(StandardModule::Broadcast)
+            }
+            Self::WatchStartingWith
+            | Self::WatchPublish
+            | Self::WatchSubscribe
+            | Self::WatchReceive => Some(StandardModule::Watch),
+            Self::ChannelAddReceiver => Some(StandardModule::Channel),
+            Self::SelectWatch => Some(StandardModule::Select),
             Self::ProcessSpec
             | Self::ProcessRegister
             | Self::ProcessReceive
@@ -896,6 +946,13 @@ impl StandardFunction {
             Self::SelectAfter => "after",
             Self::SelectAt => "at",
             Self::SelectFirst => "first",
+            Self::ChannelAddReceiver => "add_receiver",
+            Self::BroadcastBounded => "bounded",
+            Self::BroadcastPublish | Self::WatchPublish => "publish",
+            Self::BroadcastSubscribe | Self::WatchSubscribe => "subscribe",
+            Self::WatchStartingWith => "starting_with",
+            Self::WatchReceive => "receive",
+            Self::SelectWatch => "watch",
             Self::DebugCrash => "crash",
             Self::OptionUnwrapOrFail => "unwrap_or_fail",
             Self::TextConcat => "concat",
@@ -1024,6 +1081,23 @@ impl StandardFunction {
                 | Self::SelectAfter
                 | Self::SelectAt
                 | Self::SelectFirst
+                | Self::SelectWatch
+        )
+    }
+
+    /// The channel variants (G29) outside `std/select`. Like the bounded
+    /// channel, they run only on the native backend.
+    pub(crate) const fn is_channel_variant(self) -> bool {
+        matches!(
+            self,
+            Self::ChannelAddReceiver
+                | Self::BroadcastBounded
+                | Self::BroadcastPublish
+                | Self::BroadcastSubscribe
+                | Self::WatchStartingWith
+                | Self::WatchPublish
+                | Self::WatchSubscribe
+                | Self::WatchReceive
         )
     }
 
@@ -1047,6 +1121,7 @@ impl StandardFunction {
                 | Self::ChannelBounded
         ) || self.requires_process_runtime()
             || self.is_select_operation()
+            || self.is_channel_variant()
     }
 
     /// The unit of a `Duration` constructor (`Duration.seconds`) or of a whole-unit
@@ -1295,6 +1370,10 @@ impl StandardConstructor {
             | StandardType::ChannelCompletion
             | StandardType::ChannelReceive
             | StandardType::ChannelError => Some(StandardModule::Channel),
+            StandardType::BroadcastPublisher => Some(StandardModule::Broadcast),
+            StandardType::WatchPublisher | StandardType::WatchSubscription => {
+                Some(StandardModule::Watch)
+            }
             // SendError owns both Closed and Aborted, but only type-qualified
             // access is valid: Channel.Aborted names the receive failure.
             StandardType::ChannelSendError => None,

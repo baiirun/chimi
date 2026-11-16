@@ -2538,6 +2538,7 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         signal_fd: -1,
         injected_signal: 0,
         injected_signal_at: 0,
+        copy_channel_value: None,
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2704,6 +2705,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, signal_fd),
         offset_of!(ChimiSchedulerConfig, injected_signal),
         offset_of!(ChimiSchedulerConfig, injected_signal_at),
+        offset_of!(ChimiSchedulerConfig, copy_channel_value),
         size_of::<ChimiProcessTermination>(),
         offset_of!(ChimiProcessTermination, incarnation),
         offset_of!(ChimiProcessTermination, cause),
@@ -2756,9 +2758,15 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_PROCESS_MONITOR as usize,
         REQUEST_PROCESS_MAILBOX as usize,
         Down::Unavailable.code() as usize,
+        REQUEST_CHANNEL_ADD_RECEIVER as usize,
+        REQUEST_CHANNEL_BROADCAST as usize,
+        REQUEST_CHANNEL_WATCH as usize,
+        REQUEST_CHANNEL_SUBSCRIBE as usize,
+        VIOLATION_PUBLISHED_CAPABILITY as usize,
+        VIOLATION_WRONG_KIND as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 14);
+    assert_eq!(crate::chimi_fiber_abi_version(), 15);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
