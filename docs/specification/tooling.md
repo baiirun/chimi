@@ -1,8 +1,8 @@
 # Tooling
 
 Status: implemented in part (Phase 9). This page is the contract for the
-commands that sit around the compiler: the documentation generator and the linter now, and
-editor features, cross-compilation and debugging as they land.
+commands that sit around the compiler: the documentation generator, the linter and editor
+references and rename now, and more editor features, cross-compilation and debugging as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -108,3 +108,42 @@ Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
 name resolution, which records each local binding's name range. Tests:
 `compiler/chimi/tests/lint.rs`, which also keeps the standard tree and the
 example programs lint-clean.
+
+## Editor: find references and rename
+
+Purpose: let an editor list every place a symbol is written and rename it
+everywhere, across the modules of the project that owns the file. The
+language server (`chimi-lsp`) answers `textDocument/references` and
+`textDocument/rename` from the latest analysis of that project, including
+unsaved edits.
+
+Rules:
+
+- The symbol is the one whose name is under the cursor, at a reference or
+  at a declaration. A struct's type and its constructor are one symbol, as
+  are a type and a value declared by one item.
+- Its occurrences MUST be its declaration (a local's binding, an item's
+  name, every clause head of a multi-clause function, a field or variant
+  name), every reference that resolves to it, every member import of it
+  (`import lib.{Point}`), and for a struct every constructor call that builds
+  it. Each occurrence covers only the name: in `Lib.total`, only `total`.
+- References MUST leave the declaration out when the editor asks for that.
+- A rename MUST cover every occurrence, and MUST be refused when:
+  - the symbol is a standard or built-in one, or a module alias;
+  - the new name is not an identifier, or changes the leading case, since
+    case decides whether a name is a type or a value;
+  - the renamed project would have more errors than before, which catches a
+    collision with another name in scope;
+  - in the renamed project the symbol would not be written at exactly the
+    renamed places, which catches a shadowing that still type-checks, such
+    as a parameter renamed to the name of a constant its function reads.
+- A refused rename is an error reply that says why, never a partial edit.
+
+Not yet covered: renaming a struct field or an enum variant through its uses,
+because field accesses are resolved by the type checker, not by name
+resolution.
+
+Implementation: `compiler/chimi/src/occurrences.rs`
+(`IncrementalTypeReport::occurrences`), `Workspace::references` and
+`Workspace::rename` in `compiler/chimi-lsp/src/workspace.rs`. Tests: the
+workspace unit tests and `compiler/chimi-lsp/tests/protocol.rs`.
