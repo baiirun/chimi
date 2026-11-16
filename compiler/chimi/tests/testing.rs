@@ -536,6 +536,26 @@ fn capture_defect_cancels_the_tasks_its_operation_started() {
     );
 }
 
+/// With no deadline, the scope adds no timer for virtual time to jump to.
+#[test]
+fn a_deadlock_inside_capture_defect_is_still_a_deadlock() {
+    let source = concat!(
+        "import std/channel as Channel\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"waits forever\" {\n",
+        "  Test.capture_defect(fn() {\n",
+        "    let channel = Channel.bounded(1)\n",
+        "    Channel.receive(channel.receiver)\n",
+        "  })\n",
+        "  |> Test.assert_equal(\"\")\n",
+        "}\n",
+    );
+    let run = chimi_test("capture-deadlock", source, &["--json"]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert!(run.stdout.contains("\"kind\":\"deadlock\""), "{}", run.stdout);
+}
+
 const TEST_ONLY: &str = concat!(
     "import std/debug as Debug\n",
     "import std/test as Test\n",
