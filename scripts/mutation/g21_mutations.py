@@ -2,7 +2,7 @@
 "Waiting for descriptors"). A mutant that makes a wait hang shows as TIMEOUT,
 which counts as caught.
 
-Run: scripts/mutation/mutate.py --timeout 240 scripts/mutation/g21_mutations.py
+Run: scripts/mutation/mutate.py --timeout 90 scripts/mutation/g21_mutations.py
 Results: scripts/mutation/g21_results.txt.
 """
 
@@ -55,6 +55,9 @@ MUTATIONS = [
     dict(name="a closed descriptor counts as ready", file=REACTOR,
          edits=[("                Check::Invalid\n            };", "                Check::Ready(interest)\n            };")],
          **fiber("a_ready_descriptor_answers_at_once")),
+    dict(name="a due timer waits behind a virtual-clock descriptor wait", file=REACTOR,
+         edits=[(".filter(|deadline| *deadline <= self.clock.now())", ".filter(|_| false)")],
+         **fiber("a_deadline_already_due_fires_during_a_virtual_clock_wait")),
     dict(name="a scheduled read blocks the scheduler", file=RUNTIME_C,
          edits=[("      if (!wait_readable(input)) return INPUT_CANCELLED;\n", "")],
          **signals("a_task_keeps_running_while_main_waits_for_standard_input")),
