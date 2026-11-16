@@ -19,8 +19,10 @@
 /// Acquire is held off too, except while it waits: a timeout around the
 /// whole call still ends a slow connect, but a cancellation that arrives
 /// after acquire stopped waiting waits for it to return. If acquire
-/// succeeded, `use` is skipped and `release` runs, so nothing acquired is
-/// ever lost.
+/// succeeded, `use` is skipped and `release` runs. So an acquire whose last
+/// wait is the one that hands it the resource never loses it; one that waits
+/// again after taking something should hold that first part in a nested
+/// `Resource.scoped`.
 
 // 2. Constructors.
 

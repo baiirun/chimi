@@ -930,7 +930,8 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
 // Rejects an acquire that a cancellation can leave after its wait ended: the
 // grant reaches the acquiring task just before `Task.cancel`, and the
 // cancellation is held off past the acquire's later `Clock.now` until use
-// begins, so use does not run and release logs 7 at once, at 1 s (CHI-268).
+// begins, so use does not run (its child would log 5 first) and release
+// logs 7 after its own 2 s, at 3 s (CHI-268).
 #[test]
 fn a_cancel_after_acquire_stops_waiting_still_runs_the_release() {
     let result = run_virtual(
@@ -947,8 +948,12 @@ fn a_cancel_after_acquire_stops_waiting_still_runs_the_release() {
         let _ = Clock.now()
         granted
       },
-      fn(held) { Channel.send(sender, held) },
       fn(held) {
+        Clock.sleep(Duration.seconds(2))
+        Channel.send(sender, held)
+      },
+      fn(held) {
+        let _ = Task.start(fn() { Channel.send(sender, 5) })
         Clock.sleep(Duration.seconds(10))
         held
       },
@@ -962,7 +967,7 @@ fn a_cancel_after_acquire_stops_waiting_still_runs_the_release() {
 }
 "#,
     );
-    assert_eq!(result.outcome, success("1007"), "{}", result.outcome);
+    assert_eq!(result.outcome, success("3007"), "{}", result.outcome);
 }
 
 // Rejects an acquire masked even while it waits: a timeout written around the
