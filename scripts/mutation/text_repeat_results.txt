@@ -1,0 +1,7 @@
+# mutation run at 9ccd949cf62b3a78e7fb5d56458f93034cb61b35
+# text_repeat_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [std_modules] (49s)
+KILLED       an odd count drops its last copy [std_modules] (22s)
+KILLED       the piece is not doubled between passes [std_modules] (23s)
+KILLED       the loop stops one pass early [std_modules] (21s)
+# result: every mutant killed

@@ -48,10 +48,22 @@ pub fn join(parts: List<Text>, separator: Text) -> Text {
 ///
 /// Cost: O(n) in the result length.
 pub fn repeat(text: Text, count: Int) -> Text {
-  loop (remaining, pieces) = (count, []) {
+  // Square-and-multiply on text: `piece` doubles each pass and joins the
+  // result for each set bit of `count`, so the work is O(log count) appends
+  // instead of one list cell per copy.
+  loop (remaining, piece, result) = (count, text, "") {
     case remaining {
-      n if n <= 0 -> break concat(pieces)
-      n -> (n - 1, List.push(pieces, text))
+      n if n <= 0 -> break result
+      n -> {
+        let result = case n % 2 == 1 {
+          True -> append(result, piece)
+          False -> result
+        }
+        case n / 2 {
+          0 -> break result
+          half -> (half, append(piece, piece), result)
+        }
+      }
     }
   }
 }
