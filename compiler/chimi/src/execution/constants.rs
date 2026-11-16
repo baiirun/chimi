@@ -671,7 +671,9 @@ impl Measure<'_> {
                 self.shared.insert(address, part, size);
                 Some(size)
             }
-            RuntimeValue::Callable(_) | RuntimeValue::Cause(_) => Some(ROW_BYTES),
+            RuntimeValue::Callable(_) | RuntimeValue::Cause(_) | RuntimeValue::TestLog(_) => {
+                Some(ROW_BYTES)
+            }
         }
     }
 
@@ -802,6 +804,7 @@ fn constant_value(
         ),
         RuntimeValue::JsonNumber(text) => ConstantValue::JsonNumber(text.clone()),
         RuntimeValue::Cause(_) => return Err("a `Cause`".to_owned()),
+        RuntimeValue::TestLog(_) => return Err("a test recorder or script".to_owned()),
         RuntimeValue::Callable(callable) => ConstantValue::Function(match callable {
             RuntimeCallable::Declared {
                 symbol,

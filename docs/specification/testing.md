@@ -10,8 +10,8 @@ testing row of the [standard library map](../plans/standard-library-map.md).
 Implemented: test declarations (they parse, format, and type-check, and
 builds drop them), the `chimi test` runner on both backends with the human
 report, `--json`, filters, jobs, the time limit, the clock options, and the
-exit status, the four `std/test` assertions, `capture_defect`, and `T4401`.
-Not implemented yet: recorders and scripts, `std/random` and
+exit status, the four `std/test` assertions, `capture_defect`, recorders
+and scripts, `T4401`, and `T4403`. Not implemented yet: `std/random` and
 `--seed`, fake mailboxes, `--trace`, directory inputs, doc-comment examples,
 and the std-tests migration. The build is tracked
 by CHI-208; the spec was written under CHI-202.
@@ -54,7 +54,7 @@ G12 scope-owned resources).
 
 ## Example
 
-<!-- chimi: pending CHI-208 -->
+<!-- chimi: check -->
 ```chimi
 import std/debug as Debug
 import std/result as Result
@@ -475,9 +475,14 @@ runtime-owned, append-only types for tests:
   returns every value recorded so far, in the order the records linearized. Records
   from several tasks or processes interleave in that order.
 - A `Script<T>` is a shareable handle to a queue made from a list. `next`
-  removes and returns its first value, so each value has one reader and `T`
-  need only be transferable. Calling `next` on an empty script fails
-  the test with the kind `assertion`: "script exhausted after N values".
+  removes and returns its first value, so each value has one reader. `T`
+  must still be shareable for now: a script holding a channel end or another
+  exclusive value would need the capability transfer that process messages
+  use, and no test has needed one yet. Calling `next` on an empty script
+  fails the test with the kind `assertion`: "script exhausted after N values".
+- `record` or `script` with a value that is not shareable is `T4403`. Inside a
+  generic helper the value's type is not yet known, so the check waits on
+  checking properties at instantiation, as every shareability check does.
 - Both are test-only operations (`T4401`). They give tests one kind of
   observable state without adding a mutable cell to programs. If mutation
   returns to the language, these stay as conveniences or become ordinary
@@ -644,6 +649,7 @@ Codes are provisional until the runner lands. This specification claims
 | `T4400` | a test body needs something the test provider plan does not close and no `using` supplies |
 | `T4401` | a test-only `std/test` operation is reachable from a program's `main` |
 | `T4402` | a test body's success type is not `Void` |
+| `T4403` | `Test.record` or `Test.script` is given a value that is not shareable |
 | `E5009` | `chimi test` found no test item in the project |
 
 Each message names the fix: `T4400` names the need and suggests `using`;
