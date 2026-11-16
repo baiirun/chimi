@@ -2,7 +2,6 @@
 // run time, with numeric equality and order across scales and signs.
 import std/debug as Debug
 import std/decimal as Decimal
-import std/decimal.{Decimal}
 import std/test as Test
 
 const price = Decimal.of(1999, 2)

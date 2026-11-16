@@ -1,0 +1,31 @@
+import std/bytes as Bytes
+import std/bytes.{Bytes, DecodeError}
+import std/list as List
+import std/text as Text
+
+const unused_limit: Int = 3
+const _spare_limit: Int = 4
+const used_limit: Int = 10
+
+fn helper(value: Int) -> Int {
+  value + 1
+}
+
+fn unused_helper() -> Int {
+  0
+}
+
+pub fn exported() -> Int {
+  0
+}
+
+/// Parameters are never findings: a callback often ignores one.
+pub fn size(data: Bytes, extra: Int) -> Int {
+  let length = Bytes.length(data)
+  let ignored = 5
+  let _kept = 6
+  case List.first([length]) {
+    Some(first) -> helper(used_limit)
+    None -> 0
+  }
+}

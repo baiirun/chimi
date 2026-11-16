@@ -1,8 +1,8 @@
 # Tooling
 
 Status: implemented in part (Phase 9). This page is the contract for the
-commands that sit around the compiler: the documentation generator now, and
-the linter, editor features, cross-compilation and debugging as they land.
+commands that sit around the compiler: the documentation generator and the linter now, and
+editor features, cross-compilation and debugging as they land.
 The formatter, `chimi check` and `chimi test` keep their own pages
 (`testing.md` for the runner and doc-comment examples).
 
@@ -56,3 +56,55 @@ Implementation: `compiler/chimi/src/doc.rs` builds the documentation from the
 type report (`TypeReport::documentation`); doc-comment lines are read by
 `doc_examples.rs`. Tests: `compiler/chimi/tests/doc.rs` and the fixture
 `tests/fixtures/doc-project`.
+
+## Linting: `chimi lint`
+
+Purpose: point out code that compiles but that a maintainer would want to
+clean up. The compiler enforces correctness; the linter guides conventions
+and maintainability (design-philosophy.md), so lint findings are never
+compile errors and `chimi check` does not run them.
+
+```text
+chimi lint [--json] <path>                      one file
+chimi lint [--json] <directory>                 every module under it
+chimi lint [--json] --root <project> <module>   a module and what it imports
+```
+
+Rules:
+
+- `chimi lint` MUST lint only the project's own modules, never `std/`. It
+  exits 0 with no findings and 1 with findings, printing them to standard
+  error, or with `--json` to standard output in the `chimi check --json`
+  form.
+- A project that does not type-check MUST report its compile errors and no
+  lint findings, since a finding on code that does not compile misleads.
+- Each finding is a warning with the stage `lint` and the rule's name as its
+  code.
+- A name that starts with `_` is unused on purpose: no rule reports it.
+- There is no configuration file and no comment that silences a finding,
+  as the formatter has no options: a finding is fixed, or the name gets a
+  leading `_`.
+
+| Rule | Reports |
+| --- | --- |
+| `unused-import` | a module alias no code in the module uses, as `Alias.member` or `Alias.Type`, and a member import (`import m.{Name}`) the module never names, alone or as `Name.Variant` |
+| `unused-private` | a private function or constant nothing references; a runner provider (`host`) the runner binds by name is exempt |
+| `unused-binding` | a `let` binding or a pattern binding (in `case`, a destructuring `let`, a clause head) that its scope never reads |
+
+Parameters are never reported, because a callback or a fake often ignores
+one its type requires, as in Go and Gleam.
+
+Known gaps: a use is any reference, not reachability from public items and
+tests, so a private function that only calls itself, two that only call each
+other, or a chain only dead code uses, all count as used. Private structs,
+enums, interfaces and `process name` items, and unused `needs` entries, are
+not checked yet. When a module alias and a member import share a name, as
+`import std/clock as Clock` with `import std/clock.{Clock}`, a qualified path
+such as `Clock.Instant` uses the alias, as the compiler resolves it. A missing doc comment on a
+public item, suggested fixes, and showing findings in the editor come with
+the second linting part.
+
+Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
+name resolution, which records each local binding's name range. Tests:
+`compiler/chimi/tests/lint.rs`, which also keeps the standard tree and the
+example programs lint-clean.

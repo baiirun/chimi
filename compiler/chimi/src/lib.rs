@@ -19,6 +19,7 @@ mod graphemes;
 mod ids;
 mod inspection;
 mod json;
+mod lint;
 pub mod line_index;
 mod numeric;
 mod operations;

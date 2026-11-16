@@ -3158,6 +3158,7 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi: check and run received unexpected arguments\n",
             "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
             "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
+            "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | ",
             "chimi inspect <path> <byte-offset> | ",
             "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
             "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",

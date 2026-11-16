@@ -11278,6 +11278,7 @@ const fn diagnostic_phase_order(stage: DiagnosticStage) -> u8 {
         DiagnosticStage::Syntax | DiagnosticStage::Lowering | DiagnosticStage::Name => 0,
         DiagnosticStage::Type => 1,
         DiagnosticStage::ExecutionSetup => 2,
+        DiagnosticStage::Lint => 3,
     }
 }
 

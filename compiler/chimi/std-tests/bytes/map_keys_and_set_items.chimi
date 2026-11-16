@@ -1,6 +1,5 @@
 // Bytes as Map keys and Set items, in structural order by unsigned byte.
 import std/bytes as Bytes
-import std/bytes.{Bytes}
 import std/debug as Debug
 import std/map as Map
 import std/set as Set
