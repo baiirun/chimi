@@ -91,6 +91,8 @@ typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INT
 /* The HOST_CLOCK_* functions are the execution clock provider's methods. A shifted
    timestamp is `Clock.starting_at`'s: its `inner` reads now, plus `shift`. */
 typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
+               /* `Random.next_int` of the runner's `random` provider. */
+               HOST_RANDOM_NEXT_INT,
                HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
                HOST_CLOCK_SHIFTED_TIMESTAMP,
                /* A Select timer on a user Clock: its `inner` is the provider's
@@ -6033,10 +6035,61 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   return end_measured_allocation_scope(runtime, &allocation_scope, control);
 }
 
+/* The `random` provider (testing.md, Randomness): xoshiro256** seeded through
+   SplitMix64, as random_source.rs, so a seed draws the same numbers on both
+   backends. `--random-seed` fixes the seed (`chimi test` gives each test its
+   own); without it the first draw seeds from the operating system. */
+static uint64_t random_state[4];
+static bool random_seed_given, random_read;
+static uint64_t random_seed;
+
+static uint64_t splitmix64(uint64_t *state) {
+  uint64_t mixed = (*state += UINT64_C(0x9e3779b97f4a7c15));
+  mixed = (mixed ^ (mixed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  mixed = (mixed ^ (mixed >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return mixed ^ (mixed >> 31);
+}
+
+static uint64_t rotate_left(uint64_t value, int count) { return (value << count) | (value >> (64 - count)); }
+
+static uint64_t os_random_seed(void) {
+  uint64_t seed = 0;
+  FILE *source = fopen("/dev/urandom", "rb");
+  if (!source || fread(&seed, sizeof(seed), 1, source) != 1) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    seed = ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec) ^ ((uint64_t)getpid() << 32);
+  }
+  if (source) fclose(source);
+  return seed;
+}
+
+static uint64_t random_next(void) {
+  if (!random_read) {
+    uint64_t mix = random_seed_given ? random_seed : os_random_seed();
+    for (int index = 0; index < 4; ++index) random_state[index] = splitmix64(&mix);
+    random_read = true;
+  }
+  uint64_t *state = random_state;
+  uint64_t result = rotate_left(state[1] * 5, 7) * 9;
+  uint64_t shifted = state[1] << 17;
+  state[2] ^= state[0];
+  state[3] ^= state[1];
+  state[1] ^= state[2];
+  state[0] ^= state[3];
+  state[2] ^= shifted;
+  state[3] = rotate_left(state[3], 45);
+  return result;
+}
+
 static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
                                  ChimiValue **arguments, uint32_t argument_count,
                                  uint64_t span, uint32_t call_node,
                                  ChimiEnvironment *environment) {
+  if (function == HOST_RANDOM_NEXT_INT) {
+    if (argument_count != 0) return defect("verified host function has invalid runtime arguments", call_node);
+    return runtime->cancel ? cancelled() : success(integer_value((int64_t)random_next()));
+  }
   if (function == HOST_PROCESS_UTF8_LINES)
     return process_utf8_lines(runtime, arguments, argument_count, span, call_node, environment);
   if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
@@ -9917,6 +9970,8 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
       inner->host = HOST_WRITE_LINE;
     else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 1)
       inner->host = HOST_WRITE_ERROR;
+    else if (standard_type == CHIMI_TYPE_RANDOM && node->c == 0)
+      inner->host = HOST_RANDOM_NEXT_INT;
     else if (standard_type == CHIMI_TYPE_CLOCK && node->c <= 2)
       inner->host = node->c == 0 ? HOST_CLOCK_NOW : node->c == 1 ? HOST_CLOCK_TIMESTAMP : HOST_CLOCK_SLEEP_UNTIL;
     else { result = defect("closed core has no provider", node_id); break; }
@@ -10381,6 +10436,8 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
       break;
     case CONTROL_BREAK: break;
   }
+  /* `chimi test` names the seed in the report of a failing test that drew one. */
+  if (random_read) fputs(",\"random_read\":true", output);
   ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : control_cause(control);
   if (cause && cause_has_detail(cause)) {
     fputs(",\"cause\":", output);
@@ -11067,6 +11124,17 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         fputs("--signal requires INT or TERM, @, and a time such as 2s or 150ms\n", stderr);
         return 64;
       }
+    }
+    else if (strncmp(argv[index], "--random-seed=", 14) == 0) {
+      errno = 0;
+      char *end = NULL;
+      unsigned long long value = strtoull(argv[index] + 14, &end, 10);
+      if (errno == ERANGE || end == argv[index] + 14 || *end != '\0' || argv[index][14] == '-') {
+        fputs("--random-seed requires an integer from 0 through 18446744073709551615\n", stderr);
+        return 64;
+      }
+      random_seed = (uint64_t)value;
+      random_seed_given = true;
     }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;

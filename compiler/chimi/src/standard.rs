@@ -109,6 +109,9 @@ pub(crate) enum StandardType {
     SupervisorStartError,
     /// `std/clock.Clock`: the time provider the runner binds to a root `clock` need.
     Clock,
+    /// `std/random.Random`: the random source the runner binds to a root
+    /// `random` need; declared in Chimi source, unlike `Clock`.
+    Random,
     // `native type`s that only the embedded standard tree declares
     // (`operations.rs`); no built-in module synthesizes them.
     /// `std/set.Set<T>`.
@@ -223,6 +226,7 @@ impl StandardType {
             Self::SupervisorManagedSupervisor => "ManagedSupervisor",
             Self::SupervisorStartError => "StartError",
             Self::Clock => "Clock",
+            Self::Random => "Random",
             Self::Set => "Set",
             Self::Decimal => "Decimal",
             Self::Bytes => "Bytes",
@@ -248,7 +252,7 @@ impl StandardType {
     /// Its private representation grants neither silently.
     pub(crate) const fn properties(self) -> StandardProperties {
         match self {
-            Self::Console | Self::FileSystem | Self::Clock => {
+            Self::Console | Self::FileSystem | Self::Clock | Self::Random => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -1465,6 +1469,7 @@ impl StandardConstructor {
             | StandardType::SupervisorManagedProcess
             | StandardType::SupervisorManagedSupervisor
             | StandardType::Clock
+            | StandardType::Random
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

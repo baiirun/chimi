@@ -241,11 +241,12 @@ fn json_records_one_test_per_line_then_the_run() {
         "\"name\":\"charges once\",\"line\":11,\"outcome\":\"failed\",\"kind\":\"assertion\",",
         "\"message\":\"Test.assert_equal: the values differ\",",
         "\"location\":{\"path\":\"cases.chimi\",\"line\":12,\"column\":3},",
-        "\"actual\":\"[\\n  2500,\\n  2500,\\n]\",\"expected\":\"[\\n  2500,\\n]\",\"output\":[]"
+        "\"actual\":\"[\\n  2500,\\n  2500,\\n]\",\"expected\":\"[\\n  2500,\\n]\",\"output\":[],",
+        "\"seed\":0,"
     )));
     assert_eq!(
         lines[2],
-        "{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":1,\"failed\":1}"
+        "{\"schema\":\"chimi.test.v1\",\"event\":\"run_finished\",\"passed\":1,\"failed\":1,\"seed\":0}"
     );
 }
 
@@ -818,4 +819,134 @@ fn a_recorder_reachable_from_main_fails_the_build() {
         "{}",
         run.stderr
     );
+}
+
+/// `draws` prints one of each draw; its numbers come from the run seed and its
+/// identity, so the test before it and a filter must not change them.
+const RANDOM: &str = concat!(
+    "import std/debug as Debug\n",
+    "import std/io.{Console}\n",
+    "import std/random as Random\n",
+    "import std/test as Test\n",
+    "\n",
+    "fn show(line: Text) -> Void needs { console: Console } {\n",
+    "  console.write_line(line)\n",
+    "}\n",
+    "\n",
+    "test \"draws first\" {\n",
+    "  show(Debug.render(Random.int(0..1000)))\n",
+    "}\n",
+    "\n",
+    "test \"draws\" {\n",
+    "  show(Debug.render([Random.int(1..=6), Random.int(1..=6), Random.int(-5..5)]))\n",
+    "  show(Debug.render(Random.float()))\n",
+    "  show(Debug.render(Random.pick([\"a\", \"b\", \"c\"])))\n",
+    "  show(Debug.render(Random.shuffle([1, 2, 3, 4, 5])))\n",
+    "}\n",
+    "\n",
+    "test \"fails after a draw\" {\n",
+    "  Test.assert_equal(Random.int(1..=6), 0)\n",
+    "}\n",
+    "\n",
+    "test \"fails without a draw\" {\n",
+    "  Test.assert_equal(1, 0)\n",
+    "}\n",
+);
+
+/// The draws of `draws` at run seed 0, which an independent model of
+/// xoshiro256** seeded through SplitMix64 reproduces.
+const DRAWS_AT_SEED_0: &str = concat!(
+    "test main \"draws\" ... ok\n",
+    "  output:\n",
+    "    [4, 6, 1]\n",
+    "    0.2469708770566883\n",
+    "    Some(\"a\")\n",
+    "    [1, 2, 5, 4, 3]\n",
+);
+
+#[test]
+fn a_test_draws_the_same_numbers_alone_and_among_others_on_both_backends() {
+    let all = both_backends("random-all", RANDOM, &["--show-output"]);
+    assert!(all.stdout.contains(DRAWS_AT_SEED_0), "{}", all.stdout);
+    let alone = both_backends("random-alone", RANDOM, &["--show-output", "--filter=main \"draws\""]);
+    assert_eq!(alone.stdout, format!("{DRAWS_AT_SEED_0}\n1 passed, 0 failed\n"));
+    let reseeded = both_backends("random-reseeded", RANDOM, &["--show-output", "--seed=1"]);
+    assert!(!reseeded.stdout.contains(DRAWS_AT_SEED_0), "{}", reseeded.stdout);
+}
+
+#[test]
+fn a_failure_names_the_seed_only_when_the_test_drew_numbers() {
+    let run = both_backends("random-seed-report", RANDOM, &["--seed=7", "--filter=fails"]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    let after_draw = run.stdout.split("test main \"fails without a draw\"").collect::<Vec<_>>();
+    assert!(
+        after_draw[0].contains("  random seed: 7; replay with --seed=7\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(!after_draw[1].contains("random seed"), "{}", run.stdout);
+    let json = both_backends("random-seed-json", RANDOM, &["--seed=7", "--json"]);
+    assert!(json.stdout.lines().all(|line| line.contains("\"seed\":7")), "{}", json.stdout);
+}
+
+#[test]
+fn a_provided_random_source_replaces_the_seeded_one_and_an_empty_range_defects() {
+    let source = concat!(
+        "import std/random as Random\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"uses the provided source\" {\n",
+        "  let fixed = { next_int: fn() -> Int { -9223372036854775805 } }\n",
+        "  let draws = [Random.int(0..10), Random.int(10..=11)] using { random: fixed }\n",
+        "  Test.assert_equal(draws, [3, 11])\n",
+        "  let zero = { next_int: fn() -> Int { 0 } }\n",
+        "  Test.assert_equal(Random.float() using { random: zero }, 0.0)\n",
+        "  Test.assert_equal(Random.pick([]) using { random: zero }, None)\n",
+        "  Test.assert_equal(Random.shuffle([1, 2]) using { random: zero }, [2, 1])\n",
+        "  let lowest = { next_int: fn() -> Int { 1024 } }\n",
+        "  Test.assert_equal(Random.float() using { random: lowest }, 0.00000000000000011102230246251565)\n",
+        "}\n",
+        "\n",
+        "test \"defects on an empty range\" {\n",
+        "  let roll = Random.int(3..3)\n",
+        "  Void\n",
+        "}\n",
+    );
+    let run = both_backends("random-provided", source, &[]);
+    assert_eq!(run.status, Some(1), "{}", run.stderr);
+    assert!(run.stdout.contains("test main \"uses the provided source\" ... ok\n"), "{}", run.stdout);
+    assert!(run.stdout.contains("    Random.int: the range 3..3 is empty\n"), "{}", run.stdout);
+}
+
+#[test]
+fn main_gets_a_random_source_only_under_the_name_random() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/io.{Console}\n",
+        "import std/random as Random\n",
+        "\n",
+        "pub fn main() -> Int needs { console: Console } {\n",
+        "  let roll = Random.int(1..=6)\n",
+        "  console.write_line(Debug.render(roll >= 1 and roll <= 6))\n",
+        "  0\n",
+        "}\n",
+    );
+    let scratch = scratch_directory("random-main");
+    std::fs::write(scratch.join("cases.chimi"), source).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .args(["build", "cases.chimi", "-o", "program"])
+        .output()
+        .expect("run chimi build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let program = Command::new(scratch.join("program")).output().expect("run the program");
+    assert_eq!(String::from_utf8_lossy(&program.stdout), "True\n");
+    std::fs::remove_dir_all(scratch).unwrap();
+    let renamed = source.replace(
+        "pub fn main() -> Int needs { console: Console } {\n",
+        "import std/random.{Random}\n\nfn roll() -> Int needs { dice: Random } {\n  dice.next_int()\n}\n\npub fn main() -> Int needs { console: Console } {\n  let rolled = roll()\n",
+    );
+    let run = chimi("random-main-renamed", &renamed, &["build", "cases.chimi", "-o", "program"]);
+    assert_eq!(run.status, Some(1), "{}", run.stdout);
+    assert!(run.stderr.contains("error[E5002]"), "{}", run.stderr);
 }

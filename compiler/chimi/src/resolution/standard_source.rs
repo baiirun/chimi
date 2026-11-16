@@ -37,7 +37,8 @@ impl ProjectResolver {
     ///
     /// Ensures: an enum type is taken from source only with every registered
     /// variant present at its registered payload arity and no other variant, and
-    /// a native type only from a `native type` declaration; otherwise `N3105`
+    /// a native type only from a `native type` declaration, and a provided
+    /// interface only from an `interface` declaration; otherwise `N3105`
     /// names the mismatch and the built-in identity stays synthesized.
     pub(super) fn find_source_identities(&mut self) {
         for module_index in 0..self.semantic.modules.len() {
@@ -49,6 +50,7 @@ impl ProjectResolver {
                 let (kind, declaration_kind) = match entry.identity {
                     RuntimeIdentity::Type(kind) => (kind, ModuleDeclarationKind::Enum),
                     RuntimeIdentity::NativeType(kind) => (kind, ModuleDeclarationKind::NativeType),
+                    RuntimeIdentity::Interface(kind) => (kind, ModuleDeclarationKind::Interface),
                     RuntimeIdentity::Constructor(_) => continue,
                 };
                 let Some(type_name) = entry
@@ -64,6 +66,7 @@ impl ProjectResolver {
                 let Some(declaration) = declaration else {
                     let form = match declaration_kind {
                         ModuleDeclarationKind::NativeType => "native type",
+                        ModuleDeclarationKind::Interface => "interface",
                         _ => "enum",
                     };
                     self.diagnostics.push(name_error(
@@ -74,7 +77,7 @@ impl ProjectResolver {
                     ));
                     continue;
                 };
-                if declaration_kind == ModuleDeclarationKind::NativeType {
+                if declaration_kind != ModuleDeclarationKind::Enum {
                     self.source_identities.insert(
                         (module.id, declaration.semantic_id),
                         StandardSymbol::Type(kind),
