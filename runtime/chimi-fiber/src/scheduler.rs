@@ -734,6 +734,7 @@ impl Drop for Scheduler {
         if !self.kernel.incarnations.is_empty() || self.has_blocked_plans() {
             self.tear_down_processes();
         }
+        self.release_surviving_incarnations();
         self.release_held_values();
     }
 }

@@ -4320,3 +4320,44 @@ fn a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation() 
         [(1_000_000_000, TerminalCause::Cancelled)]
     );
 }
+
+#[test]
+fn survivors_of_teardown_release_their_mailboxes_and_monitors_once() {
+    let mut lab = Lab::new();
+    lab.scheduler
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER)],
+            1,
+        ))
+        .expect("admitted");
+    lab.settle();
+    let started = lab.started();
+    let (watcher, target) = (started[1].1, started[0].1);
+    let queued = [message(Msg::Add(1)), message(Msg::Add(2))];
+    for handle in queued {
+        lab.scheduler
+            .process_send(named(COUNTER), handle)
+            .expect("accepted");
+    }
+    let notice = message(Msg::Add(3));
+    lab.scheduler
+        .process_monitor(watcher, Address::Direct(target), notice);
+    let unavailable = message(Msg::Add(4));
+    lab.scheduler
+        .process_monitor(watcher, named(THIRD), unavailable);
+    lab.scheduler.release_surviving_incarnations();
+    let held = [queued[0], queued[1], notice, unavailable];
+    let released = log(|log| log.released.clone());
+    for handle in held {
+        assert!(released.contains(&handle), "{handle} released");
+    }
+    drop(lab);
+    let released = log(|log| log.released.clone());
+    for handle in held {
+        assert_eq!(
+            released.iter().filter(|h| **h == handle).count(),
+            1,
+            "{handle} released once"
+        );
+    }
+}
