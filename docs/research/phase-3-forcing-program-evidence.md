@@ -45,6 +45,7 @@ supervisors and shutdown; this one uses tasks only and does not overlap it.
 
 ### The worker loop
 
+<!-- chimi: fragment -->
 ```chimi
 enum Wake {
   Next(next: Receive<Order>)
@@ -180,6 +181,7 @@ program calls it only in tests (two sites).
 
 1. **Fallible calls look like infallible ones.** In `checkout`:
 
+   <!-- chimi: fragment -->
    ```chimi
    let reservation = fn() { checks(order) }
    |> Cause.context("checking order ${order.id}")
@@ -202,6 +204,7 @@ program calls it only in tests (two sites).
 
 2. **Handling one failure is short, and the rest pass on.**
 
+   <!-- chimi: fragment -->
    ```chimi
    fn score_or_review(order: Order) -> Int needs { fraud: Fraud } {
      case fraud.score(order) {
@@ -218,6 +221,7 @@ program calls it only in tests (two sites).
 
 3. **Discarding a failure costs four lines.**
 
+   <!-- chimi: fragment -->
    ```chimi
    case Broadcast.publish(events, event) {
      Success(_) -> Void
@@ -229,6 +233,7 @@ program calls it only in tests (two sites).
    requires `Success`/`Failure` arms there (`T4222`), so matching on the
    value needs a binding first:
 
+   <!-- chimi: fragment -->
    ```chimi
    let both = Task.all([reserve, score])
    case both {
@@ -240,6 +245,7 @@ program calls it only in tests (two sites).
 5. **Wrappers take thunks, and thunks nest.** Every combinator takes
    `fn() { ... }`, so a deadline inside a capture is a thunk inside a thunk:
 
+   <!-- chimi: fragment -->
    ```chimi
    let bounded = fn() {
      fn() { checkout(order) }
