@@ -405,6 +405,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         "probe",
         "chimi_probe_close_pipe",
         true,
+    ),
     pure("std/path.from", 1, StandardFunction::PathFrom),
     pure("std/path.to_text", 1, StandardFunction::PathToText),
     host("std/env.host_variables", 0, StandardFunction::EnvHostVariables),
