@@ -17,7 +17,7 @@ def mutant(name, file, edits, targets=("doc",), filter=""):
 
 MUTATIONS = [
     mutant("private items are listed", G, [(
-        ".filter(|declaration| declaration.public && !declaration.test)",
+        ".filter(|declaration| declaration.public)",
         ".filter(|declaration| !declaration.test)",
     )]),
     mutant("a clause group prints generated names", G, [(
