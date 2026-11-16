@@ -1423,10 +1423,12 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     }));
 
     std::fs::remove_dir_all(&traces).unwrap();
-    let (status, stdout, stderr) = run(&["--json"]);
-    assert_eq!(status, Some(1), "{stdout}{stderr}");
-    assert!(!stdout.contains("\"trace\""), "{stdout}");
-    assert!(!traces.exists(), "--trace=off writes no traces");
+    for arguments in [&["--json"][..], &["--json", "--trace=off"]] {
+        let (status, stdout, stderr) = run(arguments);
+        assert_eq!(status, Some(1), "{stdout}{stderr}");
+        assert!(!stdout.contains("\"trace\""), "{stdout}");
+        assert!(!traces.exists(), "--trace=off writes no traces");
+    }
 
     let (status, _, stderr) = run(&["--trace=some"]);
     assert_eq!(status, Some(2));
