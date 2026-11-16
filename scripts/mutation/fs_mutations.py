@@ -51,8 +51,13 @@ MUTATIONS = [
     host("an existing file counts as a directory", FS, [
         ("    Kind.Directory -> Void\n    _ -> Failure(FsError.AlreadyExists(path))", "    _ -> Void")]),
     host("files_within accepts a sibling with the same prefix", FS, [
-        ('Text.starts_with(Path.to_text(normal), Text.append(Path.to_text(inside), "/"))',
+        ("Text.starts_with(Path.to_text(normal), prefix)",
          "Text.starts_with(Path.to_text(normal), Path.to_text(inside))")]),
+    host("files_within at the root adds a separator", FS, [
+        ('    "/" -> "/"\n    text -> Text.append(text, "/")', '    text -> Text.append(text, "/")')]),
+    host("native writes an empty chunk to a closed file", RUNTIME, [
+        ('  if (!fs_get(handle)) return success(fs_status(FS_CLOSED, "file is closed"));\n  size_t written = 0;',
+         "  size_t written = 0;")]),
     host("the temporary directory is left behind", FS, [
         ("Resource.scoped(fn() { host_temporary_directory() }, remove_tree, use)",
          "Resource.scoped(fn() { host_temporary_directory() }, fn(path) { Void }, use)")]),
