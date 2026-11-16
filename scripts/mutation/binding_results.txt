@@ -1,0 +1,34 @@
+# mutation run at b7de85e8fe555ab2352315eb2ca2b0575141e98b
+# binding_mutations.py: 19 mutants against compiler/chimi
+BASELINE ok  [bindings] (19s)
+BASELINE ok  [lib -- backend::bindings] (12s)
+KILLED       close does not bump the generation [bindings] (10s)
+KILLED       a handle ignores its generation [bindings] (11s)
+KILLED       closing twice releases twice [bindings] (rerun at the next commit, after the anchor followed the typed close)
+SURVIVED     a handle of another type is accepted [bindings] (10s)
+KILLED       Err loses its message [bindings] (10s)
+KILLED       ok returns the bare value [bindings] (10s)
+KILLED       a defect keeps no message [bindings] (10s)
+KILLED       bytes lose their last byte [bindings] (11s)
+SURVIVED     text stops at U+0000 [bindings] (10s)
+SURVIVED     a wait never parks [bindings] (10s)
+SURVIVED     a wait ignores a close while parked [bindings] (11s)
+KILLED       a cancelled wait reports ready [bindings] (70s)
+KILLED       dispatch calls the first binding [bindings] (12s)
+KILLED       a symbol's binding index is off by one [bindings] (84s)
+KILLED       every package links whether reached or not [bindings] (21s)
+KILLED       the binding archive key ignores the sources [lib -- backend::bindings] (9s)
+KILLED       the interpreter calls a binding a success [bindings] (27s)
+KILLED       a test-only binding is allowed from main [bindings] (14s)
+KILLED       the probe's read ignores EAGAIN [bindings] (20s)
+# result: 4 survivors, each explained:
+# - a handle of another type is accepted: the probe has one handle type, so no
+#   test can pass another; std/net (socket and listener) adds one.
+# - text stops at U+0000: no probe binding builds Text containing U+0000 (the
+#   argument side is tested); a later package that returns such text adds it.
+# - a wait never parks: equivalent. Returning READY after a wake only makes
+#   the binding retry its read, get EAGAIN, and wait again.
+# - a wait ignores a close while parked: equivalent today. Without the check the
+#   reissue sees the closed descriptor (poll answers invalid) and fails, which
+#   the probe also reports as Closed. The check matters when a new resource
+#   reuses the number, which CHI-259 makes testable.

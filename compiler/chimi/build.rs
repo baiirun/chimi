@@ -17,6 +17,7 @@ include!("src/backend/runtime_archive_key.rs");
 
 const RUNTIME_SOURCE: &str = "runtime/native/runtime.c";
 const RUNTIME_HEADER: &str = "runtime/native/runtime.h";
+const BINDING_HEADER: &str = "runtime/native/chimi_binding.h";
 const FIBER_HEADER: &str = "../../runtime/chimi-fiber/include/chimi_fiber.h";
 
 fn main() {
@@ -25,11 +26,13 @@ fn main() {
         "src/backend/runtime_archive_key.rs",
         RUNTIME_SOURCE,
         RUNTIME_HEADER,
+        BINDING_HEADER,
         FIBER_HEADER,
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
     embed_standard_tree();
+    embed_binding_sources();
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     println!("cargo:rustc-env=CHIMI_RUNTIME_TARGET={target}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
@@ -84,6 +87,53 @@ fn embed_standard_tree() {
     std::fs::write(out.join("standard_tree.rs"), generated).expect("write standard_tree.rs");
 }
 
+/// Writes `$OUT_DIR/binding_sources.rs`: every `.c` and `.h` file of each binding
+/// package under `runtime/native/bindings/<package>/`, as `(package, file name,
+/// text)` triples in ascending order, so a new file needs no registration.
+fn embed_binding_sources() {
+    let root = Path::new("runtime/native/bindings");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let mut files = Vec::new();
+    if let Ok(packages) = std::fs::read_dir(root) {
+        for package in packages {
+            let package = package.expect("read a binding package entry").path();
+            if !package.is_dir() {
+                continue;
+            }
+            println!("cargo:rerun-if-changed={}", package.display());
+            for file in std::fs::read_dir(&package).expect("read a binding package") {
+                let file = file.expect("read a binding source entry").path();
+                if file
+                    .extension()
+                    .is_some_and(|extension| extension == "c" || extension == "h")
+                {
+                    println!("cargo:rerun-if-changed={}", file.display());
+                    files.push(file);
+                }
+            }
+        }
+    }
+    files.sort();
+    let mut generated =
+        String::from("pub(crate) const BINDING_SOURCES: &[(&str, &str, &str)] = &[\n");
+    for file in &files {
+        let package = file
+            .parent()
+            .and_then(Path::file_name)
+            .expect("a binding source sits in its package directory")
+            .to_string_lossy();
+        let name = file.file_name().expect("a file name").to_string_lossy();
+        let absolute = std::fs::canonicalize(file).expect("canonicalize a binding source");
+        generated.push_str(&format!(
+            "    ({package:?}, {name:?}, include_str!({:?})),\n",
+            absolute.to_string_lossy()
+        ));
+    }
+    generated.push_str("];\n");
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    std::fs::write(out.join("binding_sources.rs"), generated).expect("write binding_sources.rs");
+}
+
 fn collect_standard_files(directory: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
@@ -118,6 +168,7 @@ fn prebuild(
     let read = |path: &str| std::fs::read(path).map_err(|error| format!("read {path}: {error}"));
     let runtime_source = read(RUNTIME_SOURCE)?;
     let runtime_header = read(RUNTIME_HEADER)?;
+    let binding_header = read(BINDING_HEADER)?;
     let fiber_header = read(FIBER_HEADER)?;
     // Compile the bytes that are hashed, not the files again: the sources may
     // change while this script runs.
@@ -130,6 +181,7 @@ fn prebuild(
     };
     write("runtime.c", &runtime_source)?;
     write("runtime.h", &runtime_header)?;
+    write("chimi_binding.h", &binding_header)?;
     write("chimi_fiber.h", &fiber_header)?;
     let abi_version = abi_version(&runtime_header)?;
     let compiler_identity = compiler_identity()?;
@@ -152,6 +204,7 @@ fn prebuild(
         compiler_identity: &compiler_identity,
         runtime_source: &runtime_source,
         runtime_header: &runtime_header,
+        binding_header: &binding_header,
         fiber_header: &fiber_header,
         process_kernel,
     });

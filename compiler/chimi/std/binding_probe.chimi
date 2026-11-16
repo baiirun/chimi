@@ -1,0 +1,94 @@
+/// A test-only binding package that exercises the C binding boundary (G20)
+/// from the compiler's own tests: values in and out, a failure, a defect, and
+/// a handle to a pipe whose reads wait through the scheduler. Every operation
+/// is test-only (`T4401`), so no program reaches it.
+///
+/// A binding operation fails by returning `Err((code, message))`; the Chimi
+/// wrapper turns that into its module's failure enum, so the C side builds
+/// only plain values.
+import std/bytes.{Bytes}
+import std/result.{Err, Ok, Result}
+
+// 1. Public types.
+
+/// The two ends of an operating-system pipe, owned by the runtime. Released by
+/// `BindingProbe.close`, or when the program ends.
+pub native type Pipe
+
+/// Why a probe operation failed.
+pub enum ProbeError {
+  /// `parse` was given text that is not a decimal integer.
+  Invalid(message: Text)
+  /// The pipe was already closed.
+  Closed
+}
+
+// 2. Values across the boundary.
+
+/// Returns `bytes` after a copy through C.
+pub fn echo(bytes: Bytes) -> Bytes {
+  native_echo(bytes)
+}
+
+/// Returns `left + right`, added in C.
+pub fn add(left: Int, right: Int) -> Int {
+  native_add(left, right)
+}
+
+/// The decimal integer `text` spells.
+///
+/// Fails with: `ProbeError.Invalid` when `text` is not a decimal integer.
+pub fn parse(text: Text) -> Int {
+  case native_try_parse(text) {
+    Ok(value) -> value
+    Err((_, message)) -> Failure(ProbeError.Invalid(message))
+  }
+}
+
+/// Defects with `message`, raised in C.
+pub fn crash(message: Text) -> Void {
+  native_crash(message)
+}
+
+// 3. A handle.
+
+/// A new pipe. Defects when the operating system has no descriptors left.
+pub fn open() -> Pipe {
+  native_open_pipe()
+}
+
+/// Writes `bytes` to the pipe's write end.
+///
+/// Fails with: `ProbeError.Closed` after `close`.
+pub fn write(pipe: Pipe, bytes: Bytes) -> Void {
+  case native_write_pipe(pipe, bytes) {
+    Ok(written) -> written
+    Err(_) -> Failure(ProbeError.Closed)
+  }
+}
+
+/// The bytes waiting in the pipe, at most 64 KiB, waiting until some arrive.
+/// Never `None` while the pipe is open, since the pipe holds its own write end;
+/// the `Option` is the shape a socket's read has.
+///
+/// Fails with: `ProbeError.Closed` after `close`.
+pub fn read(pipe: Pipe) -> Option<Bytes> {
+  case native_read_pipe(pipe) {
+    Ok(chunk) -> chunk
+    Err(_) -> Failure(ProbeError.Closed)
+  }
+}
+
+/// Closes both ends. Closing again does nothing.
+pub fn close(pipe: Pipe) -> Void {
+  native_close_pipe(pipe)
+}
+
+native fn native_echo(bytes: Bytes) -> Bytes
+native fn native_add(left: Int, right: Int) -> Int
+native fn native_try_parse(text: Text) -> Result<Int, (Int, Text)>
+native fn native_crash(message: Text) -> Void
+native fn native_open_pipe() -> Pipe
+native fn native_write_pipe(pipe: Pipe, bytes: Bytes) -> Result<Void, (Int, Text)>
+native fn native_read_pipe(pipe: Pipe) -> Result<Option<Bytes>, (Int, Text)>
+native fn native_close_pipe(pipe: Pipe) -> Void

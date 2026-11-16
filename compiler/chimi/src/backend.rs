@@ -17,6 +17,9 @@ mod direct_loop;
 #[cfg(feature = "native-backend")]
 mod runtime_archive_key;
 
+#[cfg(feature = "native-backend")]
+mod bindings;
+
 #[cfg(feature = "native-aot-prototype")]
 #[doc(hidden)]
 pub mod native_aot_prototype;
@@ -54,6 +57,20 @@ impl BackendProgram {
 
     pub fn profile(&self) -> BackendProfile {
         BackendProfile::from_core(&self.core)
+    }
+
+    /// Why the reference interpreter cannot run this program (`E5204`): it
+    /// reaches a C binding, which only a native build can call. Names the
+    /// first such operation; `None` when the interpreter can run it.
+    pub fn interpreter_refusal(&self) -> Option<String> {
+        let binding = *self.core.reached_bindings().first()?;
+        let operation = crate::operations::OPERATIONS
+            .iter()
+            .find(|operation| operation.binding == Some(binding))
+            .map_or(binding.symbol, |operation| operation.id);
+        Some(format!(
+            "error[E5204]: the program reaches `{operation}`, a C binding, which the interpreter cannot call; build it with `chimi build`"
+        ))
     }
 
     /// Whether the entry function takes the application arguments
