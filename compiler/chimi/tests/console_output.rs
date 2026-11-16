@@ -126,7 +126,10 @@ fn a_task_keeps_running_while_another_waits_on_a_full_stdout_pipe() {
     let a = "a".repeat(3000);
     let b = "b".repeat(3000);
     let lines: Vec<&str> = output.lines().collect();
-    assert!(lines.iter().all(|line| *line == a || *line == b), "a line interleaved");
+    assert!(
+        lines.iter().all(|line| *line == a || *line == b),
+        "a line interleaved"
+    );
     assert_eq!(lines.iter().filter(|line| **line == a).count(), 100);
     assert_eq!(lines.iter().filter(|line| **line == b).count(), 100);
     std::fs::remove_dir_all(scratch).unwrap();
@@ -219,65 +222,78 @@ pub fn main() -> Int needs { console: Console } {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
-/// With `2>&1` standard output and standard error are one pipe. A task
-/// writing each stream still never splits the other's lines, since each
-/// write after poll takes at most `PIPE_BUF` bytes of a shared queue.
+/// With `2>&1` standard output and standard error are one pipe. A line on
+/// one stream is never split by a line on the other: a write after poll takes
+/// at most `PIPE_BUF` bytes, so a long line goes out in pieces, and both
+/// streams must share one queue for nothing to land between them.
 #[test]
 fn stdout_and_stderr_on_one_pipe_keep_their_lines_whole() {
     let scratch = scratch_directory("merged");
     let executable = build_native(
         &scratch,
         "merged",
-        r#"import std/io.{Console}
+        r#"import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/io.{Console}
 import std/task as Task
 import std/text as Text
 
-fn flood(error: Bool) -> Void needs { console: Console } {
-  let line = case error {
-    True -> Text.repeat("e", 3000)
-    False -> Text.repeat("o", 3000)
-  }
+fn complain() -> Void needs { clock: Clock, console: Console } {
+  Clock.sleep(Duration.milliseconds(50))
   loop count = 0 {
-    case count == 100 {
+    case count == 500 {
       True -> break
       False -> {
-        case error {
-          True -> console.write_error(line)
-          False -> console.write_line(line)
-        }
+        console.write_error("e")
         count + 1
       }
     }
   }
 }
 
-pub fn main() -> Int needs { console: Console } {
-  let out = Task.start(fn() { flood(False) })
-  let err = Task.start(fn() { flood(True) })
-  Task.result(out)
+pub fn main() -> Int needs { clock: Clock, console: Console } {
+  let err = Task.start(complain)
+  console.write_line(Text.repeat("o", 300000))
   Task.result(err)
   0
 }
 "#,
     );
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg("exec \"$0\" 2>&1")
-        .arg(&executable)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("start native program");
-    // Let both writers fill the pipe before reading, so they share it while
-    // it is full. Nothing below depends on how long this takes.
-    std::thread::sleep(Duration::from_millis(200));
-    let mut output = String::new();
-    child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
-    assert!(child.wait().unwrap().success());
-    let out = "o".repeat(3000);
-    let err = "e".repeat(3000);
-    let lines: Vec<&str> = output.lines().collect();
-    assert!(lines.iter().all(|line| *line == out || *line == err), "a line was split");
-    assert_eq!(lines.len(), 200);
+    // Whether a regression shows depends on which task wakes first, so the
+    // run repeats.
+    for _ in 0..4 {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exec \"$0\" 2>&1")
+            .arg(&executable)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start native program");
+        // Reading late and slowly makes the long line fill the pipe and park
+        // mid-line again and again while the other task waits to write. The
+        // assertions hold however long this takes; only how often a regression
+        // shows depends on it.
+        std::thread::sleep(Duration::from_millis(200));
+        let mut stdout = child.stdout.take().unwrap();
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let count = stdout.read(&mut chunk).unwrap();
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(child.wait().unwrap().success());
+        let mut lines: Vec<String> = output.lines().map(str::to_owned).collect();
+        lines.sort();
+        let mut expected = vec!["e".to_owned(); 500];
+        expected.push("o".repeat(300000));
+        assert_eq!(lines, expected, "a line was split");
+    }
     std::fs::remove_dir_all(scratch).unwrap();
 }

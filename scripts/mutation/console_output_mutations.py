@@ -8,7 +8,7 @@ MUTATIONS = [
     dict(
         name="every stream writes directly, blocking the scheduler",
         file=RUNTIME,
-        edits=[("      ? CONSOLE_QUEUED : CONSOLE_DIRECT;", "      ? CONSOLE_DIRECT : CONSOLE_DIRECT;")],
+        edits=[("    ? CONSOLE_QUEUED : CONSOLE_DIRECT;", "    ? CONSOLE_DIRECT : CONSOLE_DIRECT;")],
         targets=["console_output"],
     ),
     dict(
