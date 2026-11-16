@@ -1,6 +1,11 @@
 // Int.sum adds with `+`, so an overflowing sum defects like the operator.
 import std/int as Int
+import std/test as Test
 
-pub fn main() -> Int {
+fn run() -> Int {
   Int.sum([9223372036854775807, 1])
+}
+
+test "sum overflow defects" {
+  Test.assert_equal(Test.capture_defect(run), "integer overflow in `+`: 9223372036854775807 + 1")
 }

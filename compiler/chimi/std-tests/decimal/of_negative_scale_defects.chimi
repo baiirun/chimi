@@ -1,7 +1,12 @@
 // A negative scale is outside 0..=38 too.
 import std/decimal as Decimal
 import std/decimal.{Decimal}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   Decimal.of(1, -1)
+}
+
+test "of negative scale defects" {
+  Test.assert_equal(Test.capture_defect(run), "Decimal.of: scale must be in 0..=38, got -1")
 }

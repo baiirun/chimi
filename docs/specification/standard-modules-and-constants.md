@@ -302,10 +302,15 @@ This replaces today's five edits to `standard.rs`, `resolution.rs`,
 `typing.rs` and the `$`-named generics in `StandardGeneric` disappear,
 because signatures come from source.
 
-### Testing the standard library before a test runner exists
+### Testing the standard library
 
-Until `test` declarations exist (G16), the standard library uses
-expected-output programs:
+The standard library's tests live in `compiler/chimi/std-tests/<module>/`.
+Most files there hold `test` items, which `chimi test --json` runs on both
+backends; a Rust integration test fails when any test fails on either
+backend or the two ran different tests. The rest are expected-output
+programs, kept where the point is the runner's own outcome record or report,
+and for checks not converted yet. Before the test runner, every file was such
+a program:
 
 - Each standard module has a directory `compiler/chimi/std-tests/<module>/`.
   Each `.chimi` file there is a program with `pub fn main()`, and a sibling
@@ -314,13 +319,13 @@ expected-output programs:
   the native backend. It MUST fail when either output differs from the
   expected file, or when the two backends differ from each other.
 - The same test MUST fail when a registered operation is reached by no test
-  program, so every primitive has differential coverage.
+  or program, so every primitive has differential coverage.
 - Programs print values with `Debug.render`, so an expected file is readable
   without per-type printing code.
 
-When G16 lands, each program converts to `test` declarations in the same
-directory, and the coverage rule carries over, as
-[testing](testing.md#migrating-the-std-tests-programs) describes.
+Programs convert to `test` items in the same directory, and the coverage rule
+carries over, as [testing](testing.md#migrating-the-std-tests-programs)
+describes.
 
 ## Native bindings for std and vendored modules (G20)
 

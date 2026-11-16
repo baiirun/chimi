@@ -4,17 +4,22 @@
 import std/bytes as Bytes
 import std/debug as Debug
 import std/embed as Embed
+import std/test as Test
 
 const greeting = Embed.text("assets/greeting.txt")
 const logo = Embed.bytes("assets/logo.bin")
 const nothing = Embed.text("assets/empty.txt")
 const same = Embed.bytes("assets/greeting.txt")
 
-pub fn main() -> Text {
+fn run() -> Text {
   Debug.render([
     Debug.render(greeting),
     Debug.render(logo),
     Debug.render(nothing),
     Debug.render(Bytes.to_text_lossy(same) == greeting),
   ])
+}
+
+test "text and bytes" {
+  Test.assert_equal(run(), "[\"\\\"Hello, émbed!\\\\nline two\\\\n\\\"\", \"Bytes(89 50 4e 47 00 ff)\", \"\\\"\\\"\", \"True\"]")
 }

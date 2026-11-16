@@ -1,7 +1,12 @@
 // The start bound is checked as well as the end: the two bytes of "é" are
 // 1..3, so a slice starting at 2 splits it even though its end is a boundary.
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   Text.byte_slice("héllo", 2..3)
+}
+
+test "byte slice start inside sequence defects" {
+  Test.assert_equal(Test.capture_defect(run), "Text.byte_slice: bound 2 falls inside a UTF-8 sequence")
 }

@@ -6,6 +6,7 @@ import std/decimal as Decimal
 import std/json as Json
 import std/json.{DecodeError}
 import std/text as Text
+import std/test as Test
 
 fn decoded(text: Text) -> Text {
   case Json.decode(text) {
@@ -21,7 +22,7 @@ fn parsed(text: Text) -> Text {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let results = [
     Debug.render([Text.uppercase("a\u{0}b"), Text.lowercase("ΑΣ\u{0}Σ")]),
     Debug.render(Text.graphemes("a\u{0}b")),
@@ -32,5 +33,9 @@ pub fn main() -> Text {
     parsed("1\u{0}5"),
     parsed("1.5"),
   ]
-  Debug.render(results)
+  results
+}
+
+test "nul bytes" {
+  Test.assert_equal(run(), ["[\"A\\u{0}B\", \"ας\\u{0}σ\"]", "[\"a\", \"\\u{0}\", \"b\"]", "3", "Value.Text(\"a\\u{0}b\")", "unexpected characters after JSON value at 3", "expected a JSON value at 3", "ParseError.Invalid", "1.5"])
 }

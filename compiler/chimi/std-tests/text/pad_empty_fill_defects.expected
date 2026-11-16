@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"defect","message":"Text.pad_start: fill must not be empty"}

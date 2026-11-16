@@ -1,8 +1,13 @@
 // A negative wait defects at the constructor that receives it.
 import std/duration as Duration
 import std/schedule as Schedule
+import std/test as Test
 
-pub fn main() -> Bool {
+fn run() -> Bool {
   let wait = Duration.negate(Duration.seconds(1))
   Schedule.fixed(2, wait) == Schedule.immediate(2)
+}
+
+test "negative wait" {
+  Test.assert_equal(Test.capture_defect(run), "Schedule waits must not be negative, got -1s")
 }

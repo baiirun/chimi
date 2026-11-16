@@ -1,1 +1,0 @@
-{"schema":"chimi.runtime.v1","outcome":"defect","message":"Checkout.cents: amount must not be negative, got -1"}

@@ -1,7 +1,12 @@
 // A byte_slice bound inside a UTF-8 sequence is a broken precondition: the
 // two bytes of "é" are 1..3, so bound 2 splits it.
 import std/text as Text
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   Text.byte_slice("héllo", 0..2)
+}
+
+test "byte slice inside sequence defects" {
+  Test.assert_equal(Test.capture_defect(run), "Text.byte_slice: bound 2 falls inside a UTF-8 sequence")
 }

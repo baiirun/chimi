@@ -4,6 +4,7 @@
 import std/debug as Debug
 import std/decimal as Decimal
 import std/decimal.{Decimal, ParseError}
+import std/test as Test
 
 fn parsed(text: Text) -> Text {
   case Decimal.parse(text) {
@@ -14,19 +15,23 @@ fn parsed(text: Text) -> Text {
   }
 }
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let nines = Decimal.parse("99999999999999999999999999999999999999")
   let tiny = Decimal.parse("0.00000000000000000000000000000000000001")
   let results = [
     Debug.render([parsed("19.99"), parsed("-0.50"), parsed("007"), parsed("-0"), parsed("0.000")]),
     Debug.render([parsed(""), parsed("-"), parsed("+1"), parsed("1."), parsed(".5"), parsed("1.2.3"), parsed("1e2"), parsed("1_000"), parsed(" 1"), parsed("--1"), parsed("1.-2")]),
     Debug.render([parsed("999999999999999999999999999999999999999"), parsed("340282366920938463463374607431768211456"), parsed("340282366920938463463374607431768211457"), parsed("3402823669209384634633746074317682114560"), parsed("-99999999999999999999999999999999999999.5")]),
-    Debug.render([parsed("100000000000000000000000000000000000000"),parsed("0.000000000000000000000000000000000000001"), parsed("99999999999999999999999999999999999999")]),
+    Debug.render([parsed("100000000000000000000000000000000000000"), parsed("0.000000000000000000000000000000000000001"), parsed("99999999999999999999999999999999999999")]),
     Debug.render(Decimal.parse(Decimal.to_text(Decimal.of(-150, 2))) == Decimal.of(-15, 1)),
     Decimal.to_text(Decimal.parse(Decimal.to_text(Decimal.of(-150, 2)))),
     Debug.render([Decimal.add_checked(nines, Decimal.of(1, 0)), Decimal.add_checked(nines, -nines), Decimal.add_checked(Decimal.of(15, 1), Decimal.of(25, 2))]),
     Debug.render([Decimal.subtract_checked(-nines, Decimal.of(1, 0)), Decimal.subtract_checked(Decimal.of(1, 0), Decimal.of(150, 2))]),
     Debug.render([Decimal.multiply_checked(nines, Decimal.of(10, 0)), Decimal.multiply_checked(tiny, Decimal.of(1, 1)), Decimal.multiply_checked(Decimal.of(-3, 1), Decimal.of(5, 1))]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "parse and checked" {
+  Test.assert_equal(run(), ["[\"19.99\", \"-0.50\", \"7\", \"0\", \"0.000\"]", "[\"Empty\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\", \"Invalid\"]", "[\"OutOfRange\", \"OutOfRange\", \"OutOfRange\", \"OutOfRange\", \"OutOfRange\"]", "[\"OutOfRange\", \"OutOfRange\", \"99999999999999999999999999999999999999\"]", "True", "-1.50", "[None, Some(0), Some(1.75)]", "[None, Some(-0.5)]", "[None, None, Some(-0.15)]"])
 }

@@ -3166,7 +3166,8 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi build --root <project-dir> <entry-module> ",
             "[-o <executable>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
             "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
-            "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] | ",
+            "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
+            "[--trace=off|boundaries|full] | ",
             "chimi std check; a compiler developer may put ",
             "--std-dir <directory> before inspect, check, run, build, test, or std check\n"
         )

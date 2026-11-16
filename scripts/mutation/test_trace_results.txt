@@ -1,0 +1,16 @@
+# mutation run at ec375b6843356af3702840921755f853c2e94c87
+# test_trace_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [testing -- trace_] (11s)
+KILLED       native root computation stays test 0 [testing -- trace_] (13s)
+KILLED       native gets no telemetry file [testing -- trace_] (19s)
+KILLED       native full traces only boundaries [testing -- trace_] (10s)
+KILLED       interpreter traces at full for boundaries [testing -- trace_] (10s)
+KILLED       interpreter writes no file [testing -- trace_] (11s)
+KILLED       native execution id is generated [testing -- trace_] (16s)
+KILLED       trace names share one file [testing -- trace_] (15s)
+KILLED       a stale trace survives [testing -- trace_] (11s)
+KILLED       the report names a passing test's trace [testing -- trace_] (10s)
+KILLED       json omits the trace [testing -- trace_] (10s)
+KILLED       a bad trace level is off [testing -- trace_] (11s)
+KILLED       off traces boundaries [testing -- trace_] (1s)
+# result: every mutant killed

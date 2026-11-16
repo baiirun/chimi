@@ -2,7 +2,12 @@
 // oversized quotient; a scale outside 0..=38 is a broken precondition.
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
+import std/test as Test
 
-pub fn main() -> Option<Decimal> {
+fn run() -> Option<Decimal> {
   Decimal.divide_checked(Decimal.of(1, 0), Decimal.of(3, 0), -1, Rounding.HalfEven)
+}
+
+test "divide checked scale outside defects" {
+  Test.assert_equal(Test.capture_defect(run), "Decimal.divide_checked: scale must be in 0..=38, got -1")
 }

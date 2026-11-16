@@ -3,8 +3,9 @@
 import std/debug as Debug
 import std/duration as Duration
 import std/schedule as Schedule
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> Text {
   let second = Duration.seconds(1)
   Debug.render([
     Schedule.fixed(3, second) == Schedule.fixed(3, Duration.milliseconds(1000)),
@@ -13,4 +14,8 @@ pub fn main() -> Text {
     Schedule.immediate(3) == Schedule.fixed(3, Duration.zero),
     Schedule.exponential(3, second, second) == Schedule.exponential(3, second, second),
   ])
+}
+
+test "equality" {
+  Test.assert_equal(run(), "[True, False, False, False, True]")
 }

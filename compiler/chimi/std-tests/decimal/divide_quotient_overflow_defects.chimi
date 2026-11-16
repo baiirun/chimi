@@ -1,7 +1,12 @@
 // A quotient that needs more than 38 digits at its scale defects.
 import std/decimal as Decimal
 import std/decimal.{Decimal, Rounding}
+import std/test as Test
 
-pub fn main() -> Decimal {
+fn run() -> Decimal {
   Decimal.divide(Decimal.of(9223372036854775807, 0), Decimal.of(1, 38), 0, Rounding.HalfEven)
+}
+
+test "divide quotient overflow defects" {
+  Test.assert_equal(Test.capture_defect(run), "Decimal.divide: the quotient of 9223372036854775807 / 0.00000000000000000000000000000000000001 at scale 0 needs more than 38 digits")
 }

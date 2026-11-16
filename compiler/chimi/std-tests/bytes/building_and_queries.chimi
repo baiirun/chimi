@@ -3,8 +3,9 @@
 import std/bytes as Bytes
 import std/bytes.{Bytes}
 import std/debug as Debug
+import std/test as Test
 
-pub fn main() -> Text {
+fn run() -> List<Text> {
   let hi = Bytes.from([0x68, 0x69])
   let data = Bytes.from([0, 1, 2, 255, 13, 10, 7])
   let crlf = Bytes.from([13, 10])
@@ -24,5 +25,9 @@ pub fn main() -> Text {
     Debug.render([Bytes.append(hi, crlf), Bytes.concat([hi, Bytes.empty(), crlf, hi]), Bytes.concat([])]),
     Debug.render([Bytes.to_list(data), Bytes.to_list(Bytes.empty())]),
   ]
-  Debug.render(results)
+  results
+}
+
+test "building and queries" {
+  Test.assert_equal(run(), ["[Bytes(68 69), Bytes(), Bytes(68 69), Bytes(c3 a9)]", "[True, False, True]", "[True, True, True, True]", "[7, 0, 2]", "[True, False]", "[Some(0), Some(255), Some(7), None, None]", "[Bytes(01 02 ff), Bytes(0a 07), Bytes(00 01), Bytes(), Bytes(ff)]", "[Some(4), None, Some(0), None]", "[True, False]", "[True, False, False, True]", "[True, False, False, True]", "[Some((Bytes(00 01 02 ff), Bytes(07))), None, Some((Bytes(), Bytes()))]", "[Bytes(68 69 0d 0a), Bytes(68 69 0d 0a 68 69), Bytes()]", "[[0, 1, 2, 255, 13, 10, 7], []]"])
 }

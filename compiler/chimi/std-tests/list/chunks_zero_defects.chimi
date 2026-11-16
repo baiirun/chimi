@@ -1,6 +1,11 @@
 // A chunk size below 1 is a broken precondition, raised with Debug.crash.
 import std/list as List
+import std/test as Test
 
-pub fn main() -> List<List<Int>> {
+fn run() -> List<List<Int>> {
   List.chunks([1, 2], 0)
+}
+
+test "chunks zero defects" {
+  Test.assert_equal(Test.capture_defect(run), "List.chunks: size must be positive, got 0")
 }

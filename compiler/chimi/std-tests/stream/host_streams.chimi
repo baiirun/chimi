@@ -5,13 +5,14 @@ import std/bytes as Bytes
 import std/debug as Debug
 import std/result as Result
 import std/stream as Stream
+import std/test as Test
 
 enum HostError {
   Full
   Broke
 }
 
-pub fn main() -> Text {
+fn run() -> Text {
   let endless = Stream.reader(fn() { Some(Bytes.from_text("ab")) }, fn() { Void })
   let broken = Stream.reader(fn() { Failure(HostError.Broke) }, fn() { Void })
   let nothing = Stream.reader(fn() { None }, fn() { Void })
@@ -22,6 +23,12 @@ pub fn main() -> Text {
     Result.capture(fn() { Stream.copy(endless, refusing) }),
     Result.capture(fn() { Stream.copy(broken, quiet) }),
     Result.capture(fn() { Stream.copy(nothing, refusing) }),
-    Result.capture(fn() { Bytes.length(Stream.read_all(nothing, 0)) }),
+    Result.capture(fn() {
+      Bytes.length(Stream.read_all(nothing, 0))
+    }),
   ))
+}
+
+test "host streams" {
+  Test.assert_equal(run(), "(Result.Err(StreamError.TooLarge(5)), Result.Err(HostError.Full), Result.Err(HostError.Broke), Result.Ok(0), Result.Ok(0))")
 }

@@ -2,6 +2,7 @@
 // indented by two spaces and ended with `,`; an empty list stays on one line.
 // The value is the specification's example.
 import std/debug as Debug
+import std/test as Test
 
 struct Money {
   cents: Int,
@@ -12,11 +13,15 @@ enum Status {
   Declined(reason: Text)
 }
 
-pub fn main() -> Text {
+fn run() -> Text {
   Debug.render_indented({
     items: [Money(1)],
     status: Status.Declined("x"),
     pending: [Status.Pending],
     empty: [],
   })
+}
+
+test "render indented" {
+  Test.assert_equal(run(), "{\n  empty: [],\n  items: [\n    Money {\n      cents: 1,\n    },\n  ],\n  pending: [\n    Status.Pending,\n  ],\n  status: Status.Declined(\n    \"x\",\n  ),\n}")
 }
