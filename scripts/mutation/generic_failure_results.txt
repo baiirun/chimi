@@ -1,0 +1,5 @@
+# generic_failure_mutations.py (CHI-232), 2026-11-16
+# Run at 2c7b872: 5 of 6 killed. "a field poison disagrees with a known
+# type" survived: no row we could build records a poison argument for a
+# variant whose field uses it, so the guard is unreachable in practice. It is
+# kept so an unresolved type never draws a second diagnostic.
