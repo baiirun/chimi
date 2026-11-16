@@ -654,12 +654,11 @@ impl Compiler {
         crate::operations::verify_tree(sources)
     }
 
-    /// Every operation id in the standard registry, each of which a std-tests
-    /// program must reach.
+    /// The id of every registered operation that a program may reach, each of
+    /// which a std-tests program must reach. Test-only operations are left out:
+    /// no program reaches them (`T4401`), and `tests/testing.rs` covers them
+    /// through `chimi test`.
     #[doc(hidden)]
-    /// The id of every registered operation that a program may reach. Test-only
-    /// operations are left out: no program reaches them (`T4401`), and
-    /// `tests/testing.rs` covers them through `chimi test`.
     pub fn standard_operation_ids() -> Vec<&'static str> {
         crate::operations::OPERATIONS
             .iter()

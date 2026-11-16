@@ -73,6 +73,9 @@ impl Evaluator<'_> {
             Control::Defect { message, node, .. }
                 if !node.is_some_and(|node| self.is_assertion_call(node)) =>
             {
+                // Native defect messages are C strings, so the text ends at the
+                // first NUL there; cutting it here keeps both backends' values equal.
+                let message = message.split('\0').next().unwrap_or_default().to_owned();
                 Control::Success(RuntimeValue::Text(message))
             }
             Control::Success(value) => not_a_defect(CAPTURE_RETURNED_HEADING, &value),

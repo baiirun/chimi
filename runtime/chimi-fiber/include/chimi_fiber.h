@@ -138,8 +138,10 @@ enum {
   /* ChimiSchedulerRequest: cancels the live child tasks started in the
      scope whose id is `token`, or in a scope nested in it, but not the
      caller (Test.capture_defect after its operation defected). A later
-     SCOPE_EXIT is PENDING until they drain. ERROR when the task is not
-     inside the scope. Never a cancellation point. */
+     SCOPE_EXIT is PENDING until they drain. A child started in the scope
+     after the cancel is not cancelled, so the caller starts none before it
+     leaves. ERROR when the task is not inside the scope. Never a
+     cancellation point. */
   CHIMI_REQUEST_SCOPE_CANCEL = 33,
 };
 

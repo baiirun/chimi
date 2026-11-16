@@ -565,6 +565,45 @@ fn an_assertion_in_a_later_helper_is_not_captured_either() {
     );
 }
 
+/// Constant evaluation reports its own stops as defects, so a constant may not
+/// capture one (`E5201`, as for any operation that needs the running program).
+#[test]
+fn a_constant_cannot_capture_a_defect() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/test as Test\n",
+        "\n",
+        "const CAUGHT: Text = Test.capture_defect(fn() { Debug.crash(\"boom\") })\n",
+        "\n",
+        "test \"reads a constant\" {\n",
+        "  Test.assert_equal(CAUGHT, \"boom\")\n",
+        "}\n",
+    );
+    let run = chimi_test("capture-constant", source, &[]);
+    assert_eq!(run.status, Some(2));
+    assert!(
+        run.stderr.contains("error[E5201]") && run.stderr.contains("`Test.capture_defect`"),
+        "{}",
+        run.stderr
+    );
+}
+
+/// A native defect message is a C string; both backends capture it up to the
+/// first NUL, so a test sees the same value on each.
+#[test]
+fn a_captured_message_is_the_same_on_both_backends_when_it_holds_a_nul() {
+    let source = concat!(
+        "import std/debug as Debug\n",
+        "import std/test as Test\n",
+        "\n",
+        "test \"keeps the text before a NUL\" {\n",
+        "  Test.capture_defect(fn() { Debug.crash(\"a\\u{0}b\") }) |> Test.assert_equal(\"a\")\n",
+        "}\n",
+    );
+    let run = both_backends("capture-nul", source, &[]);
+    assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
+}
+
 /// With no deadline, the scope adds no timer for virtual time to jump to.
 #[test]
 fn a_deadlock_inside_capture_defect_is_still_a_deadlock() {
