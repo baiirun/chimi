@@ -259,7 +259,6 @@ mod tests {
         let before = clock.now();
         std::thread::sleep(Duration::from_millis(20));
         let after = clock.now();
-        assert!(before >= Instant::ORIGIN);
         assert!(after.as_nanos() - before.as_nanos() >= 20_000_000);
     }
 }

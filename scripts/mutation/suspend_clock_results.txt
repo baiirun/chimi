@@ -1,0 +1,9 @@
+# suspend_clock_mutations.py: 6 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- scheduler::clock] (7s)
+KILLED       a real wait is not capped [lib -- scheduler::clock] (3s)
+KILLED       a real wait sleeps the whole cap even when the deadline is nearer [lib -- scheduler::clock] (3s)
+KILLED       a past deadline wraps to a long wait [lib -- scheduler::clock] (2s)
+KILLED       the real clock reads seconds as milliseconds [lib -- scheduler::clock] (3s)
+KILLED       the real clock overflows instead of saturating [lib -- scheduler::clock] (2s)
+KILLED       the real clock drops the nanoseconds [lib -- scheduler::clock] (2s)
+# result: every mutant killed
