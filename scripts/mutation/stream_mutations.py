@@ -35,20 +35,26 @@ MUTATIONS = [
         "        case size > limit {",
         "        case size >= limit {")]),
     streams("a producer's failure is lost", [(
-        "        Success(Receive.Received(error)) -> Failure(error)",
-        "        Success(Receive.Received(error)) -> Failure(StreamError.Aborted)")]),
+        "      Success(Receive.Received(Item.Failed(error))) -> Failure(error)",
+        "      Success(Receive.Received(Item.Failed(error))) -> Failure(StreamError.Aborted)")]),
+    streams("a producer's failure leaves the stream open", [(
+        "        send_quietly(sender, Item.Failed(error))\n        close_quietly(out)",
+        "        send_quietly(sender, Item.Failed(error))")]),
     streams("a vanished writer reads as a clean end", [(
-        "      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)\n    }\n    Pull.Stop",
-        "      Failure(ChannelError.Aborted) -> None\n    }\n    Pull.Stop")]),
+        "      Success(Receive.Drained) -> None\n      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)\n    }\n    Pull.Stop -> {\n      Channel.abort(receiver)\n      None\n    }\n  }\n}\n\nfn push_item",
+        "      Success(Receive.Drained) -> None\n      Failure(ChannelError.Aborted) -> None\n    }\n    Pull.Stop -> {\n      Channel.abort(receiver)\n      None\n    }\n  }\n}\n\nfn push_item")]),
     streams("stop does not reach the producer", [(
-        "      Channel.abort(receiver)\n      None",
-        "      None")]),
+        "      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)\n    }\n    Pull.Stop -> {\n      Channel.abort(receiver)\n      None\n    }\n  }\n}\n\n// The reader stopped",
+        "      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)\n    }\n    Pull.Stop -> {\n      None\n    }\n  }\n}\n\n// The reader stopped")]),
     streams("produce never closes the writer", [(
         "  body(out)\n  close(out)",
         "  body(out)")]),
     streams("produce ignores its capacity", [(
-        "  let (out, chunks) = pipe(capacity)",
-        "  let (out, chunks) = pipe(capacity + 8)")]),
+        "pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors E needs R) -> Reader<E | StreamError> {\n  let made = Channel.bounded(capacity)",
+        "pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors E needs R) -> Reader<E | StreamError> {\n  let made = Channel.bounded(capacity + 8)")]),
+    streams("a host reader hands out empty chunks", [(
+        "        True -> skipped + 1\n        False -> break Some(bytes)",
+        "        True -> break Some(bytes)\n        False -> break Some(bytes)")]),
     streams("copy counts chunks, not bytes", [(
         "        copied + Bytes.length(chunk)",
         "        copied + 1")]),
@@ -60,6 +66,9 @@ MUTATIONS = [
     checker("a field call does not read failures from the type argument", [(
         "                .or(from_value)",
         "                .or(from_value.filter(|_| false))")]),
+    checker("signatures are checked before the types they name", [(
+        "            declarations.sort_by_key(|declaration| {",
+        "            declarations.sort_by_key(|_declaration| { return false;")]),
     checker("a constructor does not bind a failure-row parameter", [(
         "                    Some(GenericKind::FailureSet | GenericKind::FailureRow)\n"
         "                ) {\n"

@@ -2676,9 +2676,20 @@ impl ProjectTypeChecker {
             .iter()
             .filter(|module_id| declaration_modules.contains(module_id))
         {
-            let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
+            let mut declarations = self.resolved.semantic.modules[module_id.raw() as usize]
                 .declarations
                 .clone();
+            // Types first, so a signature that names a type declared below it
+            // sees which of the type's parameters are failure sets.
+            declarations.sort_by_key(|declaration| {
+                !matches!(
+                    declaration.kind,
+                    ModuleDeclarationKind::Struct
+                        | ModuleDeclarationKind::Enum
+                        | ModuleDeclarationKind::Interface
+                        | ModuleDeclarationKind::NativeType
+                )
+            });
             for declaration in declarations {
                 self.check_declaration(*module_id, &declaration);
             }

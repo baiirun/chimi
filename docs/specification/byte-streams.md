@@ -87,7 +87,14 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
   functions above. `E` is what their operations fail with, so a file reader
   can fail with an IO error and a pipe with `StreamError`.
 - `Stream.reader` and `Stream.writer` build a stream from functions, for host
-  streams and test fakes. They add no buffering.
+  streams and test fakes. They add no buffering. `Stream.reader` MUST skip an
+  empty chunk from `next`. The other reading rules below (stopping twice, a
+  read after a stop) bind pipes and produced streams; for a host stream they
+  are obligations on its `next` and `stop`.
+- The functions a stream is built from need no capabilities: a stream's
+  authority comes from the handle it was opened with, as an opened file needs
+  no file-system provider to read it. Opening a file or a socket, once those
+  modules exist, is where `needs` appears.
 
 ### Reading
 
@@ -113,16 +120,20 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
 
 - `pipe(capacity)` MUST return a connected writer and reader with at most
   `capacity` chunks between them. If the task that holds the writer ends
-  without closing it, the reader MUST fail with `StreamError.Aborted` once the
-  buffered chunks are read, never end as if the stream were complete.
+  without closing it, the reader MUST fail with `StreamError.Aborted`, never
+  end as if the stream were complete. Chunks it had not read yet MAY be lost,
+  as an aborted channel discards them.
 - `produce(capacity, body)` MUST run `body` once in a new child task of the
   caller, with the writer of a pipe of that capacity, and close the writer
   when `body` returns.
-- If `body` fails, the reader MUST fail with that failure after the chunks
-  written before it. A defect in `body` follows the rules for any child
+- If `body` fails, the reader MUST fail with that failure after every chunk
+  written before it, and end after that. A defect in `body` follows the rules for any child
   task's defect.
 - Stopping a produced reader makes `body`'s next write fail with
   `StreamError.Closed`, so a producer of an endless stream ends.
+- Dropping a reader is not a stop: its producer stays parked until the task
+  that started it ends. Code that may not read to the end SHOULD hold the
+  reader with `Resource.scoped(open, Stream.stop, use)`.
 
 ### Whole streams
 
@@ -145,7 +156,11 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
   `Aborted` also says truthfully that the stream did not end.
 - **Producers run in a child task.** `produce` is the shape HTTP bodies and
   subprocess output will use. A child task gives backpressure through the
-  channel and makes a stop reach the producer as a failed write.
+  channel and makes a stop reach the producer as a failed write. The body's
+  failure travels on the same channel behind its chunks, so none are lost.
+- **No needs row on a stream.** `Reader<E>` has no capability parameter, so
+  every signature that passes a stream stays short; authority is taken once,
+  where the stream is opened.
 
 ## Conformance
 
@@ -158,6 +173,9 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
 | `copy`, `from_bytes`, and the host constructors | `copy_from_bytes_and_host_fakes` |
 | `Stream.stop` as a `Resource.scoped` release | `resource_scoped_with_stop_as_the_release_closes_the_producer` |
 | A writer's task that ends without closing aborts the reader | `a_pipe_whose_writer_task_ends_without_closing_aborts` |
+| A producer's failure comes after its chunks; an ended stream stays ended; a write after `close` fails; a second stop does nothing | `a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed` |
+| A host reader skips empty chunks | `a_host_reader_skips_empty_chunks` |
+| Host streams, `read_all`'s limit on an endless reader, and `copy` failures on both backends | `std-tests/stream/host_streams.chimi` |
 
 ## Not covered yet
 

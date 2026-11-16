@@ -318,7 +318,7 @@ pub fn main() -> Text {
     assert_eq!(outcome, rendered(r#"(Result.Ok(Some(Bytes(78))), 1)"#));
 }
 
-// Rejects a reader that treats a vanished writer as a clean end: the writer's task ends without closing, and the read fails with `Aborted`.
+// Rejects a reader that treats a vanished writer as a clean end: the writer's task writes a chunk and ends without closing, and the read fails with `Aborted` (a bare pipe does not keep the unread chunk).
 #[test]
 fn a_pipe_whose_writer_task_ends_without_closing_aborts() {
     let outcome = run_virtual(
@@ -335,4 +335,66 @@ fn a_pipe_whose_writer_task_ends_without_closing_aborts() {
 "#,
     );
     assert_eq!(outcome, rendered(r#"Result.Err(StreamError.Aborted)"#));
+}
+
+// Rejects a producer failure that overtakes the chunks written before it, and streams that reopen: the reader sees `a`, `b`, `Broke`, then the end; a finished stream reads `None` again; a write after `close` fails with `Closed`; and stopping twice is harmless.
+#[test]
+fn a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed() {
+    let outcome = run_virtual("a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed", r#"pub enum Job {
+  Broke
+}
+
+pub fn main() -> Text needs { clock: Clock.Clock } {
+  let failing = Stream.produce(4, fn(out) {
+    Stream.write(out, Bytes.from_text("a"))
+    Stream.write(out, Bytes.from_text("b"))
+    Failure(Job.Broke)
+  })
+  Clock.sleep(Duration.seconds(1))
+  let reads = [
+    Result.capture(fn() { Stream.read(failing) }),
+    Result.capture(fn() { Stream.read(failing) }),
+    Result.capture(fn() { Stream.read(failing) }),
+    Result.capture(fn() { Stream.read(failing) }),
+  ]
+  let done = Stream.produce(1, fn(out) { Stream.write(out, Bytes.from_text("z")) })
+  let whole = Result.capture(fn() { text(Stream.read_all(done, 8)) })
+  let after = Result.capture(fn() { Stream.read(done) })
+  let (writer, reader) = Stream.pipe(2)
+  let closed = Result.capture(fn() {
+    Stream.close(writer)
+    Stream.write(writer, Bytes.from_text("late"))
+  })
+  Stream.stop(reader)
+  Stream.stop(reader)
+  Debug.render((reads, whole, after, closed, Result.capture(fn() { Stream.read(reader) })))
+}
+"#);
+    assert_eq!(outcome, rendered(r#"([Result.Ok(Some(Bytes(61))), Result.Ok(Some(Bytes(62))), Result.Err(Job.Broke), Result.Ok(None)], Result.Ok("z"), Result.Ok(None), Result.Err(StreamError.Closed), Result.Err(StreamError.Aborted))"#));
+}
+
+// Rejects a host reader that hands out an empty chunk: of empty, `x`, empty, only `x` comes back before the end.
+#[test]
+fn a_host_reader_skips_empty_chunks() {
+    let outcome = run_virtual("a_host_reader_skips_empty_chunks", r#"pub fn main() -> Text {
+  let made = Channel.bounded(4)
+  let feed = made.sender
+  let chunks = made.receiver
+  let filled = Result.capture(fn() {
+    Channel.send(feed, Bytes.empty())
+    Channel.send(feed, Bytes.from_text("x"))
+    Channel.send(feed, Bytes.empty())
+  })
+  Channel.close(made.completion)
+  let host = Stream.reader(fn() {
+    let got = Channel.receive(chunks)
+    case got {
+      Receive.Received(bytes) -> Some(bytes)
+      Receive.Drained -> None
+    }
+  }, fn() { Void })
+  Debug.render((filled, Result.capture(fn() { [Stream.read(host), Stream.read(host)] })))
+}
+"#);
+    assert_eq!(outcome, rendered(r#"(Result.Ok(Void), Result.Ok([Some(Bytes(78)), None]))"#));
 }

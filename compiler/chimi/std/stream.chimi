@@ -65,16 +65,26 @@ enum Push {
   Finish
 }
 
+// What a produced stream's channel carries: the body's failure travels behind
+// its chunks, so the reader sees every chunk written before it.
+enum Item<E> {
+  Data(bytes: Bytes)
+  Failed(error: E)
+}
+
 // 2. Constructors.
 
 /// A reader whose chunks come from `next`, which returns `None` once the
 /// stream has ended, and which `stop` ends early. For host streams and fakes.
+/// An empty chunk from `next` is skipped. `next` and `stop` keep the rest of
+/// the reading rules themselves: `stop` may be called again, and `next` after
+/// `stop` should fail.
 ///
 /// Cost: O(1).
 pub fn reader<E>(next: fn() -> Option<Bytes> errors E, stop: fn() -> Void) -> Reader<E> {
   Reader(fn(request) {
     case request {
-      Pull.Next -> next()
+      Pull.Next -> next_chunk(next)
       Pull.Stop -> {
         stop()
         None
@@ -98,8 +108,9 @@ pub fn writer<E>(write: fn(Bytes) -> Void errors E, close: fn() -> Void errors E
 
 /// A connected writer and reader, buffering at most `capacity` chunks between
 /// them: a write waits while the buffer is full. The reader ends once the
-/// writer is closed and every chunk is read; if the writer's task ends without
-/// closing it, the reader fails with `StreamError.Aborted`.
+/// writer is closed and every chunk is read. If the writer's task ends without
+/// closing it, the reader fails with `StreamError.Aborted`, and chunks not yet
+/// read are lost; use `produce` when a reader must see a writer's failure.
 ///
 /// Fails with: nothing. A capacity below 0 is a defect.
 /// Cost: O(1).
@@ -125,24 +136,23 @@ pub fn pipe(capacity: Int) -> (Writer<StreamError>, Reader<StreamError>) {
 /// Calls: `body` once, in a new child task.
 /// Cost: O(1) plus the task.
 pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors E needs R) -> Reader<E | StreamError> {
-  let (out, chunks) = pipe(capacity)
-  let made = Channel.bounded(1)
-  let report = made.sender
-  let reports = made.receiver
-  let reported = made.completion
+  let made = Channel.bounded(capacity)
+  let sender = made.sender
+  let receiver = made.receiver
+  let completion = made.completion
+  let out = Writer(fn(request) {
+    push_item(sender, completion, request)
+  })
   let _producer = Task.start(fn() {
     case write_all(body, out) {
       Success(_) -> Void
       Failure(error) -> {
-        let _ = Result.capture(fn() { Channel.send(report, error) })
-        Void
+        send_quietly(sender, Item.Failed(error))
+        close_quietly(out)
       }
     }
-    Channel.close(reported)
   })
-  Reader(fn(request) {
-    pull_produced(chunks, reports, request)
-  })
+  Reader(fn(request) { pull_item(receiver, request) })
 }
 
 /// A reader of `bytes` as one chunk. An empty `bytes` gives no chunk.
@@ -277,22 +287,57 @@ fn pull_chunk(receiver: Channel.Receiver<Bytes>, request: Pull) -> Option<Bytes>
   }
 }
 
-fn pull_produced<E>(chunks: Reader<StreamError>, reports: Channel.Receiver<E>, request: Pull) -> Option<Bytes> {
+fn push_item<E>(sender: Channel.Sender<Item<E>>, completion: Channel.Completion<Item<E>>, request: Push) -> Void {
   case request {
-    Pull.Next -> case chunks.pull(Pull.Next) {
-      Success(chunk) -> chunk
-      // The producer ended without closing: its failure, if it reported one.
-      Failure(StreamError.Aborted) -> case Channel.receive(reports) {
-        Success(Receive.Received(error)) -> Failure(error)
-        Success(Receive.Drained) -> Failure(StreamError.Aborted)
-        Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)
-      }
-      Failure(other) -> Failure(other)
+    Push.Chunk(bytes) -> case Channel.send(sender, Item.Data(bytes)) {
+      Success(_) -> Void
+      Failure(SendError.Closed(_)) -> Failure(StreamError.Closed)
+      Failure(SendError.Aborted(_)) -> Failure(StreamError.Closed)
+    }
+    Push.Finish -> Channel.close(completion)
+  }
+}
+
+fn pull_item<E>(receiver: Channel.Receiver<Item<E>>, request: Pull) -> Option<Bytes> {
+  case request {
+    Pull.Next -> case Channel.receive(receiver) {
+      Success(Receive.Received(Item.Data(bytes))) -> Some(bytes)
+      Success(Receive.Received(Item.Failed(error))) -> Failure(error)
+      Success(Receive.Drained) -> None
+      Failure(ChannelError.Aborted) -> Failure(StreamError.Aborted)
     }
     Pull.Stop -> {
-      let _ = Result.capture(fn() { chunks.pull(Pull.Stop) })
-      Channel.abort(reports)
+      Channel.abort(receiver)
       None
+    }
+  }
+}
+
+// The reader stopped or the channel is gone; the body's failure has nowhere
+// left to go.
+fn send_quietly<E>(sender: Channel.Sender<Item<E>>, item: Item<E>) -> Void {
+  case Channel.send(sender, item) {
+    Success(_) -> Void
+    Failure(_) -> Void
+  }
+}
+
+fn close_quietly(writer: Writer<StreamError>) -> Void {
+  case close(writer) {
+    Success(_) -> Void
+    Failure(_) -> Void
+  }
+}
+
+fn next_chunk<E>(next: fn() -> Option<Bytes> errors E) -> Option<Bytes> {
+  loop skipped = 0 {
+    let chunk = next()
+    case chunk {
+      None -> break None
+      Some(bytes) -> case Bytes.is_empty(bytes) {
+        True -> skipped + 1
+        False -> break Some(bytes)
+      }
     }
   }
 }
