@@ -137,10 +137,13 @@ pub fn main() -> Int needs {
   Channel.send(job_sender, Checkout.order(7, "mug", 1500))
   wait(2500)
   Watch.publish(settings_publisher, Worker.settings(False))
+  // Shut down settings first: the workers keep taking orders after their
+  // watch drains, until the queue drains too.
+  Channel.close(settings.completion)
+  wait(100)
   Channel.close(job_completion)
 
   let handled = Task.result(first) + Task.result(second)
-  Channel.close(settings.completion)
   Channel.close(outcome_completion)
   let report = collect(outcome_receiver)
   Channel.close(events.completion)

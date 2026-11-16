@@ -7,6 +7,7 @@ import std/clock as Clock
 import std/clock.{Clock}
 import std/duration as Duration
 import std/duration.{Duration}
+import std/list as List
 import std/result.{Result}
 import std/select as Select
 import std/task.{Timeout}
@@ -102,26 +103,32 @@ pub fn work(
   notifier: Notifier,
   clock: Clock,
 } {
-  loop state = (False, 0) {
-    let (paused, handled) = state
-    let follow = Select.watch(settings, fn(next) { Wake.Changed(next) })
-    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
-    let events_now = case paused {
-      True -> [follow, beat]
-      False -> [follow, Select.receive(jobs, fn(next) { Wake.Next(next) }), beat]
+  loop state = (False, True, 0) {
+    let (paused, following, handled) = state
+    // A drained watch is always ready, so it leaves the list once it drains;
+    // a paused worker leaves out the queue. The heartbeat is always there.
+    let watching = case following {
+      True -> [Select.watch(settings, fn(next) { Wake.Changed(next) })]
+      False -> []
     }
+    let taking = case paused {
+      True -> []
+      False -> [Select.receive(jobs, fn(next) { Wake.Next(next) })]
+    }
+    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
+    let events_now = List.concat([watching, taking, [beat]])
     let wake = Select.first(events_now)
     case wake {
-      Wake.Changed(Receive.Received(changed)) -> (changed.paused, handled)
-      Wake.Changed(Receive.Drained) -> (paused, handled)
+      Wake.Changed(Receive.Received(changed)) -> (changed.paused, following, handled)
+      Wake.Changed(Receive.Drained) -> (paused, False, handled)
       Wake.Next(Receive.Received(order)) -> {
         handle(name, order, outcomes, events)
-        (paused, handled + 1)
+        (paused, following, handled + 1)
       }
       Wake.Next(Receive.Drained) -> break handled
       Wake.Beat -> {
         report(events, Event.Heartbeat(name))
-        (paused, handled)
+        (paused, following, handled)
       }
     }
   }

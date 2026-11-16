@@ -52,82 +52,102 @@ enum Wake {
   Beat
 }
 
-  loop state = (False, 0) {
-    let (paused, handled) = state
-    let follow = Select.watch(settings, fn(next) { Wake.Changed(next) })
-    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
-    let events_now = case paused {
-      True -> [follow, beat]
-      False -> [follow, Select.receive(jobs, fn(next) { Wake.Next(next) }), beat]
+  loop state = (False, True, 0) {
+    let (paused, following, handled) = state
+    let watching = case following {
+      True -> [Select.watch(settings, fn(next) { Wake.Changed(next) })]
+      False -> []
     }
+    let taking = case paused {
+      True -> []
+      False -> [Select.receive(jobs, fn(next) { Wake.Next(next) })]
+    }
+    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
+    let events_now = List.concat([watching, taking, [beat]])
     let wake = Select.first(events_now)
     case wake {
-      Wake.Changed(Receive.Received(changed)) -> (changed.paused, handled)
-      Wake.Changed(Receive.Drained) -> (paused, handled)
+      Wake.Changed(Receive.Received(changed)) -> (changed.paused, following, handled)
+      Wake.Changed(Receive.Drained) -> (paused, False, handled)
       Wake.Next(Receive.Received(order)) -> {
         handle(name, order, outcomes, events)
-        (paused, handled + 1)
+        (paused, following, handled + 1)
       }
       Wake.Next(Receive.Drained) -> break handled
       Wake.Beat -> {
         report(events, Event.Heartbeat(name))
-        (paused, handled)
+        (paused, following, handled)
       }
     }
   }
 ```
 
+The program has one select site, this one, so every point below is one
+example, not a pattern.
+
 ### What this shows
 
-- **The cost is a wake enum and one mapping function per source.** Here that
-  is a five-line enum and two lambdas, `fn(next) { Wake.Changed(next) }`,
-  which only rewrap. The `case` then unwraps twice:
-  `Wake.Next(Receive.Received(order))`. Of the 23 lines above, about 9 exist
-  only to name and unname the event (the enum, the two lambdas, and the
-  `Wake.` prefixes).
-- **The list form paid for itself once.** "Stop taking orders while paused"
-  is an ordinary `case` that builds a shorter list. A fixed `select` block
-  would need a per-arm guard for this, as Rust's `tokio::select!` has
-  (`, if !paused`) and Go gets by setting the channel to `nil`.
-- **The mapping functions did not do real work anywhere.** In every event of
-  this program the mapping is a constructor. Nothing needed to transform the
-  value at the event, so the generality bought nothing here.
-- **One mismatch with intent showed up.** `Select.after` measures from the
-  start of each `Select.first`, so the heartbeat means "after one idle
-  second", not "every second". That was what this worker wanted. A fixed
-  period needs `Select.at` with the next instant carried in the loop state,
-  as the spec example does. Both are expressible; the difference is easy to
-  miss.
-- **Priority by list order was natural.** Settings come first so a pause
-  takes effect before the next order.
+- **The naming cost is a wake enum and one mapping function per source.**
+  The enum is five whole lines. The two lambdas, `fn(next) { Wake.Changed(next) }`,
+  only rewrap, and the `case` unwraps twice: `Wake.Next(Receive.Received(order))`.
+  Those sit on lines any form would keep, so they cost width rather than
+  lines.
+- **The larger cost is choosing which events are live.** About eight lines
+  build the list from state. Two conditions decide it: a paused worker stops
+  taking orders, and a drained watch must leave the list.
+- **The drained watch was a real bug in the first draft.** The first draft
+  always put the settings watch first. Once the watch drains it is always
+  ready, and list priority means it then wins every pass, so the worker spun
+  forever without taking another order or reaching its own `Drained`. The
+  run hid it at first, because `main` closed the settings only after the
+  workers had finished. Closing the settings first (the order `main` now
+  uses) made the program hang under the virtual clock. The spec's priority
+  rule says this ("an event early in the list that is always ready starves
+  later ones"), but it is easy to miss. Any form of choice has to handle it:
+  Go sets the channel variable to `nil`, and Rust's `tokio::select!` has a
+  per-branch `, if cond` guard and disables a branch whose pattern fails.
+  Here the library form handled it with ordinary list code; a block form
+  would need guards, or would need to drop a drained source by itself.
+- **The mapping functions did no real work.** Each one is a constructor. In
+  this program the generality bought nothing.
+- **`Select.after` measures from each call.** The heartbeat therefore means
+  "after one idle second", not "every second". That suited this worker; a
+  fixed period needs `Select.at` with the next instant carried in the loop
+  state, as the spec example does.
+- **Priority by list order was natural** for putting settings first, so that
+  a pause takes effect before the next order.
 
 For comparison only, and not proposed syntax, a block form of the same loop
-would read roughly:
+might read:
 
 ```text
-loop state = (False, 0) {
-  let (paused, handled) = state
+loop state = (False, True, 0) {
+  let (paused, following, handled) = state
   select {
-    Watch.receive(settings) -> Received(changed) -> (changed.paused, handled)
-                            -> Drained -> (paused, handled)
-    Channel.receive(jobs) if !paused -> Received(order) -> { ... }
-                                     -> Drained -> break handled
+    Watch.receive(settings) if following {
+      Received(changed) -> (changed.paused, following, handled)
+      Drained -> (paused, False, handled)
+    }
+    Channel.receive(jobs) if !paused {
+      Received(order) -> { ... }
+      Drained -> break handled
+    }
     after Duration.milliseconds(heartbeat_ms) -> { ... }
   }
 }
 ```
 
-It drops the enum and the lambdas (about 9 lines) and adds a guard and arm
-syntax that exist nowhere else in the language.
+It drops the enum, the lambdas and the list building, about fifteen lines,
+and needs guards, nested arms and an `after` form as new syntax.
 
 ### Summary for question 1
 
-In one realistic loop with three sources, the library form cost about nine
-lines of naming, and its one structural advantage (building the list from
-state) was used once. The noise is real but local: it lives in one function,
-and the rest of the service never sees it. This is one program, so it
-measures one shape of loop; a service with many select loops would multiply
-the enum cost.
+In one realistic three-source loop, the library form cost a five-line enum,
+two rewrapping lambdas, and about eight lines of list building. The list
+building handled the one hard case the program met, a drained source that
+would otherwise starve the rest, with code the language already has. A block
+form would be shorter here and would have to answer the same case with
+guards. A service with many select loops would multiply the enum cost; this
+program has one.
 
 ## Question 2: would `try` or `?` help?
 
@@ -147,8 +167,10 @@ work:     fn(...) -> Int errors ChannelError | SendError<Outcome>
 main:     fn() -> Int errors ChannelError | ConsoleError | SendError
 ```
 
-The program has about 30 call sites that can fail. None of them carries
-propagation syntax. Rust would write `?` at each one, Swift `try`, and Go an
+The program has about 40 call sites that can fail (about 20 in the checkout,
+4 in the worker, 16 in `main`, counting console writes and `Task.result`).
+Two of them handle the failure with a `case`; the rest propagate, and none
+carries propagation syntax. Rust would write `?` at each one, Swift `try`, and Go an
 `if err != nil` block. So `?` in Rust's sense, "unwrap or return the
 failure", would have nothing to do here. Its only candidate is
 `Result.get`, which turns a stored `Err` back into a live failure, and the
@@ -170,11 +192,13 @@ program calls it only in tests (two sites).
    `ship(order)` can fail and `notify(order)` cannot. Nothing on the line
    says which. The same holds in `main`, where seven `Channel.send` calls and
    two `Watch.publish` calls each put a failure in `main`'s row, and in
-   `handle`, where one `Channel.send` makes the whole worker fallible with
-   `SendError<Outcome>`. The contract shows it; the call site does not. This
-   is the case for a Swift-style `try` marker (a visible, checked marker at
-   each fallible call, with no change in meaning), and it pulls against
-   "explicit local reasoning" in the vision.
+   `handle`, where one `Channel.send` adds `SendError<Outcome>` to the
+   worker's row. The signatures do not show it either: `handle` and `work`
+   are written `-> Void` and `-> Int` with no `errors` clause, because rows
+   are inferred, and `Failure(FraudError.Flagged(score))` in `checks` raises
+   while reading like a value. The inferred contract shows all of it, through
+   `chimi inspect` or an editor. Whether that is visible enough is the
+   question "explicit local reasoning" in the vision raises.
 
 2. **Handling one failure is short, and the rest pass on.**
 
@@ -224,9 +248,9 @@ program calls it only in tests (two sites).
    Result.capture(bounded)
    ```
 
-   and a retried, timed call is three named thunks (`call`, `attempt`, and
-   the policy). This is the noisiest error-handling code in the program, and
-   neither `try` nor `?` touches it.
+   and a retried, timed call is two named thunks (`call` and `attempt`) and
+   a policy constant. This is the noisiest error-handling code in the
+   program, and neither `try` nor `?` would remove it.
 
 6. **Reading a stored outcome needs a `case`.** `notify` counts deliveries
    with `case outcome { Result.Ok(_) -> True  Result.Err(_) -> False }`;
@@ -238,14 +262,30 @@ program calls it only in tests (two sites).
 
 ### Summary for question 2
 
-The program found no place where propagation itself was noisy, because
-Chimi already propagates without syntax. The friction sits at the
-boundaries: making fallible calls visible, discarding, storing, adding
-context, and wrapping work in thunks. If a shorthand is added, the evidence
-points at a marker for visibility (`try` in Swift's sense) rather than an
-unwrap operator (`?` in Rust's sense). The thunk nesting and the discard
-`case` are separate problems that a std helper or a block-taking combinator
-form could address without new failure syntax.
+The program found no place where writing propagation was noisy, because
+Chimi already propagates without syntax. The program stores a `Result` at
+one boundary only, so it says little about an unwrap operator like Rust's
+`?`, whose only candidate here is `Result.get` (two test sites). The
+friction it did find sits elsewhere: fallible calls and raising
+`Failure(...)` look like ordinary expressions, discarding a failure takes a
+four-line `case`, and wrappers nest thunks.
+
+These bear on the options in different ways:
+
+- **Keep propagation implicit.** Nothing to add; contracts stay visible
+  through inspection and tooling (principle 5), not at the call site.
+- **A call-site marker, as Swift's `try`.** It would make the roughly 40
+  fallible sites visible, at the cost of a token at each, several of them
+  inside the thunks that are already the noisiest code.
+- **Written `errors` clauses on some signatures,** for example public
+  functions, so the row shows where a reader looks first, without marking
+  every call.
+- **An unwrap operator, as Rust's `?`.** This program gives it almost
+  nothing to do.
+
+The thunk nesting and the discard `case` are separate problems that a std
+helper or a block-taking combinator form could address without new failure
+syntax.
 
 ## Other findings
 
@@ -256,5 +296,6 @@ form could address without new failure syntax.
 | `Task.race` returns the first failure as readily as the first success | A hedged carrier quote fails when the fast carrier fails fast | CHI-245 |
 | A timed-out checkout's cause has no frames | Order 5's cause is only `Timeout.TimedOut(800ms)`; order 4's shows `charging order 4` | Added to CHI-226 |
 | `Err(FraudError.Flagged(95))` does not fit the narrowed set | A constructor has its whole enum's type | Known, CHI-218; the test matches instead |
+| A drained watch first in a `Select.first` list starves the rest | The first draft's worker spun forever once its settings watch drained | Fixed in the program; discussed under question 1 |
 | `Task.all` takes one success type | Two checks with different results share a wrapper enum and an impossible `case` arm | Evidence only |
 | Struct fields are private across modules | Fakes and workers read orders through accessor functions; the main module has 19 imports | Evidence for the open import-noise and large-struct questions |
