@@ -460,6 +460,9 @@ pub(crate) enum StandardFunction {
     // (`text`) or their lowercase hex (`bytes`).
     EmbedText,
     EmbedBytes,
+    /// `std/resource.scoped`: acquire, use, and release with release masked
+    /// against cancellation.
+    ResourceScoped,
 }
 
 impl StandardFunction {
@@ -698,7 +701,8 @@ impl StandardFunction {
             | Self::BytesReadIntCode
             | Self::BytesIntBytes
             | Self::EmbedText
-            | Self::EmbedBytes => None,
+            | Self::EmbedBytes
+            | Self::ResourceScoped => None,
         }
     }
 
@@ -847,6 +851,7 @@ impl StandardFunction {
             Self::BytesIntBytes => "int_bytes",
             Self::EmbedText => "text",
             Self::EmbedBytes => "bytes",
+            Self::ResourceScoped => "scoped",
         }
     }
 

@@ -1580,7 +1580,7 @@ impl Scheduler {
             .map(|(task, _)| *task)
             .collect();
         for task in roots {
-            self.begin_terminal(
+            self.force_terminal(
                 task,
                 TaskOutcome::Defected {
                     origin: task,
@@ -1917,12 +1917,13 @@ impl Scheduler {
         stopping.pending = pending;
     }
 
-    /// Cancels the task's structured children; each drains before this
-    /// returns.
+    /// Cancels the task's structured children. Each drains before this
+    /// returns, except one that holds a resource: it finishes its releases
+    /// first, and the shutdown deadline still forces it.
     fn cancel_children(&mut self, task: TaskId) {
         let children: Vec<_> = self.tasks[&task].children.iter().copied().collect();
         for child in children {
-            self.begin_terminal(child, TaskOutcome::Cancelled, false);
+            self.cancel_task(child, TaskOutcome::Cancelled);
         }
     }
 
@@ -1967,7 +1968,7 @@ impl Scheduler {
         let record = self.tasks.get_mut(&task).expect("forced incarnation");
         std::mem::forget(record.fiber.take());
         record.request = std::ptr::null_mut();
-        self.begin_terminal(task, TaskOutcome::Cancelled, true);
+        self.force_terminal(task, TaskOutcome::Cancelled, true);
     }
 
     /// Drops a membership record, keeping only what a live handle needs.

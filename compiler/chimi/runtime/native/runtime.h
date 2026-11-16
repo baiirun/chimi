@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 25
+#define CHIMI_RUNTIME_ABI_VERSION 26
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -226,6 +226,8 @@ enum {
   /* std/embed: lowering put the file's contents (text) or their hex (bytes) in the argument. */
   CHIMI_INTRINSIC_EMBED_TEXT,
   CHIMI_INTRINSIC_EMBED_BYTES,
+  /* std/resource.scoped: acquire, use, release with release masked. */
+  CHIMI_INTRINSIC_RESOURCE_SCOPED,
 };
 
 enum {

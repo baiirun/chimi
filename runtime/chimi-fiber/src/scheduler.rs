@@ -80,6 +80,13 @@ pub const REQUEST_SCOPE_CHECK: u32 = 27;
 pub const REQUEST_PROCESS_MONITOR: u32 = 28;
 pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
 pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
+/// `Resource.scoped` entries (`scheduler/scope.rs`); never cancellation
+/// points. ENTER replies with the entry in `token`; RELEASE masks it; EXIT
+/// leaves it and replies `value` 1 when a cancellation it held off is now
+/// delivered.
+pub const REQUEST_RESOURCE_ENTER: u32 = 31;
+pub const REQUEST_RESOURCE_RELEASE: u32 = 32;
+pub const REQUEST_RESOURCE_EXIT: u32 = 33;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -454,6 +461,12 @@ struct Task {
     scopes: Vec<scope::Scope>,
     /// The parent's innermost scope when this task was started.
     started_in_scope: Option<ScopeId>,
+    /// The channel registry's arrival stamp when this task started; what it
+    /// hands its parent dates from then (`ChannelRegistry::backdate`).
+    started_at: u64,
+    /// The outcome of a cancellation that waits for the task's releases
+    /// (`Scheduler::cancel_task`).
+    terminating: Option<TaskOutcome>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -588,6 +601,9 @@ pub struct Scheduler {
     /// consuming it, so every one stays until the scheduler is dropped.
     task_values: BTreeMap<TaskId, TaskValue>,
     next_scope: u64,
+    /// Nonzero while a forced end runs: cancellation then never waits for
+    /// releases (`force_terminal`).
+    forcing: u32,
 }
 
 impl Drop for Scheduler {
@@ -654,6 +670,7 @@ impl Scheduler {
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
             next_scope: 0,
+            forcing: 0,
         }
     }
 
@@ -945,7 +962,7 @@ impl Scheduler {
         ) {
             return Ok(());
         }
-        self.begin_terminal(task, TaskOutcome::Cancelled, false);
+        self.cancel_task(task, TaskOutcome::Cancelled);
         Ok(())
     }
 
@@ -1088,9 +1105,10 @@ impl Scheduler {
         self.require_live_task(task)?;
         self.require_live_task(new_owner)?;
         match self.channels.transfer_receiver(task, receiver, new_owner) {
-            Ok((receiver, transition)) => {
+            Ok((transferred, transition)) => {
                 self.apply_channel_transition(transition);
-                Ok(receiver)
+                self.backdate_hand_back(task, new_owner, receiver.channel());
+                Ok(transferred)
             }
             Err(error) => self.channel_violation(
                 task,
@@ -1113,9 +1131,10 @@ impl Scheduler {
             .channels
             .transfer_completion(task, completion, new_owner)
         {
-            Ok((completion, transition)) => {
+            Ok((transferred, transition)) => {
                 self.apply_channel_transition(transition);
-                Ok(completion)
+                self.backdate_hand_back(task, new_owner, completion.channel());
+                Ok(transferred)
             }
             Err(error) => self.channel_violation(
                 task,
@@ -1123,6 +1142,18 @@ impl Scheduler {
                 REQUEST_CHANNEL_TRANSFER_COMPLETION,
                 Some(new_owner),
             ),
+        }
+    }
+
+    /// A child hands the capabilities in its result to its parent as it ends;
+    /// the parent can read them only through `Task.result`, so they count as
+    /// gained when the child started, and a timeout scope the child started
+    /// outside of leaves them alone.
+    fn backdate_hand_back(&mut self, task: TaskId, new_owner: TaskId, channel: ChannelId) {
+        let record = &self.tasks[&task];
+        if record.parent == Some(new_owner) {
+            let since = record.started_at;
+            self.channels.backdate(channel, new_owner, since);
         }
     }
 
@@ -1279,6 +1310,7 @@ impl Scheduler {
         process: Option<IncarnationId>,
     ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
+        let started_at = self.channels.tick();
         let fiber = OwnedFiber::new(
             entry,
             context,
@@ -1315,6 +1347,8 @@ impl Scheduler {
                 started_in_scope: parent.and_then(|parent| {
                     self.tasks[&parent].scopes.last().map(|entry| entry.id)
                 }),
+                started_at,
+                terminating: None,
             },
         );
         if let Some(parent) = parent {
@@ -1466,7 +1500,34 @@ impl Scheduler {
                 request.status = RESPONSE_OK;
                 let _ = self.wake_front(owner);
             }
-            REQUEST_SCOPE_EXIT => match self.exit_scope(owner, ScopeId::from_raw(request.token)) {
+            REQUEST_RESOURCE_ENTER => {
+                request.token = self.enter_resource(owner).get();
+                request.status = RESPONSE_OK;
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_RESOURCE_RELEASE => {
+                request.status = if self.mask_resource(owner, ScopeId::from_raw(request.token)) {
+                    RESPONSE_OK
+                } else {
+                    RESPONSE_ERROR
+                };
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_RESOURCE_EXIT => {
+                match self.exit_resource(owner, ScopeId::from_raw(request.token)) {
+                    Some(delivered) => {
+                        request.value = i64::from(delivered);
+                        request.status = RESPONSE_OK;
+                    }
+                    None => request.status = RESPONSE_ERROR,
+                }
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_SCOPE_EXIT => match self.exit_scope(
+                owner,
+                ScopeId::from_raw(request.token),
+                request.value != 0,
+            ) {
                 ScopeExit::Pending => request.status = RESPONSE_PENDING,
                 ScopeExit::Exited { delivered } => {
                     request.value = i64::from(delivered);
@@ -1685,6 +1746,13 @@ impl Scheduler {
             return;
         }
         let record = self.tasks.get_mut(&task).expect("known task");
+        // A cancellation that waited for releases decides the outcome, unless
+        // the fiber or this end is a defect.
+        if let Some(recorded) = record.terminating.take()
+            && (recorded.is_defect() || !outcome.is_defect())
+        {
+            outcome = recorded;
+        }
         record.phase = TaskPhase::Draining(outcome);
         record.request = std::ptr::null_mut();
         if let Some(timer) = record.timer.take() {
@@ -1743,7 +1811,7 @@ impl Scheduler {
             .copied()
             .collect();
         for child in children {
-            self.begin_terminal(child, TaskOutcome::Cancelled, false);
+            self.cancel_task(child, TaskOutcome::Cancelled);
         }
         // Root supervisors the task started are structured children too.
         self.stop_owned_supervisors(task);
@@ -1805,10 +1873,10 @@ impl Scheduler {
                     self.emit(parent, TaskEventKind::Woken, Some(task), true);
                 }
                 TaskOutcome::Cancelled => {
-                    self.begin_terminal(parent, TaskOutcome::Cancelled, false);
+                    self.cancel_waiting_parent(parent, TaskOutcome::Cancelled);
                 }
                 TaskOutcome::Defected { .. } | TaskOutcome::StackOverflow { .. } => {
-                    self.begin_terminal(parent, outcome, false);
+                    self.cancel_waiting_parent(parent, outcome);
                 }
             }
         } else if outcome.is_defect()
@@ -1820,8 +1888,32 @@ impl Scheduler {
             })
             && !self.absorbs_child_defect(parent)
         {
-            self.begin_terminal(parent, outcome, false);
+            self.cancel_task(parent, outcome);
         }
+    }
+
+    /// Ends a parent parked in `Task.result` of a child that ended cancelled
+    /// or defected. A parent that keeps running to finish its releases
+    /// (`cancel_task`) and is still parked, because a release is the one
+    /// waiting, is woken to read the child's outcome itself.
+    fn cancel_waiting_parent(&mut self, parent: TaskId, outcome: TaskOutcome) {
+        self.cancel_task(parent, outcome);
+        if self
+            .tasks
+            .get(&parent)
+            .is_some_and(|record| record.phase == TaskPhase::Parked && record.fiber.is_some())
+        {
+            let _ = self.wake(parent);
+        }
+    }
+
+    /// Ends `task` now even while it waits for its releases: a forced end
+    /// (deadlock, contract violation, process force, program termination)
+    /// reaches every descendant the same way.
+    pub(super) fn force_terminal(&mut self, task: TaskId, outcome: TaskOutcome, fiber_is_terminal: bool) {
+        self.forcing += 1;
+        self.begin_terminal(task, outcome, fiber_is_terminal);
+        self.forcing -= 1;
     }
 
     fn require_owner(&self, owner: Option<TaskId>, task: TaskId) -> Result<(), SchedulerError> {
@@ -1868,7 +1960,7 @@ impl Scheduler {
             self.tasks.get(&owner).map(|record| record.phase),
             Some(TaskPhase::Runnable | TaskPhase::Parked)
         ) {
-            self.begin_terminal(
+            self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
                     origin: owner,
@@ -1970,7 +2062,7 @@ impl Scheduler {
             // scheduler runs; the record lives for the call.
             unsafe { report(context, &violation) };
         }
-        self.begin_terminal(
+        self.force_terminal(
             task,
             TaskOutcome::Defected {
                 origin: task,

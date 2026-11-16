@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 9u
+#define CHIMI_FIBER_ABI_VERSION 10u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -103,9 +103,11 @@ enum {
      A cancellation point (see chimi_fiber_scope_cancel_pending). */
   CHIMI_REQUEST_SCOPE_ENTER = 25,
   /* ChimiSchedulerRequest: leaves the scope whose id is `token`, and any
-     scope nested in it. PENDING while child tasks the scope cancelled still
-     drain; then OK with `value` 1 when this scope's own cancellation is the
-     one the task is unwinding, else 0. ERROR when the task is not inside it.
+     scope nested in it; `value` is 1 when the operation ended in a
+     cancellation, whose values are discarded: the exclusive channel
+     capabilities the task gained inside the scope are aborted. PENDING while
+     child tasks the scope cancelled still drain; then OK with `value` 1 when
+     this scope's own cancellation is the one the task is unwinding, else 0. ERROR when the task is not inside it.
      Never a cancellation point; never issue it after a terminal cancel. */
   CHIMI_REQUEST_SCOPE_EXIT = 26,
   /* ChimiSchedulerRequest: a loop pass's cancellation point. OK, or the
@@ -121,6 +123,15 @@ enum {
   CHIMI_REQUEST_PROCESS_UNMONITOR = 29,
   /* The OK reply carries `queued` and `capacity`. */
   CHIMI_REQUEST_PROCESS_MAILBOX = 30,
+  /* ChimiSchedulerRequest: Resource.scoped's entry on the scope stack. ENTER
+     (before acquire) replies with the entry in `token`. RELEASE(`token`)
+     masks it before release: cancellation of the scopes beneath waits.
+     EXIT(`token`) leaves it and replies `value` 1 when a cancellation it held
+     off is now delivered: return a cancellation. None is a cancellation point;
+     issue none after a terminal cancel. */
+  CHIMI_REQUEST_RESOURCE_ENTER = 31,
+  CHIMI_REQUEST_RESOURCE_RELEASE = 32,
+  CHIMI_REQUEST_RESOURCE_EXIT = 33,
 };
 
 /* `down` of a RECEIVE reply whose `message` is a notice handle. */

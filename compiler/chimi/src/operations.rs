@@ -25,7 +25,6 @@ pub(crate) enum OperationClass {
     /// Deterministic and creates no runtime resource; constants may call it.
     Pure,
     /// Needs the scheduler or creates runtime resources.
-    #[allow(dead_code)]
     Runtime,
     /// Talks to the operating system; its `native fn` must be private (`N3106`).
     #[allow(dead_code)]
@@ -65,6 +64,15 @@ const fn pure(id: &'static str, arity: usize, implementation: StandardFunction) 
         id,
         arity,
         class: OperationClass::Pure,
+        implementation,
+    }
+}
+
+const fn runtime(id: &'static str, arity: usize, implementation: StandardFunction) -> Operation {
+    Operation {
+        id,
+        arity,
+        class: OperationClass::Runtime,
         implementation,
     }
 }
@@ -153,6 +161,9 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     // std/embed: build-time only; see `CoreLowerer::embed`.
     pure("std/embed.text", 1, StandardFunction::EmbedText),
     pure("std/embed.bytes", 1, StandardFunction::EmbedBytes),
+
+    // std/resource
+    runtime("std/resource.scoped", 3, StandardFunction::ResourceScoped),
 ];
 
 pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[

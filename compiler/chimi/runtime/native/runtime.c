@@ -7028,13 +7028,101 @@ static ChimiControl *run_in_scope(ChimiRuntime *runtime, ChimiValue *operation, 
   ChimiControl *control = invoke(runtime, operation->as.callable, NULL, 0, span, call_node, environment);
   if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;
   for (;;) {
-    ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token};
+    /* A cancelled operation's values are discarded, so the scope's capabilities go. */
+    ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token,
+                                  .value = control->kind == CONTROL_CANCEL};
     if (scheduler_request(&exit) == CHIMI_FIBER_CANCEL) return cancelled();
     if (exit.status == CHIMI_RESPONSE_PENDING) continue;
     if (exit.status != CHIMI_RESPONSE_OK) return defect("Task.timeout scheduler request failed", call_node);
     if (control->kind == CONTROL_CANCEL && exit.value == 1) return timed_out(limit, call_node);
     return control;
   }
+}
+
+/* The outcome of Resource.scoped once release has run (std/resource.chimi): a use
+   defect stays; then a release defect; then a use cancellation; then a release
+   failure or cancellation replaces the use's value or failure. */
+static ChimiControl *after_release(ChimiControl *used, ChimiControl *released) {
+  if (used->kind == CONTROL_DEFECT) return used;
+  if (released->kind == CONTROL_DEFECT) return released;
+  if (used->kind == CONTROL_CANCEL) return used;
+  if (released->kind == CONTROL_FAILURE || released->kind == CONTROL_CANCEL) return released;
+  return used;
+}
+
+/* Issues a Resource.scoped entry request; true when the fiber resumed with a
+   cancellation instead of a plain reply (the request may still have been
+   served: check its status). */
+static bool resource_request(uint32_t kind, ChimiSchedulerRequest *request) {
+  request->kind = kind;
+  return scheduler_request(request) == CHIMI_FIBER_CANCEL;
+}
+
+/* A cancellation in place of `outcome`, which a defect outranks. */
+static ChimiControl *cancelled_unless_defect(ChimiControl *outcome) {
+  return outcome->kind == CONTROL_DEFECT ? outcome : cancelled();
+}
+
+/* Resource.scoped(acquire, release, use) (std/resource.chimi). Under the scheduler
+   the call is an entry on the task's scope stack (scheduler/scope.rs): entered
+   before acquire, so a cancellation of the task always finds it; masked before
+   release, so no cancellation interrupts release; left after it, which delivers a
+   cancellation release held off. A forced end (a terminal cancel) issues no
+   request and runs no release it has not begun: the fiber must not park. */
+static ChimiControl *resource_scoped(ChimiRuntime *runtime, ChimiValue **arguments,
+                                     uint32_t argument_count, uint64_t span,
+                                     uint32_t call_node, ChimiEnvironment *environment) {
+  if (argument_count != 3 || arguments[0]->kind != VALUE_CALLABLE ||
+      arguments[1]->kind != VALUE_CALLABLE || arguments[2]->kind != VALUE_CALLABLE)
+    return intrinsic_shape_defect(call_node);
+  ChimiValue *acquire = arguments[0], *release = arguments[1], *use = arguments[2];
+  bool scheduled = CHIMI_REQUIRES_SCHEDULER;
+  ChimiSchedulerRequest entry = {0};
+  if (scheduled) {
+    bool cancel = resource_request(CHIMI_REQUEST_RESOURCE_ENTER, &entry);
+    if (entry.status == CHIMI_RESPONSE_UNSET) return cancelled();
+    if (entry.status != CHIMI_RESPONSE_OK) return defect("Resource.scoped scheduler request failed", call_node);
+    if (cancel) {
+      /* Nothing is acquired yet: leave the entry and pass the cancellation on. */
+      if (!chimi_fiber_cancel_is_terminal()) {
+        ChimiSchedulerRequest exit = {.token = entry.token};
+        resource_request(CHIMI_REQUEST_RESOURCE_EXIT, &exit);
+      }
+      return cancelled();
+    }
+  }
+  ChimiControl *acquired = invoke(runtime, acquire->as.callable, NULL, 0, span, call_node, environment);
+  if (acquired->kind != CONTROL_SUCCESS) {
+    if (scheduled && !(acquired->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal())) {
+      ChimiSchedulerRequest exit = {.token = entry.token};
+      bool cancel = resource_request(CHIMI_REQUEST_RESOURCE_EXIT, &exit);
+      if (cancel || exit.value == 1) return cancelled_unless_defect(acquired);
+      if (exit.status != CHIMI_RESPONSE_OK) return defect("Resource.scoped scheduler request failed", call_node);
+    }
+    return acquired;
+  }
+  ChimiValue *handle = acquired->value;
+  ChimiControl *used = invoke(runtime, use->as.callable, &handle, 1, span, call_node, environment);
+  if (used->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return used;
+  if (scheduled) {
+    ChimiSchedulerRequest mask = {.token = entry.token};
+    bool cancel = resource_request(CHIMI_REQUEST_RESOURCE_RELEASE, &mask);
+    if (cancel && chimi_fiber_cancel_is_terminal()) return cancelled_unless_defect(used);
+    if (mask.status != CHIMI_RESPONSE_OK) {
+      if (mask.status == CHIMI_RESPONSE_UNSET) return cancelled_unless_defect(used);
+      return defect("Resource.scoped scheduler request failed", call_node);
+    }
+  }
+  ChimiControl *released = invoke(runtime, release->as.callable, &handle, 1, span, call_node, environment);
+  ChimiControl *outcome = after_release(used, released);
+  if (released->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return outcome;
+  if (scheduled) {
+    ChimiSchedulerRequest exit = {.token = entry.token};
+    bool cancel = resource_request(CHIMI_REQUEST_RESOURCE_EXIT, &exit);
+    if (cancel || exit.value == 1) return cancelled_unless_defect(outcome);
+    if (exit.status != CHIMI_RESPONSE_OK) return defect("Resource.scoped scheduler request failed", call_node);
+  }
+  return outcome;
 }
 
 static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
@@ -7148,6 +7236,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
+    return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)

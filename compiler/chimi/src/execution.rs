@@ -8,6 +8,7 @@ mod json_operations;
 mod map_operations;
 mod persistent_list;
 mod processes;
+mod resource_operations;
 mod structural;
 mod teardown;
 
@@ -1726,6 +1727,9 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::EmbedText
             | StandardFunction::EmbedBytes => {
                 self.invoke_bytes_operation(function, arguments, call_node)
+            }
+            StandardFunction::ResourceScoped => {
+                self.invoke_resource_scoped(arguments, span, call_node, environment)
             }
             StandardFunction::IoPath => {
                 let [RuntimeValue::Text(path)] = arguments.as_slice() else {
