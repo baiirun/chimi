@@ -11429,6 +11429,12 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                "Receiver or Completion on channel %" PRIu64 ", because every subscriber gets a copy",
                violation->task, violation->channel);
       break;
+    case CHIMI_VIOLATION_OWN_RECEIVER:
+      snprintf(text, sizeof(text),
+               "channel capability violation: task %" PRIu64 " cannot send the Receiver of channel %"
+               PRIu64 " through that same channel, because nobody could ever receive the message",
+               violation->task, violation->channel);
+      break;
     case CHIMI_VIOLATION_WRONG_KIND:
       snprintf(text, sizeof(text),
                "channel capability violation: task %" PRIu64 " cannot use channel %" PRIu64

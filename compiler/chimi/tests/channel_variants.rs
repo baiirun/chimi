@@ -728,3 +728,44 @@ fn the_interpreter_reports_the_variants_as_native_only() {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// CHI-214: sending a channel's only Receiver through that channel queues a
+// message nobody could ever receive, so the send defects. With a second
+// receiver of the same queue, the message is still receivable and goes
+// through. Rejects a check that ignores the queue's other receivers.
+#[test]
+fn sending_a_channel_its_own_only_receiver_defects() {
+    let hold = "enum Hold {\n  Empty\n  Has(receiver: Receiver<Hold>)\n}\n";
+    let alone = run_virtual(
+        "own-receiver",
+        &format!(
+            "{hold}pub fn main() -> Int {{\n\
+             \x20 let channel = Channel.bounded(1)\n\
+             \x20 Channel.send(channel.sender, Hold.Has(channel.receiver))\n\
+             \x20 Channel.close(channel.completion)\n\
+             \x20 7\n\
+             }}\n"
+        ),
+    );
+    assert_defect(
+        &alone,
+        "through that same channel, because nobody could ever receive the message",
+    );
+    let shared = run_virtual(
+        "own-receiver-shared",
+        &format!(
+            "{hold}pub fn main() -> Int {{\n\
+             \x20 let channel = Channel.bounded(1)\n\
+             \x20 let other = Channel.add_receiver(channel.receiver)\n\
+             \x20 Channel.send(channel.sender, Hold.Has(channel.receiver))\n\
+             \x20 let next = Channel.receive(other)\n\
+             \x20 case next {{\n\
+             \x20   Receive.Received(Hold.Has(_)) -> 7\n\
+             \x20   Receive.Received(Hold.Empty) -> 1\n\
+             \x20   Receive.Drained -> 0\n\
+             \x20 }}\n\
+             }}\n"
+        ),
+    );
+    assert!(shared.contains("\"outcome\":\"success\",\"value\":7"), "{shared}");
+}

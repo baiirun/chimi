@@ -169,6 +169,9 @@ pub enum ChannelError {
     /// The request named a channel of another kind: a subscribe to a plain
     /// channel, or a send to a receiver's entry.
     WrongKind(ChannelId),
+    /// A send carried the Receiver of its own channel, so the message could
+    /// never be received.
+    OwnReceiver(ChannelId),
 }
 
 /// What a broadcast or watch entry (a hub) gives its subscriptions.
@@ -598,6 +601,33 @@ impl ChannelRegistry {
                 .count()
     }
 
+    /// Whether `carried` holds every live receiver of the open `queue`: its
+    /// own and its taps'. A message on `queue` that carries them could never
+    /// be received, since only those receivers read it.
+    fn carries_every_receiver(&self, queue: ChannelId, carried: &[Carried]) -> bool {
+        let carries = |id: ChannelId| {
+            carried
+                .iter()
+                .any(|item| item.kind == CapabilityKind::Receiver && item.channel == id)
+        };
+        let Some(channel) = self.channels.get(&queue) else {
+            return false;
+        };
+        // A closed or aborted channel refuses the send and hands the
+        // capabilities back, so nothing is stranded.
+        if channel.lifecycle != Lifecycle::Open {
+            return false;
+        }
+        let mut live = channel
+            .taps
+            .iter()
+            .copied()
+            .filter(|tap| self.channels.get(tap).is_some_and(|tap| !tap.receiver_ended))
+            .chain((!channel.receiver_ended).then_some(queue))
+            .peekable();
+        live.peek().is_some() && live.all(carries)
+    }
+
     /// Sends `value`, which holds the `carried` capabilities of `task`. Once
     /// accepted or parked, each is in flight with its next token until the
     /// value reaches a receiver, who then owns it; a refused value hands
@@ -627,6 +657,9 @@ impl ChannelRegistry {
                 return Err(ChannelError::PublishedCapability(sender.channel));
             }
             return Ok(self.publish(task, sender.channel, value));
+        }
+        if self.carries_every_receiver(sender.channel, &carried) {
+            return Err(ChannelError::OwnReceiver(sender.channel));
         }
         if !carried.is_empty() {
             self.dispatch_parcel(task, value, carried);
@@ -2373,6 +2406,89 @@ mod parcel_tests {
             .receive(PARENT, receiver_at(carried, PARENT, 2))
             .unwrap();
         assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    // CHI-214: the only Receiver inside a message on its own channel means
+    // nobody could ever receive that message.
+    #[test]
+    fn a_send_carrying_its_own_receiver_is_refused_and_changes_nothing() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (other, _) = channels.create(PARENT, 1);
+        assert_eq!(
+            channels
+                .send_carrying(
+                    PARENT,
+                    route.sender,
+                    MESSAGE,
+                    &[carried_receiver(other), carried_receiver(route)]
+                )
+                .map(|_| ()),
+            Err(ChannelError::OwnReceiver(route.sender.channel()))
+        );
+        assert_eq!(
+            channels
+                .metrics(route.sender.channel())
+                .unwrap()
+                .queue_depth,
+            0
+        );
+        let (waiting, _) = channels.receive(PARENT, other.receiver).unwrap();
+        assert_eq!(waiting, ReceiveResult::Pending);
+    }
+
+    // A closed channel refuses the send and hands the receiver back, as it
+    // always did, so there is nothing to defect over.
+    #[test]
+    fn a_send_carrying_its_own_receiver_on_a_closed_channel_is_refused_as_closed() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        channels.close(PARENT, route.completion).unwrap();
+        let (result, _) = channels
+            .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route)])
+            .unwrap();
+        assert_eq!(result, SendResult::Closed(MESSAGE));
+    }
+
+    // A receiver whose task ended reads nothing, so it does not make the
+    // message receivable.
+    #[test]
+    fn a_send_carrying_its_receiver_is_refused_when_the_other_receiver_ended() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (tap, _) = channels.add_receiver(PARENT, route.receiver).unwrap();
+        channels.transfer_receiver(PARENT, tap, CHILD).unwrap();
+        channels.cleanup_task(CHILD);
+        assert_eq!(
+            channels
+                .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route)])
+                .map(|_| ()),
+            Err(ChannelError::OwnReceiver(route.sender.channel()))
+        );
+    }
+
+    // With a second receiver of the same queue, the message can still be
+    // received, so the send goes through.
+    #[test]
+    fn a_send_carrying_one_of_two_receivers_of_its_queue_is_accepted() {
+        let mut channels = registry();
+        let (route, _) = channels.create(PARENT, 1);
+        let (tap, _) = channels.add_receiver(PARENT, route.receiver).unwrap();
+        let tap = Carried {
+            channel: tap.channel(),
+            kind: CapabilityKind::Receiver,
+            token: tap.token(),
+        };
+        assert_eq!(
+            channels
+                .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route), tap])
+                .map(|_| ()),
+            Err(ChannelError::OwnReceiver(route.sender.channel()))
+        );
+        let (result, _) = channels
+            .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route)])
+            .unwrap();
+        assert_eq!(result, SendResult::Accepted);
     }
 
     #[test]
