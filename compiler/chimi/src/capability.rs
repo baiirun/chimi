@@ -131,6 +131,27 @@ impl FlowValue {
         }
     }
 
+    /// Lowers each of this value's transferability and shareability that its
+    /// type leaves to the value (a type holding functions) to `other`'s,
+    /// keeping its capability class, carries and borrows. A property the type
+    /// settles, as for an `Address`, stays as the type says.
+    fn take_sharing_of(&mut self, other: &Self) {
+        let mut properties = self.properties;
+        if properties.transferable == PropertyDerivation::ValueDependent {
+            properties.transferable = properties.transferable.combine(other.properties.transferable);
+        }
+        if properties.shareable == PropertyDerivation::ValueDependent {
+            properties.shareable = properties.shareable.combine(other.properties.shareable);
+        }
+        if properties.transferable == PropertyDerivation::Never && self.blocked_by.is_none() {
+            self.blocked_by = other.blocked_by.clone();
+        }
+        if properties.shareable == PropertyDerivation::Never && self.unshared_by.is_none() {
+            self.unshared_by = other.unshared_by.clone();
+        }
+        self.properties = properties;
+    }
+
     fn combine(mut self, mut other: Self) -> Self {
         self.carries.append(&mut other.carries);
         self.borrows.append(&mut other.borrows);
@@ -527,6 +548,10 @@ impl CapabilityChecker<'_> {
                             result.carries.extend(value.carries.iter().copied());
                         }
                         result.borrows.extend(value.borrows.iter().copied());
+                        // A closure argument the result may hold keeps what its
+                        // captures make it: `Conn(fn() { child })` is no more
+                        // shareable than the closure.
+                        result.take_sharing_of(value);
                     }
                 }
                 if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =

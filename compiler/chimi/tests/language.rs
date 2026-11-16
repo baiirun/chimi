@@ -10063,6 +10063,45 @@ fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
     );
 }
 
+// A constructor call keeps what its closure argument captures: wrapping a
+// closure that holds a task handle in a struct or an enum variant does not let
+// the handle cross a task boundary, while a closure with no captures still may.
+#[test]
+fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
+    let program = |send: &str| {
+        format!(
+            concat!(
+                "import std/channel as Channel\n",
+                "import std/task as Task\n",
+                "pub struct Conn {{\n  run: fn() -> Int,\n}}\n",
+                "pub struct Tagged {{\n  run: fn() -> Int,\n  tag: Int,\n}}\n",
+                "enum Ask {{\n  Return(connection: Conn)\n}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let child = Task.start(fn() {{ 1 }})\n",
+                "{}",
+                "  0\n",
+                "}}\n",
+            ),
+            send
+        )
+    };
+    let holds = "fn() {\n    let _ = child\n    1\n  }";
+    for send in [
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn({holds}))\n"),
+        format!("  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"),
+    ] {
+        assert_eq!(check_codes(&program(&send)), ["T4243"], "{send}");
+    }
+    assert!(
+        check_codes(&program(
+            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n"
+        ))
+        .is_empty()
+    );
+}
+
 // Rejects a Core verifier that counts a handoff body closure's own parameters
 // and locals as captures: this body captures only `step`, a shareable
 // function, but binds an inbox and a task handle of its own, which a nested
