@@ -63,3 +63,17 @@ KILLED       a handler failure ends the connection [http] (35s)
 KILLED       a header value may hold a control character [http] (34s)
 KILLED       a 1xx status may be built [http] (34s)
 # result: every mutant killed
+
+# mutation run at e3de9b2425e58aa3e9d016d267a4b3ea07c54357
+# http_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [http] (41s)
+KILLED       no Date is sent [http] (36s)
+KILLED       a handler's Date is doubled [http] (36s)
+KILLED       the calendar's year starts in January [http] (34s)
+KILLED       a time before 1970 rounds toward zero [http] (35s)
+KILLED       weekdays start on Sunday [http] (37s)
+KILLED       a closing answer does not linger [http] (36s)
+KILLED       a refusal does not linger [http] (36s)
+KILLED       lingering keeps the writing side open [http] (36s)
+KILLED       lingering has no time limit [http] (37s)
+# result: every mutant killed
