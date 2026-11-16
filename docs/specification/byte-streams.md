@@ -127,7 +127,9 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
   caller, with the writer of a pipe of that capacity, and close the writer
   when `body` returns.
 - If `body` fails, the reader MUST fail with that failure after every chunk
-  written before it, and end after that. A defect in `body` follows the rules for any child
+  written before it, and end after that. A `body` that closes its writer has
+  declared the stream complete, so a failure after that does not reach the
+  reader. A defect in `body` follows the rules for any child
   task's defect.
 - Stopping a produced reader makes `body`'s next write fail with
   `StreamError.Closed`, so a producer of an endless stream ends.
@@ -168,8 +170,9 @@ pub fn copy<E, F>(reader: Reader<E>, writer: Writer<F>) -> Int
 | --- | --- |
 | Chunks arrive in order, empty writes are skipped, `None` after the end | `a_pipe_gives_chunks_in_order_and_skips_empty_writes` |
 | `read_all` joins chunks and fails past its limit | `read_all_joins_the_chunks_and_stops_past_the_limit` |
+| `read_all` stops the reader past its limit | `read_all_stops_an_endless_producer_past_the_limit` |
 | A producer's failure reaches the reader; `stop` closes the producer and later reads abort | `a_producer_failure_reaches_the_reader_and_stop_closes_the_producer` |
-| Backpressure | `a_produced_stream_waits_while_the_reader_is_behind` |
+| Backpressure, with `body` run once beside the reader | `a_produced_stream_waits_while_the_reader_is_behind` |
 | `copy`, `from_bytes`, and the host constructors | `copy_from_bytes_and_host_fakes` |
 | `Stream.stop` as a `Resource.scoped` release | `resource_scoped_with_stop_as_the_release_closes_the_producer` |
 | A writer's task that ends without closing aborts the reader | `a_pipe_whose_writer_task_ends_without_closing_aborts` |

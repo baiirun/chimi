@@ -2672,24 +2672,14 @@ impl ProjectTypeChecker {
         body_modules: &HashSet<ModuleId>,
     ) -> TypedProject {
         let order = self.resolved.dependency_order.clone();
+        self.settle_type_parameter_kinds(&order, declaration_modules);
         for module_id in order
             .iter()
             .filter(|module_id| declaration_modules.contains(module_id))
         {
-            let mut declarations = self.resolved.semantic.modules[module_id.raw() as usize]
+            let declarations = self.resolved.semantic.modules[module_id.raw() as usize]
                 .declarations
                 .clone();
-            // Types first, so a signature that names a type declared below it
-            // sees which of the type's parameters are failure sets.
-            declarations.sort_by_key(|declaration| {
-                !matches!(
-                    declaration.kind,
-                    ModuleDeclarationKind::Struct
-                        | ModuleDeclarationKind::Enum
-                        | ModuleDeclarationKind::Interface
-                        | ModuleDeclarationKind::NativeType
-                )
-            });
             for declaration in declarations {
                 self.check_declaration(*module_id, &declaration);
             }
@@ -2787,6 +2777,59 @@ impl ProjectTypeChecker {
             )
         });
         typed
+    }
+
+    /// Checks the type declarations until their parameters' kinds stop
+    /// changing, keeping no diagnostics, so that a signature or a type that
+    /// names a type declared below it sees which of its parameters are failure
+    /// sets. The declaration pass that follows checks them again in source
+    /// order and reports.
+    fn settle_type_parameter_kinds(
+        &mut self,
+        order: &[ModuleId],
+        declaration_modules: &HashSet<ModuleId>,
+    ) {
+        let types = order
+            .iter()
+            .filter(|module_id| declaration_modules.contains(module_id))
+            .flat_map(|module_id| {
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .declarations
+                    .iter()
+                    .filter(|declaration| {
+                        matches!(
+                            declaration.kind,
+                            ModuleDeclarationKind::Struct
+                                | ModuleDeclarationKind::Enum
+                                | ModuleDeclarationKind::Interface
+                                | ModuleDeclarationKind::NativeType
+                        )
+                    })
+                    .map(|declaration| (*module_id, declaration.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let diagnostics = self.diagnostics.len();
+        let warnings = self.warnings.len();
+        let property_checks = self.property_checks.len();
+        let map_keys = self.written_map_keys.as_ref().map_or(0, Vec::len);
+        // Each round settles at least one more link of a chain of types that
+        // name each other, so as many rounds as there are types suffice.
+        for _ in 0..=types.len() {
+            let before = self.generic_kinds.clone();
+            for (module_id, declaration) in &types {
+                self.check_declaration(*module_id, declaration);
+            }
+            if self.generic_kinds == before {
+                break;
+            }
+        }
+        self.diagnostics.truncate(diagnostics);
+        self.warnings.truncate(warnings);
+        self.property_checks.truncate(property_checks);
+        if let Some(keys) = self.written_map_keys.as_mut() {
+            keys.truncate(map_keys);
+        }
     }
 
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {

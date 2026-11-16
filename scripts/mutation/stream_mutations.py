@@ -31,6 +31,9 @@ MUTATIONS = [
     streams("read_all has no limit", [(
         "        case size > limit {",
         "        case size > limit + 1000000 {")]),
+    streams("read_all leaves the reader running past its limit", [(
+        "          True -> {\n            stop(reader)\n            Failure(StreamError.TooLarge(limit))",
+        "          True -> {\n            Failure(StreamError.TooLarge(limit))")]),
     streams("read_all rejects a stream of exactly its limit", [(
         "        case size > limit {",
         "        case size >= limit {")]),
@@ -67,8 +70,11 @@ MUTATIONS = [
         "                .or(from_value)",
         "                .or(from_value.filter(|_| false))")]),
     checker("signatures are checked before the types they name", [(
-        "            declarations.sort_by_key(|declaration| {",
-        "            declarations.sort_by_key(|_declaration| { return false;")]),
+        "        self.settle_type_parameter_kinds(&order, declaration_modules);",
+        "        let _ = &order;")]),
+    checker("a type named before its declaration settles in one round", [(
+        "        for _ in 0..=types.len() {",
+        "        for _ in 0..1 {")]),
     checker("a constructor does not bind a failure-row parameter", [(
         "                    Some(GenericKind::FailureSet | GenericKind::FailureRow)\n"
         "                ) {\n"

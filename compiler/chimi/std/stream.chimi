@@ -130,8 +130,9 @@ pub fn pipe(capacity: Int) -> (Writer<StreamError>, Reader<StreamError>) {
 /// A reader of the chunks `body` writes, which runs in a child task of the
 /// caller with at most `capacity` chunks waiting to be read. The writer is
 /// closed when `body` returns. If `body` fails, the reader fails with that
-/// failure after the chunks written before it. Stopping the reader makes
-/// `body`'s next write fail with `StreamError.Closed`.
+/// failure after the chunks written before it, unless `body` closed the
+/// writer first. Stopping the reader makes `body`'s next write fail with
+/// `StreamError.Closed`.
 ///
 /// Calls: `body` once, in a new child task.
 /// Cost: O(1) plus the task.

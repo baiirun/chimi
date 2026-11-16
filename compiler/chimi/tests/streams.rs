@@ -398,3 +398,40 @@ fn a_host_reader_skips_empty_chunks() {
 "#);
     assert_eq!(outcome, rendered(r#"(Result.Ok(Void), Result.Ok([Some(Bytes(78)), None]))"#));
 }
+
+// Rejects a `read_all` that leaves its reader running: past the limit of 3 bytes it fails with `TooLarge(3)`, and the endless producer's next write fails with `Closed` (logged 1) instead of parking forever.
+#[test]
+fn read_all_stops_an_endless_producer_past_the_limit() {
+    let outcome = run_virtual("read_all_stops_an_endless_producer_past_the_limit", r#"fn log_closed(log: Channel.Sender<Int>, outcome: Result.Result<Void, StreamError>) -> Void {
+  case outcome {
+    Result.Result.Err(StreamError.Closed) -> {
+      let _ = Result.capture(fn() { Channel.send(log, 1) })
+      Void
+    }
+    _ -> Void
+  }
+}
+
+pub fn main() -> Text {
+  let made = Channel.bounded(1)
+  let log = made.sender
+  let endless = Stream.produce(1, fn(out) {
+    let outcome = Result.capture(fn() {
+      loop count = 0 {
+        Stream.write(out, Bytes.from_text("xy"))
+        count + 1
+      }
+    })
+    log_closed(log, outcome)
+  })
+  let all = Result.capture(fn() { Stream.read_all(endless, 3) })
+  let got = Channel.receive(made.receiver)
+  let closed = case got {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+  Debug.render((all, closed))
+}
+"#);
+    assert_eq!(outcome, rendered(r#"(Result.Err(StreamError.TooLarge(3)), 1)"#));
+}
