@@ -331,13 +331,13 @@ test "a header that would split the response is a defect" {
 }
 
 test "a handler can be tested without a connection" {
-  let request = Http.request(Method.Get, ["users", "9"], [("X-Trace", "abc")], Bytes.empty())
+  let request = Http.request(Method.Get, ["users", "9"], "page=2", [("X-Trace", "abc")], Bytes.empty())
   Http.header(request, "x-trace") |> Test.assert_equal(Some("abc"))
   Http.header(request, "X-TRACE") |> Test.assert_equal(Some("abc"))
   Http.header(request, "missing") |> Test.assert_equal(None)
   let response = handle(request)
   Http.status(response) |> Test.assert_equal(200)
-  Http.response_body(response) |> Test.assert_equal(Bytes.from_text("user 9 "))
+  Http.response_body(response) |> Test.assert_equal(Bytes.from_text("user 9 page=2"))
 }
 "#,
         "virtual",
@@ -526,12 +526,13 @@ test "204 and 304" {
     assert_passed(&run, 2);
 }
 
-// Rejects a server that a slow or failing peer can stop: a client that never
+// Rejects a server that a slow or failing peer can stop, or that leaves a
+// connection open after a defect: a client that never
 // reads its answers is dropped after the write limit, a handler's defect
 // still closes the connection, and failed accepts are retried with a
 // growing pause until the listener closes.
 #[test]
-fn slow_clients_defects_and_failed_accepts_do_not_stop_the_server() {
+fn slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection() {
     let run = run_tests(
         "resilience",
         r#"

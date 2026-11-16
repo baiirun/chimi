@@ -124,12 +124,13 @@ pub fn body(request: Request) -> Bytes {
   request.body
 }
 
-/// A request, for testing a handler without a connection. Header names are
-/// matched without regard to case.
+/// A request, for testing a handler without a connection. `query` is the
+/// text `Http.query` returns. Header names are matched without regard to
+/// case.
 ///
 /// Cost: O(n) in the headers.
-pub fn request(method: Method, path: List<Text>, headers: List<(Text, Text)>, body: Bytes) -> Request {
-  Request(method, path, "", lowercase_names(headers), body)
+pub fn request(method: Method, path: List<Text>, query: Text, headers: List<(Text, Text)>, body: Bytes) -> Request {
+  Request(method, path, query, lowercase_names(headers), body)
 }
 
 // 3. Building responses.

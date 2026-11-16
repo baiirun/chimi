@@ -163,7 +163,7 @@ pub enum Method { Get, Head, Post, Put, Patch, Delete, Options, Other(name: Text
 pub struct Request     // Http.method, Http.path, Http.query, Http.header, Http.headers, Http.body
 pub struct Response    // Http.status, Http.response_headers, Http.response_body
 
-pub fn request(method, path, headers, body) -> Request        // for testing handlers
+pub fn request(method, path, query, headers, body) -> Request        // for testing handlers
 pub fn response(status: Int, headers, body: Bytes) -> Response
 pub fn text(status: Int, text: Text) -> Response
 pub fn serve(listener: Listener, handle: fn(Request) -> Response errors E needs R)
@@ -286,7 +286,7 @@ pub fn serve_connection(connection: Connection, handle) -> Void needs R + { cloc
 | HTTP: control characters, bare CR and LF, two hosts, transfer codings across headers, transfer-encoding on HTTP/1.0, ASCII-only case folding, versions | `tests/http.rs` `ambiguous_requests_are_refused` |
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
-| HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_defects_and_failed_accepts_do_not_stop_the_server` |
+| HTTP: the write limit; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
 | HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
