@@ -27,6 +27,7 @@
 #include <sys/wait.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -6342,6 +6343,211 @@ static uint64_t random_next(void) {
   return result;
 }
 
+/* Console output (CHI-266). Under the scheduler a line written to a pipe, a
+   terminal or a socket never stops the other tasks: the writer waits for the
+   descriptor through CHIMI_REQUEST_IO_WAIT, as a read of "-" does. The
+   descriptor stays blocking, because its open file description is shared with
+   the parent shell and other processes; after poll reports it writable, one
+   write(2) of at most PIPE_BUF bytes does not block on a pipe or a socket. A
+   terminal may still hold such a write briefly.
+
+   Lines from different tasks never interleave: each line goes whole onto its
+   stream's queue before its writer waits, and whichever writer the reactor
+   wakes writes the front of the queue, its own bytes or an earlier line's.
+   A writer returns once the queue has passed the end of its line. A line once
+   queued is written whole, even when its writer is cancelled while it waits:
+   later writers or the end of the program write it. A failed write drops the
+   queue and fails every line still waiting in it.
+
+   A socket is written with send(MSG_DONTWAIT), which never blocks and leaves
+   the shared descriptor alone. The queue holds at most CONSOLE_QUEUE_LIMIT
+   bytes: a writer waits before it queues a line that would pass the limit, so
+   writers cancelled while they wait (a write_line under Task.timeout against
+   a stalled reader) cannot grow it without bound. A line longer than the limit
+   is queued when the queue is empty.
+
+   A regular file, a program without the scheduler, and a program under the
+   virtual clock write directly, as before: a regular file is always writable,
+   without the scheduler there is no other task to keep running, and under the
+   virtual clock the order tasks run in must not depend on how fast the reader
+   drains the pipe. */
+typedef struct ConsoleLine ConsoleLine;
+struct ConsoleLine {
+  uint64_t end; /* Queue offset just past the line. */
+  int error;    /* Nonzero once a failed write dropped the line. */
+  ConsoleLine *next;
+  ConsoleLine *previous;
+};
+
+typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
+
+typedef struct {
+  int fd;
+  FILE *file;
+  const char *name;
+  ConsoleMode mode;
+  bool socket;
+  unsigned char *bytes;
+  size_t capacity;
+  size_t start;
+  size_t end;
+  /* Queue offset of bytes[start]: every byte before it is written or dropped. */
+  uint64_t resolved;
+  /* The writers waiting for their lines, in queue order. Each record lives on
+     its writer's stack and is unlinked before the writer returns. */
+  ConsoleLine *first;
+  ConsoleLine *last;
+} ConsoleStream;
+
+static ConsoleStream console_streams[2] = {
+  {.fd = STDOUT_FILENO, .name = "stdout"},
+  {.fd = STDERR_FILENO, .name = "stderr"},
+};
+
+enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
+
+static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
+  if (stream->mode == CONSOLE_UNKNOWN) {
+    stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
+    struct stat status;
+    bool known = fstat(stream->fd, &status) == 0;
+    bool regular = known && S_ISREG(status.st_mode);
+    stream->socket = known && S_ISSOCK(status.st_mode);
+    stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !regular
+      ? CONSOLE_QUEUED : CONSOLE_DIRECT;
+  }
+  return stream->mode;
+}
+
+static void console_enqueue(ConsoleStream *stream, const void *bytes, size_t length) {
+  if (stream->end + length > stream->capacity) {
+    size_t queued = stream->end - stream->start;
+    memmove(stream->bytes, stream->bytes + stream->start, queued);
+    stream->start = 0;
+    stream->end = queued;
+    if (queued + length > stream->capacity) {
+      size_t capacity = stream->capacity ? stream->capacity : 4096;
+      while (capacity < queued + length) {
+        if (capacity > SIZE_MAX / 2) exhausted_memory();
+        capacity *= 2;
+      }
+      unsigned char *grown = realloc(stream->bytes, capacity);
+      if (!grown) exhausted_memory();
+      stream->bytes = grown;
+      stream->capacity = capacity;
+    }
+  }
+  memcpy(stream->bytes + stream->end, bytes, length);
+  stream->end += length;
+}
+
+/* Drops every queued byte and fails each waiting line with `error`. */
+static void console_fail(ConsoleStream *stream, int error) {
+  stream->resolved += stream->end - stream->start;
+  stream->start = stream->end = 0;
+  for (ConsoleLine *line = stream->first; line; line = line->next) line->error = error;
+}
+
+/* One write(2) from the front of the queue, at most `limit` bytes. False with
+   errno set when it failed; an interruption or a descriptor a parent left
+   non-blocking reports nothing written and true. */
+static bool console_write_front(ConsoleStream *stream, size_t limit) {
+  size_t length = stream->end - stream->start;
+  if (length > limit) length = limit;
+  ssize_t count = stream->socket
+    ? send(stream->fd, stream->bytes + stream->start, length, MSG_DONTWAIT)
+    : write(stream->fd, stream->bytes + stream->start, length);
+  if (count < 0) return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
+  stream->start += (size_t)count;
+  stream->resolved += (uint64_t)count;
+  return true;
+}
+
+/* Writes the whole queue, blocking this thread. The end of the program, and a
+   writer that must not park, use it. */
+static void console_drain_blocking(ConsoleStream *stream) {
+  while (stream->start < stream->end) {
+    struct pollfd poll_fd = {.fd = stream->fd, .events = POLLOUT};
+    if (poll(&poll_fd, 1, -1) < 0 && errno != EINTR) {
+      console_fail(stream, errno);
+      return;
+    }
+    if (!console_write_front(stream, SIZE_MAX)) {
+      console_fail(stream, errno);
+      return;
+    }
+  }
+}
+
+static void console_drain_all(void) {
+  for (size_t index = 0; index < 2; ++index) console_drain_blocking(&console_streams[index]);
+}
+
+static void console_unlink(ConsoleStream *stream, ConsoleLine *line) {
+  if (line->previous) line->previous->next = line->next;
+  else stream->first = line->next;
+  if (line->next) line->next->previous = line->previous;
+  else stream->last = line->previous;
+}
+
+/* Waits until `stream` is writable and writes the front of its queue.
+   CONSOLE_WAITED after a write or a wake that only means "ask again",
+   CONSOLE_CANCELLED when the writer was cancelled. When the reactor cannot
+   wait on the descriptor (it is closed, or poll failed) the write fails, as a
+   read of "-" does: writing anyway could block the scheduler thread. */
+enum { CONSOLE_WAITED, CONSOLE_CANCELLED };
+
+static int console_wait_and_write(ConsoleStream *stream) {
+  /* A body ending under a terminal cancel must not park (CHI-265). */
+  if (chimi_fiber_cancel_is_terminal()) {
+    console_drain_blocking(stream);
+    return CONSOLE_WAITED;
+  }
+  ChimiSchedulerRequest request = {
+    .kind = CHIMI_REQUEST_IO_WAIT, .value = stream->fd, .token = CHIMI_IO_WRITABLE};
+  if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CONSOLE_CANCELLED;
+  if (request.status == CHIMI_RESPONSE_PENDING) return CONSOLE_WAITED;
+  if (request.status == CHIMI_RESPONSE_ERROR) {
+    console_fail(stream, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
+    return CONSOLE_WAITED;
+  }
+  /* Another writer may have emptied the queue while this one waited. */
+  if (stream->start < stream->end && !console_write_front(stream, PIPE_BUF))
+    console_fail(stream, errno);
+  return CONSOLE_WAITED;
+}
+
+/* Writes `text` and a newline. 0 when written, -1 when cancelled, otherwise
+   the errno of the failed write. */
+static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream,
+                              const char *text, size_t length) {
+  if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
+    errno = 0;
+    if (fwrite(text, 1, length, stream->file) != length || fputc('\n', stream->file) == EOF ||
+        fflush(stream->file) != 0)
+      return errno ? errno : EIO;
+    return 0;
+  }
+  /* Nothing is queued yet, so a cancellation here loses nothing. */
+  while (stream->start < stream->end &&
+         stream->end - stream->start + length + 1 > CONSOLE_QUEUE_LIMIT)
+    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) return -1;
+  console_enqueue(stream, text, length);
+  console_enqueue(stream, "\n", 1);
+  ConsoleLine line = {.end = stream->resolved + (stream->end - stream->start), .previous = stream->last};
+  if (stream->last) stream->last->next = &line;
+  else stream->first = &line;
+  stream->last = &line;
+  int outcome = 0;
+  for (;;) {
+    if (line.error) { outcome = line.error; break; }
+    if (stream->resolved >= line.end) break;
+    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
+  }
+  console_unlink(stream, &line);
+  return outcome;
+}
+
 static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
                                  ChimiValue **arguments, uint32_t argument_count,
                                  uint64_t span, uint32_t call_node,
@@ -6355,12 +6561,11 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
     return defect("verified host function has invalid runtime arguments", call_node);
   if (runtime->cancel) return cancelled();
-  FILE *output = function == HOST_WRITE_LINE ? stdout : stderr;
-  size_t length = arguments[0]->as.text.length;
-  if (fwrite(arguments[0]->as.text.bytes, 1, length, output) != length || fputc('\n', output) == EOF ||
-      fflush(output) != 0) {
-    const char *stream = function == HOST_WRITE_LINE ? "stdout" : "stderr";
-    ChimiValue *fields[] = {text_value(stream), text_value(strerror(errno))};
+  ConsoleStream *stream = &console_streams[function == HOST_WRITE_LINE ? 0 : 1];
+  int written = console_write_line(runtime, stream, arguments[0]->as.text.bytes, arguments[0]->as.text.length);
+  if (written < 0) return cancelled();
+  if (written > 0) {
+    ChimiValue *fields[] = {text_value(stream->name), text_value(strerror(written))};
     return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
   }
   return runtime->cancel ? cancelled() : success(void_value());
@@ -12037,6 +12242,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 }
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
+  /* A fatal runtime error exits from wherever it is; queued console lines still
+     go out. A second stop signal (end_by_signal) skips this and drops them. */
+  atexit(console_drain_all);
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);
   char generated_execution_id[96];
@@ -12232,6 +12440,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       ChimiControl *control = runtime.cancel
         ? cancelled()
         : execute_program_entry(&runtime, entry, environment);
+      console_drain_all();
       release_binding_handles();
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
@@ -12258,6 +12467,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   ChimiControl *control = runtime.cancel
     ? cancelled()
     : execute_program_entry(&runtime, entry, environment);
+  /* Lines whose writers were cancelled while they waited (CHI-266). */
+  console_drain_all();
   release_binding_handles();
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
