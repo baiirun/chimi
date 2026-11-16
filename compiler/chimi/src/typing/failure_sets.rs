@@ -576,7 +576,9 @@ impl ProjectTypeChecker {
                     symbol: expected_symbol,
                     arguments: expected_arguments,
                 },
-            ) if symbol == expected_symbol && actual_arguments.len() == expected_arguments.len() => {
+            ) if symbol == expected_symbol
+                && actual_arguments.len() == expected_arguments.len() =>
+            {
                 actual_arguments
                     .into_iter()
                     .zip(expected_arguments)
@@ -585,7 +587,12 @@ impl ProjectTypeChecker {
                         let covariant = self.type_parameter_is_covariant(symbol, index);
                         let contravariant = self.type_parameter_is_contravariant(symbol, index);
                         let within = |checker: &mut Self, flipped| {
-                            checker.failure_set_shortfall_within(actual, expected, flipped, depth + 1)
+                            checker.failure_set_shortfall_within(
+                                actual,
+                                expected,
+                                flipped,
+                                depth + 1,
+                            )
                         };
                         match (covariant, contravariant) {
                             (true, _) => within(self, flipped),

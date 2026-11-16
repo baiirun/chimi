@@ -1,0 +1,21 @@
+// A defect in `release` replaces the failure `use` ended with.
+import std/resource as Resource
+
+enum UseError {
+  Broken
+}
+
+fn divide(left: Int, right: Int) -> Int {
+  left / right
+}
+
+pub fn main() -> Int {
+  Resource.scoped(
+    fn() { 0 },
+    fn(held) {
+      let _ = divide(2, held)
+      Void
+    },
+    fn(_held) { Failure(UseError.Broken) },
+  )
+}

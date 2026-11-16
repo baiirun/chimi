@@ -7949,7 +7949,9 @@ impl ProjectTypeChecker {
                 (true, true) => true,
                 (true, false) | (false, true) => false,
                 (false, false) => actual_lists.iter().all(|actual| {
-                    expected_lists.iter().any(|expected| agree(actual, expected))
+                    expected_lists
+                        .iter()
+                        .any(|expected| agree(actual, expected))
                 }),
             }
         };

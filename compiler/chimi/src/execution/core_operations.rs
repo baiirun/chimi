@@ -83,8 +83,13 @@ impl Evaluator<'_> {
             (StandardFunction::TestAssert, [RuntimeValue::Boolean(true), _]) => {
                 Control::Success(RuntimeValue::Void)
             }
-            (StandardFunction::TestAssert, [RuntimeValue::Boolean(false), RuntimeValue::Text(message)])
-            | (StandardFunction::TestFail, [RuntimeValue::Text(message)]) => defect(message.clone()),
+            (
+                StandardFunction::TestAssert,
+                [RuntimeValue::Boolean(false), RuntimeValue::Text(message)],
+            )
+            | (StandardFunction::TestFail, [RuntimeValue::Text(message)]) => {
+                defect(message.clone())
+            }
             _ => self.intrinsic_shape_defect(function, call_node),
         }
     }

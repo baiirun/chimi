@@ -650,7 +650,7 @@ impl Scheduler {
                 Idle::Deadlock(parked) => {
                     if root_live(self) {
                         deadlock = parked;
-                        self.begin_terminal(
+                        self.force_terminal(
                             root,
                             TaskOutcome::Defected {
                                 origin: root,

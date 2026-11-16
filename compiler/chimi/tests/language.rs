@@ -11662,8 +11662,7 @@ fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
         ),
     );
     assert_eq!(
-        outcome,
-        "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
+        outcome, "\"outcome\":\"success\",\"value\":[601,25000,90770,20000]",
         "{outcome}"
     );
 }
@@ -11772,7 +11771,11 @@ fn a_crash_message_built_inside_a_loop_survives_the_loop() {
             "}\n",
         ),
     );
-    assert_eq!(defect_message(&outcome), "boom-message-in-chunk", "{outcome}");
+    assert_eq!(
+        defect_message(&outcome),
+        "boom-message-in-chunk",
+        "{outcome}"
+    );
 }
 
 // Guards: a match reads every subject, both when its subjects fit the runtime's

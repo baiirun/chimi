@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CHIMI_RUNTIME_ABI_VERSION 30
+#define CHIMI_RUNTIME_ABI_VERSION 32
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -251,6 +251,8 @@ enum {
   CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL,
   CHIMI_INTRINSIC_TEST_ASSERT,
   CHIMI_INTRINSIC_TEST_FAIL,
+  /* std/resource.scoped: acquire, use, release with release masked. */
+  CHIMI_INTRINSIC_RESOURCE_SCOPED,
 };
 
 enum {

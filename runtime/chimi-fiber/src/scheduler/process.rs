@@ -1231,6 +1231,11 @@ impl Scheduler {
     }
 
     /// True when the task is a forced incarnation, which must not park again.
+    /// True while `task` belongs to an incarnation whose shutdown has begun.
+    pub(super) fn is_stopping(&self, task: TaskId) -> bool {
+        self.stopping(task).is_some()
+    }
+
     pub(super) fn is_forced(&self, task: TaskId) -> bool {
         self.stopping(task).is_some_and(|stopping| stopping.forced)
     }
@@ -1648,7 +1653,7 @@ impl Scheduler {
             .map(|(task, _)| *task)
             .collect();
         for task in roots {
-            self.begin_terminal(
+            self.force_terminal(
                 task,
                 TaskOutcome::Defected {
                     origin: task,
@@ -1867,9 +1872,12 @@ impl Scheduler {
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
-        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
+        if matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
+            && !self.has_live_descendants(task)
+        {
             // The body has ended and waits for root supervisors it started;
             // their members' deadlines bound the wait, so no timer is armed.
+            // A descendant still running its releases keeps the deadline armed.
             return false;
         }
         let now = self.clock.now();
@@ -2057,8 +2065,12 @@ impl Scheduler {
             .expect("only stopping incarnations are forced");
         stopping.timer = None;
         if matches!(self.tasks[&task].phase, TaskPhase::Draining(_)) {
-            // The body finished its cleanup in time; only supervisors it
-            // started are still stopping, each under its own deadlines.
+            // The body finished its cleanup in time. Descendants still running
+            // their releases end now; supervisors it started are still
+            // stopping, each under its own deadlines.
+            self.forcing += 1;
+            self.force_live_descendants(task);
+            self.forcing -= 1;
             return;
         }
         stopping.forced = true;
@@ -2085,7 +2097,7 @@ impl Scheduler {
         let record = self.tasks.get_mut(&task).expect("forced incarnation");
         std::mem::forget(record.fiber.take());
         record.request = std::ptr::null_mut();
-        self.begin_terminal(task, TaskOutcome::Cancelled, true);
+        self.force_terminal(task, TaskOutcome::Cancelled, true);
     }
 
     /// Drops a membership record, keeping only what a live handle needs.

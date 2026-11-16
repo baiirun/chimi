@@ -5490,7 +5490,10 @@ fn native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect() {
     };
     let (fits_status, fits) = run("5000");
     assert_eq!(fits_status, Some(0), "{fits}");
-    assert!(fits.contains(r#""outcome":"success","value":10000"#), "{fits}");
+    assert!(
+        fits.contains(r#""outcome":"success","value":10000"#),
+        "{fits}"
+    );
     let (overflow_status, overflow) = run("1000000");
     assert_eq!(overflow_status, Some(70), "{overflow}");
     assert!(
