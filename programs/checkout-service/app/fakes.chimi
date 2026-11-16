@@ -1,0 +1,107 @@
+import app/checkout as Checkout
+import app/checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, NotifyError, Order, PaymentError, Payments, Reservation, ShippingError, StockError}
+import std/clock as Clock
+import std/clock.{Clock, Instant}
+import std/duration as Duration
+import std/text as Text
+
+// Deterministic stand-ins for the services a checkout calls. Each one waits
+// on the clock like a network call would, and fails by rule rather than by
+// chance, so a run under the virtual clock is exact.
+
+fn pause(clock: Clock, milliseconds: Int) -> Void {
+  clock.sleep_until(Clock.add(clock.now(), Duration.milliseconds(milliseconds)))
+}
+
+/// Holds stock for every SKU except `sold-out`.
+pub fn inventory() needs {
+  clock: Clock
+} {
+  let source = clock
+  {
+    reserve: fn(sku: Text) -> Reservation {
+      pause(source, 10)
+      case sku {
+        "sold-out" -> Failure(StockError.OutOfStock(sku))
+        _ -> Checkout.reservation(sku, 7000 + Text.byte_length(sku))
+      }
+    },
+  }
+}
+
+/// Scores large orders as risky, and cannot be reached for the `mug` SKU.
+pub fn fraud() needs {
+  clock: Clock
+} {
+  let source = clock
+  {
+    score: fn(order: Order) -> Int {
+      pause(source, 20)
+      case Checkout.cents(order) > 100000, Checkout.sku(order) {
+        True, _ -> 95
+        False, "mug" -> Failure(FraudError.Unreachable)
+        False, _ -> 10
+      }
+    },
+  }
+}
+
+/// Answers 503 until `healthy_at`. Declines a total of 666 cents, and takes
+/// 300 ms for the `slow` SKU, longer than a checkout's per-attempt timeout.
+pub fn payments(healthy_at: Instant) needs {
+  clock: Clock
+} {
+  let source = clock
+  {
+    charge: fn(order: Order) -> Text {
+      pause(source, 30)
+      case Checkout.cents(order) == 666, Checkout.sku(order) == "slow", source.now() < healthy_at {
+        True, _, _ -> Failure(PaymentError.Declined("card refused"))
+        _, True, _ -> {
+          pause(source, 300)
+          "ch-late-${Checkout.id(order)}"
+        }
+        _, _, True -> Failure(PaymentError.Unavailable(503))
+        _, _, False -> "ch-${Checkout.id(order)}"
+      }
+    },
+  }
+}
+
+/// Ground answers in 50 ms. Express answers in 20 ms, but has no route to
+/// the `island` SKU.
+pub fn carriers() needs {
+  clock: Clock
+} {
+  let source = clock
+  {
+    ground: fn(_order: Order) -> Text {
+      pause(source, 50)
+      "ground"
+    },
+    express: fn(order: Order) -> Text {
+      pause(source, 20)
+      case Checkout.sku(order) {
+        "island" -> Failure(ShippingError.NoRoute("express"))
+        _ -> "express"
+      }
+    },
+  }
+}
+
+/// Email always arrives; SMS bounces for odd order ids.
+pub fn notifier() needs {
+  clock: Clock
+} {
+  let source = clock
+  {
+    email: fn(_order: Order) -> Void { pause(source, 5) },
+    sms: fn(order: Order) -> Void {
+      pause(source, 5)
+      case Checkout.id(order) % 2 {
+        1 -> Failure(NotifyError.Bounced("sms"))
+        _ -> pause(source, 0)
+      }
+    },
+  }
+}
