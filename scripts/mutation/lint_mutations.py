@@ -73,3 +73,18 @@ MUTATIONS = [
         "                    let shadowed = false && aliases.contains(&member.text.as_str());",
     )]),
 ]
+
+MUTATIONS += [
+    mutant("a public item without a doc is fine", L, [(
+        "                && declaration_doc(module, declaration).is_none()",
+        "                && false",
+    )]),
+    mutant("main needs a doc", L, [(
+        "                && declaration.name.text != \"main\"\n",
+        "",
+    )]),
+    mutant("a private item needs a doc", L, [(
+        "            declaration.public\n                && declaration.name.text != \"main\"",
+        "            true\n                && declaration.name.text != \"main\"",
+    )]),
+]

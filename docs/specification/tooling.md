@@ -91,6 +91,7 @@ Rules:
 | `unused-import` | a module alias no code in the module uses, as `Alias.member` or `Alias.Type`, and a member import (`import m.{Name}`) the module never names, alone or as `Name.Variant` |
 | `unused-private` | a private function or constant nothing references; a runner provider (`host`) the runner binds by name is exempt |
 | `unused-binding` | a `let` binding or a pattern binding (in `case`, a destructuring `let`, a clause head) that its scope never reads |
+| `missing-doc` | a public item with no `///` doc comment, which `chimi doc`, hover and completion would show with no explanation; `main` is exempt, since the entry point is the program, not an API |
 
 Parameters are never reported, because a callback or a fake often ignores
 one its type requires, as in Go and Gleam.
@@ -101,9 +102,12 @@ other, or a chain only dead code uses, all count as used. Private structs,
 enums, interfaces and `process name` items, and unused `needs` entries, are
 not checked yet. When a module alias and a member import share a name, as
 `import std/clock as Clock` with `import std/clock.{Clock}`, a qualified path
-such as `Clock.Instant` uses the alias, as the compiler resolves it. A missing doc comment on a
-public item, suggested fixes, and showing findings in the editor come with
-the second linting part.
+such as `Clock.Instant` uses the alias, as the compiler resolves it.
+Suggested fixes (code actions) are not offered yet.
+
+In the editor, the language server MUST publish the same findings for the
+project's own modules as warnings beside the compiler's diagnostics, and
+none while the project has errors.
 
 Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
 name resolution, which records each local binding's name range. Tests:

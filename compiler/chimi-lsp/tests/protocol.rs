@@ -110,6 +110,18 @@ fn editor_session_publishes_diagnostics_and_formats() {
     assert_eq!(edits.as_array().map(Vec::len), Some(1));
     assert_eq!(edits[0]["range"]["end"], json!({"line": 1, "character": 0}));
 
+    // A lint finding is a warning; the compile error above was an error.
+    assert_eq!(diagnostic["severity"], 1);
+    notify(
+        &client,
+        "textDocument/didChange",
+        json!({"textDocument": {"uri": uri, "version": 3},
+            "contentChanges": [{"text": "pub fn main() -> Int {\n  let unused = 1\n  0\n}\n"}]}),
+    );
+    let published = next_diagnostics(&client);
+    assert_eq!(published["diagnostics"][0]["severity"], 2);
+    assert_eq!(published["diagnostics"][0]["code"], "unused-binding");
+
     request(&client, 3, "shutdown", Value::Null);
     notify(&client, "exit", Value::Null);
     handle.join().unwrap().unwrap();
