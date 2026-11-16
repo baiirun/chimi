@@ -348,6 +348,15 @@ impl TypeReport {
     pub fn documentation(&self, module_path: &str) -> Option<crate::ModuleDocumentation> {
         crate::doc::document_module(&self.typed, module_path)
     }
+
+    /// `chimi lint`'s findings for the project's own modules, or with
+    /// `include_standard` for the `std/` modules as well. Each is a warning
+    /// whose code names its rule.
+    pub fn lint(&self, include_standard: bool) -> Vec<Diagnostic> {
+        crate::lint::lint(&self.typed.resolved, |module_path| {
+            include_standard || !module_path.starts_with("std/")
+        })
+    }
 }
 
 fn value_property_report(typed: &TypedProject, type_id: TypeId) -> ValuePropertyReport {

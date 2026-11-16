@@ -102,13 +102,13 @@ pub fn main() -> Void needs {
   |> Process.register(dispatcher)
   |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([recording, dispatching], 5, Supervisor.restarts(3, Duration.seconds(30))))
-  let first = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+  let _first = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
     |> Process.register(worker_1), Supervisor.Restart.OnDefect
   )
-  let second = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+  let _second = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
     |> Process.register(worker_2), Supervisor.Restart.OnDefect
   )
-  let third = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
+  let _third = Supervisor.start_process(root, Process.spec(work, 4, Duration.seconds(5))
     |> Process.register(worker_3), Supervisor.Restart.OnDefect
   )
   Process.send(worker_1, Job.Poison)

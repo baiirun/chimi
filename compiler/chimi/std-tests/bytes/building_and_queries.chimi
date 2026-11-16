@@ -1,7 +1,6 @@
 // Bytes: building from lists, text, and parts; length, get, slice (clamped),
 // search, prefixes and suffixes, split_once, equality and order, and rendering.
 import std/bytes as Bytes
-import std/bytes.{Bytes}
 import std/debug as Debug
 import std/test as Test
 

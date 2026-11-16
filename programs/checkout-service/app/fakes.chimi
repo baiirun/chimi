@@ -1,5 +1,5 @@
 import app/checkout as Checkout
-import app/checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, NotifyError, Order, PaymentError, Payments, Reservation, ShippingError, StockError}
+import app/checkout.{FraudError, NotifyError, Order, PaymentError, Reservation, ShippingError, StockError}
 import std/clock as Clock
 import std/clock.{Clock, Instant}
 import std/duration as Duration
