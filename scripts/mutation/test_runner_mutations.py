@@ -48,9 +48,17 @@ MUTATIONS = [
         "            let free = results.iter().position(Option::is_none).unwrap();\n            let _ = position;\n            results[free] = Some(result);",
     )]),
     runner("filter: filters are ignored", T, [(
-        "filters.is_empty() || filters.iter().any(|filter| identity.contains(filter))",
-        "true || filters.iter().any(|filter| identity.contains(filter))",
+        "                filters.is_empty()\n",
+        "                true\n",
     )]),
+    runner("filter: only the quoted form matches", T, [(
+        ".any(|filter| plain.contains(filter) || quoted.contains(filter))",
+        ".any(|filter| quoted.contains(filter))",
+    )]),
+    runner("clock start: any text is accepted", T, [(
+        "    clock_start_nanoseconds(text).is_some()",
+        "    clock_start_nanoseconds(text).is_some() || true",
+    )], targets=("testing",)),
     runner("interpreter: every test runs the first entry", B, [(
         "        core.entry = entry;\n",
         "        let _ = entry;\n",
