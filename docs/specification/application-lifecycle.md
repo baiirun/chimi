@@ -104,18 +104,27 @@ the longest a stop can take is the sum of its members' `shutdown_within`.
 The native runner handles SIGINT and SIGTERM.
 
 - The **first** signal cancels `main`, the root task. That is the same
-  cancellation as `Task.cancel`: `main`'s child tasks are cancelled, and
-  every root supervisor `main` started stops, newest first, through the drain
-  above. A `main` parked in `Supervisor.wait` therefore ends once its root
-  has drained, and a `main` inside `Resource.scoped` runs its releases,
-  masked, before it ends (`tests/std_signal.rs`
-  `a_stop_signal_runs_the_releases_of_main_itself`). The runner-wide cancellation that host operations observe is
-  not set, so processes that drain keep their host access.
+  cancellation as `Task.cancel`: `main`'s child tasks are cancelled, a `main`
+  inside `Resource.scoped` runs its releases, masked, and then every root
+  supervisor `main` started stops, newest first, through the drain above
+  (`tests/std_signal.rs` `a_stop_signal_runs_the_releases_of_main_itself`).
+  A `main` parked in `Supervisor.wait` therefore ends once its root has
+  drained. The runner-wide cancellation that host operations observe is not
+  set, so processes that drain keep their host access.
+- `main`'s releases have no deadline: unlike a process body, `main` has no
+  `shutdown_within`, so a release that sleeps holds the stop until it
+  returns, and the second signal below is the way to end it sooner
+  (`tests/signals.rs`
+  `the_first_signal_runs_main_s_release_and_a_second_cuts_it_short`). A
+  release that can never return ends in the deadlock defect (exit 70), as
+  in any scope, not with the signal.
 - A **second** SIGINT or SIGTERM ends the program at once with that signal's
   default action (press Ctrl-C twice).
 - A program with no processes or tasks (no scheduler) is cancelled at its
   next semantic operation, and a blocking read of standard input is
-  interrupted.
+  interrupted. That cancellation is runner-wide, so the masked releases
+  above are not promised there: a release's own host operations end
+  cancelled.
 - A program on the scheduler that is reading standard input waits for it in
   the IO reactor
   ([G21](host-capabilities-and-execution-properties.md#waiting-for-descriptors-g21)),
