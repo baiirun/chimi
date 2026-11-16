@@ -6,6 +6,12 @@
 //! fibers on several threads has to account for, so it must be added to
 //! `Carrier` or to the list below on purpose, with its owner decided.
 //! Function-local statics are not allowed at all: their owner is invisible.
+//!
+//! The check reads the object's symbols, and only ELF reports one per
+//! variable: on Mach-O, clang merges internal globals into `__MergedGlobals`
+//! and labels sections `ltmpN`. The source is the same on every host, so
+//! Linux guards it.
+#![cfg(target_os = "linux")]
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -105,14 +111,13 @@ fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether `symbol` is a listed global. Mach-O prefixes C names with `_`,
-/// and an optimiser may split an array into `name.0`, `name.1` and so on.
+/// Whether `symbol` is a listed global. An optimiser may split an array into
+/// `name.0`, `name.1` and so on.
 /// Every function-local static is refused: GCC names one `var.N` and Clang
 /// `function.var`, so the latter never matches, and the former matches only
 /// a local that shares a listed global's name.
 fn allowed(symbol: &str) -> bool {
-    let name = symbol.strip_prefix('_').unwrap_or(symbol);
-    let mut parts = name
+    let mut parts = symbol
         .split('.')
         .filter(|part| !part.chars().all(|character| character.is_ascii_digit()));
     match (parts.next(), parts.next()) {
