@@ -1,7 +1,6 @@
 // A stored Err keeps its cause outside the value: Cause.of reads it, equality
 // ignores it, and Result.get re-raises the failure with the same cause.
 import std/cause as Cause
-import std/cause.{Cause}
 import std/result as Result
 import std/result.{Result, Ok, Err}
 import std/list as List

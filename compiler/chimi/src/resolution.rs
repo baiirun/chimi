@@ -200,6 +200,9 @@ pub(crate) struct ProjectSymbol {
     pub(crate) kind: ProjectSymbolKind,
     pub(crate) name: String,
     pub(crate) public: bool,
+    /// Where a parameter or local binding names itself; `None` for every
+    /// other symbol, whose declaration the semantic module holds.
+    pub(crate) name_range: Option<crate::ids::TextRange>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2933,6 +2936,7 @@ impl ProjectResolver {
             &name.text,
             false,
         );
+        self.symbols[id.raw() as usize].name_range = Some(name.range);
         scope.values.insert(name.text.clone(), id);
     }
 
@@ -3019,6 +3023,7 @@ impl ProjectResolver {
             kind,
             name: name.to_owned(),
             public,
+            name_range: None,
         });
         id
     }
