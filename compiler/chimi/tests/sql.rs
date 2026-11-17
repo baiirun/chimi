@@ -637,3 +637,101 @@ test "a savepoint's failed commit stays the outcome when its rollback fails too"
     );
     assert_passed(&run, 11);
 }
+
+// Rejects a transaction's database that still reaches the connection after
+// the transaction ended, statements from two tasks that run on it at once, a
+// commit that does not wait for a statement another task is running, and an
+// outer statement that runs inside another task's savepoint.
+#[test]
+fn a_transactions_database_runs_one_statement_at_a_time_until_it_ends() {
+    let run = run_tests(
+        "transaction-gate",
+        r#"
+import std/watch as Watch
+
+// A driver whose statement `slow` waits for the next value `go` publishes;
+// it logs each statement as it starts and `slow done` once it finishes.
+fn blocking(log: Recorder<Text>, go: Watch.Publisher<Bool>) -> Sql.Driver {
+  Sql.driver(fn(_) {
+    Sql.connection(fn(sql, _) {
+      Test.record(log, sql)
+      case sql == "slow" {
+        True -> {
+          let _ = Result.capture(fn() { next_value(Watch.subscribe(go)) })
+          Test.record(log, "slow done")
+        }
+        False -> Void
+      }
+      Sql.done()
+    }, fn(depth) { Test.record(log, "begin ${depth}") }, fn(depth) { Test.record(log, "commit ${depth}") }, fn(depth) {
+      Test.record(log, "rollback ${depth}")
+    }, fn() { Void }, fn() { Void })
+  })
+}
+
+// Waits past a follower's current value for the next one.
+fn next_value(follower: Watch.Subscription<Bool>) -> Void {
+  let _ = Watch.receive(follower)
+  let _ = Watch.receive(follower)
+  Void
+}
+
+// Lets `slow` finish after `seconds`.
+fn release_after(go: Watch.Publisher<Bool>, seconds: Int) -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(seconds))
+  let _ = Result.capture(fn() { Watch.publish(go, True) })
+  Void
+}
+
+test "a transaction's database fails once the transaction has ended" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let escaped = Sql.transaction(db, fn(tx) { tx })
+    failed(fn() { Sql.execute(escaped, "late", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+    failed(fn() { Sql.transaction(escaped, fn(nested) { Sql.execute(nested, "later", []) }) })
+      |> Test.assert_equal(Some(SqlError.TransactionEnded))
+    let inner = Sql.transaction(db, fn(tx) { Sql.transaction(tx, fn(nested) { nested }) })
+    failed(fn() { Sql.execute(inner, "inner", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+  })
+  List.filter(Test.recorded(calls), fn(call) { call == ran("late") or call == ran("later") or call == ran("inner") }) |> Test.assert_equal([])
+}
+
+test "a transaction ends after the statement another task is running" {
+  let log = Test.recorder()
+  let go = Watch.starting_with(False)
+  let signal = go.publisher
+  let start = Clock.now()
+  let releaser = Task.start(fn() { release_after(signal, 5) })
+  Sql.open(blocking(log, signal), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let _ = Task.start(fn() { Sql.execute(tx, "slow", []) })
+      Clock.sleep(Duration.seconds(1))
+    })
+  })
+  Task.result(releaser)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
+  Test.recorded(log) |> Test.assert_equal(["begin 0", "slow", "slow done", "commit 0"])
+}
+
+test "statements from several tasks take turns, and a savepoint holds its turn" {
+  let log = Test.recorder()
+  let go = Watch.starting_with(False)
+  let signal = go.publisher
+  let releaser = Task.start(fn() { release_after(signal, 5) })
+  Sql.open(blocking(log, signal), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let nested = Task.start(fn() { Sql.transaction(tx, fn(inner) { Sql.execute(inner, "slow", []) }) })
+      let outer = Task.start(fn() {
+        Clock.sleep(Duration.seconds(1))
+        Sql.execute(tx, "outer", [])
+      })
+      Task.result(nested) + Task.result(outer)
+    })
+  })
+  Task.result(releaser)
+  Test.recorded(log) |> Test.assert_equal(["begin 0", "begin 1", "slow", "slow done", "commit 1", "outer", "commit 0"])
+}
+"#,
+    );
+    assert_passed(&run, 3);
+}

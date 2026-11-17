@@ -1,6 +1,7 @@
 """Mutants of std/sql's driver-independent layer (CHI-258): reading rows by
 column, one and first, the pool (lazy connections, reuse, resets, its size,
-its wait, closing), and transactions (commit, rollback, savepoints). A mutant
+its wait, closing), transactions (commit, rollback, savepoints), and the
+gate that runs a transaction's statements one at a time until it ends. A mutant
 that makes a wait hang shows as TIMEOUT, which counts as caught.
 
 Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/sql_mutations.py
@@ -154,4 +155,29 @@ MUTATIONS = [
     mutant("a statement in a transaction takes its own connection",
            "    Place.Pinned(connection, _) -> connection.run(sql, params)\n    Place.Pooled(_, _, _, _) -> borrow(",
            "    Place.Pinned(connection, _) -> Failure(SqlError.PoolClosed)\n    Place.Pooled(_, _, _, _) -> borrow("),
+    # The transaction's gate (CHI-269).
+    mutant("a transaction's statements skip the gate",
+           "    Place.Pinned(connection, _, gate) -> pinned(connection, gate, fn(held) { held.run(sql, params) })",
+           "    Place.Pinned(connection, _, _) -> connection.run(sql, params)"),
+    mutant("a savepoint does not hold the outer turn",
+           "    Place.Pinned(connection, depth, gate) -> pinned(connection, gate, fn(_) { savepoint(connection, depth, body) })",
+           "    Place.Pinned(connection, depth, _) -> savepoint(connection, depth, body)"),
+    mutant("a transaction ends without waiting for a running statement",
+           "        let _ = Result.capture(fn() { Channel.receive(answers) })\n        Void",
+           "        Void"),
+    mutant("a refused statement runs anyway",
+           "    Receive.Received(True) -> Void\n    _ -> Failure(SqlError.TransactionEnded)",
+           "    _ -> Void"),
+    mutant("a finished statement keeps its turn",
+           "fn(_) { post(gate, Turn.Leave) }",
+           "fn(_) { Void }"),
+    mutant("a statement that stopped waiting keeps the turn",
+           "          Failure(_) -> rest",
+           "          Failure(_) -> break Some(Queue(True, rest, None))"),
+    mutant("waiting statements take turns newest first",
+           "admit(Queue(queue.busy, List.push(queue.waiting, reply), queue.ending))",
+           "admit(Queue(queue.busy, List.append([reply], queue.waiting), queue.ending))"),
+    mutant("an ended gate stays open",
+           "  }, fn(turns) { Channel.close(turns.completion) }, fn(turns) {",
+           "  }, fn(_) { Void }, fn(turns) {"),
 ]
