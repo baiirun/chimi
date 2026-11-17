@@ -288,11 +288,12 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   by the stop without being closed, so its client waits until the program
   exits. This is a runtime gap: a discarded start argument or task capture
   frees its memory but does not release the host handles it holds.
-- Streamed response bodies, decided 2026-11-17 and not built yet:
-  `Http.streamed(status, headers, produce)`, where the server calls
-  `produce` with the connection's writer after the head and sends the body
-  chunked. Request bodies stay buffered under `max_body_bytes` until a
-  program needs a larger upload.
+- Streamed response bodies, planned as `Http.streamed(status, headers,
+  produce)`: the server calls `produce` with the connection's writer after
+  the head and sends the body chunked. It waits on whether a data type may
+  carry a `needs` row, since a producer usually needs capabilities. Request
+  bodies stay buffered under `max_body_bytes` until a program needs a
+  larger upload.
 - A request whose first bytes arrive in the moment the drain starts may be
   closed as idle, as Go's can; a client retries such a request when it is
   safe to. The same holds for a connection accepted as the listener closes
