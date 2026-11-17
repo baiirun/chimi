@@ -288,11 +288,10 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ## std/sql (driver-independent layer)
 
-Nested transactions are **provisional**: they follow the recommendation on an
-open decision card (a transaction inside a transaction is a savepoint). A
+A transaction inside a transaction is a savepoint (Byron, 2026-11-17). A
 pool takes its settings as a record, `Sql.defaults` updated with what differs,
-as std/http does. Which database the first driver
-talks to is also open; this layer has no driver of its own beyond `Sql.fake`.
+as std/http does. The first real driver is SQLite,
+then Postgres; this layer has no driver of its own beyond `Sql.fake`.
 `std/sql` is written in Chimi with no binding package, but its pool uses
 bounded channels, so it runs on the native backend only.
 
@@ -368,12 +367,24 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   `body` succeeds it commits, and a failed commit is the outcome. When `body`
   fails it rolls back and the body's failure is the outcome. When `body`
   defects or is cancelled, the pool's reset rolls the transaction back.
-- A transaction inside a transaction is a savepoint (`SAVEPOINT chimi_<n>`,
-  then `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT`), so an inner failure
+- A transaction inside a transaction is a savepoint, so an inner failure
   that the outer body catches undoes only the inner statements. A savepoint
   is undone whenever its body does not succeed, including a defect or a
   cancellation the outer body survives (a `Task.timeout` inside it), and the
-  body's failure stays the outcome even when `ROLLBACK TO SAVEPOINT` fails.
+  body's failure stays the outcome even when rolling the savepoint back fails.
+  A savepoint whose commit fails is rolled back, and the failed commit is its
+  outcome. A transaction whose commit fails is not rolled back here; the
+  pool's reset cleans the connection.
+- The driver writes every transaction statement. `begin`, `commit` and
+  `rollback` take a depth: 0 is the transaction, and n is the nth savepoint
+  nested inside it. A standard-SQL driver sends `BEGIN`, `COMMIT` and
+  `ROLLBACK` at depth 0, and `SAVEPOINT`, `RELEASE SAVEPOINT`, and
+  `ROLLBACK TO SAVEPOINT` then `RELEASE SAVEPOINT` at depth n. SQL Server's
+  `SAVE TRANSACTION` fits the same three functions. Rolling back a savepoint
+  MUST leave it ended, so the next savepoint at that depth can reuse its name.
+  It MUST also work after a failed `commit` at the same depth, even when that
+  commit already ended the savepoint. A failed rollback is ignored, and the
+  failure that caused it stays the outcome.
 
 ### Drivers and tests
 
@@ -381,7 +392,8 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   driver that needs the network or the file system takes that capability when
   it is built, so the capability still appears in `main`.
 - `Sql.fake(answer)` is a driver that hands every call (`Connected`, `Ran`,
-  `Began`, `Committed`, `RolledBack`, `Reset`, `Closed`) to `answer`. Tests
+  `Began(depth)`, `Committed(depth)`, `RolledBack(depth)`, `Reset`, `Closed`)
+  to `answer`. Tests
   record the calls with `Test.recorder` and script failures in `answer`.
 
 ## std/tls
@@ -501,7 +513,7 @@ refuses the peer's versions.
 | SQL: rows read by name, each typed accessor, nulls, missing columns, wrong kinds, `one` and `first` | `tests/sql.rs` `rows_are_read_by_column_name_with_typed_accessors` |
 | SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
-| SQL: commit, rollback, defect, cancellation, a failed commit, savepoints | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
+| SQL: commit, rollback, defect, cancellation, a failed commit, savepoints, a driver's own savepoint statements | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
 | TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
 | TLS: `Untrusted`, `WrongHost(host)`, `Expired` and not yet valid on the client, `Handshake` on the server, a stranger's expired certificate is `Untrusted`, an empty host | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
 | TLS: bad roots, an empty bundle, a bad key, a key that is not the certificate's | `tests/tls.rs` `bad_roots_and_identities_fail_where_they_are_made` |
