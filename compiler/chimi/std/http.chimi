@@ -469,7 +469,6 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
   loop cursor = Cursor(Bytes.empty(), 0) {
-    mark_working(signals, False)
     let next = Task.timeout(fn() {
       let start = arrive(reader, cursor, signals)
       case start {
@@ -506,9 +505,10 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
 
 // A cursor at the start of the next request's bytes, once there are any, or
 // `None` when the client closed the connection first or the server is
-// draining with no request begun. The connection is marked working from
-// then on. Bytes already read count as a request begun, so a pipelined
-// request is answered (with `connection: close`) during a drain.
+// draining with no request begun. The connection counts as idle only while
+// it waits here for bytes, and as working once they arrive. Bytes already
+// read count as a request begun, so a pipelined request is answered (with
+// `connection: close`) during a drain.
 fn arrive(reader: Reader<NetError>, cursor: Cursor, signals: Option<Signals>) -> Option<Cursor> {
   case (unread(cursor) > 0, draining_now(signals)) {
     (True, _) -> {
@@ -517,6 +517,7 @@ fn arrive(reader: Reader<NetError>, cursor: Cursor, signals: Option<Signals>) ->
     }
     (False, True) -> None
     (False, False) -> {
+      mark_working(signals, False)
       let chunk = Stream.read(reader)
       case chunk {
         Some(bytes) -> {

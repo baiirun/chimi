@@ -782,6 +782,10 @@ fn slow(request: Request) -> Response needs { clock: Clock } {
       Clock.sleep(Duration.seconds(5))
       Http.text(200, "slow")
     }
+    ["one"] -> {
+      Clock.sleep(Duration.seconds(1))
+      Http.text(200, "one")
+    }
     _ -> Http.text(200, "fast")
   }
 }
@@ -920,6 +924,21 @@ test "a request whose first bytes came before the drain is answered" {
   answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 4\r\nconnection: close\r\n\r\nfast")
 }
 
+test "a pipelined request read before the drain is answered" {
+  let (client, server_end) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let serving = Task.start(fn() { Http.serve(once(server_end, plan), Http.defaults, slow) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /one HTTP/1.1\r\nHost: x\r\n\r\nGET /fast HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.seconds(1))
+  Stream.close(script)
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
+  Stream.close(Net.writer(client))
+  Task.result(serving)
+  let head = "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\n"
+  answer |> Test.assert_equal("${head}content-length: 3\r\n\r\none${head}content-length: 4\r\nconnection: close\r\n\r\nfast")
+}
+
 test "busy connections drain together" {
   let (first, first_end) = Net.pair(64)
   let (second, second_end) = Net.pair(64)
@@ -945,5 +964,5 @@ test "busy connections drain together" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 7);
+    assert_passed(&run, 8);
 }
