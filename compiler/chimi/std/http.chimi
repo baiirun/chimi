@@ -305,14 +305,17 @@ fn serve_admitted<E, R>(inbox: Inbox<Unused>, accepted: Connection, bounds: Limi
       Void
     })
   })
-  // A new follower's first receive is the flag's value now, so the select
-  // below wakes only for a change.
-  let _ = Watch.receive(drained)
-  let woken = Select.first([
-    Select.task(serving, fn(_) { Woken.Served }),
-    Select.inbox(inbox, fn(_) { Woken.Stopped }),
-    Select.watch(drained, fn(_) { Woken.Draining }),
-  ])
+  // A new follower's first receive is the flag's value now, which catches a
+  // drain that began before this follower; the select wakes only for a change.
+  let now_draining = Watch.receive(drained)
+  let woken = case now_draining {
+    Receive.Received(True) -> Woken.Draining
+    _ -> Select.first([
+      Select.task(serving, fn(_) { Woken.Served }),
+      Select.inbox(inbox, fn(_) { Woken.Stopped }),
+      Select.watch(drained, fn(_) { Woken.Draining }),
+    ])
+  }
   case (woken, is_set(working)) {
     (Woken.Draining, True) -> Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])
     _ -> Void
@@ -502,15 +505,18 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
 }
 
 // A cursor at the start of the next request's bytes, once there are any, or
-// `None` when the client closed the connection first. The connection is
-// marked working from then on.
+// `None` when the client closed the connection first or the server is
+// draining with no request begun. The connection is marked working from
+// then on. Bytes already read count as a request begun, so a pipelined
+// request is answered (with `connection: close`) during a drain.
 fn arrive(reader: Reader<NetError>, cursor: Cursor, signals: Option<Signals>) -> Option<Cursor> {
-  case unread(cursor) > 0 {
-    True -> {
+  case (unread(cursor) > 0, draining_now(signals)) {
+    (True, _) -> {
       mark_working(signals, True)
       Some(cursor)
     }
-    False -> {
+    (False, True) -> None
+    (False, False) -> {
       let chunk = Stream.read(reader)
       case chunk {
         Some(bytes) -> {

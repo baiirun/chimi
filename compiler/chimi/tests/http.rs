@@ -768,9 +768,9 @@ test "failed accepts are retried" {
 }
 
 // Rejects a drain that cuts off a request in progress, leaves an idle
-// connection open, keeps a draining connection alive for another request,
-// returns before the connections have closed, or cannot be bounded by a
-// timeout around `serve`.
+// connection open (including one waiting for its next request), keeps a
+// draining connection alive for another request, returns before the
+// connections have closed, or cannot be bounded by a timeout around `serve`.
 #[test]
 fn closing_the_listener_drains_the_connections() {
     let run = run_tests(
@@ -844,8 +844,95 @@ test "a timeout around serve cuts the drain short" {
   let _ = Task.result(serving)
   Net.close(other)
 }
+
+// A listener that hands over `first`, then closes once `plan` ends.
+fn once(first: Connection, plan: Reader<StreamError>) -> Listener {
+  two(first, first, plan)
+}
+
+test "a connection answered keep-alive before the drain closes once it is idle" {
+  let (client, server_end) = Net.pair(1)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let start = Clock.now()
+  let serving = Task.start(fn() {
+    Http.serve(once(server_end, plan), Http.defaults, slow)
+    Clock.since(start)
+  })
+  // The client does not read, so the answers, both keep-alive, are still
+  // being written when the drain starts; the connection must not then wait
+  // for a third request until the 60 s request timeout.
+  Stream.write(Net.writer(client), Bytes.from_text("GET /fast HTTP/1.1\r\nHost: x\r\n\r\nGET /fast HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.seconds(1))
+  Stream.close(script)
+  Clock.sleep(Duration.seconds(1))
+  let answer = undated(Stream.read_all(Net.reader(client), 1048576))
+  Stream.close(Net.writer(client))
+  Task.result(serving) |> Test.assert_equal(Duration.seconds(2))
+  let fast = "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 4\r\n"
+  answer |> Test.assert_equal("${fast}\r\nfast${fast}\r\nfast")
+}
+
+test "a connection waiting for its next request closes at once" {
+  let (client, server_end) = Net.pair(1024)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let start = Clock.now()
+  let serving = Task.start(fn() {
+    Http.serve(once(server_end, plan), Http.defaults, slow)
+    Clock.since(start)
+  })
+  // The answer is written in full, so the connection is waiting for a
+  // second request when the drain starts.
+  Stream.write(Net.writer(client), Bytes.from_text("GET /fast HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.seconds(1))
+  Stream.close(script)
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
+  Stream.close(Net.writer(client))
+  Task.result(serving) |> Test.assert_equal(Duration.seconds(1))
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 4\r\n\r\nfast")
+}
+
+test "a request whose first bytes came before the drain is answered" {
+  let (client, server_end) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let serving = Task.start(fn() { Http.serve(once(server_end, plan), Http.defaults, slow) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /fast HTTP/1.1\r\n"))
+  Clock.sleep(Duration.seconds(1))
+  Stream.close(script)
+  Clock.sleep(Duration.seconds(1))
+  Stream.write(Net.writer(client), Bytes.from_text("Host: x\r\n\r\n"))
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
+  Stream.close(Net.writer(client))
+  Task.result(serving)
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 4\r\nconnection: close\r\n\r\nfast")
+}
+
+test "busy connections drain together" {
+  let (first, first_end) = Net.pair(64)
+  let (second, second_end) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  Stream.write(script, Bytes.from([2]))
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve(two(first_end, second_end, plan), Http.defaults, slow) })
+  Stream.write(Net.writer(first), Bytes.from_text("GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Stream.write(Net.writer(second), Bytes.from_text("GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.seconds(1))
+  Stream.close(script)
+  let other = Task.start(fn() {
+    let _ = Stream.read_all(Net.reader(second), 1024)
+    Stream.close(Net.writer(second))
+  })
+  let _ = Stream.read_all(Net.reader(first), 1024)
+  Stream.close(Net.writer(first))
+  Task.result(other)
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
+}
 "#,
         "virtual",
     );
-    assert_passed(&run, 2);
+    assert_passed(&run, 6);
 }

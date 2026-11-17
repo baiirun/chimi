@@ -83,8 +83,8 @@ MUTATIONS = [
     # Not a mutant: dropping the explicit Supervisor.stop survives, because a
     # root supervisor also stops when the task that started it ends.
     mutant("a connection's process waits only for its task",
-           "  let woken = Select.first([\n    Select.task(serving, fn(_) { Woken.Served }),\n    Select.inbox(inbox, fn(_) { Woken.Stopped }),\n    Select.watch(drained, fn(_) { Woken.Draining }),\n  ])",
-           "  let _ = Task.result(serving)\n  let woken = Woken.Served"),
+           "    _ -> Select.first([\n      Select.task(serving, fn(_) { Woken.Served }),\n      Select.inbox(inbox, fn(_) { Woken.Stopped }),\n      Select.watch(drained, fn(_) { Woken.Draining }),\n    ])",
+           "    _ -> {\n      let _ = Task.result(serving)\n      Woken.Served\n    }"),
     dict(name="the verifier counts a body closure's own locals as captures",
          file="src/executable/verify.rs",
          edits=[("captures.iter().filter(|capture| !own.contains(capture))",
@@ -270,4 +270,10 @@ MUTATIONS = [
     mutant("a connection's end is never published",
            "    Resource.scoped(fn() { admitted.finished }, set, fn(_) {",
            "    Resource.scoped(fn() { admitted.finished }, fn(_) { Void }, fn(_) {"),
+    mutant("a connection admitted during the drain waits for a change",
+           "    Receive.Received(True) -> Woken.Draining\n",
+           ""),
+    mutant("an idle connection waits for its next request during the drain",
+           "    (False, True) -> None\n    (False, False) -> {",
+           "    (False, _) -> {"),
 ]
