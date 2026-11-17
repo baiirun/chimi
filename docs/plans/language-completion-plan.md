@@ -114,13 +114,13 @@ metrics, crypto, test, url/csv/regex/compression, math.
 | ID | Gap | Status |
 | --- | --- | --- |
 | T1 | Test declarations and runner | specified in draft (`testing.md`); G16 recorders, virtual time, and fake addresses are in the same spec |
-| T2 | Language server breadth | has diagnostics, hover, definition, formatting; lacks completion, references, rename, inlay types |
-| T3 | Linter | missing |
-| T4 | Documentation generator | missing; doc comments with runnable examples |
+| T2 | Language server breadth | diagnostics, hover with doc comments, definition, formatting, references, rename, completion after `Alias.`, inlay types for `let`, lint warnings |
+| T3 | Linter | `chimi lint`, with findings in the editor |
+| T4 | Documentation generator | `chimi doc` and `chimi doc --html`; doc comments with runnable examples |
 | T5 | Local workspaces and packages | missing; local-first, reproducible, lockfile |
 | T6 | Profiler and allocation views | runner tracing only |
-| T7 | REPL and debugger | missing |
-| T8 | Cross-compilation | host target only |
+| T7 | Debugger | `chimi trace show`, a post-mortem trace viewer; no REPL by decision (2026-11-17) |
+| T8 | Cross-compilation | `chimi build --target` accepts the host only; other targets need toolchain installs |
 | T9 | Self-hosting compiler | long-term goal of principle 15 |
 
 ### Deliberately deferred
