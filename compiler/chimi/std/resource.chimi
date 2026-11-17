@@ -15,6 +15,14 @@
 /// `Task.cancel`, or a parent that ends does not interrupt it; that
 /// cancellation takes effect as soon as release returns. A `Task.timeout`
 /// written inside `release` still bounds it.
+///
+/// Acquire is held off too, except while it waits: a timeout around the
+/// whole call still ends a slow connect, but a cancellation that arrives
+/// after acquire stopped waiting waits for it to return. If acquire
+/// succeeded, `use` is skipped and `release` runs. So an acquire whose last
+/// wait is the one that hands it the resource never loses it; one that waits
+/// again after taking something should hold that first part in a nested
+/// `Resource.scoped`.
 
 // 2. Constructors.
 
@@ -22,9 +30,10 @@
 /// same value, and returns what `use` returned.
 ///
 /// `release` runs exactly once whenever `acquire` succeeded, whether `use`
-/// succeeds, fails, defects, or is cancelled. It does not run when `acquire`
-/// does not succeed: nothing was acquired. Cancellation that arrives while
-/// `release` runs waits until it returns.
+/// succeeds, fails, defects, or is cancelled, or is skipped because a
+/// cancellation arrived after acquire stopped waiting. It does not run when
+/// `acquire` does not succeed: nothing was acquired. Cancellation that
+/// arrives while `release` runs waits until it returns.
 ///
 /// Fails with: what `acquire` fails with; otherwise what `release` fails
 /// with, which replaces both the value and the failure of `use`, as a file

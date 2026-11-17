@@ -104,12 +104,14 @@ pub const REQUEST_PROCESS_ARGUMENT: u32 = 31;
 /// the request after every wake. Consumes nothing (`scheduler/select.rs`).
 pub const REQUEST_SELECT: u32 = 32;
 /// `Resource.scoped` entries (`scheduler/scope.rs`); never cancellation
-/// points. ENTER replies with the entry in `token`; RELEASE masks it; EXIT
-/// leaves it and replies `value` 1 when a cancellation it held off is now
+/// points. ENTER pushes a masked entry and replies with it in `token`; USE
+/// unmasks it once acquire succeeded; RELEASE masks it again; EXIT leaves it.
+/// USE and EXIT reply `value` 1 when a cancellation the entry held off is now
 /// delivered.
 pub const REQUEST_RESOURCE_ENTER: u32 = 33;
 pub const REQUEST_RESOURCE_RELEASE: u32 = 34;
 pub const REQUEST_RESOURCE_EXIT: u32 = 35;
+pub const REQUEST_RESOURCE_USE: u32 = 49;
 /// `channel`, `owner`, `token`: one of the caller's receivers. OK with
 /// another receiver of the same queue in `channel`, `owner`, `token`.
 pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
@@ -1815,6 +1817,16 @@ impl Scheduler {
                 } else {
                     RESPONSE_ERROR
                 };
+                let _ = self.wake_front(owner);
+            }
+            REQUEST_RESOURCE_USE => {
+                match self.use_resource(owner, ScopeId::from_raw(request.token)) {
+                    Some(delivered) => {
+                        request.value = i64::from(delivered);
+                        request.status = RESPONSE_OK;
+                    }
+                    None => request.status = RESPONSE_ERROR,
+                }
                 let _ = self.wake_front(owner);
             }
             REQUEST_RESOURCE_EXIT => {

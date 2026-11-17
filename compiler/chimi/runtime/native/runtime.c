@@ -9212,9 +9212,11 @@ static ChimiControl *cancelled_unless_defect(ChimiControl *outcome) {
 
 /* Resource.scoped(acquire, release, use) (std/resource.chimi). Under the scheduler
    the call is an entry on the task's scope stack (scheduler/scope.rs): entered
-   before acquire, so a cancellation of the task always finds it; masked before
-   release, so no cancellation interrupts release; left after it, which delivers a
-   cancellation release held off. A forced end (a terminal cancel) issues no
+   masked before acquire, so a cancellation of the task always finds it and none
+   lands between acquire returning and the entry owning its value; unmasked for
+   use, which delivers a cancellation acquire held off; masked again before
+   release, so no cancellation interrupts release; left after it, which delivers
+   a cancellation release held off. A forced end (a terminal cancel) issues no
    request and runs no release it has not begun: the fiber must not park. */
 static ChimiControl *resource_scoped(ChimiRuntime *runtime, ChimiValue **arguments,
                                      uint32_t argument_count, uint64_t span,
@@ -9249,7 +9251,18 @@ static ChimiControl *resource_scoped(ChimiRuntime *runtime, ChimiValue **argumen
     return acquired;
   }
   ChimiValue *handle = acquired->value;
-  ChimiControl *used = invoke(runtime, use->as.callable, &handle, 1, span, call_node, environment);
+  ChimiControl *used = NULL;
+  if (scheduled) {
+    /* Acquire ran masked; unmask for use. A cancellation acquire held off is
+       delivered here, and release then runs without use. */
+    ChimiSchedulerRequest unmask = {.token = entry.token};
+    bool cancel = resource_request(CHIMI_REQUEST_RESOURCE_USE, &unmask);
+    if (cancel && chimi_fiber_cancel_is_terminal()) return cancelled();
+    if (unmask.status == CHIMI_RESPONSE_UNSET) return cancelled();
+    if (unmask.status != CHIMI_RESPONSE_OK) return defect("Resource.scoped scheduler request failed", call_node);
+    if (cancel || unmask.value == 1) used = cancelled();
+  }
+  if (!used) used = invoke(runtime, use->as.callable, &handle, 1, span, call_node, environment);
   if (used->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return used;
   if (scheduled) {
     ChimiSchedulerRequest mask = {.token = entry.token};
