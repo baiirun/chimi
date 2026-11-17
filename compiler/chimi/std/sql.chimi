@@ -228,10 +228,11 @@ pub struct Database {
 
 // Where a database's statements run: on a connection from the pool, or on
 // the connection a transaction holds, `depth` transactions deep, until the
-// transaction publishes on `ended` that it has ended.
+// transaction or any transaction around it publishes on its watch in
+// `ended` (innermost first) that it has ended.
 enum Place {
   Pooled(asks: Channel.Sender<Ask>, driver: Driver, target: Text, bounds: Limits)
-  Pinned(connection: Connection, depth: Int, ended: Watch.Publisher<Bool>)
+  Pinned(connection: Connection, depth: Int, ended: List<Watch.Publisher<Bool>>)
 }
 
 /// A pool's settings, to update with what differs: at most
@@ -329,7 +330,7 @@ pub fn first(db: Database, sql: Text, params: List<Value>) -> Option<Row> {
 /// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R {
   case db.place {
-    Place.Pinned(connection, depth, ended) -> pinned(connection, ended, fn(_) { savepoint(connection, depth, body) })
+    Place.Pinned(connection, depth, ended) -> pinned(connection, ended, fn(_) { savepoint(connection, depth, ended, body) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { outermost(connection, body) })
   }
 }
@@ -485,7 +486,7 @@ fn run(db: Database, sql: Text, params: List<Value>) -> Reply {
 
 fn outermost<T, E, R>(connection: Connection, body: fn(Database) -> T errors E needs R) -> T needs R {
   connection.begin(0)
-  case Result.capture(fn() { gated(connection, 1, body) }) {
+  case Result.capture(fn() { gated(connection, 1, [], body) }) {
     Ok(result) -> {
       connection.commit(0)
       result
@@ -504,7 +505,11 @@ fn outermost<T, E, R>(connection: Connection, body: fn(Database) -> T errors E n
 // cancellation inside it (such as a timeout the outer body survives) rolls
 // back only its own statements, and the body's failure stays the failure even
 // when the rollback itself fails.
-fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
+//
+// Its commit and rollback, like its statements, never reach the driver once
+// a transaction around it has ended: a task can still be inside a savepoint
+// when the outer body returns.
+fn savepoint<T, E, R>(connection: Connection, depth: Int, enclosing: List<Watch.Publisher<Bool>>, body: fn(Database) -> T errors E needs R) -> T needs R {
   Resource.scoped(fn() {
     connection.begin(depth)
     Channel.bounded(1)
@@ -513,13 +518,15 @@ fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> 
     case clean {
       True -> Void
       False -> {
-        let _ = Result.capture(fn() { connection.rollback(depth) })
+        let _ = Result.capture(fn() {
+          pinned(connection, enclosing, fn(held) { held.rollback(depth) })
+        })
         Void
       }
     }
   }, fn(settled) {
-    let result = gated(connection, depth + 1, body)
-    connection.commit(depth)
+    let result = gated(connection, depth + 1, enclosing, body)
+    pinned(connection, enclosing, fn(held) { held.commit(depth) })
     // The mark's channel has room for it, so this send cannot fail.
     let _ = Result.capture(fn() { Channel.send(settled.sender, Void) })
     result
@@ -540,21 +547,22 @@ fn released(completion: Channel.Completion<Void>, mark: Channel.Receiver<Void>) 
 // 6. Whether a transaction has ended.
 
 // Runs `body` on a database pinned to `connection`, which works only until
-// `body` ends: the release publishes the end on every way out, a defect or
-// a cancellation included, and closes the watch.
-fn gated<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
+// `body` or an enclosing transaction ends: the release publishes the end on
+// every way out, a defect or a cancellation included, and closes the watch.
+fn gated<T, E, R>(connection: Connection, depth: Int, enclosing: List<Watch.Publisher<Bool>>, body: fn(Database) -> T errors E needs R) -> T needs R {
   Resource.scoped(fn() { Watch.starting_with(False) }, fn(live) {
     let ending = live.publisher
     let _ = Result.capture(fn() { Watch.publish(ending, True) })
     Channel.close(live.completion)
   }, fn(live) {
-    body(Database(Place.Pinned(connection, depth, live.publisher)))
+    body(Database(Place.Pinned(connection, depth, List.append([live.publisher], enclosing))))
   })
 }
 
-// Runs `use` on `connection` unless its transaction has ended.
-fn pinned<T, E, R>(connection: Connection, ended: Watch.Publisher<Bool>, use: fn(Connection) -> T errors E needs R) -> T needs R {
-  case has_ended(ended) {
+// Runs `use` on `connection` unless its transaction, or one around it, has
+// ended.
+fn pinned<T, E, R>(connection: Connection, ended: List<Watch.Publisher<Bool>>, use: fn(Connection) -> T errors E needs R) -> T needs R {
+  case List.any(ended, has_ended) {
     True -> Failure(SqlError.TransactionEnded)
     False -> use(connection)
   }

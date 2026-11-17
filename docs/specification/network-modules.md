@@ -368,7 +368,8 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   fails it rolls back and the body's failure is the outcome. When `body`
   defects or is cancelled, the pool's reset rolls the transaction back.
 - Once a transaction or savepoint has ended, however its body ended, a
-  statement or nested transaction on its database MUST fail with
+  statement, nested transaction, or savepoint commit or rollback on its
+  database or on a savepoint inside it MUST fail with
   `TransactionEnded` and never reach the driver, as when the database escaped
   its body or a task kept it (Go's `ErrTxDone`). There is no static check
   that it stays inside, which matches the rule for scope-owned resources

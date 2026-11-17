@@ -734,6 +734,41 @@ test "a savepoint's database ends when the savepoint is cancelled or defects" {
   kept(calls) |> Test.assert_equal([ran("still")])
 }
 
+// Waits for a database on `handed`, opens a savepoint on it, and after
+// `seconds` inside it runs `sql` and a deeper savepoint.
+fn savepoint_later(handed: Channel.Receiver<Database>, seconds: Int, sql: Text) -> Option<SqlError> needs { clock: Clock } {
+  case Result.capture(fn() { Channel.receive(handed) }) {
+    Ok(Channel.Receive.Received(db)) -> failed(fn() {
+      Sql.transaction(db, fn(nested) {
+        Clock.sleep(Duration.seconds(seconds))
+        let late = failed(fn() { Sql.execute(nested, sql, []) })
+        let deeper = failed(fn() { Sql.transaction(nested, fn(_) { Void }) })
+        (late, deeper) |> Test.assert_equal((Some(SqlError.TransactionEnded), Some(SqlError.TransactionEnded)))
+      })
+    })
+    _ -> Some(SqlError.Failed("no database"))
+  }
+}
+
+test "a savepoint still open in a task ends with the transaction around it" {
+  let calls = Test.recorder()
+  let hand = Channel.bounded(1)
+  let handed = hand.receiver
+  let sender = hand.sender
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let worker = Task.start(fn() { savepoint_later(handed, 2, "late") })
+    Sql.transaction(db, fn(tx) {
+      let _ = Result.capture(fn() { Channel.send(sender, tx) })
+      Clock.sleep(Duration.seconds(1))
+    })
+    // The savepoint's own commit is refused too.
+    Task.result(worker) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+  })
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began(0), Call.Began(1), Call.Committed(0), Call.Reset, Call.Closed,
+  ])
+}
+
 test "the outer database still works inside one of its savepoints" {
   let calls = Test.recorder()
   Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
@@ -745,5 +780,5 @@ test "the outer database still works inside one of its savepoints" {
 }
 "#,
     );
-    assert_passed(&run, 4);
+    assert_passed(&run, 5);
 }

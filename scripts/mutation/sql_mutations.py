@@ -174,4 +174,10 @@ MUTATIONS = [
     mutant("a live database reads as ended",
            "    Ok(Receive.Received(False)) -> False\n    _ -> True",
            "    _ -> True"),
+    mutant("a savepoint ignores the transactions around it",
+           "List.append([live.publisher], enclosing)",
+           "[live.publisher]"),
+    mutant("a savepoint commits after the transaction around it ended",
+           "    pinned(connection, enclosing, fn(held) { held.commit(depth) })",
+           "    connection.commit(depth)"),
 ]
