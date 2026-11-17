@@ -171,12 +171,31 @@ test "placeholders bind in order, however they are written" {
   })
 }
 
+test "a DECIMAL column's large and small numbers read back without an exponent" {
+  memory(fn(db) {
+    Sql.execute(db, "create table prices (p decimal)", [])
+    Sql.execute(db, "insert into prices values (?), (?), (?)", [Value.Decimal(Decimal.parse("100000000000000000000")), Value.Decimal(Decimal.parse("0.0000001")), Value.Decimal(Decimal.parse("-2.5"))])
+    let read = List.map(Sql.query(db, "select p from prices", []), fn(row) { Sql.value(row, "p") })
+    Test.assert_equal(read, [Value.Decimal(Decimal.parse("100000000000000000000")), Value.Decimal(Decimal.parse("0.0000001")), Value.Decimal(Decimal.parse("-2.5"))])
+  })
+}
+
+test "a statement that writes no rows changes none, even after a write" {
+  memory(fn(db) {
+    users(db)
+    Test.assert_equal(Sql.execute(db, "insert into users (name) values ('a'), ('b'), ('c')", []), 3)
+    Test.assert_equal(Sql.execute(db, "create table other (x)", []), 0)
+    Test.assert_equal(Sql.execute(db, "drop table other", []), 0)
+    Test.assert_equal(Sql.execute(db, "delete from users where name = 'nobody'", []), 0)
+  })
+}
+
 test "the version is the vendored one" {
   Test.assert_equal(Sqlite.version(), "3.54.1")
 }
 "#,
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 7);
 }
 
 // Rejects a failure mapped to the wrong `SqlError`, a constraint named by
@@ -242,8 +261,10 @@ test "values a Float or Text cannot hold fail" {
 }
 
 // Rejects a transaction that does not commit, a failed one that keeps its
-// writes, a savepoint whose rollback undoes the outer transaction too, or a
-// file database not in write-ahead mode.
+// writes, a savepoint whose rollback undoes the outer transaction too, two
+// savepoints at one depth at once, statements that run on after SQLite ended
+// the transaction, a deferred begin (whose later write cannot wait for the
+// lock), or a file database not in write-ahead mode.
 #[test]
 fn transactions_and_savepoints() {
     let run = run_tests(
@@ -285,6 +306,80 @@ test "a failed savepoint undoes only its own writes" {
   })
 }
 
+test "two savepoints at once on one transaction are refused" {
+  database(fn(db) {
+    users(db)
+    Sql.transaction(db, fn(tx) {
+      let first = Task.start(fn() {
+        Sql.transaction(tx, fn(inner) {
+          Sql.execute(inner, "insert into users (name) values ('first')", [])
+          Clock.sleep(Duration.seconds(1))
+        })
+      })
+      Clock.sleep(Duration.milliseconds(10))
+      let second = failure(fn() {
+        Sql.transaction(tx, fn(inner) { Sql.execute(inner, "insert into users (name) values ('second')", []) })
+      })
+      Test.assert_equal(second, SqlError.Failed("SQLite: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another"))
+      Task.result(first)
+      Sql.transaction(tx, fn(inner) { Sql.execute(inner, "insert into users (name) values ('third')", []) })
+    })
+    Test.assert_equal(names(db), ["first", "third"])
+  })
+}
+
+test "a transaction SQLite ended by itself takes no more statements" {
+  database(fn(db) {
+    users(db)
+    let ended = failure(fn() {
+      Sql.transaction(db, fn(tx) {
+        Sql.execute(tx, "insert into users (name, email) values ('a', 'x@x')", [])
+        let _ = Result.capture(fn() { Sql.execute(tx, "insert or rollback into users (name, email) values ('b', 'x@x')", []) })
+        Sql.execute(tx, "insert into users (name) values ('after')", [])
+      })
+    })
+    Test.assert_equal(ended, SqlError.TransactionEnded)
+    Test.assert_equal(names(db), [])
+    Sql.execute(db, "insert into users (name) values ('later')", [])
+    Test.assert_equal(names(db), ["later"])
+  })
+}
+
+test "a transaction that reads before it writes is not cut off by another writer" {
+  database(fn(db) {
+    users(db)
+    let reader = Task.start(fn() {
+      Sql.transaction(db, fn(tx) {
+        let before = List.length(names(tx))
+        Clock.sleep(Duration.seconds(1))
+        Sql.execute(tx, "insert into users (name) values ('counted ${before}')", [])
+      })
+    })
+    Clock.sleep(Duration.milliseconds(10))
+    Sql.execute(db, "insert into users (name) values ('other')", [])
+    Task.result(reader)
+    Test.assert_equal(names(db), ["counted 0", "other"])
+  })
+}
+
+test "a commit that fails leaves nothing behind for the connection's next use" {
+  database(fn(db) {
+    users(db)
+    Sql.execute(db, "create table posts (id integer primary key, user_id integer references users(id) deferrable initially deferred)", [])
+    let failed = failure(fn() {
+      Sql.transaction(db, fn(tx) {
+        Sql.execute(tx, "insert into posts (user_id) values (7)", [])
+      })
+    })
+    Test.assert_equal(failed, SqlError.ConstraintFailed("FOREIGN KEY constraint failed", "FOREIGN KEY constraint failed"))
+    Sql.transaction(db, fn(tx) {
+      Sql.execute(tx, "insert into users (name) values ('next')", [])
+    })
+    Test.assert_equal(names(db), ["next"])
+    Test.assert_equal(Sql.int(Sql.one(db, "select count(*) as n from posts", []), "n"), 0)
+  })
+}
+
 test "a file database uses write-ahead logging" {
   database(fn(db) {
     Test.assert_equal(Sql.text(Sql.one(db, "pragma journal_mode", []), "journal_mode"), "wal")
@@ -293,7 +388,7 @@ test "a file database uses write-ahead logging" {
 }
 "#,
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 7);
 }
 
 // Rejects a statement that fails at once while another connection holds the
@@ -344,8 +439,9 @@ test "a lock held too long is a conflict" {
     assert_passed(&run, 2);
 }
 
-// Rejects a driver that opens a file its `files` provider does not allow, or
-// one that cannot open a file in a directory it does allow.
+// Rejects a driver that opens a file its `files` provider does not allow,
+// one that lets a statement attach or write another file, or one that
+// cannot open a file in a directory it does allow.
 #[test]
 fn the_files_provider_limits_the_targets() {
     let run = run_tests(
@@ -367,6 +463,13 @@ test "a database in a missing directory fails to connect" {
   })
 }
 
+test "a statement cannot reach another database file" {
+  database(fn(db) {
+    Test.assert_equal(failure(fn() { Sql.execute(db, "attach database '/tmp/chimi-attach.db' as other", []) }), SqlError.Rejected("SQLITE_AUTH", "not authorized"))
+    Test.assert_equal(failure(fn() { Sql.execute(db, "vacuum into '/tmp/chimi-vacuum.db'", []) }), SqlError.Rejected("SQLITE_AUTH", "authorization denied"))
+  })
+}
+
 test "data written through one pool is there for the next" {
   Fs.temporary_directory(fn(directory) {
     within(directory, "app.db", fn(db) {
@@ -378,7 +481,7 @@ test "data written through one pool is there for the next" {
 }
 "#,
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
 
 // Rejects a vendored SQLite edited in place, or a file added or dropped

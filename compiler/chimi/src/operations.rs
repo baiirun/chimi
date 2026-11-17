@@ -441,6 +441,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/sqlite.native_open", 1, "sqlite", "chimi_sqlite_open", false),
     binding("std/sqlite.native_close", 1, "sqlite", "chimi_sqlite_close", false),
     binding("std/sqlite.native_autocommit", 1, "sqlite", "chimi_sqlite_autocommit", false),
+    binding("std/sqlite.native_depth", 1, "sqlite", "chimi_sqlite_depth", false),
+    binding("std/sqlite.native_set_depth", 2, "sqlite", "chimi_sqlite_set_depth", false),
     binding("std/sqlite.native_prepare", 2, "sqlite", "chimi_sqlite_prepare", false),
     binding("std/sqlite.native_finalize", 1, "sqlite", "chimi_sqlite_finalize", false),
     binding("std/sqlite.native_parameter_count", 1, "sqlite", "chimi_sqlite_parameter_count", false),

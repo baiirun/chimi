@@ -440,13 +440,17 @@ source, checksum and compile options). The design note is
   when it is built. Before it opens a file, a connection MUST check the
   file's directory through the `files` provider, so a provider confined with
   `Fs.files_within` refuses a target outside it with
-  `SqlError.ConnectFailed`. The file itself is opened by SQLite, not through
-  the provider.
+  `SqlError.ConnectFailed`. The check is of the path's text at connect time:
+  SQLite opens the file itself, follows symbolic links, and keeps its `-wal`
+  and `-shm` files beside it, none of which the provider sees.
+- A statement MUST NOT reach another file: `ATTACH` and `VACUUM INTO` fail
+  with `Rejected("SQLITE_AUTH", ...)`.
 - A target is a file path, created when it is missing, or `:memory:`. URIs
   are not taken: a target that starts with `file:` is a file name. Each
   connection to `:memory:` has its own database.
 - Each connection MUST turn foreign keys on, and a file's connection MUST use
-  write-ahead logging with `synchronous = NORMAL`.
+  write-ahead logging with `synchronous = NORMAL`; a file where SQLite cannot
+  use it fails to connect.
 
 ### Statements
 
@@ -457,8 +461,8 @@ source, checksum and compile options). The design note is
 - Parameters bind by position, whatever SQLite placeholder the statement
   uses. A count that differs from the statement's MUST fail with
   `Rejected("SQLITE_RANGE", ...)` before the statement runs.
-- `affected` is the number of rows a write changed, and 0 for a statement
-  that only reads.
+- `affected` is the number of rows the statement changed, and 0 for one that
+  changed none (a read, or `CREATE TABLE` after a write).
 - A statement is finalized however its run ends: a failure, a cancel, or its
   last row.
 - Each call runs SQLite on the task's carrier thread, so a long statement
@@ -468,12 +472,15 @@ source, checksum and compile options). The design note is
 
 - `Int`, `Float`, `Text`, `Bytes` and `Null` are SQLite's INTEGER, REAL,
   TEXT, BLOB and NULL, both ways. An empty `Bytes` stays an empty blob.
+  SQLite itself stores `-0.0` in a REAL column as `0.0`.
 - `Bool` is stored as 0 or 1, and read back as a `Bool` only from a column
   whose declared type is `BOOLEAN` or `BOOL` and whose value is 0 or 1.
 - `Decimal` is stored as text, and read back as a `Decimal` from a column
   whose declared type starts with `DECIMAL` or `NUMERIC`. SQLite stores a
   number in a `DECIMAL` column as INTEGER or REAL, so a column that must keep
-  every digit is declared `DECIMAL_TEXT`, which has text affinity.
+  every digit is declared `DECIMAL_TEXT`, which has text affinity. A REAL
+  read as a `Decimal` is read without its exponent, so `1e+20` is
+  `100000000000000000000`.
 - A REAL that a `Float` cannot hold (an infinity), and text that is not
   UTF-8, MUST fail with `SqlError.Failed` naming the column.
 
@@ -484,6 +491,12 @@ source, checksum and compile options). The design note is
   Savepoint n is `SAVEPOINT chimi_n`; its commit is `RELEASE`, and its
   rollback is `ROLLBACK TO` then `RELEASE`. A rollback after a failed release
   that already ended the savepoint does nothing.
+- Tasks that share a transaction MUST NOT open two savepoints at one depth at
+  once: SQLite would roll back or release the wrong one. The second fails
+  with `SqlError.Failed` and runs nothing; one after another is fine.
+- When SQLite ends a transaction by itself (`INSERT OR ROLLBACK`, a trigger's
+  `RAISE(ROLLBACK)`, a full disk), every later statement and commit on it
+  MUST fail with `SqlError.TransactionEnded` rather than run on its own.
 - `reset` rolls back a transaction still open.
 - SQLite never sleeps on the thread waiting for a lock. While another
   connection holds it, a statement MUST wait on the driver's clock, letting
@@ -494,7 +507,7 @@ source, checksum and compile options). The design note is
 
 | SQLite | `SqlError` |
 |---|---|
-| a constraint (unique, not null, check, foreign key) | `ConstraintFailed(name, message)`, the name being what follows `failed: `, such as `users.email` |
+| a constraint (unique, not null, check, foreign key) | `ConstraintFailed(name, message)`, the name being what follows `failed: `, such as `users.email`, or the whole message when nothing does (a foreign key) |
 | `SQLITE_BUSY`, `SQLITE_LOCKED`, after the retries | `Conflict(message)` |
 | a file that cannot be opened | `ConnectFailed(message)` |
 | `SQLITE_ERROR`, `READONLY`, `TOOBIG`, `MISMATCH`, `AUTH`, `RANGE` | `Rejected(code name, message)` |
@@ -630,11 +643,11 @@ refuses the peer's versions.
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
 | SQL: commit, rollback, defect, cancellation, a failed commit, savepoints, a driver's own savepoint statements | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
 | SQL: an ended transaction's or savepoint's database fails, whether it escaped, was kept by a task, or its body defected or was cancelled | `tests/sql.rs` `a_transactions_database_fails_once_the_transaction_has_ended` |
-| SQLite: every kind of value both ways, a Bool only from a BOOLEAN column, row counts, placeholders, the version | `tests/sqlite.rs` `values_round_trip` |
+| SQLite: every kind of value both ways, a Bool only from a BOOLEAN column, decimals with exponents, row counts after DDL, placeholders, the version | `tests/sqlite.rs` `values_round_trip` |
 | SQLite: constraints by name, foreign keys, refused statements, the parameter count, one statement per call, an infinity and text that is not UTF-8 | `tests/sqlite.rs` `failures_name_what_went_wrong` |
-| SQLite: commit, a failed transaction, a failed savepoint inside a transaction, write-ahead logging and foreign keys on | `tests/sqlite.rs` `transactions_and_savepoints` |
+| SQLite: commit, a failed transaction, a failed savepoint inside a transaction, two savepoints at once, a transaction SQLite ended, a read-then-write transaction beside another writer, write-ahead logging and foreign keys on | `tests/sqlite.rs` `transactions_and_savepoints` |
 | SQLite: a write waits for the transaction holding the lock, and conflicts after 5 s | `tests/sqlite.rs` `a_locked_database_waits_then_conflicts` |
-| SQLite: a target outside the `files` provider, a missing directory, data kept across pools | `tests/sqlite.rs` `the_files_provider_limits_the_targets` |
+| SQLite: a target outside the `files` provider, a missing directory, ATTACH and VACUUM INTO refused, data kept across pools | `tests/sqlite.rs` `the_files_provider_limits_the_targets` |
 | The vendored SQLite matches its manifest | `tests/sqlite.rs` `the_vendored_sqlite_matches_its_manifest` |
 | TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
 | TLS: `Untrusted`, `WrongHost(host)`, `Expired` and not yet valid on the client, `Handshake` on the server, a stranger's expired certificate is `Untrusted`, an empty host | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |

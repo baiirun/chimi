@@ -30,16 +30,47 @@ enum {
   VALUE_BLOB = 4,
 };
 
+static void release_database(void *state);
+static void release_statement(void *state);
+static const ChimiBindingType DATABASE_TYPE = {"SqliteDb", release_database};
+static const ChimiBindingType STATEMENT_TYPE = {"SqliteStatement", release_statement};
+
+/* An open connection, and how many transaction levels std/sqlite.chimi has
+   open on it: 0 outside a transaction, 1 in one, n + 1 in savepoint n. */
+typedef struct {
+  sqlite3 *db;
+  int64_t depth;
+} Database;
+
+/* A prepared statement, and the connection's total change count when it was
+   prepared, so a statement that wrote nothing reports 0 changes. */
+typedef struct {
+  sqlite3_stmt *statement;
+  sqlite3_int64 changes_before;
+} Prepared;
+
 static void release_database(void *state) {
-  sqlite3_close_v2(state);
+  Database *database = state;
+  sqlite3_close_v2(database->db);
+  free(database);
 }
 
 static void release_statement(void *state) {
-  sqlite3_finalize(state);
+  Prepared *prepared = state;
+  sqlite3_finalize(prepared->statement);
+  free(prepared);
 }
 
-static const ChimiBindingType DATABASE = {"SqliteDb", release_database};
-static const ChimiBindingType STATEMENT = {"SqliteStatement", release_statement};
+static sqlite3 *database_argument(ChimiBindingCall *call, uint32_t index) {
+  Database *database = chimi_binding_handle(call, index, &DATABASE_TYPE);
+  return database ? database->db : NULL;
+}
+
+static sqlite3_stmt *statement_argument(ChimiBindingCall *call, uint32_t index) {
+  Prepared *prepared = chimi_binding_handle(call, index, &STATEMENT_TYPE);
+  return prepared ? prepared->statement : NULL;
+}
+
 
 static ChimiBindingResult *closed(ChimiBindingCall *call) {
   return chimi_binding_failure(call, SQLITE_BINDING_CLOSED, "the database is closed");
@@ -60,6 +91,18 @@ ChimiBindingResult *chimi_sqlite_version(ChimiBindingCall *call) {
   return chimi_binding_success(call, chimi_binding_make_text(call, version, strlen(version)));
 }
 
+/* Refuses ATTACH, so a statement cannot open a file the files provider did
+   not check. */
+static int refuse_attach(void *unused, int action, const char *a, const char *b, const char *c,
+                         const char *d) {
+  (void)unused;
+  (void)a;
+  (void)b;
+  (void)c;
+  (void)d;
+  return action == SQLITE_ATTACH ? SQLITE_DENY : SQLITE_OK;
+}
+
 /* native_open(target: Text) -> Result<SqliteDb, (Int, Text)>: opens or
    creates the database at a path or `file:` URI. */
 ChimiBindingResult *chimi_sqlite_open(ChimiBindingCall *call) {
@@ -72,7 +115,7 @@ ChimiBindingResult *chimi_sqlite_open(ChimiBindingCall *call) {
     return chimi_binding_failure(call, SQLITE_CANTOPEN, "the target holds a NUL character");
   }
   sqlite3 *db = NULL;
-  int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX
+  int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
               | SQLITE_OPEN_EXRESCODE;
   int code = sqlite3_open_v2(target, &db, flags, NULL);
   if (code != SQLITE_OK) {
@@ -81,7 +124,18 @@ ChimiBindingResult *chimi_sqlite_open(ChimiBindingCall *call) {
     sqlite3_close_v2(db);
     return chimi_binding_failure(call, code, message);
   }
-  ChimiBindingValue *handle = chimi_binding_make_handle(call, &DATABASE, db);
+  /* Another database file may never be reached from this one: the files
+     provider checked only the target's directory. */
+  sqlite3_limit(db, SQLITE_LIMIT_ATTACHED, 0);
+  sqlite3_set_authorizer(db, refuse_attach, NULL);
+  Database *database = malloc(sizeof *database);
+  if (!database) {
+    sqlite3_close_v2(db);
+    return chimi_binding_failure(call, SQLITE_NOMEM, "out of memory");
+  }
+  database->db = db;
+  database->depth = 0;
+  ChimiBindingValue *handle = chimi_binding_make_handle(call, &DATABASE_TYPE, database);
   if (!handle) {
     return chimi_binding_failure(call, SQLITE_CANTOPEN, "too many open databases");
   }
@@ -91,16 +145,36 @@ ChimiBindingResult *chimi_sqlite_open(ChimiBindingCall *call) {
 /* native_close(db: SqliteDb) -> Void. Statements still open keep the
    connection until they are finalized. */
 ChimiBindingResult *chimi_sqlite_close(ChimiBindingCall *call) {
-  chimi_binding_close_handle(call, 0, &DATABASE);
+  chimi_binding_close_handle(call, 0, &DATABASE_TYPE);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 
 /* native_autocommit(db: SqliteDb) -> Result<Bool, (Int, Text)>: whether no
    transaction is open. */
 ChimiBindingResult *chimi_sqlite_autocommit(ChimiBindingCall *call) {
-  sqlite3 *db = chimi_binding_handle(call, 0, &DATABASE);
+  sqlite3 *db = database_argument(call, 0);
   if (!db) return closed(call);
   return chimi_binding_ok(call, chimi_binding_make_boolean(call, sqlite3_get_autocommit(db)));
+}
+
+/* native_depth(db: SqliteDb) -> Result<Int, (Int, Text)>: the transaction
+   levels open, as native_set_depth last set them. */
+ChimiBindingResult *chimi_sqlite_depth(ChimiBindingCall *call) {
+  Database *database = chimi_binding_handle(call, 0, &DATABASE_TYPE);
+  if (!database) return closed(call);
+  return chimi_binding_ok(call, chimi_binding_make_integer(call, database->depth));
+}
+
+/* native_set_depth(db: SqliteDb, depth: Int) -> Result<Void, (Int, Text)> */
+ChimiBindingResult *chimi_sqlite_set_depth(ChimiBindingCall *call) {
+  int64_t depth;
+  Database *database = chimi_binding_handle(call, 0, &DATABASE_TYPE);
+  if (!chimi_binding_integer(call, 1, &depth)) {
+    return chimi_binding_defect(call, "std/sqlite: set_depth takes an Int");
+  }
+  if (!database) return closed(call);
+  database->depth = depth;
+  return ok_void(call);
 }
 
 /* Whether `rest` holds only whitespace and SQL comments. */
@@ -131,9 +205,10 @@ ChimiBindingResult *chimi_sqlite_prepare(ChimiBindingCall *call) {
   if (!chimi_binding_text(call, 1, &sql, &length)) {
     return chimi_binding_defect(call, "std/sqlite: prepare takes a statement");
   }
-  sqlite3 *db = chimi_binding_handle(call, 0, &DATABASE);
+  sqlite3 *db = database_argument(call, 0);
   if (!db) return closed(call);
   sqlite3_mutex_enter(sqlite3_db_mutex(db));
+  sqlite3_int64 changes_before = sqlite3_total_changes64(db);
   sqlite3_stmt *statement = NULL;
   const char *tail = NULL;
   int code = sqlite3_prepare_v2(db, sql, (int)length, &statement, &tail);
@@ -149,7 +224,14 @@ ChimiBindingResult *chimi_sqlite_prepare(ChimiBindingCall *call) {
                                  "the text holds more than one statement");
   }
   if (!statement) return chimi_binding_ok(call, chimi_binding_none(call));
-  ChimiBindingValue *handle = chimi_binding_make_handle(call, &STATEMENT, statement);
+  Prepared *prepared = malloc(sizeof *prepared);
+  if (!prepared) {
+    sqlite3_finalize(statement);
+    return chimi_binding_failure(call, SQLITE_NOMEM, "out of memory");
+  }
+  prepared->statement = statement;
+  prepared->changes_before = changes_before;
+  ChimiBindingValue *handle = chimi_binding_make_handle(call, &STATEMENT_TYPE, prepared);
   if (!handle) {
     return chimi_binding_failure(call, SQLITE_NOMEM, "too many open statements");
   }
@@ -158,13 +240,13 @@ ChimiBindingResult *chimi_sqlite_prepare(ChimiBindingCall *call) {
 
 /* native_finalize(statement: SqliteStatement) -> Void */
 ChimiBindingResult *chimi_sqlite_finalize(ChimiBindingCall *call) {
-  chimi_binding_close_handle(call, 0, &STATEMENT);
+  chimi_binding_close_handle(call, 0, &STATEMENT_TYPE);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 
 /* native_parameter_count(statement: SqliteStatement) -> Int */
 ChimiBindingResult *chimi_sqlite_parameter_count(ChimiBindingCall *call) {
-  sqlite3_stmt *statement = chimi_binding_handle(call, 0, &STATEMENT);
+  sqlite3_stmt *statement = statement_argument(call, 0);
   if (!statement) return chimi_binding_defect(call, "std/sqlite: the statement is finalized");
   return chimi_binding_success(call,
                                chimi_binding_make_integer(call, sqlite3_bind_parameter_count(statement)));
@@ -174,7 +256,7 @@ ChimiBindingResult *chimi_sqlite_parameter_count(ChimiBindingCall *call) {
    bind calls; NULL after a defect result is stored in `*result`. */
 static sqlite3_stmt *bind_target(ChimiBindingCall *call, int *index, ChimiBindingResult **result) {
   int64_t position;
-  sqlite3_stmt *statement = chimi_binding_handle(call, 0, &STATEMENT);
+  sqlite3_stmt *statement = statement_argument(call, 0);
   if (!statement || !chimi_binding_integer(call, 1, &position) || position < 1
       || position > sqlite3_bind_parameter_count(statement)) {
     *result = chimi_binding_defect(call, "std/sqlite: a bind outside the statement's parameters");
@@ -268,8 +350,9 @@ ChimiBindingResult *chimi_sqlite_bind_bytes(ChimiBindingCall *call) {
    `None` when a row is ready, or `Some(changed)` when the statement is done,
    with the rows a write changed (0 for a statement that only reads). */
 ChimiBindingResult *chimi_sqlite_step(ChimiBindingCall *call) {
-  sqlite3_stmt *statement = chimi_binding_handle(call, 0, &STATEMENT);
-  if (!statement) return chimi_binding_defect(call, "std/sqlite: the statement is finalized");
+  Prepared *prepared = chimi_binding_handle(call, 0, &STATEMENT_TYPE);
+  if (!prepared) return chimi_binding_defect(call, "std/sqlite: the statement is finalized");
+  sqlite3_stmt *statement = prepared->statement;
   sqlite3 *db = sqlite3_db_handle(statement);
   sqlite3_mutex_enter(sqlite3_db_mutex(db));
   int code = sqlite3_step(statement);
@@ -277,7 +360,10 @@ ChimiBindingResult *chimi_sqlite_step(ChimiBindingCall *call) {
   if (code == SQLITE_ROW) {
     result = chimi_binding_ok(call, chimi_binding_none(call));
   } else if (code == SQLITE_DONE) {
-    int64_t changed = sqlite3_stmt_readonly(statement) ? 0 : sqlite3_changes64(db);
+    /* sqlite3_changes64 keeps the count of the last INSERT, UPDATE or DELETE,
+       so a statement that changed nothing (a read, CREATE TABLE) reports 0. */
+    int64_t changed =
+        sqlite3_total_changes64(db) == prepared->changes_before ? 0 : sqlite3_changes64(db);
     result = chimi_binding_ok(call, chimi_binding_some(call, chimi_binding_make_integer(call, changed)));
   } else {
     result = database_failure(call, db, sqlite3_extended_errcode(db));
@@ -294,7 +380,7 @@ static ChimiBindingValue *text_value(ChimiBindingCall *call, const char *text) {
 /* native_columns(statement: SqliteStatement) -> List<(Text, Text)>: each
    column's name and declared type ("" for an expression). */
 ChimiBindingResult *chimi_sqlite_columns(ChimiBindingCall *call) {
-  sqlite3_stmt *statement = chimi_binding_handle(call, 0, &STATEMENT);
+  sqlite3_stmt *statement = statement_argument(call, 0);
   if (!statement) return chimi_binding_defect(call, "std/sqlite: the statement is finalized");
   int count = sqlite3_column_count(statement);
   ChimiBindingValue **columns = calloc(count ? (size_t)count : 1, sizeof *columns);
@@ -358,7 +444,7 @@ static void float_text(double value, char *out, size_t size) {
    0 null, 1 integer, 2 float (as text), 3 text, 4 blob. A text value that is
    not UTF-8 fails. */
 ChimiBindingResult *chimi_sqlite_row(ChimiBindingCall *call) {
-  sqlite3_stmt *statement = chimi_binding_handle(call, 0, &STATEMENT);
+  sqlite3_stmt *statement = statement_argument(call, 0);
   if (!statement) return chimi_binding_defect(call, "std/sqlite: the statement is finalized");
   int count = sqlite3_data_count(statement);
   ChimiBindingValue **values = calloc(count ? (size_t)count : 1, sizeof *values);

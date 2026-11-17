@@ -49,7 +49,7 @@ import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok, Result}
 import std/sql as Sql
-import std/sql.{Connection, Driver, Reply, SqlError, Value}
+import std/sql.{Connection, Driver, SqlError, Value}
 import std/text as Text
 
 // 1. The driver.
@@ -104,7 +104,11 @@ fn connect(given: Given, target: Text) -> Connection {
     case memory {
       True -> Void
       False -> {
-        statement(db, "pragma journal_mode = wal")
+        let mode = run(db, "pragma journal_mode = wal", [])
+        case mode.rows {
+          [[Value.Text("wal")]] -> Void
+          _ -> Failure(SqlError.Failed("write-ahead logging is not available for this file"))
+        }
         statement(db, "pragma synchronous = normal")
       }
     }
@@ -116,10 +120,13 @@ fn connect(given: Given, target: Text) -> Connection {
       Failure(SqlError.ConnectFailed("SQLite: ${reason(failure)}"))
     }
   }
-  Sql.connection(fn(sql, params) { run(db, sql, params) }, fn(depth) {
-    statement(db, begin_statement(depth))
+  Sql.connection(fn(sql, params) {
+    let answer = run_inside(db, sql, params)
+    Sql.reply(answer.columns, answer.rows, answer.changed)
   }, fn(depth) {
-    statement(db, commit_statement(depth))
+    begin(db, depth)
+  }, fn(depth) {
+    commit(db, depth)
   }, fn(depth) {
     rollback(db, depth)
   }, fn() {
@@ -149,6 +156,40 @@ fn reason(failure: SqlError) -> Text {
   }
 }
 
+// The binding counts the transaction levels open on the connection: 0
+// outside a transaction, 1 inside one, and n + 1 inside savepoint n. Tasks
+// that share a transaction could otherwise open two savepoints at the same
+// depth, and SQLite would roll back or release the wrong one.
+fn begin(db: Opened, depth: Int) -> Void {
+  let open = sql(native_depth(db.handle))
+  case open == depth {
+    True -> Void
+    False -> Failure(SqlError.Failed("SQLite: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another"))
+  }
+  sql(native_set_depth(db.handle, depth + 1))
+  let begun = Result.capture(fn() {
+    case depth == 0 {
+      True -> statement(db, begin_statement(depth))
+      False -> {
+        let _ = run_inside(db, begin_statement(depth), [])
+        Void
+      }
+    }
+  })
+  case begun {
+    Ok(_) -> Void
+    Err(failure) -> {
+      sql(native_set_depth(db.handle, depth))
+      Failure(failure)
+    }
+  }
+}
+
+fn commit(db: Opened, depth: Int) -> Void {
+  let _ = run_inside(db, commit_statement(depth), [])
+  sql(native_set_depth(db.handle, depth))
+}
+
 fn begin_statement(depth: Int) -> Text {
   case depth == 0 {
     True -> "begin immediate"
@@ -167,8 +208,9 @@ fn commit_statement(depth: Int) -> Text {
 // the savepoint may be gone already, which SQLite reports as no such
 // savepoint; that rollback has nothing left to do.
 fn rollback(db: Opened, depth: Int) -> Void {
+  sql(native_set_depth(db.handle, depth))
   case depth == 0 {
-    True -> statement(db, "rollback")
+    True -> reset(db)
     False -> {
       let undone = Result.capture(fn() {
         statement(db, "rollback to chimi_${depth}")
@@ -188,6 +230,7 @@ fn rollback(db: Opened, depth: Int) -> Void {
 // Rolls back what is left open, so the pool can hand the connection out
 // again; a closed connection fails.
 fn reset(db: Opened) -> Void {
+  sql(native_set_depth(db.handle, 0))
   let idle = sql(native_autocommit(db.handle))
   case idle {
     True -> Void
@@ -202,24 +245,44 @@ fn statement(db: Opened, text: Text) -> Void {
 
 // 3. Statements.
 
+// Runs a statement for std/sql. Inside a transaction, the transaction must
+// still be open: SQLite ends one by itself on `INSERT OR ROLLBACK`, a
+// trigger's `RAISE(ROLLBACK)` or a full disk, and the statements after it
+// would otherwise commit on their own.
+fn run_inside(db: Opened, text: Text, params: List<Value>) -> Answer {
+  let open = sql(native_depth(db.handle))
+  let idle = sql(native_autocommit(db.handle))
+  case open > 0 and idle {
+    True -> Failure(SqlError.TransactionEnded)
+    False -> run(db, text, params)
+  }
+}
+
 // How long a statement keeps retrying while another connection holds the
 // lock, and the longest wait between tries, in milliseconds.
 const busy_limit: Int = 5000
 const longest_pause: Int = 100
 
+// What a statement gave back, before std/sql wraps it as a `Reply`.
+struct Answer {
+  columns: List<Text>,
+  rows: List<List<Value>>,
+  changed: Int,
+}
+
 // What one try of a statement did.
 enum Try {
-  Ran(reply: Reply)
+  Ran(answer: Answer)
   Locked(message: Text)
 }
 
 // Runs one statement, retrying it while another connection holds the lock:
 // after 1 ms, then waits that double up to 100 ms, until 5 s have passed.
-fn run(db: Opened, text: Text, params: List<Value>) -> Reply {
+fn run(db: Opened, text: Text, params: List<Value>) -> Answer {
   loop (pause, waited) = (1, 0) {
     let tried = run_once(db, text, params)
     case tried {
-      Try.Ran(reply) -> break reply
+      Try.Ran(answer) -> break answer
       Try.Locked(message) -> case waited >= busy_limit {
         True -> Failure(SqlError.Conflict(message))
         False -> {
@@ -250,7 +313,7 @@ fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
       True -> Try.Locked(message)
       False -> failed(code, message)
     }
-    Ok(None) -> Try.Ran(Sql.done())
+    Ok(None) -> Try.Ran(Answer([], [], 0))
     Ok(Some(handle)) -> Resource.scoped(fn() { handle }, native_finalize, fn(prepared_statement) {
       bind_all(prepared_statement, params)
       let columns = native_columns(prepared_statement)
@@ -266,7 +329,7 @@ fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
         let step = native_step(prepared_statement)
         case step {
           Ok(None) -> List.push(rows, decoded(names, declared, sql(native_row(prepared_statement))))
-          Ok(Some(changed)) -> break Try.Ran(Sql.reply(names, rows, changed))
+          Ok(Some(changed)) -> break Try.Ran(Answer(names, rows, changed))
           Err((code, message)) -> case locked(code) and rows == [] {
             True -> break Try.Locked(message)
             False -> failed(code, message)
@@ -343,10 +406,35 @@ fn value(name: Text, declared_type: Text, cell: (Int, Int, Text, Bytes)) -> Valu
 }
 
 fn decimal_value(name: Text, text: Text) -> Value {
-  let parsed = Result.capture(fn() { Decimal.parse(text) })
+  let parsed = Result.capture(fn() { Decimal.parse(positional(text)) })
   case parsed {
     Ok(number) -> Value.Decimal(number)
     Err(_) -> Failure(SqlError.Failed("SQLite: the column ${name} holds ${text}, which is not a Decimal"))
+  }
+}
+
+// A float's text without an exponent: SQLite gives a REAL as "1e+20" or
+// "1.5e-07", which `Decimal.parse` does not read.
+fn positional(text: Text) -> Text {
+  case Text.split_once(text, "e") {
+    None -> text
+    Some((mantissa, exponent)) -> {
+      let negative = Text.starts_with(mantissa, "-")
+      let unsigned = Text.replace(mantissa, "-", "")
+      let (whole, fraction) = Option.unwrap_or(Text.split_once(unsigned, "."), (unsigned, ""))
+      let digits = Text.append(whole, fraction)
+      let point = Text.byte_length(whole) + Int.parse(Text.replace(exponent, "+", ""))
+      let count = Text.byte_length(digits)
+      let shifted = case (point <= 0, point >= count) {
+        (True, _) -> Text.concat(["0.", Text.repeat("0", 0 - point), digits])
+        (_, True) -> Text.append(digits, Text.repeat("0", point - count))
+        _ -> Text.concat([Text.byte_slice(digits, 0..point), ".", Text.byte_slice(digits, point..count)])
+      }
+      case negative {
+        True -> Text.append("-", shifted)
+        False -> shifted
+      }
+    }
   }
 }
 
@@ -424,6 +512,8 @@ native fn native_version() -> Text
 native fn native_open(target: Text) -> Result<SqliteDb, (Int, Text)>
 native fn native_close(db: SqliteDb) -> Void
 native fn native_autocommit(db: SqliteDb) -> Result<Bool, (Int, Text)>
+native fn native_depth(db: SqliteDb) -> Result<Int, (Int, Text)>
+native fn native_set_depth(db: SqliteDb, depth: Int) -> Result<Void, (Int, Text)>
 native fn native_prepare(db: SqliteDb, sql: Text) -> Result<Option<SqliteStatement>, (Int, Text)>
 native fn native_finalize(statement: SqliteStatement) -> Void
 native fn native_parameter_count(statement: SqliteStatement) -> Int
