@@ -282,8 +282,9 @@ Rules:
 Not yet: timing (the telemetry carries none), channel and clock event
 detail, linking a process's spans to its entry in the process list, telling
 apart two runs concatenated under the same `--execution-id` (their events
-merge), and a browsable or interactive view. A REPL waits on Byron's
-decision.
+merge), and a browsable or interactive view. Chimi has no REPL
+(decisions.md, 2026-11-17): exploration happens in tests and runnable doc
+examples.
 
 Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
 `LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
