@@ -3,7 +3,8 @@
 The Linear workspace hit the free plan's issue limit on 2026-11-16, so the
 oldest closed CHI issues were archived on 2026-11-17 to make room. Archived
 issues are not deleted: they stay searchable in Linear (turn on "show
-archived") and can be restored. This file keeps the decisions and the
+archived") and can be restored. They carry the label `to-archive`, so
+`label:to-archive` finds all 59 of them (CHI-1 to CHI-65, closed issues only). This file keeps the decisions and the
 important log entries from each archived issue in the repo, so nothing depends
 on Linear.
 
@@ -75,7 +76,11 @@ decisions:
   build latency as a core objection, so the foundation criteria separate the
   compiler's own speed from how fast it is to rebuild and iterate on.
   Shortlist was Rust with Rowan or cstree, TypeScript, and Go with custom
-  green trees.
+  green trees. The answer recorded on the issue: the prototype's host language
+  is a tactical choice, not a Chimi design decision, and the lasting
+  foundation is host-independent (lossless lexer, never-failing event parser,
+  immutable lossless CST with a typed facade, compact semantic representation,
+  resolved and typed core, and a separately designed runtime boundary).
 - **CHI-18 (ts-ffa0aa) Golden source corpus.** Byron's reviews shaped the
   early language: functions are cold direct-style computations (no source
   `Computation<T>`, no `await`); nominal products are field-only `struct`
