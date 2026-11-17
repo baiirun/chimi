@@ -6,8 +6,9 @@ This is the normative contract for the Phase 7b network modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-253):
 the modules a service uses to talk over the network. It covers `std/net`
 (CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
-driver-independent layer (CHI-258). `std/tls`, the HTTP client, and the SQL
-drivers add their sections as they land.
+driver-independent layer (CHI-258), and `std/tls`'s client and server over
+a connection. `Tls.listener`, HTTPS, the HTTP client, and the SQL drivers add
+their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -383,6 +384,67 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   `Began`, `Committed`, `RolledBack`, `Reset`, `Closed`) to `answer`. Tests
   record the calls with `Test.recorder` and script failures in `answer`.
 
+## std/tls
+
+`std/tls` puts TLS over any `Net.Connection` and gives back a
+`Net.Connection`, so every layer above (`std/http`, `std/sql` drivers) runs
+over either kind with no second API. It is mbedTLS 4.1 LTS, vendored
+unmodified under `runtime/native/bindings/tls/mbedtls/` with its provenance and
+a checksum manifest.
+
+### Wrapping a connection
+
+- `Tls.client(connection, host, settings)` MUST finish the handshake before it
+  returns. It checks the server's certificate against `settings.roots` and
+  against `host`, and sends `host` as the server name (SNI). There MUST be no
+  way to skip the check.
+- `Tls.server(connection, identity)` MUST finish the handshake before it
+  returns. It does not ask for a client certificate.
+- `Tls.defaults` is `{ roots }`, and its roots are the system's: the file
+  `SSL_CERT_FILE` names when it is set, otherwise the first of
+  `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+  `/etc/ssl/cert.pem` and `/etc/ssl/ca-bundle.pem` that holds a certificate.
+  When none loads, the client MUST fail with `TlsError.NoRoots` and MUST NOT
+  trust anything.
+- `Tls.roots(pem)` and `Tls.identity(certificate, key)` MUST check their input
+  where they are made and fail with `TlsError.Invalid`, including a key that
+  is not the certificate's.
+- TLS 1.2 and 1.3 are offered, with mbedTLS's default suites and groups.
+
+### The wrapped connection
+
+- Its reader gives plaintext, one record (at most 16 KiB) per read. It ends
+  when the peer sends `close_notify`. An inner stream that ends without one
+  MUST fail the read with `NetError.Failed`, because the data may have been
+  cut short.
+- Its writer encrypts each write whole and writes the records to the inner
+  writer. Closing it sends `close_notify`, then closes the inner writer.
+- `Net.close` releases the session and closes the inner connection. Later
+  reads and writes fail with `NetError.Closed`.
+- After the handshake every failure is a `NetError`, as for any connection.
+  A record that fails to decrypt is `NetError.Failed` with mbedTLS's words.
+- Encryption runs in memory: the wrapper moves ciphertext through the inner
+  connection's streams, so a TLS connection waits where its inner one waits,
+  and a `Net.pair` fake behaves as a socket does. Each call on a session
+  holds the session's lock, since the reader and the writer may be used from
+  different tasks.
+
+### Failures
+
+`TlsError` is `Untrusted`, `Expired` (also not yet valid), `WrongHost(host)`,
+`Unacceptable(reason)` (no common TLS version), `NoRoots`,
+`Handshake(message)` (an alert from the peer, a peer that is not speaking TLS,
+or one that ended during the handshake), and `Invalid(message)`. A failed
+handshake still sends the alert mbedTLS queued, as far as the connection
+allows, and leaves the inner connection open for its owner to close.
+
+### Not yet
+
+- `Tls.listener(listener, identity)` and HTTPS in `std/http`.
+- Caching parsed roots: each client parses its roots again.
+- Client certificates, ALPN, session resumption, and choosing suites.
+- The licence notices in a build's report.
+
 ## Decisions
 
 - **One `network` need covers connecting, listening, and name lookup.** A
@@ -420,6 +482,13 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 | SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
 | SQL: commit, rollback, defect, cancellation, a failed commit, savepoints | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
+| TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
+| TLS: `Untrusted`, `WrongHost(host)` and `Expired` on the client, `Handshake` on the server | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
+| TLS: bad roots, an empty bundle, a bad key, a key that is not the certificate's | `tests/tls.rs` `bad_roots_and_identities_fail_where_they_are_made` |
+| TLS: a peer leaving during the handshake, a peer not speaking TLS, an end without `close_notify`, a closed connection | `tests/tls.rs` `a_peer_that_leaves_or_speaks_something_else_fails_the_connection` |
+| TLS: the system's roots, `SSL_CERT_FILE`, and `NoRoots` | `tests/tls.rs` `the_defaults_trust_the_systems_roots` |
+| TLS over loopback sockets | `tests/tls.rs` `a_tls_connection_runs_over_loopback_sockets` |
+| The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
 | `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |
