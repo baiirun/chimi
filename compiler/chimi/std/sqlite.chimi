@@ -39,9 +39,8 @@ import std/clock as Clock
 import std/clock.{Clock}
 import std/decimal as Decimal
 import std/duration as Duration
-import std/duration.{Duration}
 import std/float as Float
-import std/fs.{Files}
+import std/fs.{Files, FsError}
 import std/int as Int
 import std/list as List
 import std/option as Option
@@ -136,7 +135,8 @@ fn allowed(files: Files, target: Text) -> Void {
   let checked = Result.capture(fn() { files.metadata(directory) })
   case checked {
     Ok(_) -> Void
-    Err(_) -> Failure(SqlError.ConnectFailed("SQLite: the files provider refuses ${target}"))
+    Err(FsError.PermissionDenied(_)) -> Failure(SqlError.ConnectFailed("SQLite: the files provider refuses ${target}"))
+    Err(_) -> Failure(SqlError.ConnectFailed("SQLite: the directory of ${target} cannot be read"))
   }
 }
 
@@ -170,7 +170,9 @@ fn rollback(db: Opened, depth: Int) -> Void {
   case depth == 0 {
     True -> statement(db, "rollback")
     False -> {
-      let undone = Result.capture(fn() { statement(db, "rollback to chimi_${depth}") })
+      let undone = Result.capture(fn() {
+        statement(db, "rollback to chimi_${depth}")
+      })
       case undone {
         Ok(_) -> statement(db, "release chimi_${depth}")
         Err(SqlError.Rejected(_, message)) -> case Text.contains(message, "no such savepoint") {
