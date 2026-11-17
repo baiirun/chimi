@@ -13,7 +13,11 @@ pub(super) const BINDING_HEADER: &str = include_str!("../../runtime/native/chimi
 
 /// Operating-system libraries a package links, which the build report lists
 /// (Principle 15). Every package not named here links none.
-const SYSTEM_LIBRARIES: &[(&str, &[&str])] = &[("net", &["pthread"]), ("tls", &["pthread"])];
+const SYSTEM_LIBRARIES: &[(&str, &[&str])] = &[
+    ("net", &["pthread"]),
+    ("tls", &["pthread"]),
+    ("sqlite", &["pthread", "m"]),
+];
 
 /// One binding package a program links.
 #[derive(Debug, Eq, PartialEq)]

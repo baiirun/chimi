@@ -1,0 +1,435 @@
+/// SQLite databases for `std/sql`, through SQLite 3.54 built into the
+/// program. `Sqlite.driver()` opens connections to a database file, and
+/// std/sql pools them and runs statements on them:
+///
+/// ```text
+/// pub fn main() -> Void needs { files: Files } {
+///   Sql.open(Sqlite.driver(), "app.db", Sql.defaults, fn(db) {
+///     Sql.execute(db, "create table if not exists users (id integer primary key, name text)", [])
+///     Sql.execute(db, "insert into users (name) values (?)", [Value.Text("Ada")])
+///   })
+/// }
+/// ```
+///
+/// A target is a file path, created when it is missing, or `:memory:` for
+/// an empty database in memory. Each pooled connection to `:memory:` has a
+/// database of its own, so open it with `max_connections: 1`.
+///
+/// Every connection turns on foreign keys and, for a file, write-ahead
+/// logging with `synchronous = NORMAL`. A transaction begins with
+/// `BEGIN IMMEDIATE`, so it takes the write lock at its start; a nested
+/// transaction is a savepoint. When another connection holds the lock, a
+/// statement waits, letting other tasks run, and retries for up to 5 s
+/// before it fails with `SqlError.Conflict`.
+///
+/// Placeholders are SQLite's (`?`, `?1`, `:name`, `$name`), and parameters
+/// bind in order. Values map to SQLite's types: `Int` to INTEGER, `Float` to
+/// REAL, `Text` to TEXT, `Bytes` to BLOB and `Null` to NULL. `Bool` is stored
+/// as 0 or 1 and read back as a `Bool` from a column declared `BOOLEAN`.
+/// `Decimal` is stored as text and read back as a `Decimal` from a column
+/// whose declared type starts with `DECIMAL` or `NUMERIC`. Declare such a
+/// column `DECIMAL_TEXT` to keep every digit: SQLite stores a `DECIMAL`
+/// column's numbers as INTEGER or REAL.
+///
+/// Each call runs SQLite on the task's thread, so a long query holds up
+/// the other tasks there until it ends.
+
+import std/bytes.{Bytes}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/decimal as Decimal
+import std/duration as Duration
+import std/duration.{Duration}
+import std/float as Float
+import std/fs.{Files}
+import std/int as Int
+import std/list as List
+import std/option as Option
+import std/path as Path
+import std/resource as Resource
+import std/result as Result
+import std/result.{Err, Ok, Result}
+import std/sql as Sql
+import std/sql.{Connection, Driver, Reply, SqlError, Value}
+import std/text as Text
+
+// 1. The driver.
+
+/// A driver for SQLite database files. It takes its capabilities when it is
+/// built: `files`, so a target outside what that provider allows fails to
+/// connect, and `clock`, for the waits while another connection holds the
+/// lock.
+///
+/// Cost: O(1).
+pub fn driver() -> Driver needs {
+  files: Files,
+  clock: Clock,
+} {
+  let given = Given(files, clock)
+  Sql.driver(fn(target) { connect(given, target) })
+}
+
+// An open database, with the clock its retries wait on.
+struct Opened {
+  handle: SqliteDb,
+  clock: Clock,
+}
+
+// The capabilities a driver took when it was built.
+struct Given {
+  files: Files,
+  clock: Clock,
+}
+
+/// The version of SQLite built into the program, as `3.54.1`.
+///
+/// Cost: O(1).
+pub fn version() -> Text {
+  native_version()
+}
+
+// 2. Connections.
+
+// Opens `target` and sets the connection up. The `files` provider checks
+// the directory the file is in, so a confined provider refuses a path
+// outside it.
+fn connect(given: Given, target: Text) -> Connection {
+  let memory = target == ":memory:"
+  case memory {
+    True -> Void
+    False -> allowed(given.files, target)
+  }
+  let db = Opened(connected(native_open(target)), given.clock)
+  let set_up = Result.capture(fn() {
+    statement(db, "pragma foreign_keys = on")
+    case memory {
+      True -> Void
+      False -> {
+        statement(db, "pragma journal_mode = wal")
+        statement(db, "pragma synchronous = normal")
+      }
+    }
+  })
+  case set_up {
+    Ok(_) -> Void
+    Err(failure) -> {
+      native_close(db.handle)
+      Failure(SqlError.ConnectFailed("SQLite: ${reason(failure)}"))
+    }
+  }
+  Sql.connection(fn(sql, params) { run(db, sql, params) }, fn(depth) {
+    statement(db, begin_statement(depth))
+  }, fn(depth) {
+    statement(db, commit_statement(depth))
+  }, fn(depth) {
+    rollback(db, depth)
+  }, fn() {
+    reset(db)
+  }, fn() {
+    native_close(db.handle)
+  })
+}
+
+fn allowed(files: Files, target: Text) -> Void {
+  let path = Path.from(target)
+  let directory = Option.unwrap_or(Path.parent(path), Path.from("."))
+  let checked = Result.capture(fn() { files.metadata(directory) })
+  case checked {
+    Ok(_) -> Void
+    Err(_) -> Failure(SqlError.ConnectFailed("SQLite: the files provider refuses ${target}"))
+  }
+}
+
+fn reason(failure: SqlError) -> Text {
+  case failure {
+    SqlError.Rejected(_, message) -> message
+    SqlError.Failed(message) -> message
+    SqlError.Conflict(message) -> message
+    _ -> "the connection could not be set up"
+  }
+}
+
+fn begin_statement(depth: Int) -> Text {
+  case depth == 0 {
+    True -> "begin immediate"
+    False -> "savepoint chimi_${depth}"
+  }
+}
+
+fn commit_statement(depth: Int) -> Text {
+  case depth == 0 {
+    True -> "commit"
+    False -> "release chimi_${depth}"
+  }
+}
+
+// A savepoint's rollback undoes it and then ends it. After a failed release
+// the savepoint may be gone already, which SQLite reports as no such
+// savepoint; that rollback has nothing left to do.
+fn rollback(db: Opened, depth: Int) -> Void {
+  case depth == 0 {
+    True -> statement(db, "rollback")
+    False -> {
+      let undone = Result.capture(fn() { statement(db, "rollback to chimi_${depth}") })
+      case undone {
+        Ok(_) -> statement(db, "release chimi_${depth}")
+        Err(SqlError.Rejected(_, message)) -> case Text.contains(message, "no such savepoint") {
+          True -> Void
+          False -> Failure(SqlError.Rejected("SQLITE_ERROR", message))
+        }
+        Err(failure) -> Failure(failure)
+      }
+    }
+  }
+}
+
+// Rolls back what is left open, so the pool can hand the connection out
+// again; a closed connection fails.
+fn reset(db: Opened) -> Void {
+  let idle = sql(native_autocommit(db.handle))
+  case idle {
+    True -> Void
+    False -> statement(db, "rollback")
+  }
+}
+
+fn statement(db: Opened, text: Text) -> Void {
+  let _ = run(db, text, [])
+  Void
+}
+
+// 3. Statements.
+
+// How long a statement keeps retrying while another connection holds the
+// lock, and the longest wait between tries, in milliseconds.
+const busy_limit: Int = 5000
+const longest_pause: Int = 100
+
+// What one try of a statement did.
+enum Try {
+  Ran(reply: Reply)
+  Locked(message: Text)
+}
+
+// Runs one statement, retrying it while another connection holds the lock:
+// after 1 ms, then waits that double up to 100 ms, until 5 s have passed.
+fn run(db: Opened, text: Text, params: List<Value>) -> Reply {
+  loop (pause, waited) = (1, 0) {
+    let tried = run_once(db, text, params)
+    case tried {
+      Try.Ran(reply) -> break reply
+      Try.Locked(message) -> case waited >= busy_limit {
+        True -> Failure(SqlError.Conflict(message))
+        False -> {
+          wait(db.clock, pause)
+          let doubled = pause * 2
+          let next = case doubled > longest_pause {
+            True -> longest_pause
+            False -> doubled
+          }
+          (next, waited + pause)
+        }
+      }
+    }
+  }
+}
+
+// Parks the task for `milliseconds`, letting other tasks run.
+fn wait(clock: Clock, milliseconds: Int) -> Void {
+  Clock.sleep(Duration.milliseconds(milliseconds)) using { clock: clock }
+}
+
+// The statement is finalized however the try ends: a failure, a cancel, or
+// its last row.
+fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
+  let prepared = native_prepare(db.handle, text)
+  case prepared {
+    Err((code, message)) -> case locked(code) {
+      True -> Try.Locked(message)
+      False -> failed(code, message)
+    }
+    Ok(None) -> Try.Ran(Sql.done())
+    Ok(Some(handle)) -> Resource.scoped(fn() { handle }, native_finalize, fn(prepared_statement) {
+      bind_all(prepared_statement, params)
+      let columns = native_columns(prepared_statement)
+      let names = List.map(columns, fn(column) {
+        let (name, _) = column
+        name
+      })
+      let declared = List.map(columns, fn(column) {
+        let (_, declared_type) = column
+        Text.uppercase(declared_type)
+      })
+      loop rows = [] {
+        let step = native_step(prepared_statement)
+        case step {
+          Ok(None) -> List.push(rows, decoded(names, declared, sql(native_row(prepared_statement))))
+          Ok(Some(changed)) -> break Try.Ran(Sql.reply(names, rows, changed))
+          Err((code, message)) -> case locked(code) and rows == [] {
+            True -> break Try.Locked(message)
+            False -> failed(code, message)
+          }
+        }
+      }
+    })
+  }
+}
+
+fn bind_all(handle: SqliteStatement, params: List<Value>) -> Void {
+  let expected = native_parameter_count(handle)
+  let given = List.length(params)
+  case given == expected {
+    True -> Void
+    False -> Failure(SqlError.Rejected("SQLITE_RANGE", "the statement takes ${expected} parameters, and ${given} were given"))
+  }
+  List.each(List.enumerate(params), fn(pair) {
+    let (index, param) = pair
+    sql(bind(handle, index + 1, param))
+  })
+}
+
+fn bind(handle: SqliteStatement, index: Int, param: Value) -> Result<Void, (Int, Text)> {
+  case param {
+    Value.Null -> native_bind_null(handle, index)
+    Value.Bool(flag) -> native_bind_integer(handle, index, case flag {
+      True -> 1
+      False -> 0
+    })
+    Value.Int(number) -> native_bind_integer(handle, index, number)
+    Value.Float(number) -> native_bind_float(handle, index, Float.to_text(number))
+    Value.Decimal(number) -> native_bind_text(handle, index, Decimal.to_text(number))
+    Value.Text(text) -> native_bind_text(handle, index, text)
+    Value.Bytes(bytes) -> native_bind_bytes(handle, index, bytes)
+  }
+}
+
+// 4. Values.
+
+// One row from the binding's (kind, integer, text, bytes) tuples, read by
+// each column's declared type (upper-cased).
+fn decoded(names: List<Text>, declared: List<Text>, cells: List<(Int, Int, Text, Bytes)>) -> List<Value> {
+  List.map(List.zip(List.zip(names, declared), cells), fn(entry) {
+    let ((name, declared_type), cell) = entry
+    value(name, declared_type, cell)
+  })
+}
+
+fn value(name: Text, declared_type: Text, cell: (Int, Int, Text, Bytes)) -> Value {
+  let (kind, integer, text, bytes) = cell
+  let decimal = Text.starts_with(declared_type, "DECIMAL") or Text.starts_with(declared_type, "NUMERIC")
+  let boolean = declared_type == "BOOLEAN" or declared_type == "BOOL"
+  case kind {
+    1 -> case (boolean and (integer == 0 or integer == 1), decimal) {
+      (True, _) -> Value.Bool(integer == 1)
+      (_, True) -> decimal_value(name, Int.to_text(integer))
+      _ -> Value.Int(integer)
+    }
+    2 -> case decimal {
+      True -> decimal_value(name, text)
+      False -> float(name, text)
+    }
+    3 -> case decimal {
+      True -> case Result.capture(fn() { Decimal.parse(text) }) {
+        Ok(number) -> Value.Decimal(number)
+        Err(_) -> Value.Text(text)
+      }
+      False -> Value.Text(text)
+    }
+    4 -> Value.Bytes(bytes)
+    _ -> Value.Null
+  }
+}
+
+fn decimal_value(name: Text, text: Text) -> Value {
+  let parsed = Result.capture(fn() { Decimal.parse(text) })
+  case parsed {
+    Ok(number) -> Value.Decimal(number)
+    Err(_) -> Failure(SqlError.Failed("SQLite: the column ${name} holds ${text}, which is not a Decimal"))
+  }
+}
+
+// SQLite's REAL may hold an infinity, which a `Float` cannot.
+fn float(name: Text, text: Text) -> Value {
+  let parsed = Result.capture(fn() { Float.parse(text) })
+  case parsed {
+    Ok(number) -> Value.Float(number)
+    Err(_) -> Failure(SqlError.Failed("SQLite: the column ${name} holds ${text}, which is not a Float"))
+  }
+}
+
+// 5. Failures.
+
+fn connected(result: Result<SqliteDb, (Int, Text)>) -> SqliteDb {
+  case result {
+    Ok(db) -> db
+    Err((_, message)) -> Failure(SqlError.ConnectFailed("SQLite: ${message}"))
+  }
+}
+
+fn sql<T>(result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
+    Err((code, message)) -> failed(code, message)
+  }
+}
+
+// SQLITE_BUSY and SQLITE_LOCKED, with their extended codes.
+fn locked(code: Int) -> Bool {
+  let primary = code % 256
+  code > 0 and (primary == 5 or primary == 6)
+}
+
+fn failed(code: Int, message: Text) -> Never {
+  case code {
+    // The binding's own codes, below SQLite's.
+    -1 -> Failure(SqlError.ConnectionLost)
+    -2 -> Failure(SqlError.Rejected("MANY_STATEMENTS", "SQLite: ${message}; run one statement per call"))
+    -3 -> Failure(SqlError.Failed("SQLite: the column ${message} holds text that is not UTF-8"))
+    _ -> by_primary(code % 256, message)
+  }
+}
+
+fn by_primary(primary: Int, message: Text) -> Never {
+  case primary {
+    19 -> Failure(SqlError.ConstraintFailed(constraint(message), message))
+    5 -> Failure(SqlError.Conflict(message))
+    6 -> Failure(SqlError.Conflict(message))
+    1 -> Failure(SqlError.Rejected("SQLITE_ERROR", message))
+    8 -> Failure(SqlError.Rejected("SQLITE_READONLY", message))
+    18 -> Failure(SqlError.Rejected("SQLITE_TOOBIG", message))
+    20 -> Failure(SqlError.Rejected("SQLITE_MISMATCH", message))
+    23 -> Failure(SqlError.Rejected("SQLITE_AUTH", message))
+    25 -> Failure(SqlError.Rejected("SQLITE_RANGE", message))
+    _ -> Failure(SqlError.Failed("SQLite: ${message}"))
+  }
+}
+
+// What a constraint failure names: "UNIQUE constraint failed: users.email"
+// names `users.email`, and a named CHECK constraint its name.
+fn constraint(message: Text) -> Text {
+  case Text.split_once(message, "failed: ") {
+    Some((_, named)) -> named
+    None -> message
+  }
+}
+
+// 6. The binding (runtime/native/bindings/sqlite/sqlite.c).
+
+native type SqliteDb
+native type SqliteStatement
+
+native fn native_version() -> Text
+native fn native_open(target: Text) -> Result<SqliteDb, (Int, Text)>
+native fn native_close(db: SqliteDb) -> Void
+native fn native_autocommit(db: SqliteDb) -> Result<Bool, (Int, Text)>
+native fn native_prepare(db: SqliteDb, sql: Text) -> Result<Option<SqliteStatement>, (Int, Text)>
+native fn native_finalize(statement: SqliteStatement) -> Void
+native fn native_parameter_count(statement: SqliteStatement) -> Int
+native fn native_bind_null(statement: SqliteStatement, index: Int) -> Result<Void, (Int, Text)>
+native fn native_bind_integer(statement: SqliteStatement, index: Int, value: Int) -> Result<Void, (Int, Text)>
+native fn native_bind_float(statement: SqliteStatement, index: Int, value: Text) -> Result<Void, (Int, Text)>
+native fn native_bind_text(statement: SqliteStatement, index: Int, value: Text) -> Result<Void, (Int, Text)>
+native fn native_bind_bytes(statement: SqliteStatement, index: Int, value: Bytes) -> Result<Void, (Int, Text)>
+native fn native_step(statement: SqliteStatement) -> Result<Option<Int>, (Int, Text)>
+native fn native_columns(statement: SqliteStatement) -> List<(Text, Text)>
+native fn native_row(statement: SqliteStatement) -> Result<List<(Int, Int, Text, Bytes)>, (Int, Text)>
