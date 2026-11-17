@@ -427,7 +427,15 @@ a checksum manifest.
   connection's streams, so a TLS connection waits where its inner one waits,
   and a `Net.pair` fake behaves as a socket does. Each call on a session
   holds the session's lock, since the reader and the writer may be used from
-  different tasks.
+  different tasks. The lock covers the session's own state; running sessions
+  on parallel carriers will also need mbedTLS's threading support.
+- A read MUST NOT wait for input while records it was given are unread: a
+  record with no data (a TLS 1.3 session ticket, a warning alert, an empty
+  data record) is skipped, and the read goes on to what follows it.
+- The session is made and handshaken inside `Resource.scoped`, so it MUST be
+  freed however the handshake ends, including a timeout or a cancel.
+  `Tls.live_sessions_for_tests()` (test-only) counts the sessions a program
+  holds.
 
 ### Failures
 
@@ -436,13 +444,22 @@ a checksum manifest.
 `Handshake(message)` (an alert from the peer, a peer that is not speaking TLS,
 or one that ended during the handshake), and `Invalid(message)`. A failed
 handshake still sends the alert mbedTLS queued, as far as the connection
-allows, and leaves the inner connection open for its owner to close.
+allows, and leaves the inner connection open for its owner to close. A
+chain that does not reach a trusted root is `Untrusted` whatever else is
+wrong with it, so a stranger's expired certificate is not reported as
+`Expired`. A version mismatch usually reaches the client as the server's
+alert, so `Handshake`; `Unacceptable` is what this side reports when it
+refuses the peer's versions.
 
 ### Not yet
 
 - `Tls.listener(listener, identity)` and HTTPS in `std/http`.
 - Caching parsed roots: each client parses its roots again.
 - Client certificates, ALPN, session resumption, and choosing suites.
+- An alert queued while reading (after a record fails to decrypt) is sent
+  with the next write or close, not at once, because only the writer side
+  writes to the inner connection.
+- A numeric `host` is still sent as SNI, which RFC 6066 does not allow.
 - The licence notices in a build's report.
 
 ## Decisions
@@ -483,11 +500,13 @@ allows, and leaves the inner connection open for its owner to close.
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
 | SQL: commit, rollback, defect, cancellation, a failed commit, savepoints | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
 | TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
-| TLS: `Untrusted`, `WrongHost(host)` and `Expired` on the client, `Handshake` on the server | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
+| TLS: `Untrusted`, `WrongHost(host)`, `Expired` and not yet valid on the client, `Handshake` on the server, a stranger's expired certificate is `Untrusted`, an empty host | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
 | TLS: bad roots, an empty bundle, a bad key, a key that is not the certificate's | `tests/tls.rs` `bad_roots_and_identities_fail_where_they_are_made` |
 | TLS: a peer leaving during the handshake, a peer not speaking TLS, an end without `close_notify`, a closed connection | `tests/tls.rs` `a_peer_that_leaves_or_speaks_something_else_fails_the_connection` |
 | TLS: the system's roots, `SSL_CERT_FILE`, and `NoRoots` | `tests/tls.rs` `the_defaults_trust_the_systems_roots` |
 | TLS over loopback sockets | `tests/tls.rs` `a_tls_connection_runs_over_loopback_sockets` |
+| TLS: no session outlives a failed or timed-out handshake, or `Net.close` | `tests/tls.rs` `no_session_outlives_its_connection_or_its_handshake` |
+| TLS: an OpenSSL server, TLS 1.3 with session tickets and TLS 1.2, twenty exchanges each | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
 | The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |

@@ -34,6 +34,7 @@ import std/bytes as Bytes
 import std/bytes.{Bytes}
 import std/net as Net
 import std/net.{Connection, NetError}
+import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok, Result}
 import std/stream as Stream
@@ -113,11 +114,12 @@ pub fn identity(certificate: Bytes, key: Bytes) -> Identity {
 /// streams fail with. On a failure the inner connection is left open, for
 /// the caller that opened it to close.
 pub fn client(connection: Connection, host: Text, settings: { roots: Roots }) -> Connection {
-  let session = case settings.roots.pem {
-    Some(pem) -> tls(native_client(pem, host), host)
-    None -> tls(native_client_system(host), host)
-  }
-  secured(connection, session, host)
+  secured(connection, host, fn() {
+    case settings.roots.pem {
+      Some(pem) -> tls(native_client(pem, host), host)
+      None -> tls(native_client_system(host), host)
+    }
+  })
 }
 
 /// The server end of a TLS connection over `connection`, proving itself
@@ -127,29 +129,36 @@ pub fn client(connection: Connection, host: Text, settings: { roots: Roots }) ->
 /// the inner connection's streams fail with. On a failure the inner
 /// connection is left open.
 pub fn server(connection: Connection, identity: Identity) -> Connection {
-  let session = tls(native_server(identity.certificate, identity.key), "")
-  secured(connection, session, "")
+  secured(connection, "", fn() { tls(native_server(identity.certificate, identity.key), "") })
+}
+
+/// How many TLS sessions this program holds: made, and not yet freed by
+/// `Net.close` or a failed handshake. For tests that check nothing leaks.
+/// Test-only (`T4401`).
+pub fn live_sessions_for_tests() -> Int {
+  native_live_sessions()
 }
 
 // 5. The session over the inner connection.
 
-fn secured(connection: Connection, session: TlsSession, host: Text) -> Connection {
-  case Result.capture(fn() { handshake(connection, session, host) }) {
-    Ok(_) -> Net.connection(
-      Stream.reader(fn() { receive(connection, session) }, fn() { Stream.stop(Net.reader(connection)) }),
-      Stream.writer(fn(bytes) { send(connection, session, bytes) }, fn() { finish(connection, session) }),
-      Net.local_address(connection),
-      Net.peer_address(connection),
-      fn() {
-        native_free(session)
-        Net.close(connection)
-      },
-    )
-    Err(error) -> {
+// The session is made and handshaken inside Resource.scoped, so it is freed
+// however the handshake ends (a failure, a cancel, a timeout), and handed to
+// a handle of its own once the handshake is done.
+fn secured(connection: Connection, host: Text, start: fn() -> TlsSession errors TlsError | NetError) -> Connection {
+  let session = Resource.scoped(start, native_free, fn(starting) {
+    handshake(connection, starting, host)
+    tls(native_handoff(starting), host)
+  })
+  Net.connection(
+    Stream.reader(fn() { receive(connection, session) }, fn() { Stream.stop(Net.reader(connection)) }),
+    Stream.writer(fn(bytes) { send(connection, session, bytes) }, fn() { finish(connection, session) }),
+    Net.local_address(connection),
+    Net.peer_address(connection),
+    fn() {
       native_free(session)
-      Failure(error)
-    }
-  }
+      Net.close(connection)
+    },
+  )
 }
 
 // A failed step still sends what the session queued (an alert telling the
@@ -254,4 +263,6 @@ native fn native_take(session: TlsSession) -> Bytes
 native fn native_send(session: TlsSession, bytes: Bytes) -> Result<Void, (Int, Text)>
 native fn native_receive(session: TlsSession) -> Result<(Int, Bytes), (Int, Text)>
 native fn native_close_notify(session: TlsSession) -> Void
+native fn native_handoff(session: TlsSession) -> Result<TlsSession, (Int, Text)>
 native fn native_free(session: TlsSession) -> Void
+native fn native_live_sessions() -> Int

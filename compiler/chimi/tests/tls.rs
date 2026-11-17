@@ -71,6 +71,8 @@ const OTHER_KEY: &str = include_str!("fixtures/tls/other.key");
 const SERVER_CERT: &str = include_str!("fixtures/tls/server.pem");
 const SERVER_KEY: &str = include_str!("fixtures/tls/server.key");
 const EXPIRED_CERT: &str = include_str!("fixtures/tls/expired.pem");
+const FUTURE_CERT: &str = include_str!("fixtures/tls/future.pem");
+const STRANGER_EXPIRED_CERT: &str = include_str!("fixtures/tls/stranger-expired.pem");
 
 fn literal(pem: &str) -> String {
     format!("\"{}\"", pem.replace('\n', "\\n"))
@@ -81,6 +83,7 @@ fn suite(tests: &str) -> String {
     format!(
         r#"import std/bytes as Bytes
 import std/debug as Debug
+import std/duration as Duration
 import std/net as Net
 import std/net.{{Connection, NetError, Network}}
 import std/resource as Resource
@@ -99,6 +102,8 @@ const OTHER_KEY: Text = {}
 const SERVER_CERT: Text = {}
 const SERVER_KEY: Text = {}
 const EXPIRED_CERT: Text = {}
+const FUTURE_CERT: Text = {}
+const STRANGER_EXPIRED_CERT: Text = {}
 
 fn attempt<T, E, R>(operation: fn() -> T errors E needs R) -> Text needs R {{
   case Result.capture(operation) {{
@@ -153,6 +158,8 @@ fn over_pair(roots: Text, certificate: Text, host: Text, request: Text) -> (Text
         literal(SERVER_CERT),
         literal(SERVER_KEY),
         literal(EXPIRED_CERT),
+        literal(FUTURE_CERT),
+        literal(STRANGER_EXPIRED_CERT),
     )
 }
 
@@ -221,7 +228,7 @@ test "the bytes on the wire are not the plaintext" {
     assert_passed(&result, 3);
 }
 
-// Rejects a client that skips any of the three checks: a certificate from an
+// Rejects a client that skips any of the checks: a certificate from an
 // authority it does not trust, one for another host, and one that has
 // expired each fail the handshake on the client with their own variant, and
 // the server sees the handshake fail.
@@ -246,9 +253,24 @@ test "an expired certificate" {
   let (client, _server) = over_pair(CA, EXPIRED_CERT, "localhost", "hello")
   client |> Test.assert_equal("Err(TlsError.Expired)")
 }
+
+test "a certificate not yet valid" {
+  let (client, _server) = over_pair(CA, FUTURE_CERT, "localhost", "hello")
+  client |> Test.assert_equal("Err(TlsError.Expired)")
+}
+
+test "a stranger's expired certificate is untrusted first" {
+  let (client, _server) = over_pair(CA, STRANGER_EXPIRED_CERT, "localhost", "hello")
+  client |> Test.assert_equal("Err(TlsError.Untrusted)")
+}
+
+test "an empty host" {
+  let (client, _server) = over_pair(CA, SERVER_CERT, "", "hello")
+  Text.starts_with(client, "Err(TlsError.Invalid(") |> Test.assert_equal(True)
+}
 "#,
     );
-    assert_passed(&result, 3);
+    assert_passed(&result, 6);
 }
 
 // Rejects roots or an identity that are accepted unchecked and fail only at
@@ -334,6 +356,19 @@ test "the peer ends without close_notify" {
   Task.result(server)
 }
 
+test "closing the writer sends close_notify, then ends the inner stream" {
+  let (client_end, server_end) = Net.pair(4)
+  let server = Task.start(fn() {
+    let connection = Tls.server(server_end, server_identity(SERVER_CERT))
+    let first = Stream.read(Net.reader(connection))
+    // The TLS stream ends at close_notify, and the inner one right after.
+    (first, Stream.read(Net.reader(server_end)))
+  })
+  let connection = Tls.client(client_end, "localhost", trusting(CA))
+  Stream.close(Net.writer(connection))
+  Task.result(server) |> Test.assert_equal((None, None))
+}
+
 test "a closed connection" {
   let (client_end, server_end) = Net.pair(4)
   let server = Task.start(fn() { Tls.server(server_end, server_identity(SERVER_CERT)) })
@@ -346,7 +381,7 @@ test "a closed connection" {
 }
 "#,
     );
-    assert_passed(&result, 4);
+    assert_passed(&result, 5);
 }
 
 // Rejects a default that trusts nothing or everything, and one that ignores
@@ -414,6 +449,111 @@ test "loopback" {
     )
     .test(&[], &["--clock=real"]);
     assert_passed(&result, 1);
+}
+
+// Rejects a session that outlives its connection: one freed only when the
+// handshake fails and not when a timeout cuts it short, or one that `Net.close`
+// leaves open. The count of live sessions comes back to zero after each.
+#[test]
+fn no_session_outlives_its_connection_or_its_handshake() {
+    let result = run(
+        "leaks",
+        r#"
+test "sessions are freed" {
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+  let _ = over_pair(OTHER_CA, SERVER_CERT, "localhost", "hello")
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+  // A server that never answers, and a client that gives up waiting.
+  let (client_end, _server_end) = Net.pair(4)
+  let waited = attempt(fn() {
+    Task.timeout(fn() { Tls.client(client_end, "localhost", trusting(CA)) }, Duration.seconds(1))
+  })
+  Text.starts_with(waited, "Err(") |> Test.assert_equal(True)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+  // An open connection holds one session at each end until it is closed.
+  let (left, right) = Net.pair(4)
+  let server = Task.start(fn() { Tls.server(right, server_identity(SERVER_CERT)) })
+  let client = Tls.client(left, "localhost", trusting(CA))
+  let served = Task.result(server)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(2)
+  Net.close(client)
+  Net.close(served)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+}
+"#,
+    );
+    assert_passed(&result, 1);
+}
+
+// Rejects an engine that tests only against itself: OpenSSL's server sends
+// TLS 1.3 session tickets after the handshake (a record with no data, ahead of
+// the answer), and speaks TLS 1.2 when told to. Twenty exchanges each, since
+// a client that waits for input it already holds hangs only when the ticket
+// and the answer arrive in one read.
+#[test]
+fn a_client_talks_to_an_openssl_server() {
+    for version in ["-tls1_3", "-tls1_2"] {
+        let scratch = Scratch::new("openssl", "");
+        std::fs::write(scratch.0.join("server.pem"), SERVER_CERT).unwrap();
+        std::fs::write(scratch.0.join("server.key"), SERVER_KEY).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut server = Command::new("openssl")
+            .current_dir(&scratch.0)
+            .args(["s_server", "-quiet", "-www", "-num_tickets", "2", version])
+            .args(["-cert", "server.pem", "-key", "server.key"])
+            .args(["-accept", &format!("127.0.0.1:{port}")])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("openssl s_server runs (the TLS interop test needs OpenSSL)");
+        let started = std::time::Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "openssl s_server did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let tests = format!(
+            r#"
+fn fetch() -> Text needs {{ network: Network }} {{
+  Resource.scoped(fn() {{ Net.connect("127.0.0.1", {port}) }}, Net.close, fn(inner) {{
+    let connection = Tls.client(inner, "localhost", trusting(CA))
+    Stream.write(Net.writer(connection), Bytes.from_text("GET / HTTP/1.0\r\n\r\n"))
+    let page = Bytes.to_text(Stream.read_all(Net.reader(connection), 1048576))
+    Net.close(connection)
+    page
+  }})
+}}
+
+test "twenty pages" {{
+  let pages = Task.timeout(fn() {{
+    loop count = 0 {{
+      case count == 20 {{
+        True -> break count
+        False -> {{
+          let page = fetch() using {{ network: Net.host_for_tests() }}
+          Text.starts_with(page, "HTTP/1.0 200 ok") |> Test.assert_equal(True)
+          count + 1
+        }}
+      }}
+    }}
+  }}, Duration.seconds(60))
+  pages |> Test.assert_equal(20)
+}}
+"#
+        );
+        std::fs::write(scratch.0.join("cases.chimi"), suite(&tests)).unwrap();
+        let result = scratch.test(&[], &["--clock=real"]);
+        let _ = server.kill();
+        let _ = server.wait();
+        assert_passed(&result, 1);
+    }
 }
 
 // Rejects a vendored mbedTLS edited in place, or a file added or dropped

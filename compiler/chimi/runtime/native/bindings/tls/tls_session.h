@@ -56,6 +56,8 @@ TlsSession *tls_server_session(const unsigned char *certificate, size_t certific
                                const unsigned char *key, size_t key_length, int *code,
                                char *message, size_t size);
 void tls_free_session(TlsSession *session);
+/* How many sessions are made and not yet freed. */
+long tls_live_sessions(void);
 
 /* Returns 1 when the handshake is complete, 0 when it needs input, or -1 on
    failure (`session->failure`). */

@@ -433,7 +433,9 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/tls.native_send", 2, "tls", "chimi_tls_send", false),
     binding("std/tls.native_receive", 1, "tls", "chimi_tls_receive", false),
     binding("std/tls.native_close_notify", 1, "tls", "chimi_tls_close_notify", false),
+    binding("std/tls.native_handoff", 1, "tls", "chimi_tls_handoff", false),
     binding("std/tls.native_free", 1, "tls", "chimi_tls_free", false),
+    binding("std/tls.native_live_sessions", 0, "tls", "chimi_tls_live_sessions", true),
     // std/exec: child processes (CHI-250). `native_allow_real_commands` is
     // test-only, so only `Exec.host_for_tests` in a test reaches it.
     binding("std/exec.native_command", 1, "exec", "chimi_exec_command", false),

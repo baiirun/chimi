@@ -1,10 +1,12 @@
 #include "tls_session.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "mbedtls/error.h"
+#include "mbedtls/platform_util.h"
 #include "psa/crypto.h"
 
 static int crypto_ready(void) {
@@ -79,6 +81,11 @@ static int receive_from_buffer(void *context, unsigned char *bytes, size_t lengt
   return (int)length;
 }
 
+/* Sessions made and not yet freed, for tests that check nothing leaks. */
+static atomic_long live_sessions;
+
+long tls_live_sessions(void) { return atomic_load(&live_sessions); }
+
 static TlsSession *new_session(int endpoint, int *code, char *message, size_t size) {
   if (!crypto_ready()) {
     *code = TLS_INVALID;
@@ -91,6 +98,7 @@ static TlsSession *new_session(int endpoint, int *code, char *message, size_t si
     snprintf(message, size, "out of memory");
     return NULL;
   }
+  atomic_fetch_add(&live_sessions, 1);
   mbedtls_ssl_init(&session->ssl);
   mbedtls_ssl_config_init(&session->config);
   mbedtls_x509_crt_init(&session->roots);
@@ -170,7 +178,7 @@ TlsSession *tls_server_session(const unsigned char *certificate, size_t certific
   result = key_copy ? mbedtls_pk_parse_key(&session->key, key_copy, key_length + 1, NULL, 0)
                     : MBEDTLS_ERR_PK_ALLOC_FAILED;
   if (key_copy) {
-    memset(key_copy, 0, key_length);
+    mbedtls_platform_zeroize(key_copy, key_length);
     free(key_copy);
   }
   if (result != 0) {
@@ -199,6 +207,7 @@ TlsSession *tls_server_session(const unsigned char *certificate, size_t certific
 
 void tls_free_session(TlsSession *session) {
   if (!session) return;
+  atomic_fetch_sub(&live_sessions, 1);
   mbedtls_ssl_free(&session->ssl);
   mbedtls_ssl_config_free(&session->config);
   mbedtls_x509_crt_free(&session->roots);
@@ -215,7 +224,13 @@ static int fail(TlsSession *session, int error) {
   if (error == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
     flags = mbedtls_ssl_get_verify_result(&session->ssl);
   }
-  if (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE)) {
+  /* An untrusted chain says nothing about its dates or names, so it is
+     reported first: an attacker's expired certificate is Untrusted. */
+  if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
+    session->failure = TLS_UNTRUSTED;
+    snprintf(session->message, sizeof session->message,
+             "the peer's certificate is not signed by a trusted root");
+  } else if (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE)) {
     session->failure = TLS_EXPIRED;
     snprintf(session->message, sizeof session->message,
              "the peer's certificate is expired or not yet valid");
@@ -226,8 +241,7 @@ static int fail(TlsSession *session, int error) {
   } else if (flags != 0) {
     session->failure = TLS_UNTRUSTED;
     snprintf(session->message, sizeof session->message,
-             "the peer's certificate is not signed by a trusted root (flags 0x%x)",
-             (unsigned)flags);
+             "the peer's certificate is not acceptable (flags 0x%x)", (unsigned)flags);
   } else if (error == MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION) {
     session->failure = TLS_UNACCEPTABLE;
     describe(error, session->message, sizeof session->message,
@@ -277,18 +291,30 @@ int tls_send(TlsSession *session, const unsigned char *bytes, size_t length) {
 
 int tls_receive(TlsSession *session, unsigned char *buffer, size_t size, size_t *length) {
   if (session->failure) return -1;
+  /* mbedTLS answers WANT_READ after a record that carried no data (a session
+     ticket, a warning alert) even when later records are already fed in,
+     and 0 for an empty data record, which is not the end (this transport
+     never reports one). So it reads on while anything is unread, here or in
+     mbedTLS, and needs input only once a call finds nothing. A call that
+     consumes nothing with input waiting is retried a few times, so a stuck
+     state cannot spin. */
+  int idle = 0;
   for (;;) {
+    size_t consumed = session->incoming.start;
     int result = mbedtls_ssl_read(&session->ssl, buffer, size);
     if (result > 0) {
       *length = (size_t)result;
       return TLS_DATA;
     }
-    if (result == 0 || result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return TLS_PEER_CLOSED;
-    if (result == MBEDTLS_ERR_SSL_WANT_READ) return TLS_NEEDS_INPUT;
-    /* A TLS 1.3 server may send tickets after the handshake; they carry no
-       application data, so read on. */
-    if (result == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;
-    return fail(session, result);
+    if (result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return TLS_PEER_CLOSED;
+    if (result != 0 && result != MBEDTLS_ERR_SSL_WANT_READ &&
+        result != MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+      return fail(session, result);
+    }
+    int unread = session->incoming.start < session->incoming.length ||
+                 mbedtls_ssl_check_pending(&session->ssl);
+    idle = session->incoming.start != consumed ? 0 : idle + 1;
+    if (!unread || idle > 4) return TLS_NEEDS_INPUT;
   }
 }
 

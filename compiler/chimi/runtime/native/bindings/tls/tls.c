@@ -2,9 +2,10 @@
    a handle; std/tls.chimi moves its ciphertext through the wrapped
    connection's streams, so no call here waits. A connection's reader and
    writer are used from different tasks, so each call on a session holds the
-   session's lock: one carrier never interleaves two calls anyway, and once
-   carriers run in parallel (parallel-scheduler.md) the lock keeps mbedTLS's
-   state single-writer. */
+   session's lock. Today one carrier never interleaves two calls anyway; the
+   lock covers a session's own state only, and parallel carriers
+   (parallel-scheduler.md) will also need mbedTLS's threading support for
+   the PSA state that sessions share. */
 #define _POSIX_C_SOURCE 200809L
 #include "chimi_binding.h"
 
@@ -32,10 +33,16 @@ static void release_session(void *state) {
 
 static const ChimiBindingType SESSION = {"TlsSession", release_session};
 
-/* The session argument at `index`, locked; NULL when it is closed. */
+/* The session argument at `index`, locked; NULL when it is closed or was
+   handed to another handle. */
 static Locked *acquire(ChimiBindingCall *call, uint32_t index) {
   Locked *locked = chimi_binding_handle(call, index, &SESSION);
-  if (locked) pthread_mutex_lock(&locked->lock);
+  if (!locked) return NULL;
+  pthread_mutex_lock(&locked->lock);
+  if (!locked->session) {
+    pthread_mutex_unlock(&locked->lock);
+    return NULL;
+  }
   return locked;
 }
 
@@ -77,8 +84,8 @@ ChimiBindingResult *chimi_tls_client(ChimiBindingCall *call) {
       !chimi_binding_text(call, 1, &host, &host_length)) {
     return chimi_binding_defect(call, "tls: client takes roots and a host");
   }
-  if (strlen(host) != host_length) {
-    return chimi_binding_failure(call, TLS_INVALID, "the host name holds U+0000");
+  if (host_length == 0 || strlen(host) != host_length) {
+    return chimi_binding_failure(call, TLS_INVALID, "the host name is empty or holds U+0000");
   }
   /* Empty bytes may come with no pointer, which would mean the system's. */
   static const unsigned char none[1] = {0};
@@ -97,8 +104,8 @@ ChimiBindingResult *chimi_tls_client_system(ChimiBindingCall *call) {
   if (!chimi_binding_text(call, 0, &host, &host_length)) {
     return chimi_binding_defect(call, "tls: client_system takes a host");
   }
-  if (strlen(host) != host_length) {
-    return chimi_binding_failure(call, TLS_INVALID, "the host name holds U+0000");
+  if (host_length == 0 || strlen(host) != host_length) {
+    return chimi_binding_failure(call, TLS_INVALID, "the host name is empty or holds U+0000");
   }
   int code = 0;
   char message[256] = "";
@@ -238,8 +245,27 @@ ChimiBindingResult *chimi_tls_close_notify(ChimiBindingCall *call) {
   return unlocked(locked, chimi_binding_success(call, chimi_binding_void(call)));
 }
 
+/* native_handoff(session) -> Result<TlsSession, _>: a new handle owning the
+   session, leaving the argument's handle empty (closed to later calls, and
+   its release frees nothing). std/tls.chimi makes a session inside
+   Resource.scoped, whose release frees it if the handshake fails or is
+   cancelled, and hands it off once the handshake is done. */
+ChimiBindingResult *chimi_tls_handoff(ChimiBindingCall *call) {
+  Locked *locked = acquire(call, 0);
+  if (!locked) return closed(call);
+  TlsSession *session = locked->session;
+  locked->session = NULL;
+  pthread_mutex_unlock(&locked->lock);
+  return made(call, session, TLS_INVALID, "");
+}
+
 /* native_free(session) -> Void: later calls see the session closed. */
 ChimiBindingResult *chimi_tls_free(ChimiBindingCall *call) {
   chimi_binding_close_handle(call, 0, &SESSION);
   return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* native_live_sessions() -> Int: test-only, through Tls.live_sessions_for_tests. */
+ChimiBindingResult *chimi_tls_live_sessions(ChimiBindingCall *call) {
+  return chimi_binding_success(call, chimi_binding_make_integer(call, tls_live_sessions()));
 }
