@@ -373,7 +373,8 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   cancellation the outer body survives (a `Task.timeout` inside it), and the
   body's failure stays the outcome even when rolling the savepoint back fails.
   A savepoint whose commit fails is rolled back, and the failed commit is its
-  outcome.
+  outcome. A transaction whose commit fails is not rolled back here; the
+  pool's reset cleans the connection.
 - The driver writes every transaction statement. `begin`, `commit` and
   `rollback` take a depth: 0 is the transaction, and n is the nth savepoint
   nested inside it. A standard-SQL driver sends `BEGIN`, `COMMIT` and
@@ -381,6 +382,9 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   `ROLLBACK TO SAVEPOINT` then `RELEASE SAVEPOINT` at depth n. SQL Server's
   `SAVE TRANSACTION` fits the same three functions. Rolling back a savepoint
   MUST leave it ended, so the next savepoint at that depth can reuse its name.
+  It MUST also work after a failed `commit` at the same depth, even when that
+  commit already ended the savepoint. A failed rollback is ignored, and the
+  failure that caused it stays the outcome.
 
 ### Drivers and tests
 

@@ -136,9 +136,12 @@ pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver {
 /// so a driver writes its own database's statements for both (`BEGIN` and
 /// `SAVEPOINT chimi_1`, or SQL Server's `SAVE TRANSACTION`). Rolling back a
 /// savepoint undoes its statements and ends it, as `ROLLBACK TO SAVEPOINT`
-/// then `RELEASE SAVEPOINT` do. `reset` returns the connection to a clean state before the
-/// pool reuses it (rolling back anything left open) and fails when the
-/// connection is no longer usable; `close` releases it.
+/// then `RELEASE SAVEPOINT` do. A savepoint whose commit fails is rolled
+/// back next, so that rollback must also work when the failed commit already
+/// ended it. A transaction whose commit fails is left to `reset`. `reset`
+/// returns the connection to a clean state before the pool reuses it
+/// (rolling back anything left open) and fails when the connection is no
+/// longer usable; `close` releases it.
 ///
 /// Cost: O(1).
 pub fn connection(

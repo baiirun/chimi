@@ -606,7 +606,34 @@ test "a savepoint whose commit fails is undone and fails" {
     Call.Committed(0), Call.Reset, Call.Closed,
   ])
 }
+
+test "a savepoint that defects is undone and the defect is the outcome" {
+  let calls = Test.recorder()
+  Test.capture_defect(fn() {
+    Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+      Sql.transaction(db, fn(tx) { Sql.transaction(tx, fn(_) { Debug.crash("boom") }) })
+    })
+  }) |> Test.assert_equal("boom")
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began(0), Call.Began(1), Call.RolledBack(1), Call.Reset, Call.Closed,
+  ])
+}
+
+test "a savepoint's failed commit stays the outcome when its rollback fails too" {
+  let driver = Sql.fake(fn(call) {
+    case call {
+      Call.Committed(1) -> Failure(SqlError.Conflict("release"))
+      Call.RolledBack(1) -> Failure(SqlError.ConnectionLost)
+      _ -> Sql.done()
+    }
+  })
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      failed(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "b", []) }) })
+    })
+  }) |> Test.assert_equal(Some(SqlError.Conflict("release")))
+}
 "#,
     );
-    assert_passed(&run, 9);
+    assert_passed(&run, 11);
 }
