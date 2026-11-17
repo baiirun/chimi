@@ -460,6 +460,9 @@ refuses the peer's versions.
   with the next write or close, not at once, because only the writer side
   writes to the inner connection.
 - A numeric `host` is still sent as SNI, which RFC 6066 does not allow.
+- A TLS 1.3 KeyUpdate from the peer ends the connection with
+  `NetError.Failed`: mbedTLS 4.1 does not handle it. Long-lived connections
+  to a server that rotates its keys will need it.
 - The licence notices in a build's report.
 
 ## Decisions
@@ -507,6 +510,7 @@ refuses the peer's versions.
 | TLS over loopback sockets | `tests/tls.rs` `a_tls_connection_runs_over_loopback_sockets` |
 | TLS: no session outlives a failed or timed-out handshake, or `Net.close` | `tests/tls.rs` `no_session_outlives_its_connection_or_its_handshake` |
 | TLS: an OpenSSL server, TLS 1.3 with session tickets and TLS 1.2, twenty exchanges each | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
+| TLS: empty data records, and up to forty session tickets in one record, are read past | `tests/tls.rs` `the_engine_reads_past_records_without_data` |
 | The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |

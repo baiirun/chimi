@@ -267,6 +267,9 @@ test "a stranger's expired certificate is untrusted first" {
 test "an empty host" {
   let (client, _server) = over_pair(CA, SERVER_CERT, "", "hello")
   Text.starts_with(client, "Err(TlsError.Invalid(") |> Test.assert_equal(True)
+  let (client_end, _server_end) = Net.pair(4)
+  let system = attempt(fn() { Tls.client(client_end, "", Tls.defaults) })
+  Text.starts_with(system, "Err(TlsError.Invalid(") |> Test.assert_equal(True)
 }
 "#,
     );
@@ -554,6 +557,65 @@ test "twenty pages" {{
         let _ = server.wait();
         assert_passed(&result, 1);
     }
+}
+
+// Rejects an engine that ends the stream at two empty data records, or asks
+// for input it already holds after a record of several session tickets: the
+// engine runs, in C, against records a `Tls.server` never sends
+// (`fixtures/tls-engine.c`), linked with the package archive the build
+// script prebuilt.
+#[test]
+fn the_engine_reads_past_records_without_data() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let package = manifest.join("runtime/native/bindings/tls");
+    let archive = std::path::Path::new(env!("OUT_DIR")).join("libchimi_bind_tls.a");
+    assert!(
+        archive.exists(),
+        "the build script did not prebuild the tls package: {}",
+        archive.display()
+    );
+    let executable = std::env::temp_dir().join(format!("chimi-tls-engine-{}", std::process::id()));
+    let mut compile = Command::new("cc");
+    compile.args(["-std=c11", "-O1", "-w"]);
+    for include in [
+        "",
+        "mbedtls/include",
+        "mbedtls/library",
+        "mbedtls/tf-psa-crypto/include",
+        "mbedtls/tf-psa-crypto/drivers/builtin/include",
+        "mbedtls/tf-psa-crypto/drivers/builtin/src",
+        "mbedtls/tf-psa-crypto/core",
+        "mbedtls/tf-psa-crypto/dispatch",
+        "mbedtls/tf-psa-crypto/utilities",
+        "mbedtls/tf-psa-crypto/platform",
+        "mbedtls/tf-psa-crypto/extras",
+    ] {
+        compile.arg("-I").arg(package.join(include));
+    }
+    let built = compile
+        .arg(manifest.join("tests/fixtures/tls-engine.c"))
+        .arg(&archive)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("run cc");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let run = Command::new(&executable)
+        .arg(manifest.join("tests/fixtures/tls"))
+        .output()
+        .expect("run the engine fixture");
+    let _ = std::fs::remove_file(&executable);
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "one empty record: data hello closed\n\
+         two empty records: data hello closed\n\
+         three empty records: data hello closed\n\
+         two tickets in a record: data hello closed\n\
+         eight tickets in a record: data hello closed\n\
+         forty tickets in a record: data hello closed\n",
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
 
 // Rejects a vendored mbedTLS edited in place, or a file added or dropped

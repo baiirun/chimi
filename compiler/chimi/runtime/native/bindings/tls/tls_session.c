@@ -295,12 +295,14 @@ int tls_receive(TlsSession *session, unsigned char *buffer, size_t size, size_t 
      ticket, a warning alert) even when later records are already fed in,
      and 0 for an empty data record, which is not the end (this transport
      never reports one). So it reads on while anything is unread, here or in
-     mbedTLS, and needs input only once a call finds nothing. A call that
-     consumes nothing with input waiting is retried a few times, so a stuck
-     state cannot spin. */
+     mbedTLS, and needs input only once nothing is. A record may hold many
+     messages that take a call each without consuming fed bytes, so a call
+     counts as progress when mbedTLS held unread bytes before it; the bound
+     on calls without either only keeps a stuck state from spinning. */
   int idle = 0;
-  for (;;) {
+  for (long passes = 0;; passes++) {
     size_t consumed = session->incoming.start;
+    int buffered = mbedtls_ssl_check_pending(&session->ssl);
     int result = mbedtls_ssl_read(&session->ssl, buffer, size);
     if (result > 0) {
       *length = (size_t)result;
@@ -313,8 +315,10 @@ int tls_receive(TlsSession *session, unsigned char *buffer, size_t size, size_t 
     }
     int unread = session->incoming.start < session->incoming.length ||
                  mbedtls_ssl_check_pending(&session->ssl);
-    idle = session->incoming.start != consumed ? 0 : idle + 1;
-    if (!unread || idle > 4) return TLS_NEEDS_INPUT;
+    if (!unread) return TLS_NEEDS_INPUT;
+    int progressed = session->incoming.start != consumed || buffered;
+    idle = progressed ? 0 : idle + 1;
+    if (idle > 4 || passes > 100000) return TLS_NEEDS_INPUT;
   }
 }
 
