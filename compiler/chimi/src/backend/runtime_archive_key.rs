@@ -73,8 +73,26 @@ pub fn runtime_archive_key(inputs: &RuntimeArchiveInputs<'_>) -> String {
 /// makes it absolute) and `-D<definition>`, which a
 /// test checks, so no flag resolves against the current directory. A vendored library keeps its upstream layout
 /// and is configured here rather than by editing it.
-pub const BINDING_PACKAGE_FLAGS: &[(&str, &[&str])] =
-    &[("probe", &["-Iinclude", "-DPROBE_PACKAGE_FLAGS=1"])];
+pub const BINDING_PACKAGE_FLAGS: &[(&str, &[&str])] = &[
+    ("probe", &["-Iinclude", "-DPROBE_PACKAGE_FLAGS=1"]),
+    // mbedTLS 4.1 with its default configuration, laid out as upstream ships
+    // it (bindings/tls/mbedtls/PROVENANCE.md).
+    (
+        "tls",
+        &[
+            "-Imbedtls/include",
+            "-Imbedtls/library",
+            "-Imbedtls/tf-psa-crypto/include",
+            "-Imbedtls/tf-psa-crypto/drivers/builtin/include",
+            "-Imbedtls/tf-psa-crypto/drivers/builtin/src",
+            "-Imbedtls/tf-psa-crypto/core",
+            "-Imbedtls/tf-psa-crypto/dispatch",
+            "-Imbedtls/tf-psa-crypto/utilities",
+            "-Imbedtls/tf-psa-crypto/platform",
+            "-Imbedtls/tf-psa-crypto/extras",
+        ],
+    ),
+];
 
 /// The extra flags of `package`, in order; empty for most packages.
 pub fn binding_package_flags(package: &str) -> &'static [&'static str] {
