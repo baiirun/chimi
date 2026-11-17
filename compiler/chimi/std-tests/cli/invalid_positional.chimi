@@ -1,0 +1,17 @@
+import std/cli as Cli
+import std/cli.{CliError, Exit}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
+
+test "a bad value names the argument it was for" {
+  let count = Cli.argument("count", "How many", Cli.int)
+  let counting = Cli.command("counting", "Counts", [Cli.arg(count)])
+  case Result.capture(fn() { Cli.parse(counting, ["many"]) }) {
+    Err(Exit.Usage(error, message)) -> {
+      Test.assert_equal(error, CliError.InvalidValue("<count>", "many", "int"))
+      Test.assert_equal(message, "counting: invalid value \"many\" for <count>: expected int\nusage: counting [options] <count>\nTry 'counting --help' for more information.")
+    }
+    _ -> Test.fail("expected a usage failure")
+  }
+}

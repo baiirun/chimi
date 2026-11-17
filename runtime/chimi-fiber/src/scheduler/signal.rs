@@ -298,7 +298,10 @@ impl Scheduler {
             time: now,
             request_kind: u32::try_from(signal).unwrap_or(0),
         });
-        self.begin_terminal(root, TaskOutcome::Cancelled, false);
+        // Cancelled like any task (scope-owned-resources.md): a `main` inside
+        // `Resource.scoped` runs its releases masked before it ends. The
+        // runner ends the program at once on a second signal.
+        self.cancel_task(root, TaskOutcome::Cancelled);
     }
 
     /// True when a stalled real-clock run should wait for a signal instead

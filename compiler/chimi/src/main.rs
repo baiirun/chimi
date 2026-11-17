@@ -1,6 +1,6 @@
 use chimi::Compiler;
 use chimi::backend::native::{build_application, check_build_target};
-use chimi::execution::{ExecutionConfig, ExecutionOutcome};
+use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
 use chimi::project::{LoadedProject, StandardTree};
 use std::env;
 use std::ffi::OsString;
@@ -1030,7 +1030,33 @@ fn run(input: Input, standard: &StandardTree, arguments: Vec<String>) -> ExitCod
     let config = ExecutionConfig::for_process().with_application_arguments(arguments);
     let report = program.execute_oracle(config);
     print!("{}", report.render_json_lines());
-    outcome_exit_code(&report.outcome)
+    exit_code(&report)
+}
+
+/// The status of `report`: its `std/cli.Exit`, applied after the outcome as
+/// the native runner applies it, or else its outcome's.
+fn exit_code(report: &ExecutionReport) -> ExitCode {
+    match &report.program_exit {
+        Some(ProgramExit::Code(code)) => match u8::try_from(*code) {
+            Ok(code) => ExitCode::from(code),
+            Err(_) => {
+                eprintln!("Chimi runtime: Exit.Code({code}) is outside 0 to 255");
+                ExitCode::from(70)
+            }
+        },
+        Some(ProgramExit::Help(text)) => shown(&mut std::io::stdout(), text, 0),
+        Some(ProgramExit::Usage(message)) => shown(&mut std::io::stderr(), message, 2),
+        None => outcome_exit_code(&report.outcome),
+    }
+}
+
+/// Writes `text` and a newline to `stream` and exits `status`, or 74 when the
+/// write fails, as the native runner does.
+fn shown(stream: &mut dyn std::io::Write, text: &str, status: u8) -> ExitCode {
+    match writeln!(stream, "{text}").and_then(|()| stream.flush()) {
+        Ok(()) => ExitCode::from(status),
+        Err(_) => ExitCode::from(74),
+    }
 }
 
 /// The process status a native runner exits with for the same outcome, per

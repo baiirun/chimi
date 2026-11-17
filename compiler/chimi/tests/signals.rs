@@ -299,3 +299,54 @@ fn the_first_sigint_cancels_a_scheduled_program_while_it_reads_input() {
     assert_eq!(status.signal(), Some(SIGINT), "{status}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+#[test]
+fn the_first_signal_runs_main_s_release_and_a_second_cuts_it_short() {
+    // main has no `shutdown_within`, so its releases have no deadline and
+    // only the second signal ends a slow one (application-lifecycle.md,
+    // "Signals").
+    let scratch = scratch_directory("main-release");
+    let executable = build_native(
+        &scratch,
+        "service",
+        r#"import std/clock as Clock
+import std/clock.{Clock}
+import std/duration as Duration
+import std/io.{Console}
+import std/resource as Resource
+import std/task as Task
+
+fn idle() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(60))
+}
+
+pub fn main() -> Int needs { clock: Clock, console: Console } {
+  Resource.scoped(
+    fn() { Task.start(idle) },
+    fn(held) {
+      console.write_line("releasing")
+      Clock.sleep(Duration.seconds(60))
+      console.write_line("released")
+    },
+    fn(held) {
+      console.write_line("ready")
+      Clock.sleep(Duration.seconds(60))
+      3
+    },
+  )
+}
+"#,
+    );
+    let mut running = Running::start(&executable);
+    assert_eq!(running.next_line(), "ready");
+    running.signal(SIGTERM);
+    assert_eq!(running.next_line(), "releasing");
+    running.signal(SIGINT);
+    let (rest, status) = running.finish();
+    assert!(rest.is_empty(), "the release was cut short: {rest:?}");
+    assert!(
+        matches!(status.signal(), Some(SIGTERM | SIGINT)),
+        "ended by a signal: {status}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}

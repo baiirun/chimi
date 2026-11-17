@@ -1,0 +1,12 @@
+import std/cli as Cli
+import std/test as Test
+
+const name = Cli.argument("name", "Who", Cli.text)
+
+test "an option and a positional may share a name" {
+  let file_option = Cli.option("file", "f", "A file option", Cli.text)
+  let file_argument = Cli.argument("file", "A file argument", Cli.text)
+  let both = Cli.command("both", "Both", [Cli.arg(file_option), Cli.arg(file_argument)])
+  let parsed = Cli.parse(both, ["-f", "a", "b"])
+  Test.assert_equal((Cli.get(parsed, file_option), Cli.get(parsed, file_argument)), (Some("a"), "b"))
+}

@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include <sys/wait.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
@@ -448,7 +450,10 @@ enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
 static uint64_t next_heap_owner = 2;
 static AllocationArea static_area = {.role = AREA_STATIC};
-static uint64_t next_mark_epoch = 1;
+/* Epochs are unique across the process, not per carrier or per heap, so an
+   allocation that moves between heaps or carriers can never carry a stale epoch
+   that a later pass reuses (parallel-scheduler.md, "Runtime state by owner"). */
+static _Atomic uint64_t next_mark_epoch = 1;
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
    and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
@@ -553,10 +558,49 @@ typedef struct {
   /* fs_read's buffer: read(2) fills it and the bytes are copied out before any
      park. NULL until the first read. */
   char *fs_read_chunk;
+  /* Handle keys whose count reached zero on this carrier, waiting for the next
+     scheduler request of a fiber running here (flush_channel_releases). */
+  uint64_t *released_handles;
+  size_t released_handle_count;
+  size_t released_handle_capacity;
 } Carrier;
 
-static Carrier carrier_state = {.fiber = {.heap = &main_heap}};
-static Carrier *const carrier = &carrier_state;
+#ifdef CHIMI_CARRIER_SIMULATION
+/* A test build (parallel-scheduler.md, "Runtime state by owner"): every fiber
+   resumes on the other of two carriers from the one it parked on, each with its
+   own scratch, caches and release queue, the way a fiber migrates once N
+   carriers run. It finds a pointer into a carrier kept across a park and a field
+   filed as carrier state that must follow the fiber. The memory report's
+   counters are handed over at each switch, since they are process totals that a
+   later step makes shared. */
+#define CARRIER_COUNT 2
+static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}},
+                                                {.fiber = {.heap = &main_heap}}};
+static Carrier *carrier = &carrier_states[0];
+
+/* Continues on the carrier other than `parked`, carrying the counters over from
+   the one that ran last. */
+static void carrier_migrate(Carrier *parked) {
+  Carrier *from = carrier;
+  Carrier *to = &carrier_states[parked == &carrier_states[0]];
+  if (to != from) {
+    to->heap_totals = from->heap_totals;
+    to->pending_footprint_bytes = from->pending_footprint_bytes;
+    to->unscoped_allocated_bytes = from->unscoped_allocated_bytes;
+    to->capture_transfer_probes = from->capture_transfer_probes;
+    to->process_heap_peak_value_bytes = from->process_heap_peak_value_bytes;
+    to->copied_values = from->copied_values;
+    to->copied_bytes = from->copied_bytes;
+  }
+  carrier = to;
+}
+#else
+#define CARRIER_COUNT 1
+static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}}};
+static Carrier *const carrier = &carrier_states[0];
+
+static void carrier_migrate(Carrier *parked) { (void)parked; }
+#endif
 
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
@@ -795,10 +839,17 @@ static void allocation_kind(void *value, AllocationKind kind) {
    scheduler holds it. channel_capability_value creates endpoint values,
    copy_forward is the only thing that copies them, and release_allocation the only
    thing that frees them; those three keep the counts. At zero no value can name
-   the channel again, so its id waits in `released_channels` for the next
+   the channel again, so its id waits in the carrier's `released_handles` for the next
    scheduler request of any task (flush_channel_releases). A count can reach zero
    inside a collection or a scheduler release hook, where no request may be issued.
    The table is an open-addressing map keyed by channel id; ids are never 0.
+
+   One table serves every carrier (parallel-scheduler.md, "Handle counts"). A
+   handle copied on one carrier can be freed on another, so only the total is
+   meaningful, and a retain must be counted before the copy can reach another
+   carrier: retain and drop take the table's lock, and a copy is counted when it
+   is made, before any request can move it. A key that reaches zero is queued on
+   the carrier that dropped it, outside the lock.
 
    Task handles are counted in the same table, under their task id with
    TASK_HANDLE_KEY set (channel and task ids stay far below that bit): every live
@@ -810,12 +861,19 @@ static void allocation_kind(void *value, AllocationKind kind) {
    intrinsic, so the value it came from is still live. */
 #define TASK_HANDLE_KEY (UINT64_C(1) << 63)
 typedef struct { uint64_t channel; size_t endpoints; } ChannelEndpoints;
-static ChannelEndpoints *channel_endpoints;
-static size_t channel_endpoint_capacity;
-static size_t channel_endpoint_count;
-static uint64_t *released_channels;
-static size_t released_channel_count;
-static size_t released_channel_capacity;
+typedef struct {
+  pthread_mutex_t lock;
+  ChannelEndpoints *slots;
+  size_t capacity;
+  /* Written under `lock`; read without it only as the "any handle at all"
+     shortcut of the freers, whose own handle's retain happened before. */
+  _Atomic size_t count;
+} HandleTable;
+static HandleTable handle_table = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+static bool handles_live(void) {
+  return atomic_load_explicit(&handle_table.count, memory_order_relaxed) != 0;
+}
 
 static bool is_channel_endpoint(const ChimiValue *value) {
   return value->kind == VALUE_CHANNEL_SENDER || value->kind == VALUE_CHANNEL_RECEIVER ||
@@ -833,75 +891,113 @@ static size_t channel_slot(uint64_t channel, size_t capacity) {
   return (size_t)((channel * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & (capacity - 1);
 }
 
-static void channel_endpoints_grow(void) {
-  size_t capacity = channel_endpoint_capacity ? channel_endpoint_capacity * 2 : 64;
+/* Requires: handle_table.lock held. Nothing that runs under the lock retains,
+   drops, parks or runs a hook; exhausted_memory exits with it held, which is
+   safe while no atexit handler touches the table. */
+static void handle_table_grow(void) {
+  size_t capacity = handle_table.capacity ? handle_table.capacity * 2 : 64;
   ChannelEndpoints *table = calloc(capacity, sizeof(*table));
   if (!table) exhausted_memory();
-  for (size_t index = 0; index < channel_endpoint_capacity; ++index) {
-    if (!channel_endpoints[index].channel) continue;
-    size_t slot = channel_slot(channel_endpoints[index].channel, capacity);
+  for (size_t index = 0; index < handle_table.capacity; ++index) {
+    if (!handle_table.slots[index].channel) continue;
+    size_t slot = channel_slot(handle_table.slots[index].channel, capacity);
     while (table[slot].channel) slot = (slot + 1) & (capacity - 1);
-    table[slot] = channel_endpoints[index];
+    table[slot] = handle_table.slots[index];
   }
-  free(channel_endpoints);
-  channel_endpoints = table;
-  channel_endpoint_capacity = capacity;
+  free(handle_table.slots);
+  handle_table.slots = table;
+  handle_table.capacity = capacity;
+}
+
+static void handle_table_set_count(size_t count) {
+  atomic_store_explicit(&handle_table.count, count, memory_order_relaxed);
 }
 
 static void channel_endpoint_retain(uint64_t channel) {
-  if (2 * (channel_endpoint_count + 1) > channel_endpoint_capacity) channel_endpoints_grow();
-  size_t mask = channel_endpoint_capacity - 1;
-  size_t slot = channel_slot(channel, channel_endpoint_capacity);
-  while (channel_endpoints[slot].channel && channel_endpoints[slot].channel != channel)
-    slot = (slot + 1) & mask;
-  if (!channel_endpoints[slot].channel) {
-    channel_endpoints[slot].channel = channel;
-    ++channel_endpoint_count;
+  pthread_mutex_lock(&handle_table.lock);
+  size_t count = atomic_load_explicit(&handle_table.count, memory_order_relaxed);
+  if (2 * (count + 1) > handle_table.capacity) handle_table_grow();
+  ChannelEndpoints *slots = handle_table.slots;
+  size_t mask = handle_table.capacity - 1;
+  size_t slot = channel_slot(channel, handle_table.capacity);
+  while (slots[slot].channel && slots[slot].channel != channel) slot = (slot + 1) & mask;
+  if (!slots[slot].channel) {
+    slots[slot].channel = channel;
+    handle_table_set_count(count + 1);
   }
-  ++channel_endpoints[slot].endpoints;
+  ++slots[slot].endpoints;
+  pthread_mutex_unlock(&handle_table.lock);
 }
 
-static void channel_endpoint_drop(uint64_t channel) {
-  size_t mask = channel_endpoint_capacity - 1;
-  size_t slot = channel_slot(channel, channel_endpoint_capacity);
-  while (channel_endpoints[slot].channel != channel) {
+/* Removes one reference to `channel`. Ensures: true exactly when this removed the
+   last one, so the caller owns the key's release. Requires: handle_table.lock.
+   No other thread can queue the same key meanwhile: once the count is zero, no
+   value names the key, so none can retain or drop it. */
+static bool handle_table_drop(uint64_t channel) {
+  ChannelEndpoints *slots = handle_table.slots;
+  if (!slots) return false;
+  size_t mask = handle_table.capacity - 1;
+  size_t slot = channel_slot(channel, handle_table.capacity);
+  while (slots[slot].channel != channel) {
     /* An endpoint of an earlier execution's scheduler (benchmark repeats). */
-    if (!channel_endpoints[slot].channel) return;
+    if (!slots[slot].channel) return false;
     slot = (slot + 1) & mask;
   }
-  if (--channel_endpoints[slot].endpoints != 0) return;
+  if (--slots[slot].endpoints != 0) return false;
   /* Backward-shift deletion keeps every probe sequence unbroken. */
   size_t hole = slot;
-  for (size_t next = (hole + 1) & mask; channel_endpoints[next].channel;
-       next = (next + 1) & mask) {
-    size_t home = channel_slot(channel_endpoints[next].channel, channel_endpoint_capacity);
+  for (size_t next = (hole + 1) & mask; slots[next].channel; next = (next + 1) & mask) {
+    size_t home = channel_slot(slots[next].channel, handle_table.capacity);
     if (((next - home) & mask) >= ((next - hole) & mask)) {
-      channel_endpoints[hole] = channel_endpoints[next];
+      slots[hole] = slots[next];
       hole = next;
     }
   }
-  channel_endpoints[hole] = (ChannelEndpoints){0};
-  --channel_endpoint_count;
-  if (released_channel_count == released_channel_capacity) {
-    size_t capacity = released_channel_capacity ? released_channel_capacity * 2 : 16;
-    uint64_t *released = realloc(released_channels, capacity * sizeof(*released));
-    if (!released) exhausted_memory();
-    released_channels = released;
-    released_channel_capacity = capacity;
-  }
-  released_channels[released_channel_count++] = channel;
+  slots[hole] = (ChannelEndpoints){0};
+  handle_table_set_count(atomic_load_explicit(&handle_table.count, memory_order_relaxed) - 1);
+  return true;
 }
 
-/* Each execution starts a new scheduler, whose channel ids start over. */
+/* Queues `key` for release on the carrier running now. */
+static void release_queue_push(uint64_t key) {
+  Carrier *here = carrier;
+  if (here->released_handle_count == here->released_handle_capacity) {
+    size_t capacity = here->released_handle_capacity ? here->released_handle_capacity * 2 : 16;
+    uint64_t *released = realloc(here->released_handles, capacity * sizeof(*released));
+    if (!released) exhausted_memory();
+    here->released_handles = released;
+    here->released_handle_capacity = capacity;
+  }
+  here->released_handles[here->released_handle_count++] = key;
+}
+
+/* handle_table_drop under the table's lock. */
+static bool handle_table_release(uint64_t channel) {
+  pthread_mutex_lock(&handle_table.lock);
+  bool last = handle_table_drop(channel);
+  pthread_mutex_unlock(&handle_table.lock);
+  return last;
+}
+
+static void channel_endpoint_drop(uint64_t channel) {
+  if (handle_table_release(channel)) release_queue_push(channel);
+}
+
+/* Each execution starts a new scheduler, whose channel ids start over. Runs
+   before the scheduler starts, so no fiber holds a handle on any carrier. */
 static void channel_endpoints_reset(void) {
-  if (channel_endpoints) memset(channel_endpoints, 0, channel_endpoint_capacity * sizeof(*channel_endpoints));
-  channel_endpoint_count = 0;
-  released_channel_count = 0;
+  pthread_mutex_lock(&handle_table.lock);
+  if (handle_table.slots)
+    memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
+  handle_table_set_count(0);
+  pthread_mutex_unlock(&handle_table.lock);
+  for (size_t index = 0; index < CARRIER_COUNT; ++index)
+    carrier_states[index].released_handle_count = 0;
 }
 
 /* Frees one allocation that its area has already unlinked. */
 static void release_allocation(AllocationHeader *header) {
-  if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
+  if (handles_live() && header->kind == ALLOCATION_VALUE) {
     uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
     if (key) channel_endpoint_drop(key);
   }
@@ -1658,7 +1754,7 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
       if (header->next) continue;
       dead_bytes += header->bytes;
       ++dead_count;
-      if (channel_endpoint_count && header->kind == ALLOCATION_VALUE) {
+      if (handles_live() && header->kind == ALLOCATION_VALUE) {
         uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
         if (key) channel_endpoint_drop(key);
       }
@@ -1747,8 +1843,8 @@ static void sweep_survivors(AllocationScope *scope) {
    value in another heap or in a fragment. */
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  carrier->collecting_epoch = next_mark_epoch++;
-  if (next_mark_epoch == 0) {
+  carrier->collecting_epoch = atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);
+  if (carrier->collecting_epoch == UINT64_MAX) {
     fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
   }
   flush_young_counts(scope);
@@ -2284,7 +2380,9 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
 }
 /* Void, True and False are each one shared value in the static area, because values
    never change after construction and conditions and effects produce them on almost
-   every pass. Static values are never collected, copied or freed. */
+   every pass. Static values are never collected, copied or freed. decode_constants
+   creates all three at startup, before any carrier runs, so the static area is never
+   appended to while fibers run. */
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   if (!shared_values[index]) {
@@ -2761,18 +2859,40 @@ static ChimiValue *publisher_bundle_value(uint64_t channel, uint64_t owner, uint
   return value;
 }
 
+/* Parks the running fiber with `request`. The fiber may resume on another
+   carrier, so nothing read through `carrier` before this call is used after it. */
+static ChimiFiberCommand carrier_request(void *request) {
+  Carrier *parked = carrier;
+  ChimiFiberCommand command = chimi_fiber_request(request, NULL);
+  carrier_migrate(parked);
+  return command;
+}
+
+/* A carrier whose release queue holds a key, the running one first. With more
+   than one carrier this stands in for each carrier's loop draining its own
+   queue, which step 3 adds: without it a key queued where no fiber requests
+   again would wait for ever. */
+static Carrier *carrier_with_releases(void) {
+  if (carrier->released_handle_count) return carrier;
+  for (size_t index = 0; index < CARRIER_COUNT; ++index)
+    if (carrier_states[index].released_handle_count) return &carrier_states[index];
+  return NULL;
+}
+
 /* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
    value was freed, and CHIMI_REQUEST_TASK_RELEASE for each task whose last handle
    was. The scheduler serves a request as soon as the task parks, so a release is
    done even when the task resumes with CHIMI_FIBER_CANCEL. */
 static ChimiFiberCommand flush_channel_releases(void) {
-  while (released_channel_count) {
-    uint64_t key = released_channels[--released_channel_count];
+  /* The queue is found again on every pass: the request below parks, and the
+     fiber may resume on another carrier. */
+  for (Carrier *queue; (queue = carrier_with_releases());) {
+    uint64_t key = queue->released_handles[--queue->released_handle_count];
     ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHANNEL_RELEASE, .channel = key};
     if (key & TASK_HANDLE_KEY)
       request = (ChimiSchedulerRequest){.kind = CHIMI_REQUEST_TASK_RELEASE,
                                         .task = key & ~TASK_HANDLE_KEY};
-    if (chimi_fiber_request(&request, NULL) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
+    if (carrier_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
   }
   return CHIMI_FIBER_RESUME;
 }
@@ -2787,7 +2907,7 @@ static ChimiFiberCommand flush_channel_releases(void) {
 static ChimiFiberCommand scheduler_request(void *request) {
   FiberContext fiber = carrier->fiber;
   ChimiFiberCommand command = flush_channel_releases();
-  if (command != CHIMI_FIBER_CANCEL) command = chimi_fiber_request(request, NULL);
+  if (command != CHIMI_FIBER_CANCEL) command = carrier_request(request);
   carrier->fiber = fiber;
   return command;
 }
@@ -6228,6 +6348,239 @@ static uint64_t random_next(void) {
   return result;
 }
 
+/* Console output (CHI-266). Under the scheduler a line written to a pipe, a
+   terminal or a socket never stops the other tasks: the writer waits for the
+   descriptor through CHIMI_REQUEST_IO_WAIT, as a read of "-" does. The
+   descriptor stays blocking, because its open file description is shared with
+   the parent shell and other processes; after poll reports it writable, one
+   write(2) of at most PIPE_BUF bytes does not block on a pipe or a socket. A
+   terminal may still hold such a write briefly.
+
+   Lines from different tasks never interleave: each line goes whole onto its
+   stream's queue before its writer waits (standard error shares standard
+   output's queue when both name the same open file), and whichever writer the reactor
+   wakes writes the front of the queue, its own bytes or an earlier line's.
+   A writer returns once the queue has passed the end of its line. A line once
+   queued is written whole, even when its writer is cancelled while it waits:
+   later writers or the end of the program write it. A body ending under a
+   terminal cancel queues its line and returns without waiting. A failed write
+   drops the queue and fails every line not yet fully written.
+
+   A socket is written with send(MSG_DONTWAIT), which never blocks and leaves
+   the shared descriptor alone. The queue holds at most CONSOLE_QUEUE_LIMIT
+   bytes: a writer waits before it queues a line that would pass the limit, so
+   writers cancelled while they wait (a write_line under Task.timeout against
+   a stalled reader) cannot grow it without bound. A line longer than the limit
+   is queued when the queue is empty.
+
+   A regular file, a program without the scheduler, and a program under the
+   virtual clock write directly, as before: a regular file is always writable,
+   without the scheduler there is no other task to keep running, and under the
+   virtual clock the order tasks run in must not depend on how fast the reader
+   drains the pipe. */
+typedef struct ConsoleLine ConsoleLine;
+struct ConsoleLine {
+  uint64_t end; /* Queue offset just past the line. */
+  int error;    /* Nonzero once a failed write dropped the line. */
+  ConsoleLine *next;
+  ConsoleLine *previous;
+};
+
+/* The bytes waiting for one open file. */
+typedef struct {
+  unsigned char *bytes;
+  size_t capacity;
+  size_t start;
+  size_t end;
+  /* Queue offset of bytes[start]: every byte before it is written or dropped. */
+  uint64_t resolved;
+  /* The writers waiting for their lines, in queue order. Each record is on
+     the heap, not its writer's stack: a fiber that overflows its stack while
+     it waits ends without returning, and its record must not dangle. The
+     writer unlinks and frees it before returning. */
+  ConsoleLine *first;
+  ConsoleLine *last;
+} ConsoleQueue;
+
+typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
+
+typedef struct {
+  int fd;
+  const char *name;
+  ConsoleMode mode;
+  bool socket;
+  FILE *file;
+  /* Its own queue, or standard output's when both descriptors name the same
+     open file (`2>&1`, one terminal), so their lines never interleave. */
+  ConsoleQueue *queue;
+} ConsoleStream;
+
+static ConsoleQueue console_queues[2];
+static ConsoleStream console_streams[2] = {
+  {.fd = STDOUT_FILENO, .name = "stdout"},
+  {.fd = STDERR_FILENO, .name = "stderr"},
+};
+
+enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
+
+static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
+  if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
+  stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
+  stream->queue = &console_queues[stream->fd == STDOUT_FILENO ? 0 : 1];
+  struct stat status;
+  bool known = fstat(stream->fd, &status) == 0;
+  stream->socket = known && S_ISSOCK(status.st_mode);
+  stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !S_ISREG(status.st_mode)
+    ? CONSOLE_QUEUED : CONSOLE_DIRECT;
+  if (stream->mode == CONSOLE_QUEUED && stream->fd == STDERR_FILENO) {
+    ConsoleStream *output = &console_streams[0];
+    struct stat other;
+    if (console_mode(runtime, output) == CONSOLE_QUEUED && fstat(output->fd, &other) == 0 &&
+        other.st_dev == status.st_dev && other.st_ino == status.st_ino)
+      stream->queue = output->queue;
+  }
+  return stream->mode;
+}
+
+static void console_enqueue(ConsoleQueue *queue, const void *bytes, size_t length) {
+  if (queue->end + length > queue->capacity) {
+    size_t queued = queue->end - queue->start;
+    memmove(queue->bytes, queue->bytes + queue->start, queued);
+    queue->start = 0;
+    queue->end = queued;
+    if (queued + length > queue->capacity) {
+      size_t capacity = queue->capacity ? queue->capacity : 4096;
+      while (capacity < queued + length) {
+        if (capacity > SIZE_MAX / 2) exhausted_memory();
+        capacity *= 2;
+      }
+      unsigned char *grown = realloc(queue->bytes, capacity);
+      if (!grown) exhausted_memory();
+      queue->bytes = grown;
+      queue->capacity = capacity;
+    }
+  }
+  memcpy(queue->bytes + queue->end, bytes, length);
+  queue->end += length;
+}
+
+/* Drops every queued byte and fails each line not yet fully written with
+   `error`. A line already written stays written. */
+static void console_fail(ConsoleQueue *queue, int error) {
+  for (ConsoleLine *line = queue->first; line; line = line->next)
+    if (line->end > queue->resolved) line->error = error;
+  queue->resolved += queue->end - queue->start;
+  queue->start = queue->end = 0;
+}
+
+/* One write(2) from the front of the queue, at most `limit` bytes. False with
+   errno set when it failed; an interruption or a descriptor a parent left
+   non-blocking reports nothing written and true. */
+static bool console_write_front(const ConsoleStream *stream, size_t limit) {
+  ConsoleQueue *queue = stream->queue;
+  size_t length = queue->end - queue->start;
+  if (length > limit) length = limit;
+  ssize_t count = stream->socket
+    ? send(stream->fd, queue->bytes + queue->start, length, MSG_DONTWAIT)
+    : write(stream->fd, queue->bytes + queue->start, length);
+  if (count < 0) return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
+  queue->start += (size_t)count;
+  queue->resolved += (uint64_t)count;
+  return true;
+}
+
+/* Writes the whole queue, blocking this thread. Only the end of the program
+   uses it, when no task is left to keep running. */
+static void console_drain_blocking(const ConsoleStream *stream) {
+  ConsoleQueue *queue = stream->queue;
+  while (queue->start < queue->end) {
+    struct pollfd poll_fd = {.fd = stream->fd, .events = POLLOUT};
+    if (poll(&poll_fd, 1, -1) < 0 && errno != EINTR) {
+      console_fail(queue, errno);
+      return;
+    }
+    if (!console_write_front(stream, SIZE_MAX)) {
+      console_fail(queue, errno);
+      return;
+    }
+  }
+}
+
+static void console_drain_all(void) {
+  for (size_t index = 0; index < 2; ++index)
+    if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
+}
+
+static void console_unlink(ConsoleQueue *queue, ConsoleLine *line) {
+  if (line->previous) line->previous->next = line->next;
+  else queue->first = line->next;
+  if (line->next) line->next->previous = line->previous;
+  else queue->last = line->previous;
+}
+
+/* Waits until `stream` is writable and writes the front of its queue.
+   CONSOLE_WAITED after a write or a wake that only means "ask again",
+   CONSOLE_CANCELLED when the writer was cancelled. When the reactor cannot
+   wait on the descriptor (it is closed, or poll failed) the write fails, as a
+   read of "-" does: writing anyway could block the scheduler thread. */
+enum { CONSOLE_WAITED, CONSOLE_CANCELLED };
+
+static int console_wait_and_write(const ConsoleStream *stream) {
+  ChimiSchedulerRequest request = {
+    .kind = CHIMI_REQUEST_IO_WAIT, .value = stream->fd, .token = CHIMI_IO_WRITABLE};
+  if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CONSOLE_CANCELLED;
+  if (request.status == CHIMI_RESPONSE_PENDING) return CONSOLE_WAITED;
+  ConsoleQueue *queue = stream->queue;
+  if (request.status == CHIMI_RESPONSE_ERROR) {
+    console_fail(queue, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
+    return CONSOLE_WAITED;
+  }
+  /* Another writer may have emptied the queue while this one waited. */
+  if (queue->start < queue->end && !console_write_front(stream, PIPE_BUF)) console_fail(queue, errno);
+  return CONSOLE_WAITED;
+}
+
+/* Writes `text` and a newline. 0 when written (or, for a body ending under a
+   terminal cancel, queued), -1 when cancelled, otherwise the errno of the
+   failed write. */
+static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream,
+                              const char *text, size_t length) {
+  if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
+    errno = 0;
+    if (fwrite(text, 1, length, stream->file) != length || fputc('\n', stream->file) == EOF ||
+        fflush(stream->file) != 0)
+      return errno ? errno : EIO;
+    return 0;
+  }
+  ConsoleQueue *queue = stream->queue;
+  /* A body ending under a terminal cancel must not park (CHI-265), and must
+     not block the other tasks either: its line is queued for later writers or
+     the end of the program, past the limit if need be. */
+  bool terminal = chimi_fiber_cancel_is_terminal();
+  /* Nothing is queued yet, so a cancellation here loses nothing. */
+  while (!terminal && queue->start < queue->end &&
+         queue->end - queue->start + length + 1 > CONSOLE_QUEUE_LIMIT)
+    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) return -1;
+  console_enqueue(queue, text, length);
+  console_enqueue(queue, "\n", 1);
+  if (terminal) return 0;
+  ConsoleLine *line = malloc(sizeof(*line));
+  if (!line) exhausted_memory();
+  *line = (ConsoleLine){.end = queue->resolved + (queue->end - queue->start), .previous = queue->last};
+  if (queue->last) queue->last->next = line;
+  else queue->first = line;
+  queue->last = line;
+  int outcome = 0;
+  for (;;) {
+    if (line->error) { outcome = line->error; break; }
+    if (queue->resolved >= line->end) break;
+    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
+  }
+  console_unlink(queue, line);
+  free(line);
+  return outcome;
+}
+
 static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
                                  ChimiValue **arguments, uint32_t argument_count,
                                  uint64_t span, uint32_t call_node,
@@ -6241,12 +6594,11 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
     return defect("verified host function has invalid runtime arguments", call_node);
   if (runtime->cancel) return cancelled();
-  FILE *output = function == HOST_WRITE_LINE ? stdout : stderr;
-  size_t length = arguments[0]->as.text.length;
-  if (fwrite(arguments[0]->as.text.bytes, 1, length, output) != length || fputc('\n', output) == EOF ||
-      fflush(output) != 0) {
-    const char *stream = function == HOST_WRITE_LINE ? "stdout" : "stderr";
-    ChimiValue *fields[] = {text_value(stream), text_value(strerror(errno))};
+  ConsoleStream *stream = &console_streams[function == HOST_WRITE_LINE ? 0 : 1];
+  int written = console_write_line(runtime, stream, arguments[0]->as.text.bytes, arguments[0]->as.text.length);
+  if (written < 0) return cancelled();
+  if (written > 0) {
+    ChimiValue *fields[] = {text_value(stream->name), text_value(strerror(written))};
     return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
   }
   return runtime->cancel ? cancelled() : success(void_value());
@@ -7857,6 +8209,10 @@ static ProcessDefect *process_defects;
 static size_t process_defect_count;
 
 static void remember_process_defect(const char *message) {
+  /* A body resumed with a terminal cancel already has its end decided by the
+     scheduler, which reports no defect message for it, and a request now would
+     park it and abandon its fiber and heap (CHI-265). */
+  if (chimi_fiber_cancel_is_terminal()) return;
   ChimiProcessRequest self = {.kind = CHIMI_REQUEST_PROCESS_SELF};
   if (scheduler_request(&self) == CHIMI_FIBER_CANCEL || self.status != CHIMI_RESPONSE_OK) return;
   ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
@@ -9212,8 +9568,12 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
     if (interrupted) {
       /* A child defect reaches here only when this task absorbs it (a process
          body that is shutting down); the siblings stop now, not when the body
-         ends. */
-      cancel_live_children(&children);
+         ends. After a terminal cancel (a forced body, Task.cancel, a parent's
+         end) the scheduler ends the children itself, so no request is issued: a
+         forced body that parked now would have its fiber and heap abandoned
+         (CHI-265). */
+      if (!(interrupted->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()))
+        cancel_live_children(&children);
       combinator_children_free(&children);
       return interrupted;
     }
@@ -10559,6 +10919,7 @@ static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
 }
 
 static void decode_constants(void) {
+  for (uint32_t index = 0; index < 3; ++index) (void)shared_value(index);
   AllocationArea *previous = carrier->fiber.target;
   carrier->fiber.target = &static_area;
   constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
@@ -11599,6 +11960,36 @@ static volatile int32_t received_signal = 0;
 static int signal_pipe[2] = {-1, -1};
 static ChimiRuntime *signal_runtime = NULL;
 
+/* A `std/cli.Exit` that `main` returned or failed with (CHI-252), applied
+   after every release, the drain and the outcome record: `Code(n)` exits n,
+   `Help(text)` writes text to standard output and exits 0, `Usage(_,
+   message)` writes message to standard error and exits 2. A code outside 0
+   to 255 is a defect, 70. False for any other outcome. */
+static bool program_exit(const ChimiControl *control, int *status) {
+  if (control->kind != CONTROL_SUCCESS && control->kind != CONTROL_FAILURE) return false;
+  const ChimiValue *value = control->value;
+  if (value == NULL || value->kind != VALUE_CONSTRUCTED) return false;
+  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[value->as.constructed.constructor].constructor];
+  if (!shape->program_exit) return false;
+  const ChimiValue *field = value->as.constructed.fields[value->as.constructed.length - 1].value;
+  const char *variant = CHIMI_STRINGS[shape->variant_name];
+  if (strcmp(variant, "Code") == 0) {
+    if (field->as.integer < 0 || field->as.integer > 255) {
+      fprintf(stderr, "Chimi runtime: Exit.Code(%" PRId64 ") is outside 0 to 255\n", field->as.integer);
+      *status = 70;
+    } else {
+      *status = (int)field->as.integer;
+    }
+    return true;
+  }
+  bool help = strcmp(variant, "Help") == 0;
+  FILE *stream = help ? stdout : stderr;
+  bool written = fwrite(field->as.text.bytes, 1, field->as.text.length, stream) == field->as.text.length &&
+                 fputc('\n', stream) != EOF && fflush(stream) == 0;
+  *status = written ? (help ? 0 : 2) : 74;
+  return true;
+}
+
 static void end_by_signal(int number) {
   /* Dying by the signal tells a parent (a shell, systemd, Kubernetes) that the
      program stopped because it was asked to. As process 1 in a container a
@@ -11898,6 +12289,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 }
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
+  /* A fatal runtime error exits from wherever it is; queued console lines still
+     go out. A second stop signal (end_by_signal) skips this and drops them. */
+  atexit(console_drain_all);
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);
   char generated_execution_id[96];
@@ -12093,6 +12487,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       ChimiControl *control = runtime.cancel
         ? cancelled()
         : execute_program_entry(&runtime, entry, environment);
+      console_drain_all();
       release_binding_handles();
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
@@ -12119,6 +12514,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   ChimiControl *control = runtime.cancel
     ? cancelled()
     : execute_program_entry(&runtime, entry, environment);
+  /* Lines whose writers were cancelled while they waited (CHI-266). */
+  console_drain_all();
   release_binding_handles();
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
@@ -12127,6 +12524,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;
+  int exit_status;
+  if (program_exit(control, &exit_status)) return exit_status;
   switch (control->kind) {
     case CONTROL_SUCCESS: return 0;
     case CONTROL_FAILURE: return 1;

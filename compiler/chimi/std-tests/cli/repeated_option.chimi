@@ -1,0 +1,14 @@
+import std/cli as Cli
+import std/test as Test
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const quiet = Cli.flag("quiet", "q", "Say less")
+const max = Cli.option("max", "m", "Stop after N", Cli.int)
+const output = Cli.option("output", "", "Where to write", Cli.path)
+const name = Cli.argument("name", "Who", Cli.text)
+const files = Cli.rest("file", "Files to read", Cli.path)
+const tool = Cli.command("tool", "A tool", [Cli.arg(verbose), Cli.arg(quiet), Cli.arg(max), Cli.arg(output), Cli.arg(name), Cli.arg(files)])
+
+test "the last of a repeated option wins" {
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["--max", "3", "-m", "5", "x"]), max), Some(5))
+}

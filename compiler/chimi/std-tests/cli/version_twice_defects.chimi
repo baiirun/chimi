@@ -1,0 +1,10 @@
+import std/cli as Cli
+import std/test as Test
+
+test "a command that declares --version cannot take a version" {
+  let own = Cli.flag("version", "", "Mine")
+  let message = Test.capture_defect(fn() {
+    Cli.version(Cli.command("t", "", [Cli.arg(own)]), "1")
+  })
+  Test.assert_equal(message, "Cli.version: t already declares --version")
+}

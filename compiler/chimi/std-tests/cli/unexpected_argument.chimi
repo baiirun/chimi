@@ -1,0 +1,18 @@
+import std/cli as Cli
+import std/cli.{CliError, Exit}
+import std/result as Result
+import std/result.{Err}
+import std/test as Test
+
+const name = Cli.argument("name", "Who", Cli.text)
+
+test "a command with no rest refuses an extra argument" {
+  let one = Cli.command("one", "One argument", [Cli.arg(name)])
+  case Result.capture(fn() { Cli.parse(one, ["x", "y"]) }) {
+    Err(Exit.Usage(error, message)) -> {
+      Test.assert_equal(error, CliError.UnexpectedArgument("y"))
+      Test.assert_equal(message, "one: unexpected argument \"y\"\nusage: one [options] <name>\nTry 'one --help' for more information.")
+    }
+    _ -> Test.fail("expected a usage failure")
+  }
+}

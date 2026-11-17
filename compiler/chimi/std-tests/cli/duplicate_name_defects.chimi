@@ -1,0 +1,22 @@
+import std/cli as Cli
+import std/test as Test
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const name = Cli.argument("name", "Who", Cli.text)
+
+test "a command that declares a name twice, or help, defects" {
+  let twice = Test.capture_defect(fn() {
+    Cli.command("t", "", [Cli.arg(verbose), Cli.arg(verbose)])
+  })
+  Test.assert_equal(twice, "Cli.command: t declares a name twice, or declares help")
+  let short = Cli.flag("value", "v", "Clashes with -v")
+  let clash = Test.capture_defect(fn() {
+    Cli.command("t", "", [Cli.arg(verbose), Cli.arg(short)])
+  })
+  Test.assert_equal(clash, "Cli.command: t declares a name twice, or declares help")
+  let help = Cli.flag("help", "", "Mine")
+  let declared = Test.capture_defect(fn() {
+    Cli.command("t", "", [Cli.arg(help)])
+  })
+  Test.assert_equal(declared, "Cli.command: t declares a name twice, or declares help")
+}

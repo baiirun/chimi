@@ -419,6 +419,32 @@ fn a_child_that_ends_cancelled_cancels_the_caller_of_task_race() {
     assert_eq!(run.process.status.code(), Some(130), "{}", run.outcome);
 }
 
+// Rejects a cancelled combinator that cancels its children with scheduler
+// requests on its way out (CHI-265): the scheduler already ends them, and the
+// park left the cancelled task unable to finish, so `Task.result` of it ended
+// the program in the deadlock defect instead of the cancellation.
+#[test]
+fn task_cancel_of_a_task_waiting_in_a_combinator_ends_it_cancelled() {
+    for combinator in ["Task.race", "Task.all"] {
+        let run = run_virtual(
+            "cancel-combinator",
+            &format!(
+                concat!(
+                    "pub fn main() -> Int {{\n",
+                    "  let child = Task.start(fn() -> Int {{ case {combinator}([fn() {{ after(1000, 1) }}, fn() {{ after(1000, 2) }}]) {{ _ -> 1 }} }})\n",
+                    "  Clock.sleep(Duration.milliseconds(1))\n",
+                    "  Task.cancel(child)\n",
+                    "  Task.result(child)\n",
+                    "}}\n",
+                ),
+                combinator = combinator
+            ),
+        );
+        assert_eq!(run.process.status.code(), Some(130), "{combinator}: {}", run.outcome);
+        assert!(run.outcome.contains("\"outcome\":\"cancellation\""), "{combinator}: {}", run.outcome);
+    }
+}
+
 // ----- Processes --------------------------------------------------------------
 
 // A stop drains before it cancels (application-lifecycle.md): the body keeps
