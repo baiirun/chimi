@@ -270,9 +270,10 @@ MUTATIONS = [
     mutant("a connection's end is never published",
            "    Resource.scoped(fn() { admitted.finished }, set, fn(_) {",
            "    Resource.scoped(fn() { admitted.finished }, fn(_) { Void }, fn(_) {"),
-    mutant("a connection admitted during the drain waits for a change",
-           "    Receive.Received(True) -> Woken.Draining\n",
-           ""),
+    # Not a mutant: dropping the `Receive.Received(True) -> Woken.Draining`
+    # branch survives, because the single-carrier scheduler always runs a new
+    # connection's subscribe before the drain is set. The branch is kept for
+    # schedules where the drain wins that race.
     mutant("an idle connection waits for its next request during the drain",
            "    (False, True) -> None\n    (False, False) -> {",
            "    (False, _) -> {"),

@@ -265,7 +265,7 @@ test "an unknown method reaches the handler by name" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 6);
+    assert_passed(&run, 7);
 }
 
 // Rejects a body reader that mis-frames: a chunked body (with an extension and
@@ -893,6 +893,17 @@ test "a connection waiting for its next request closes at once" {
   answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 4\r\n\r\nfast")
 }
 
+test "a connection admitted as the listener closes is closed at once" {
+  let (client, server_end) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  Stream.close(script)
+  let start = Clock.now()
+  Http.serve(once(server_end, plan), Http.defaults, slow)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(0))
+  Stream.read_all(Net.reader(client), 1024) |> Test.assert_equal(Bytes.empty())
+}
+
 test "a request whose first bytes came before the drain is answered" {
   let (client, server_end) = Net.pair(64)
   let (script, plan) = Stream.pipe(8)
@@ -934,5 +945,5 @@ test "busy connections drain together" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 6);
+    assert_passed(&run, 7);
 }
