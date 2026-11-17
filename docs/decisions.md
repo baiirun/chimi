@@ -162,6 +162,30 @@ from the philosophy and earlier decisions; any of these can be overruled.
 | 2026-11-16 | When one function raises a generic enum variant at two type arguments (`W<Int>.Bad` and `W<Text>.Bad`), a pattern may not inspect a field whose type differs between them (`T4230`); a wildcard there, a field whose type agrees, or a fieldless variant is fine. The whole error is typed as the failure set, not the declaration's `W<T>`. A failure-set member written with arguments (`errors W<Int>`, `W<Int> \| A`) keeps them. | Implementer (CHI-232) | `typing.rs` `field_with_several_types`; `typing/failure_sets.rs` |
 | 2026-11-15 | `Schedule.fixed` and `Schedule.exponential` defect on a negative wait, as they do on an attempt count below 1; an exponential `first` above `limit` waits `limit` every time. `T4347` covers literal and module-constant attempt counts. `Schedule.delay` re-checks a schedule built from a variant directly. | Implementer (CHI-206) | `time-and-outcomes.md` Schedules |
 
+## Foundations (August 2026)
+
+Decisions from the prototype phase, before this ledger started. They were
+recorded only in tracker logs until those issues were archived; the logs are
+summarized in [linear-archive.md](process/linear-archive.md). Only decisions
+that still hold are listed here.
+
+| Date | Decision | By | Detail |
+| --- | --- | --- | --- |
+| 2026-08-08 | Selective recovery: matching a live outcome with `case` handles the chosen `Failure` variants and lets the rest bubble; reusable recovery is an ordinary function from thunk to thunk. No `Recovery.with` API and no new recovery syntax. | User | CHI-3 (ts-c45b33) |
+| 2026-08-08 | Recovery inference subtracts only variants covered by unguarded `Failure` patterns; a `Failure` pattern the subject cannot produce is a compile error; leftover failures after partial recovery are not warnings; Core has no Recover node, recovery lowers to an ordinary Match. | User | CHI-4 (ts-52159f); CHI-2 (ts-c99c23) |
+| 2026-08-07 | Trace data: a closed `Json.Value` with explicit `Null`, decoding by pattern matching, an immutable `Map` with unspecified order, JSON object keys encoded in ascending byte order, and no partial output on failure. | User | `trace-data-and-processing.md`; CHI-51 |
+| 2026-08-06 | Native AOT with a linked runtime is the execution architecture, Cranelift first; bytecode stays a possible portability option. Tracing has three caller-chosen modes: off (a real fast path), boundaries, and full. | User | ADR 0002; CHI-43 (ts-95a81c) |
+| 2026-08-05 | Rust is the bootstrap compiler host: better frontend latency, memory and binary size than Go outweighed Go's faster rebuilds. The compiler ships as one executable, and self-hosting is the eventual goal. | User | ADR 0001; CHI-32 (ts-0846e5) |
+| 2026-08-05 | Chimi source never calls `Runtime.run`: a root function closes its dependencies with `using`, and the toolchain supplies tracing, identity, cancellation and limits. `Failure(error)` builds a failed outcome and ordinary expressions succeed implicitly. Aliases and newtypes stay out until a concrete use case needs them. | User | `executable-kernel-decision-inventory.md`; CHI-29 |
+| 2026-08-05 | Generic parameters are bound explicitly (`fn map<A, B, E, R>`), with their kind inferred from use. | User | `executable-kernel.md`; CHI-28 |
+| 2026-08-04 | The dependency keyword is `needs` (was `requires`); `using` provides dependencies as a postfix expression and may discharge needs partially; a provider may narrow failures and needs but not change inputs or success. | User | CHI-26 (ts-b47a2e) |
+| 2026-08-04 | Imports: a module's name is never inferred from its file name, so a module import names its alias with `as`; member lists may bind public types and enum constructors but never functions; no wildcard imports. | User | `executable-kernel.md` Imports; CHI-19 (ts-39cad7) |
+| 2026-08-04 | The formatter works on the lossless CST and never rewrites syntax-invalid source; diagnostics share one stage-aware envelope that keeps syntax and type errors distinct. | User | CHI-24 (ts-92334c) |
+| 2026-08-03 | Every event carries a runtime-owned computation context that propagates across child work, retries and dependency calls; process and task labels are optional debugging names. No hot code upgrade: a future runtime may run a new version beside the old one and drain, without migrating live state. | User | CHI-27 (ts-d7eaf3) |
+| 2026-08-03 | Frontend performance targets: 16 ms p95 for syntax feedback and 100 ms p95 for local semantic feedback on a recorded reference machine, over the ten accepted workloads. | User | CHI-23 (ts-892f0b) |
+| 2026-08-03 | Newlines separate items, block steps, members and case arms, and are soft inside delimited lists (no semicolons). Bare `{ name: value }` is a record, other braces are blocks, empty braces are invalid. `Void` is written in success types and is distinct from `Option`. | User | CHI-25 (ts-929d55) |
+| 2026-08-02 | Functions are cold direct-style computations (no `Computation<T>`, no `await`); products are field-only `struct`s and alternatives are `enum`s with payloads; `case` is the only branching expression and guards must be pure; struct fields and constructors are private to their module. | User | CHI-18 (ts-ffa0aa) |
+
 ## Processes and runtime
 
 | Date | Decision | By | Detail |
