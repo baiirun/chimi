@@ -39,6 +39,7 @@ import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok}
 import std/task as Task
+import std/watch as Watch
 
 // 1. Values, rows and failures.
 
@@ -133,8 +134,9 @@ pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver {
   Driver(connect)
 }
 
-/// A connection from its operations, for writing a driver. `run` runs one
-/// statement with its parameters. `begin`, `commit` and `rollback` take a
+/// A connection from its operations, for writing a driver. Tasks that share
+/// a transaction call one connection, so its operations must accept calls
+/// from several tasks. `run` runs one statement with its parameters. `begin`, `commit` and `rollback` take a
 /// depth: 0 is the transaction, and n is the nth savepoint nested inside it,
 /// so a driver writes its own database's statements for both (`BEGIN` and
 /// `SAVEPOINT chimi_1`, or SQL Server's `SAVE TRANSACTION`). Rolling back a
@@ -225,11 +227,11 @@ pub struct Database {
 }
 
 // Where a database's statements run: on a connection from the pool, or on
-// the connection a transaction holds, `depth` transactions deep, one
-// statement at a time through the transaction's gate.
+// the connection a transaction holds, `depth` transactions deep, until the
+// transaction publishes on `ended` that it has ended.
 enum Place {
   Pooled(asks: Channel.Sender<Ask>, driver: Driver, target: Text, bounds: Limits)
-  Pinned(connection: Connection, depth: Int, gate: Channel.Sender<Turn>)
+  Pinned(connection: Connection, depth: Int, ended: Watch.Publisher<Bool>)
 }
 
 /// A pool's settings, to update with what differs: at most
@@ -317,20 +319,17 @@ pub fn first(db: Database, sql: Text, params: List<Value>) -> Option<Row> {
 
 /// Runs `body` in a transaction: it commits when `body` succeeds, and rolls
 /// back when `body` fails, defects or is cancelled. Every statement `body`
-/// runs on the database it is given uses the transaction's connection, one
-/// at a time even from several tasks, and the transaction ends only once the
-/// statement running then has finished. After it ends, a statement on that
-/// database fails with `TransactionEnded`. A transaction inside a
-/// transaction is a savepoint, so its failure undoes only its own
-/// statements; other tasks' statements on the outer database wait until it
-/// ends.
+/// runs on the database it is given uses the transaction's connection, and
+/// once `body` has ended, a statement on that database fails with
+/// `TransactionEnded`. A transaction inside a transaction is a savepoint, so
+/// its failure undoes only its own statements.
 ///
 /// Fails with: what `body` fails with (after the rollback), a failed commit,
 /// what the driver fails with, the pool's failures, and
 /// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R {
   case db.place {
-    Place.Pinned(connection, depth, gate) -> pinned(connection, gate, fn(_) { savepoint(connection, depth, body) })
+    Place.Pinned(connection, depth, ended) -> pinned(connection, ended, fn(_) { savepoint(connection, depth, body) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { outermost(connection, body) })
   }
 }
@@ -479,7 +478,7 @@ fn kind(value: Value) -> Text {
 
 fn run(db: Database, sql: Text, params: List<Value>) -> Reply {
   case db.place {
-    Place.Pinned(connection, _, gate) -> pinned(connection, gate, fn(held) { held.run(sql, params) })
+    Place.Pinned(connection, _, ended) -> pinned(connection, ended, fn(held) { held.run(sql, params) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { connection.run(sql, params) })
   }
 }
@@ -538,157 +537,35 @@ fn released(completion: Channel.Completion<Void>, mark: Channel.Receiver<Void>) 
   }
 }
 
-// 6. Transactions' gates.
+// 6. Whether a transaction has ended.
 
-// A transaction's gate: a task that lets its statements onto the connection
-// one at a time, so tasks can share the transaction's database through the
-// shareable sender of its turns. `End` waits for the statement holding the
-// connection, refuses the ones waiting, and answers; the transaction then
-// closes the gate, so a later statement's turn cannot be sent.
-enum Turn {
-  Enter(reply: Channel.Sender<Bool>)
-  Leave
-  End(reply: Channel.Sender<Bool>)
-}
-
-// The gate's receiver, held in a struct for the same reason as `Keeper`.
-struct Gate {
-  turns: Channel.Receiver<Turn>,
-}
-
-// The gate's state: whether a statement holds the connection, the statements
-// waiting for it, oldest first, and the transaction waiting to end.
-struct Queue {
-  busy: Bool,
-  waiting: List<Channel.Sender<Bool>>,
-  ending: Option<Channel.Sender<Bool>>,
-}
-
-// Runs `body` on a database pinned to `connection` behind a new gate. When
-// `body` returns or fails, the gate ends first, waiting for a statement
-// another task is still running. On a defect or a cancellation the gate is
-// only closed, since its task may be cancelled with `body`; the connection
-// then goes to the pool's reset.
+// Runs `body` on a database pinned to `connection`, which works only until
+// `body` ends: the release publishes the end on every way out, a defect or
+// a cancellation included, and closes the watch.
 fn gated<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
-  Resource.scoped(fn() {
-    let turns = Channel.bounded(16)
-    let receiver = turns.receiver
-    let _ = Task.start(fn() { guard(Gate(receiver)) })
-    turns
-  }, fn(turns) { Channel.close(turns.completion) }, fn(turns) {
-    let gate = turns.sender
-    let outcome = Result.capture(fn() {
-      body(Database(Place.Pinned(connection, depth, gate)))
-    })
-    let reply = Channel.bounded(0)
-    let answers = reply.receiver
-    case Channel.send(gate, Turn.End(reply.sender)) {
-      Success(_) -> {
-        let _ = Result.capture(fn() { Channel.receive(answers) })
-        Void
-      }
-      Failure(_) -> Void
-    }
-    case outcome {
-      Ok(result) -> result
-      Err(error) -> Failure(error)
-    }
+  Resource.scoped(fn() { Watch.starting_with(False) }, fn(live) {
+    let ending = live.publisher
+    let _ = Result.capture(fn() { Watch.publish(ending, True) })
+    Channel.close(live.completion)
+  }, fn(live) {
+    body(Database(Place.Pinned(connection, depth, live.publisher)))
   })
 }
 
-// Runs `use` on `connection` once the gate lets it on, and leaves on every
-// way out of `use`.
-fn pinned<T, E, R>(connection: Connection, gate: Channel.Sender<Turn>, use: fn(Connection) -> T errors E needs R) -> T needs R {
-  Resource.scoped(fn() { enter(gate) }, fn(_) { post(gate, Turn.Leave) }, fn(_) { use(connection) })
-}
-
-fn enter(gate: Channel.Sender<Turn>) -> Void {
-  let reply = Channel.bounded(0)
-  let answers = reply.receiver
-  case Channel.send(gate, Turn.Enter(reply.sender)) {
-    Success(_) -> Void
-    Failure(_) -> Failure(SqlError.TransactionEnded)
-  }
-  let answer = case Result.capture(fn() { Channel.receive(answers) }) {
-    Ok(received) -> received
-    Err(_) -> Receive.Drained
-  }
-  case answer {
-    Receive.Received(True) -> Void
-    _ -> Failure(SqlError.TransactionEnded)
+// Runs `use` on `connection` unless its transaction has ended.
+fn pinned<T, E, R>(connection: Connection, ended: Watch.Publisher<Bool>, use: fn(Connection) -> T errors E needs R) -> T needs R {
+  case has_ended(ended) {
+    True -> Failure(SqlError.TransactionEnded)
+    False -> use(connection)
   }
 }
 
-// Owns the gate's state in its loop until the transaction ends, then refuses
-// every statement that still asks until the gate is closed and drained. A
-// statement that stopped waiting refuses its turn, which goes to the next.
-fn guard(gate: Gate) -> Void {
-  loop queue = Queue(False, [], None) {
-    let turns = gate.turns
-    let next = case Channel.receive(turns) {
-      Success(received) -> received
-      Failure(_) -> Receive.Drained
-    }
-    let after = case next {
-      Receive.Drained -> None
-      Receive.Received(Turn.Enter(reply)) -> admit(Queue(queue.busy, List.push(queue.waiting, reply), queue.ending))
-      Receive.Received(Turn.Leave) -> admit(Queue(False, queue.waiting, queue.ending))
-      Receive.Received(Turn.End(reply)) -> admit(Queue(queue.busy, queue.waiting, Some(reply)))
-    }
-    case after {
-      Some(state) -> state
-      None -> break Void
-    }
-  }
-  loop _open = True {
-    let turns = gate.turns
-    let next = case Channel.receive(turns) {
-      Success(received) -> received
-      Failure(_) -> Receive.Drained
-    }
-    case next {
-      Receive.Drained -> break Void
-      Receive.Received(Turn.Enter(reply)) -> {
-        post(reply, False)
-        True
-      }
-      Receive.Received(Turn.End(reply)) -> {
-        post(reply, True)
-        True
-      }
-      Receive.Received(Turn.Leave) -> True
-    }
-  }
-}
-
-// Lets the oldest waiting statement on when nothing holds the connection.
-// Once the transaction is ending and nothing holds it, the waiting statements
-// are refused, the transaction is answered, and the gate has ended (`None`).
-fn admit(queue: Queue) -> Option<Queue> {
-  case (queue.busy, queue.ending) {
-    (True, _) -> Some(queue)
-    (False, Some(reply)) -> {
-      List.each(queue.waiting, fn(waiter) { post(waiter, False) })
-      post(reply, True)
-      None
-    }
-    (False, None) -> loop waiting = queue.waiting {
-      case waiting {
-        [] -> break Some(Queue(False, [], None))
-        [waiter, ..rest] -> case Channel.send(waiter, True) {
-          Success(_) -> break Some(Queue(True, rest, None))
-          Failure(_) -> rest
-        }
-      }
-    }
-  }
-}
-
-// Sends `value`, for a message whose receiver may have stopped listening.
-fn post<T>(to: Channel.Sender<T>, value: T) -> Void {
-  case Channel.send(to, value) {
-    Success(_) -> Void
-    Failure(_) -> Void
+// A fresh follower's first receive is the watch's latest value at once, so
+// this never waits; a closed watch reads as ended.
+fn has_ended(ended: Watch.Publisher<Bool>) -> Bool {
+  case Result.capture(fn() { Watch.receive(Watch.subscribe(ended)) }) {
+    Ok(Receive.Received(False)) -> False
+    _ -> True
   }
 }
 
@@ -821,7 +698,7 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
 // mid-statement, so such a connection is never reused.
 fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R {
   case db.place {
-    Place.Pinned(connection, _, gate) -> pinned(connection, gate, use)
+    Place.Pinned(connection, _, ended) -> pinned(connection, ended, use)
     Place.Pooled(asks, driver, target, bounds) -> Resource.scoped(fn() { take(asks, bounds.wait) }, fn(_) {
       let _ = tell(asks, Ask.Done)
       Void

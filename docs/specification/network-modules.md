@@ -367,19 +367,18 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   `body` succeeds it commits, and a failed commit is the outcome. When `body`
   fails it rolls back and the body's failure is the outcome. When `body`
   defects or is cancelled, the pool's reset rolls the transaction back.
-- A transaction's database MUST run its statements one at a time, even when
-  several tasks share it, in the order they asked. A savepoint holds the
-  outer database's turn until it ends, so another task's outer statement
-  never runs inside it.
-- When `body` returns or fails, the transaction waits for the statement
-  another task is running, refuses the ones still waiting, and only then
-  commits or rolls back. A defect or a cancellation does not wait; the pool's
-  reset cleans the connection.
-- Once a transaction or savepoint has ended, every statement or nested
-  transaction on its database MUST fail with `TransactionEnded` and never
-  reach the driver, as when the database escaped its body (Go's
-  `ErrTxDone`). There is no static check that it stays inside, which matches
-  the rule for scope-owned resources (decisions.md, 2026-11-15).
+- Once a transaction or savepoint has ended, however its body ended, a
+  statement or nested transaction on its database MUST fail with
+  `TransactionEnded` and never reach the driver, as when the database escaped
+  its body or a task kept it (Go's `ErrTxDone`). There is no static check
+  that it stays inside, which matches the rule for scope-owned resources
+  (decisions.md, 2026-11-15). Inside a savepoint the outer database still
+  works and runs inside the savepoint.
+- Tasks that share a transaction's database share its one connection, and
+  their statements are not queued. A driver's connection MUST therefore
+  accept calls from several tasks, as a native binding that locks its handle
+  does. A statement another task is running while the transaction ends may
+  still finish after it.
 - A transaction inside a transaction is a savepoint, so an inner failure
   that the outer body catches undoes only the inner statements. A savepoint
   is undone whenever its body does not succeed, including a defect or a
@@ -527,7 +526,7 @@ refuses the peer's versions.
 | SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
 | SQL: commit, rollback, defect, cancellation, a failed commit, savepoints, a driver's own savepoint statements | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
-| SQL: an escaped transaction database fails, statements take turns across tasks, a transaction waits for a running statement, a savepoint holds its turn | `tests/sql.rs` `a_transactions_database_runs_one_statement_at_a_time_until_it_ends` |
+| SQL: an ended transaction's or savepoint's database fails, whether it escaped, was kept by a task, or its body defected or was cancelled | `tests/sql.rs` `a_transactions_database_fails_once_the_transaction_has_ended` |
 | TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
 | TLS: `Untrusted`, `WrongHost(host)`, `Expired` and not yet valid on the client, `Handshake` on the server, a stranger's expired certificate is `Untrusted`, an empty host | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
 | TLS: bad roots, an empty bundle, a bad key, a key that is not the certificate's | `tests/tls.rs` `bad_roots_and_identities_fail_where_they_are_made` |

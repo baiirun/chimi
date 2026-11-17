@@ -639,99 +639,111 @@ test "a savepoint's failed commit stays the outcome when its rollback fails too"
 }
 
 // Rejects a transaction's database that still reaches the connection after
-// the transaction ended, statements from two tasks that run on it at once, a
-// commit that does not wait for a statement another task is running, and an
-// outer statement that runs inside another task's savepoint.
+// the transaction or savepoint ended (returned from its body, kept by a task
+// that outlives it, or ended by a defect or a cancellation), and a check that
+// refuses the outer database inside one of its savepoints.
 #[test]
-fn a_transactions_database_runs_one_statement_at_a_time_until_it_ends() {
+fn a_transactions_database_fails_once_the_transaction_has_ended() {
     let run = run_tests(
-        "transaction-gate",
+        "transaction-ended",
         r#"
-import std/watch as Watch
-
-// A driver whose statement `slow` waits for the next value `go` publishes;
-// it logs each statement as it starts and `slow done` once it finishes.
-fn blocking(log: Recorder<Text>, go: Watch.Publisher<Bool>) -> Sql.Driver {
-  Sql.driver(fn(_) {
-    Sql.connection(fn(sql, _) {
-      Test.record(log, sql)
-      case sql == "slow" {
-        True -> {
-          let _ = Result.capture(fn() { next_value(Watch.subscribe(go)) })
-          Test.record(log, "slow done")
-        }
-        False -> Void
-      }
-      Sql.done()
-    }, fn(depth) { Test.record(log, "begin ${depth}") }, fn(depth) { Test.record(log, "commit ${depth}") }, fn(depth) {
-      Test.record(log, "rollback ${depth}")
-    }, fn() { Void }, fn() { Void })
+fn kept(calls: Recorder<Call>) -> List<Call> {
+  List.filter(Test.recorded(calls), fn(call) {
+    case call {
+      Call.Ran(sql, _) -> sql != "a"
+      _ -> False
+    }
   })
 }
 
-// Waits past a follower's current value for the next one.
-fn next_value(follower: Watch.Subscription<Bool>) -> Void {
-  let _ = Watch.receive(follower)
-  let _ = Watch.receive(follower)
-  Void
-}
-
-// Lets `slow` finish after `seconds`.
-fn release_after(go: Watch.Publisher<Bool>, seconds: Int) -> Void needs { clock: Clock } {
-  Clock.sleep(Duration.seconds(seconds))
-  let _ = Result.capture(fn() { Watch.publish(go, True) })
-  Void
-}
-
-test "a transaction's database fails once the transaction has ended" {
+test "a database returned from its transaction fails and never reaches the driver" {
   let calls = Test.recorder()
   Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
     let escaped = Sql.transaction(db, fn(tx) { tx })
     failed(fn() { Sql.execute(escaped, "late", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
     failed(fn() { Sql.transaction(escaped, fn(nested) { Sql.execute(nested, "later", []) }) })
       |> Test.assert_equal(Some(SqlError.TransactionEnded))
-    let inner = Sql.transaction(db, fn(tx) { Sql.transaction(tx, fn(nested) { nested }) })
-    failed(fn() { Sql.execute(inner, "inner", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
-  })
-  List.filter(Test.recorded(calls), fn(call) { call == ran("late") or call == ran("later") or call == ran("inner") }) |> Test.assert_equal([])
-}
-
-test "a transaction ends after the statement another task is running" {
-  let log = Test.recorder()
-  let go = Watch.starting_with(False)
-  let signal = go.publisher
-  let start = Clock.now()
-  let releaser = Task.start(fn() { release_after(signal, 5) })
-  Sql.open(blocking(log, signal), "app.db", Sql.defaults, fn(db) {
-    Sql.transaction(db, fn(tx) {
-      let _ = Task.start(fn() { Sql.execute(tx, "slow", []) })
-      Clock.sleep(Duration.seconds(1))
+    let inner = Sql.transaction(db, fn(tx) {
+      let nested = Sql.transaction(tx, fn(nested) { nested })
+      failed(fn() { Sql.execute(nested, "inner", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Sql.execute(tx, "a", [])
     })
+    inner |> Test.assert_equal(0)
   })
-  Task.result(releaser)
-  Clock.since(start) |> Test.assert_equal(Duration.seconds(5))
-  Test.recorded(log) |> Test.assert_equal(["begin 0", "slow", "slow done", "commit 0"])
+  kept(calls) |> Test.assert_equal([])
 }
 
-test "statements from several tasks take turns, and a savepoint holds its turn" {
-  let log = Test.recorder()
-  let go = Watch.starting_with(False)
-  let signal = go.publisher
-  let releaser = Task.start(fn() { release_after(signal, 5) })
-  Sql.open(blocking(log, signal), "app.db", Sql.defaults, fn(db) {
-    Sql.transaction(db, fn(tx) {
-      let nested = Task.start(fn() { Sql.transaction(tx, fn(inner) { Sql.execute(inner, "slow", []) }) })
-      let outer = Task.start(fn() {
+test "a task that keeps a transaction's database fails once it has ended" {
+  let calls = Test.recorder()
+  let outcome = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let later = Sql.transaction(db, fn(tx) {
+      Task.start(fn() {
         Clock.sleep(Duration.seconds(1))
-        Sql.execute(tx, "outer", [])
+        failed(fn() { Sql.execute(tx, "late", []) })
       })
-      Task.result(nested) + Task.result(outer)
+    })
+    Task.result(later)
+  })
+  outcome |> Test.assert_equal(Some(SqlError.TransactionEnded))
+  kept(calls) |> Test.assert_equal([])
+}
+
+// Waits for a database on `handed`, then runs `sql` on it after `seconds`.
+fn run_later(handed: Channel.Receiver<Database>, seconds: Int, sql: Text) -> Option<SqlError> needs { clock: Clock } {
+  case Result.capture(fn() { Channel.receive(handed) }) {
+    Ok(Channel.Receive.Received(db)) -> {
+      Clock.sleep(Duration.seconds(seconds))
+      failed(fn() { Sql.execute(db, sql, []) })
+    }
+    _ -> Some(SqlError.Failed("no database"))
+  }
+}
+
+test "a savepoint's database ends when the savepoint is cancelled or defects" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let cut = Channel.bounded(1)
+      let cut_handed = cut.receiver
+      let after_cut = Task.start(fn() { run_later(cut_handed, 3, "cut") })
+      let cut_sender = cut.sender
+      let _ = Result.capture(fn() {
+        Task.timeout(fn() {
+          Sql.transaction(tx, fn(nested) {
+            let _ = Result.capture(fn() { Channel.send(cut_sender, nested) })
+            Clock.sleep(Duration.seconds(5))
+          })
+        }, Duration.seconds(1))
+      })
+      let crash = Channel.bounded(1)
+      let crash_handed = crash.receiver
+      let after_crash = Task.start(fn() { run_later(crash_handed, 1, "crash") })
+      let crash_sender = crash.sender
+      let defected = Test.capture_defect(fn() {
+        Sql.transaction(tx, fn(nested) {
+          let _ = Result.capture(fn() { Channel.send(crash_sender, nested) })
+          Debug.crash("boom")
+        })
+      })
+      defected |> Test.assert_equal("boom")
+      Task.result(after_cut) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Task.result(after_crash) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Sql.execute(tx, "still", [])
     })
   })
-  Task.result(releaser)
-  Test.recorded(log) |> Test.assert_equal(["begin 0", "begin 1", "slow", "slow done", "commit 1", "outer", "commit 0"])
+  kept(calls) |> Test.assert_equal([ran("still")])
+}
+
+test "the outer database still works inside one of its savepoints" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      Sql.transaction(tx, fn(_) { Sql.execute(tx, "outer", []) })
+    })
+  })
+  kept(calls) |> Test.assert_equal([ran("outer")])
 }
 "#,
     );
-    assert_passed(&run, 3);
+    assert_passed(&run, 4);
 }
