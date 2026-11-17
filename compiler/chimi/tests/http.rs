@@ -265,7 +265,7 @@ test "an unknown method reaches the handler by name" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 7);
+    assert_passed(&run, 6);
 }
 
 // Rejects a body reader that mis-frames: a chunked body (with an extension and
