@@ -273,7 +273,9 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   A connection that is idle, waiting for its next request, MUST close at
   once. A connection in the middle of a request (from its first byte until
   its answer is written) MUST finish it, and that answer carries
-  `connection: close`, so nothing after it is read. `serve` returns once
+  `connection: close`, so nothing after it is read. Bytes the server has
+  already read count as a request begun, so a pipelined request read before
+  the drain MUST be answered the same way. `serve` returns once
   every connection has closed, after its linger.
 - The drain has no bound of its own: a caller bounds it with `Task.timeout`
   around `serve`. When the calling task is cancelled, the supervisor is
@@ -290,7 +292,9 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   which is still an open decision).
 - A request whose first bytes arrive in the moment the drain starts may be
   closed as idle, as Go's can; a client retries such a request when it is
-  safe to.
+  safe to. The same holds for a connection accepted as the listener closes
+  whose request has not been read yet; Go instead treats a new connection
+  as busy for its first 5 s.
 - The HTTP client, and HTTPS after `std/tls`.
 
 ## std/sql (driver-independent layer)
@@ -527,7 +531,7 @@ refuses the peer's versions.
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
 | HTTP: the write limit; a closing answer lingers up to 2 s for a client still sending; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
-| HTTP: closing the listener drains: idle connections close at once, a request in progress is answered with `connection: close`, and a timeout around `serve` cuts the drain short | `tests/http.rs` `closing_the_listener_drains_the_connections` |
+| HTTP: closing the listener drains: idle connections close at once, a request in progress (or a pipelined one already read) is answered with `connection: close`, and a timeout around `serve` cuts the drain short | `tests/http.rs` `closing_the_listener_drains_the_connections` |
 | HTTP: `date` on every response at four clock starts (leap day, before 1970, 2100), and a handler's own `date` stands | `tests/http.rs` `every_response_carries_the_date` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
 | HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` and closes open connections; a handler's defect closes only its connection; past `max_connections` a client waits | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
