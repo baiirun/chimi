@@ -129,7 +129,9 @@ pub fn client(connection: Connection, host: Text, settings: { roots: Roots }) ->
 /// the inner connection's streams fail with. On a failure the inner
 /// connection is left open.
 pub fn server(connection: Connection, identity: Identity) -> Connection {
-  secured(connection, "", fn() { tls(native_server(identity.certificate, identity.key), "") })
+  secured(connection, "", fn() {
+    tls(native_server(identity.certificate, identity.key), "")
+  })
 }
 
 /// How many TLS sessions this program holds: made, and not yet freed by
