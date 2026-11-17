@@ -33,6 +33,7 @@
 
 import std/bytes as Bytes
 import std/bytes.{Bytes}
+import std/channel.{Receive}
 import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
@@ -54,6 +55,7 @@ import std/supervisor as Supervisor
 import std/supervisor.{HandoffError, Running}
 import std/task as Task
 import std/text as Text
+import std/watch as Watch
 
 // 1. Public types.
 
@@ -219,41 +221,159 @@ pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int
 /// accepted, as Node's `server.maxConnections` does. A failed accept, such as running out
 /// of file descriptors or a client that reset before it was accepted, is
 /// retried after a pause that grows from 10 ms to 1 s, so a burst of failures
-/// neither ends serving nor spins. When serving ends, by the listener
-/// closing or the calling task being cancelled, the connections still open
-/// are stopped, which closes them.
+/// neither ends serving nor spins.
+///
+/// Closing the listener drains the server: idle connections close at once,
+/// a request in progress is answered with `connection: close`, and `serve`
+/// returns once every connection has closed. To bound the drain, run `serve`
+/// under `Task.timeout`: when the calling task is cancelled, the connections
+/// still open are stopped at once, which closes them.
 ///
 /// Fails with: nothing; only closing the listener ends serving.
 /// Defects when: never because of `handle`.
 pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
-  let _ = limits(settings)
-  // The connection is served in a task the process waits on. When serving
-  // ends, the supervisor's stop makes the inbox ready, so the process ends
-  // and cancels that task, which closes the connection. A forced stop runs
-  // no more of the process's code, so it would leave the connection open.
-  let connection = Process.handoff_spec(fn(inbox: Inbox<Unused>, accepted: Connection) {
-    let serving = Task.start(fn() { serve_connection(accepted, settings, handle) })
-    Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])
+  let bounds = limits(settings)
+  let drain = Watch.starting_with(False)
+  let draining = drain.publisher
+  // Each connection is served in a task its process waits on, and the
+  // process publishes on `finished` however it ends. When the drain starts,
+  // the process ends an idle connection at once and lets a busy one finish
+  // its request. When serving ends, the supervisor's stop makes the inbox
+  // ready, so the process ends and cancels that task, which closes the
+  // connection. A forced stop runs no more of the process's code, so it
+  // would leave the connection open.
+  let connection = Process.handoff_spec(fn(inbox: Inbox<Unused>, admitted: Admitted) {
+    Resource.scoped(fn() { admitted.finished }, set, fn(_) {
+      serve_admitted(inbox, admitted.connection, bounds, handle, draining)
+    })
   }, 1, Duration.seconds(1))
   Resource.scoped(fn() {
     Supervisor.start(Supervisor.policy([], settings.max_connections, Supervisor.restarts(0, Duration.seconds(1))))
   }, Supervisor.stop, fn(connections) {
-    loop pause = 10 {
+    let open = loop state = (10, []) {
+      let (pause, open) = state
       case Result.capture(fn() { Net.accept(listener) }) {
-        Err(NetError.Closed) -> break Void
+        Err(NetError.Closed) -> break open
         Err(_) -> {
           Clock.sleep(Duration.milliseconds(pause))
-          smaller(pause * 2, 1000)
+          (smaller(pause * 2, 1000), open)
         }
         Ok(accepted) -> {
-          admit(connections, connection, accepted)
-          10
+          let finished = Watch.starting_with(False)
+          let done = finished.publisher
+          let still = List.filter(open, fn(flag) { not is_set(flag) })
+          case admit(connections, connection, Admitted(accepted, done)) {
+            True -> (10, List.push(still, done))
+            False -> (10, still)
+          }
         }
       }
     }
+    set(draining)
+    List.each(open, wait_until_set)
   })
+}
+
+// An accepted connection and the flag its process sets when it ends.
+struct Admitted {
+  connection: Connection,
+  finished: Watch.Publisher<Bool>,
+}
+
+// What a connection's process waits for first.
+enum Woken {
+  Served
+  Stopped
+  Draining
+}
+
+// Serves one admitted connection in a task, until the task ends, the
+// supervisor stops, or the drain starts while the connection is idle.
+fn serve_admitted<E, R>(inbox: Inbox<Unused>, accepted: Connection, bounds: Limits, handle: fn(Request) -> Response errors E needs R, draining: Watch.Publisher<Bool>) -> Void needs R + {
+  clock: Clock
+} {
+  let busy = Watch.starting_with(False)
+  let working = busy.publisher
+  let drained = Watch.subscribe(draining)
+  let serving = Task.start(fn() {
+    Resource.scoped(fn() { accepted }, Net.close, fn(open) {
+      let _ = Result.capture(fn() {
+        exchange_all(open, bounds, handle, Some(Signals(draining, working)))
+      })
+      Void
+    })
+  })
+  // A new follower's first receive is the flag's value now, so the select
+  // below wakes only for a change.
+  let _ = Watch.receive(drained)
+  let woken = Select.first([
+    Select.task(serving, fn(_) { Woken.Served }),
+    Select.inbox(inbox, fn(_) { Woken.Stopped }),
+    Select.watch(drained, fn(_) { Woken.Draining }),
+  ])
+  case (woken, is_set(working)) {
+    (Woken.Draining, True) -> Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])
+    _ -> Void
+  }
+}
+
+// The flags a served connection reads and sets: whether the server is
+// draining, and whether this connection is in the middle of a request.
+struct Signals {
+  draining: Watch.Publisher<Bool>,
+  working: Watch.Publisher<Bool>,
+}
+
+fn set(flag: Watch.Publisher<Bool>) -> Void {
+  publish(flag, True)
+}
+
+fn publish(flag: Watch.Publisher<Bool>, value: Bool) -> Void {
+  let _ = Result.capture(fn() { Watch.publish(flag, value) })
+  Void
+}
+
+// Whether `flag` is set. A new follower's first receive is the flag's value
+// now, so this never waits; a flag whose watch has gone reads as set.
+fn is_set(flag: Watch.Publisher<Bool>) -> Bool {
+  case Result.capture(fn() { Watch.receive(Watch.subscribe(flag)) }) {
+    Ok(Receive.Received(False)) -> False
+    _ -> True
+  }
+}
+
+// Waits until `flag` is set, or its watch has gone.
+fn wait_until_set(flag: Watch.Publisher<Bool>) -> Void {
+  let _ = Result.capture(fn() { next_set(Watch.subscribe(flag)) })
+  Void
+}
+
+fn next_set(follower: Watch.Subscription<Bool>) -> Void {
+  loop _waiting = True {
+    let received = Watch.receive(follower)
+    case received {
+      Receive.Received(False) -> True
+      _ -> break Void
+    }
+  }
+}
+
+// Whether the server is draining, for a connection `serve` runs.
+fn draining_now(signals: Option<Signals>) -> Bool {
+  case signals {
+    Some(flags) -> is_set(flags.draining)
+    None -> False
+  }
+}
+
+// Marks whether the connection is in the middle of a request.
+fn mark_working(signals: Option<Signals>, value: Bool) -> Void {
+  case signals {
+    Some(flags) -> publish(flags.working, value)
+    None -> Void
+  }
 }
 
 // A connection process's mailbox, which nothing sends to.
@@ -261,13 +381,19 @@ enum Unused {
   Unused
 }
 
-// Starts `accepted`'s process, or closes it when the server is at its cap or
-// stopping.
-fn admit<E>(connections: Running, spec: HandoffSpec<Connection, Unused, E>, accepted: Connection) -> Void {
-  case Supervisor.start_handoff(connections, spec, accepted) {
-    Success(_) -> Void
-    Failure(HandoffError.CapacityReached(back)) -> Net.close(back)
-    Failure(HandoffError.Stopped(back)) -> Net.close(back)
+// Starts `admitted`'s process, or closes its connection when the server is
+// at its cap or stopping. Whether the process started.
+fn admit<E>(connections: Running, spec: HandoffSpec<Admitted, Unused, E>, admitted: Admitted) -> Bool {
+  case Supervisor.start_handoff(connections, spec, admitted) {
+    Success(_) -> True
+    Failure(HandoffError.CapacityReached(back)) -> {
+      Net.close(back.connection)
+      False
+    }
+    Failure(HandoffError.Stopped(back)) -> {
+      Net.close(back.connection)
+      False
+    }
   }
 }
 
@@ -285,7 +411,7 @@ pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes
 } {
   Resource.scoped(fn() { connection }, Net.close, fn(open) {
     let _ = Result.capture(fn() {
-      exchange_all(open, limits(settings), handle)
+      exchange_all(open, limits(settings), handle, None)
     })
     Void
   })
@@ -331,14 +457,22 @@ enum Next {
   Refused(refusal: Refusal)
 }
 
-fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+// Answers requests until the connection should close. Under `serve`, the
+// connection is working from the first byte of a request until its answer
+// is written, and a drain makes the next answer close the connection.
+fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request) -> Response errors E needs R, signals: Option<Signals>) -> Void needs R + {
   clock: Clock
 } {
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
   loop cursor = Cursor(Bytes.empty(), 0) {
+    mark_working(signals, False)
     let next = Task.timeout(fn() {
-      read_request(reader, writer, cursor, bounds)
+      let start = arrive(reader, cursor, signals)
+      case start {
+        Some(begun) -> read_request(reader, writer, begun, bounds)
+        None -> Next.Ended
+      }
     }, bounds.idle)
     case next {
       Next.Ended -> break Void
@@ -351,7 +485,7 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
       }
       Next.Arrived(request, keep_alive, minor, rest) -> {
         let answer = answer(request, handle)
-        let keep = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close")
+        let keep = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close") and not draining_now(signals)
         Task.timeout(fn() {
           write_response(writer, answer, now(), keep, minor, request.method == Method.Head)
         }, bounds.write)
@@ -362,6 +496,28 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
             break Void
           }
         }
+      }
+    }
+  }
+}
+
+// A cursor at the start of the next request's bytes, once there are any, or
+// `None` when the client closed the connection first. The connection is
+// marked working from then on.
+fn arrive(reader: Reader<NetError>, cursor: Cursor, signals: Option<Signals>) -> Option<Cursor> {
+  case unread(cursor) > 0 {
+    True -> {
+      mark_working(signals, True)
+      Some(cursor)
+    }
+    False -> {
+      let chunk = Stream.read(reader)
+      case chunk {
+        Some(bytes) -> {
+          mark_working(signals, True)
+          Some(Cursor(bytes, 0))
+        }
+        None -> None
       }
     }
   }
