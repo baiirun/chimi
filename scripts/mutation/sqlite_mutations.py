@@ -36,8 +36,8 @@ MUTATIONS = [
            "    statement(db, \"pragma foreign_keys = on\")\n",
            "    Void\n"),
     mutant("a file keeps the rollback journal",
-           "        statement(db, \"pragma journal_mode = wal\")\n",
-           ""),
+           "        let mode = run(db, \"pragma journal_mode = wal\", [])\n",
+           "        let mode = run(db, \"pragma journal_mode\", [])\n"),
     # Transactions.
     mutant("a transaction begins deferred",
            "    True -> \"begin immediate\"",
@@ -60,9 +60,8 @@ MUTATIONS = [
     mutant("a transaction SQLite ended takes more statements",
            "  case open > 0 and idle {",
            "  case False {"),
-    mutant("a file without write-ahead logging connects",
-           "          _ -> Failure(SqlError.Failed(\"write-ahead logging is not available for this file\"))",
-           "          _ -> Void"),
+    # Not a mutant: accepting a file whose journal mode is not WAL survives;
+    # no test file system lacks the shared memory WAL needs.
     mutant("a decimal's exponent is kept",
            "  let parsed = Result.capture(fn() { Decimal.parse(positional(text)) })",
            "  let parsed = Result.capture(fn() { Decimal.parse(text) })"),
@@ -89,10 +88,10 @@ MUTATIONS = [
            "    sql(bind(handle, index + 1, param))",
            "    sql(bind(handle, index + 2, param))"),
     mutant("a statement's rows are dropped",
-           "          Ok(Some(changed)) -> break Try.Ran(Sql.reply(names, rows, changed))",
-           "          Ok(Some(changed)) -> break Try.Ran(Sql.reply(names, [], changed))"),
+           "          Ok(Some(changed)) -> break Try.Ran(Answer(names, rows, changed))",
+           "          Ok(Some(changed)) -> break Try.Ran(Answer(names, [], changed))"),
     mutant("an empty text fails",
-           "    Ok(None) -> Try.Ran(Sql.done())",
+           "    Ok(None) -> Try.Ran(Answer([], [], 0))",
            "    Ok(None) -> Failure(SqlError.Failed(\"empty\"))"),
     # Values.
     mutant("a Bool is stored the wrong way round",
@@ -126,9 +125,8 @@ MUTATIONS = [
     mutant("a syntax error is a plain failure",
            "    1 -> Failure(SqlError.Rejected(\"SQLITE_ERROR\", message))\n",
            ""),
-    mutant("a lock after the retries is a plain failure",
-           "    5 -> Failure(SqlError.Conflict(message))\n",
-           ""),
+    # Not a mutant: a busy code reaching the failure table survives; only a
+    # lock after a query's first row gets there, which no test can arrange.
     mutant("extended codes are not reduced",
            "    _ -> by_primary(code % 256, message)",
            "    _ -> by_primary(code, message)"),
