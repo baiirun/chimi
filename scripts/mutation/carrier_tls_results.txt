@@ -1,0 +1,6 @@
+# mutation run at c44d9b87c7017b97c674a3ca70dc18f68a3b3e6d
+# carrier_tls_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [cli -- ends_with_a_stack_overflow_defect] (89s)
+KILLED       the guard never sets the carrier's limit [cli -- ends_with_a_stack_overflow_defect] (35s)
+KILLED       the check reads no limit [cli -- ends_with_a_stack_overflow_defect] (34s)
+# result: every mutant killed

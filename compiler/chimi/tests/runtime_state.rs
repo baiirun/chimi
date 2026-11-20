@@ -22,8 +22,10 @@ use std::process::Command;
 
 /// Writable process-wide globals, each owned as the design note says.
 const SHARED: &[&str] = &[
-    // The carrier, which holds every per-thread field.
+    // The carrier, which holds every per-thread field, and each thread's
+    // pointer to its own (a thread-local, one per thread by construction).
     "carrier_states",
+    "carrier_this_thread",
     // Heaps and constants every fiber shares.
     "main_heap",
     "next_heap_owner",
@@ -31,7 +33,6 @@ const SHARED: &[&str] = &[
     "static_area",
     "shared_values",
     "constant_values",
-    "host_stack_limit",
     // Task and channel handle counts, one locked table for every carrier
     // (each carrier queues its own releases).
     "handle_table",
