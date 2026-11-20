@@ -22,6 +22,8 @@ enum { TLS_CHUNK = 16 * 1024 };
 typedef struct {
   pthread_mutex_t lock;
   TlsSession *session;
+  /* A task is driving a deferred handshake (std/tls.chimi's `settle`). */
+  int claimed;
 } Locked;
 
 static void release_session(void *state) {
@@ -69,6 +71,7 @@ static ChimiBindingResult *made(ChimiBindingCall *call, TlsSession *session, int
     return chimi_binding_failure(call, TLS_INVALID, "out of memory");
   }
   locked->session = session;
+  locked->claimed = 0;
   ChimiBindingValue *handle = chimi_binding_make_handle(call, &SESSION, locked);
   if (!handle) return chimi_binding_failure(call, TLS_INVALID, "too many open TLS sessions");
   return chimi_binding_ok(call, handle);
@@ -257,6 +260,26 @@ ChimiBindingResult *chimi_tls_handoff(ChimiBindingCall *call) {
   locked->session = NULL;
   pthread_mutex_unlock(&locked->lock);
   return made(call, session, TLS_INVALID, "");
+}
+
+/* native_claim(session) -> Bool: True when the caller now drives the
+   session's handshake and must call native_unclaim after; False while
+   another task drives it. A closed session answers True, so its caller
+   meets the closed session at once. */
+ChimiBindingResult *chimi_tls_claim(ChimiBindingCall *call) {
+  Locked *locked = acquire(call, 0);
+  if (!locked) return chimi_binding_success(call, chimi_binding_make_boolean(call, 1));
+  int mine = !locked->claimed;
+  locked->claimed = 1;
+  return unlocked(locked, chimi_binding_success(call, chimi_binding_make_boolean(call, mine)));
+}
+
+/* native_unclaim(session) -> Void */
+ChimiBindingResult *chimi_tls_unclaim(ChimiBindingCall *call) {
+  Locked *locked = acquire(call, 0);
+  if (!locked) return chimi_binding_success(call, chimi_binding_void(call));
+  locked->claimed = 0;
+  return unlocked(locked, chimi_binding_success(call, chimi_binding_void(call)));
 }
 
 /* native_free(session) -> Void: later calls see the session closed. */
