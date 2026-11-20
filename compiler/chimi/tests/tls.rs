@@ -895,3 +895,49 @@ test "serve" {{
     let (status, stdout, stderr) = serving.join().unwrap();
     assert_eq!(status, Some(0), "{stdout}{stderr}");
 }
+
+// Rejects a deferred handshake that two tasks drive at once: a server that
+// reads in one task and writes its banner in another, the reader first,
+// leaves the writer waiting in an inner read that never comes unless the
+// second task waits for the first's handshake. Over loopback, since a fake
+// pair's channel ends belong to one task.
+#[test]
+fn a_deferred_handshake_is_driven_by_one_task_at_a_time() {
+    let result = Scratch::new(
+        "deferred-tasks",
+        &suite(
+            r#"
+import std/clock.{Clock}
+
+fn banner() -> Text needs { network: Network, clock: Clock } {
+  let listener = Tls.listener(Net.listen("127.0.0.1", 0), server_identity(SERVER_CERT))
+  let port = Net.port(Net.listener_address(listener))
+  let client_end = Net.connect("127.0.0.1", port)
+  let served = Net.accept(listener)
+  let reading = Task.start(fn() { Bytes.to_text(Stream.read_all(Net.reader(served), 1024)) })
+  let writing = Task.start(fn() {
+    Stream.write(Net.writer(served), Bytes.from_text("220 ready"))
+    Stream.close(Net.writer(served))
+  })
+  let client = Tls.client(client_end, "localhost", trusting(CA))
+  let seen = Task.timeout(fn() { Bytes.to_text(Stream.read_all(Net.reader(client), 1024)) }, Duration.seconds(5))
+  Task.timeout(fn() { Task.result(writing) }, Duration.seconds(5))
+  Stream.write(Net.writer(client), Bytes.from_text("QUIT"))
+  Stream.close(Net.writer(client))
+  let heard = Task.timeout(fn() { Task.result(reading) }, Duration.seconds(5))
+  Net.close(client)
+  Net.close(served)
+  Net.close_listener(listener)
+  "${seen} ${heard} ${Tls.live_sessions_for_tests()}"
+}
+
+test "two tasks" {
+  let outcome = banner() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("220 ready QUIT 0")
+}
+"#,
+        ),
+    )
+    .test(&[], &["--clock=real"]);
+    assert_passed(&result, 1);
+}

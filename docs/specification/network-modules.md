@@ -576,7 +576,10 @@ a checksum manifest.
   A handshake that fails there fails that read or write with
   `NetError.Failed("TLS: the handshake failed: ...")`, or with the inner
   connection's own `NetError`; after it, the connection behaves as one from
-  `Tls.server`. Its session lives from `accept` until `Net.close`. Closing
+  `Tls.server`. One task at a time drives the handshake: a read or write
+  from another task meanwhile waits for it to end (and takes over if it
+  was cancelled), so a reader and a writer in two tasks never both read
+  the inner connection for it. Its session lives from `accept` until `Net.close`. Closing
   the TLS listener closes `listener`, and its address is `listener`'s.
 - HTTPS is `Http.serve(Tls.listener(listener, identity), settings, handle)`:
   std/http needs nothing of its own, and the handshake falls under the
@@ -636,9 +639,9 @@ refuses the peer's versions.
 
 - Caching parsed roots and identities: each client parses its roots
   again, and each accepted connection its identity.
-- A deferred handshake driven from two tasks at once (one reading, one
-  writing before the first returns) may feed the session out of order.
-  `Http.serve` uses one task per connection, so it never does.
+- Stopping a deferred connection's reader before its handshake leaves the
+  handshake nothing to read, so a later write fails; with `Tls.server` the
+  handshake is already done by then.
 - Client certificates, ALPN, session resumption, and choosing suites.
 - An alert queued while reading (after a record fails to decrypt) is sent
   with the next write or close, not at once, because only the writer side
@@ -705,6 +708,7 @@ refuses the peer's versions.
 | TLS: no session outlives a failed or timed-out handshake, or `Net.close` | `tests/tls.rs` `no_session_outlives_its_connection_or_its_handshake` |
 | TLS: an OpenSSL server, TLS 1.3 with session tickets and TLS 1.2, twenty exchanges each | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
 | TLS: empty data records, and up to forty session tickets in one record, are read past | `tests/tls.rs` `the_engine_reads_past_records_without_data` |
+| TLS: a reader and a writer in two tasks share one deferred handshake | `tests/tls.rs` `a_deferred_handshake_is_driven_by_one_task_at_a_time` |
 | TLS: a listener's accept waits for no client; the first read, or a first write, handshakes; a client that does not speak TLS fails the first read; sessions freed; closing and the address pass through | `tests/tls.rs` `a_tls_listener_hands_over_connections_that_handshake_when_first_used` |
 | HTTPS: `Http.serve` over `Tls.listener` answers over loopback while a silent connection is open, and frees every session | `tests/tls.rs` `http_serve_over_a_tls_listener_is_https` |
 | HTTPS: an OpenSSL client, TLS 1.3 and TLS 1.2, verifying the authority and the host name | `tests/tls.rs` `an_openssl_client_talks_to_a_tls_listener` |

@@ -40,6 +40,8 @@ import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok, Result}
 import std/stream as Stream
+import std/watch as Watch
+import std/channel.{Receive}
 
 // 1. Public types.
 
@@ -147,8 +149,9 @@ pub fn server(connection: Connection, identity: Identity) -> Connection {
 /// timeouts, never the accept loop (as Go's `tls.NewListener` does). A
 /// handshake that fails there fails the read or write with
 /// `NetError.Failed`, naming what went wrong; after the handshake the
-/// connection behaves as one from `Tls.server`. Closing the listener closes
-/// `listener`.
+/// connection behaves as one from `Tls.server`. While one task drives the
+/// handshake, a read or write from another waits for it. Closing the
+/// listener closes `listener`.
 ///
 /// Fails with (from `Net.accept`): what `listener` fails with, and
 /// `NetError.Failed` when the session cannot be made; the accepted
@@ -197,15 +200,19 @@ fn secured(connection: Connection, host: Text, start: fn() -> TlsSession errors 
 }
 
 // A server connection whose handshake runs on its first read or write. A
-// finished handshake answers at once, so later calls cost one check.
+// finished handshake answers at once, so later calls cost a few checks.
+// `turns` counts the times a task gave up driving the handshake, so a task
+// that found another driving it waits for that one to finish instead of
+// reading the inner connection beside it.
 fn deferred(connection: Connection, session: TlsSession) -> Connection {
+  let turns = Watch.starting_with(0).publisher
   Net.connection(
     Stream.reader(fn() {
-      settle(connection, session)
+      settle(connection, session, turns)
       receive(connection, session)
     }, fn() { Stream.stop(Net.reader(connection)) }),
     Stream.writer(fn(bytes) {
-      settle(connection, session)
+      settle(connection, session, turns)
       send(connection, session, bytes)
     }, fn() { finish(connection, session) }),
     Net.local_address(connection),
@@ -217,8 +224,52 @@ fn deferred(connection: Connection, session: TlsSession) -> Connection {
   )
 }
 
-// The handshake of a deferred connection, failing as a connection does.
-fn settle(connection: Connection, session: TlsSession) -> Void {
+// The handshake of a deferred connection, driven by one task at a time and
+// failing as a connection does. The claim is given back however the drive
+// ends, a cancel or a timeout included, so a waiting task can take over.
+fn settle(connection: Connection, session: TlsSession, turns: Watch.Publisher<Int>) -> Void {
+  loop _waiting = True {
+    let seen = turn(turns)
+    case native_claim(session) {
+      True -> break Resource.scoped(fn() { Void }, fn(_) {
+        native_unclaim(session)
+        let _ = Result.capture(fn() { Watch.publish(turns, seen + 1) })
+        Void
+      }, fn(_) { drive(connection, session) })
+      False -> {
+        next_turn(turns, seen)
+        True
+      }
+    }
+  }
+}
+
+fn turn(turns: Watch.Publisher<Int>) -> Int {
+  case Result.capture(fn() { Watch.receive(Watch.subscribe(turns)) }) {
+    Ok(Receive.Received(count)) -> count
+    _ -> 0
+  }
+}
+
+// Waits until `turns` has moved past `seen`, or its watch has gone.
+fn next_turn(turns: Watch.Publisher<Int>, seen: Int) -> Void {
+  let _ = Result.capture(fn() {
+    let follower = Watch.subscribe(turns)
+    loop _waiting = True {
+      let received = Watch.receive(follower)
+      case received {
+        Receive.Received(count) -> case count == seen {
+          True -> True
+          False -> break Void
+        }
+        _ -> break Void
+      }
+    }
+  })
+  Void
+}
+
+fn drive(connection: Connection, session: TlsSession) -> Void {
   case Result.capture(fn() { handshake(connection, session, "") }) {
     Ok(_) -> Void
     Err(TlsError.Untrusted) -> failed("the client's certificate is not trusted")
@@ -347,5 +398,7 @@ native fn native_send(session: TlsSession, bytes: Bytes) -> Result<Void, (Int, T
 native fn native_receive(session: TlsSession) -> Result<(Int, Bytes), (Int, Text)>
 native fn native_close_notify(session: TlsSession) -> Void
 native fn native_handoff(session: TlsSession) -> Result<TlsSession, (Int, Text)>
+native fn native_claim(session: TlsSession) -> Bool
+native fn native_unclaim(session: TlsSession) -> Void
 native fn native_free(session: TlsSession) -> Void
 native fn native_live_sessions() -> Int

@@ -434,6 +434,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/tls.native_receive", 1, "tls", "chimi_tls_receive", false),
     binding("std/tls.native_close_notify", 1, "tls", "chimi_tls_close_notify", false),
     binding("std/tls.native_handoff", 1, "tls", "chimi_tls_handoff", false),
+    binding("std/tls.native_claim", 1, "tls", "chimi_tls_claim", false),
+    binding("std/tls.native_unclaim", 1, "tls", "chimi_tls_unclaim", false),
     binding("std/tls.native_free", 1, "tls", "chimi_tls_free", false),
     binding("std/tls.native_live_sessions", 0, "tls", "chimi_tls_live_sessions", true),
     // std/sqlite: the SQLite driver for std/sql, through vendored SQLite.
