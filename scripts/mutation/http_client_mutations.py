@@ -1,0 +1,142 @@
+"""Mutants of the std/http client (CHI-257): the URL parser, the request it
+writes, how it frames a reply's body, the replies it refuses, its limits and
+its timeout. A mutant that makes a wait hang shows as TIMEOUT, which counts
+as caught.
+
+Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/http_client_mutations.py
+Results: scripts/mutation/http_client_results.txt.
+"""
+
+CRATE = "compiler/chimi"
+
+HTTP = "std/http.chimi"
+
+CLIENT_TESTS = dict(targets=["http_client"], filter="")
+TLS_TESTS = dict(targets=["tls"], filter="http_send_over_https_checks_the_certificate")
+
+
+def mutant(name, old, new, tests=CLIENT_TESTS):
+    return dict(name=name, file=HTTP, edits=[(old, new)], **tests)
+
+
+MUTATIONS = [
+    # URLs.
+    mutant("https is sent as http",
+           "    (_, True) -> (True, drop_bytes(url, 8))",
+           "    (_, True) -> (False, drop_bytes(url, 8))",
+           TLS_TESTS),
+    mutant("the scheme must be lower case",
+           "  let lowered = ascii_lowercase(url)",
+           "  let lowered = url"),
+    mutant("a fragment is sent",
+           "    Some((before, _)) -> before\n    None -> rest\n  }\n  let (authority, target)",
+           "    Some((_, _)) -> rest\n    None -> rest\n  }\n  let (authority, target)"),
+    mutant("a query alone has no path",
+           "        True -> (authority, \"/${target}\")",
+           "        True -> (authority, target)"),
+    mutant("userinfo is allowed",
+           "    True -> Failure(HttpError.BadUrl(\"a user name or password in the URL\"))",
+           "    True -> Void"),
+    mutant("controls are allowed in a URL",
+           "    True -> Void\n    False -> Failure(HttpError.BadUrl(\"a space or control character\"))",
+           "    True -> Void\n    False -> Void"),
+    mutant("the default port is shown in host",
+           "  let shown = case port == default_port {",
+           "  let shown = case False {"),
+    mutant("port 65535 is refused",
+           "        Ok(number) -> case number >= 1 and number <= 65535 {",
+           "        Ok(number) -> case number >= 1 and number < 65535 {"),
+    mutant("port 0 is allowed",
+           "        Ok(number) -> case number >= 1 and number <= 65535 {",
+           "        Ok(number) -> case number >= 0 and number <= 65535 {"),
+    mutant("an IPv6 host keeps no brackets in host",
+           "    True -> \"[${host}]\"",
+           "    True -> host"),
+    mutant("text after an IPv6 address is allowed",
+           "        False -> Failure(HttpError.BadUrl(\"text after an IPv6 address\"))",
+           "        False -> (inside, None)"),
+    mutant("an empty host is allowed",
+           "  case Text.is_empty(host) or Text.contains(host, \"[\") or Text.contains(host, \"]\") {",
+           "  case Text.contains(host, \"[\") or Text.contains(host, \"]\") {"),
+    # The request.
+    mutant("the caller's host is overridden",
+           "    Some(_) -> []\n    None -> [(\"host\", target.authority)]",
+           "    Some(_) -> [(\"host\", target.authority)]\n    None -> [(\"host\", target.authority)]"),
+    mutant("framing headers are kept",
+           "    not is_framing_header(name)\n  })\n  let host",
+           "    True\n  })\n  let host"),
+    mutant("a POST without a body has no length",
+           "  let measured = not Bytes.is_empty(body) or List.contains([Method.Post, Method.Put, Method.Patch], method)",
+           "  let measured = not Bytes.is_empty(body)"),
+    mutant("a body is sent without a length",
+           "  let measured = not Bytes.is_empty(body) or List.contains([Method.Post, Method.Put, Method.Patch], method)",
+           "  let measured = List.contains([Method.Post, Method.Put, Method.Patch], method)"),
+    mutant("no connection: close",
+           "List.concat([host, given, length, [(\"connection\", \"close\")]])",
+           "List.concat([host, given, length])"),
+    mutant("headers are not checked",
+           "  let given = List.filter(List.map(headers, checked_header), fn(header) {",
+           "  let given = List.filter(headers, fn(header) {"),
+    mutant("a method that is not a token is sent",
+           "      False -> Debug.crash(\"Http: the method \\\"${name}\\\" is not a token\")",
+           "      False -> name"),
+    mutant("settings are not checked",
+           "    False -> Debug.crash(\"Http: max_head_bytes, max_headers and timeout must be positive, and max_body_bytes not negative\")",
+           "    False -> Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.timeout, settings.timeout)"),
+    # The reply.
+    mutant("interim replies are returned",
+           "          case status < 200 {\n            True -> rest",
+           "          case False {\n            True -> rest"),
+    mutant("101 is accepted",
+           "      case status == 101 {\n        True -> Failure(Refusal.Malformed(\"101 Switching Protocols\"))",
+           "      case False {\n        True -> Failure(Refusal.Malformed(\"101 Switching Protocols\"))"),
+    mutant("the header count is not limited",
+           "    [status_line, ..header_lines] -> {\n      case List.length(header_lines) > bounds.header_count {",
+           "    [status_line, ..header_lines] -> {\n      case False {"),
+    mutant("HTTP/2 is read as HTTP/1",
+           "  case (Text.starts_with(version, \"HTTP/1.\"), bytes) {",
+           "  case (Text.starts_with(version, \"HTTP/\"), bytes) {"),
+    mutant("a status above 599 is accepted",
+           "      Ok(status) -> case status >= 100 and status <= 599 {",
+           "      Ok(status) -> case status >= 100 {"),
+    mutant("a two-digit status is accepted",
+           "  case all_digits(code) and Text.byte_length(code) == 3 {",
+           "  case all_digits(code) and Text.byte_length(code) >= 2 {"),
+    mutant("a HEAD reply's body is read",
+           "  case (head_only or status == 204 or status == 304, List.last(codings), lengths) {",
+           "  case (status == 204 or status == 304, List.last(codings), lengths) {"),
+    mutant("a 304 reply's body is read",
+           "  case (head_only or status == 204 or status == 304, List.last(codings), lengths) {",
+           "  case (head_only or status == 204, List.last(codings), lengths) {"),
+    mutant("chunked is not decoded",
+           "    (False, Some(\"chunked\"), _) -> {\n      let (body, _) = read_chunked(reader, cursor, bounds)\n      body\n    }",
+           "    (False, Some(\"chunked\"), _) -> read_to_end(reader, cursor, bounds.body_bytes)"),
+    mutant("another coding is read by its length",
+           "    (False, Some(_), _) -> read_to_end(reader, cursor, bounds.body_bytes)",
+           "    (False, Some(_), _) -> Bytes.empty()"),
+    mutant("a conflicting length is accepted",
+           "    (False, None, [first, ..rest]) -> case List.all(rest, fn(other) { other == first }) {",
+           "    (False, None, [first, ..rest]) -> case True {"),
+    mutant("the body limit is not checked by length",
+           "        case length > bounds.body_bytes {\n          True -> Failure(Refusal.BodyTooLarge)",
+           "        case False {\n          True -> Failure(Refusal.BodyTooLarge)"),
+    mutant("the body limit is exclusive by length",
+           "        case length > bounds.body_bytes {\n          True -> Failure(Refusal.BodyTooLarge)",
+           "        case length >= bounds.body_bytes {\n          True -> Failure(Refusal.BodyTooLarge)"),
+    mutant("a body to the end is not limited",
+           "    case size > limit {\n      True -> Failure(Refusal.BodyTooLarge)\n      False -> Void\n    }\n    let read",
+           "    let read"),
+    mutant("a body to the end stops at the first read",
+           "      Some(chunk) -> (List.push(parts, chunk), size + Bytes.length(chunk))",
+           "      Some(chunk) -> break List.push(parts, chunk)"),
+    mutant("a non-numeric length reads to the end",
+           "      True -> Failure(Refusal.Malformed(\"content-length is not a number\"))\n      False -> read_to_end",
+           "      True -> read_to_end(reader, cursor, bounds.body_bytes)\n      False -> read_to_end"),
+    mutant("a malformed reply is a TooLarge",
+           "    Err(Refusal.Malformed(reason)) -> Failure(HttpError.BadReply(reason))",
+           "    Err(Refusal.Malformed(_)) -> Failure(HttpError.TooLarge)"),
+    # Time.
+    mutant("the exchange has no timeout",
+           "  Task.timeout(fn() {\n    exchange(reader, writer, request, method == Method.Head, bounds)\n  }, settings.timeout)",
+           "  exchange(reader, writer, request, method == Method.Head, bounds)"),
+]
