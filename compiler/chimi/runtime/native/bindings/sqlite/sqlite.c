@@ -91,16 +91,25 @@ ChimiBindingResult *chimi_sqlite_version(ChimiBindingCall *call) {
   return chimi_binding_success(call, chimi_binding_make_text(call, version, strlen(version)));
 }
 
-/* Refuses ATTACH, so a statement cannot open a file the files provider did
-   not check. */
+/* Whether the pragma `name` moves SQLite's files to a directory a statement
+   names, past the files provider. */
+static int moves_files(const char *name) {
+  return name && (sqlite3_stricmp(name, "temp_store_directory") == 0
+                  || sqlite3_stricmp(name, "data_store_directory") == 0);
+}
+
+/* Refuses ATTACH (which VACUUM INTO also asks for) and the pragmas that move
+   SQLite's files, so a statement cannot open a file in a directory the files
+   provider did not check. */
 static int refuse_attach(void *unused, int action, const char *a, const char *b, const char *c,
                          const char *d) {
   (void)unused;
-  (void)a;
   (void)b;
   (void)c;
   (void)d;
-  return action == SQLITE_ATTACH ? SQLITE_DENY : SQLITE_OK;
+  if (action == SQLITE_ATTACH) return SQLITE_DENY;
+  if (action == SQLITE_PRAGMA && moves_files(a)) return SQLITE_DENY;
+  return SQLITE_OK;
 }
 
 /* native_open(target: Text) -> Result<SqliteDb, (Int, Text)>: opens or

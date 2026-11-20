@@ -443,8 +443,11 @@ source, checksum and compile options). The design note is
   `SqlError.ConnectFailed`. The check is of the path's text at connect time:
   SQLite opens the file itself, follows symbolic links, and keeps its `-wal`
   and `-shm` files beside it, none of which the provider sees.
-- A statement MUST NOT reach another file: `ATTACH` and `VACUUM INTO` fail
-  with `Rejected("SQLITE_AUTH", ...)`.
+- A statement MUST NOT reach another file: `ATTACH`, `VACUUM INTO` and the
+  pragmas that move SQLite's files (`temp_store_directory`,
+  `data_store_directory`) fail with `Rejected("SQLITE_AUTH", ...)`. SQLite
+  still writes unnamed temporary files for large sorts and temporary tables
+  in the system's temporary directory.
 - A target is a file path, created when it is missing, or `:memory:`. URIs
   are not taken: a target that starts with `file:` is a file name. Each
   connection to `:memory:` has its own database.
@@ -460,7 +463,8 @@ source, checksum and compile options). The design note is
   statement changes nothing.
 - Parameters bind by position, whatever SQLite placeholder the statement
   uses. A count that differs from the statement's MUST fail with
-  `Rejected("SQLITE_RANGE", ...)` before the statement runs.
+  `Rejected("SQLITE_RANGE", ...)` before the statement runs; a text with no
+  statement takes none.
 - `affected` is the number of rows the statement changed, and 0 for one that
   changed none (a read, or `CREATE TABLE` after a write).
 - A statement is finalized however its run ends: a failure, a cancel, or its
@@ -480,7 +484,8 @@ source, checksum and compile options). The design note is
   number in a `DECIMAL` column as INTEGER or REAL, so a column that must keep
   every digit is declared `DECIMAL_TEXT`, which has text affinity. A REAL
   read as a `Decimal` is read without its exponent, so `1e+20` is
-  `100000000000000000000`.
+  `100000000000000000000`; one beyond a `Decimal`'s 38 digits fails with
+  `SqlError.Failed`.
 - A REAL that a `Float` cannot hold (an infinity), and text that is not
   UTF-8, MUST fail with `SqlError.Failed` naming the column.
 

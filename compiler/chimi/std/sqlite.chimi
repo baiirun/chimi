@@ -150,7 +150,7 @@ fn allowed(files: Files, target: Text) -> Void {
 fn reason(failure: SqlError) -> Text {
   case failure {
     SqlError.Rejected(_, message) -> message
-    SqlError.Failed(message) -> message
+    SqlError.Failed(message) -> Option.unwrap_or(Text.strip_prefix(message, "SQLite: "), message)
     SqlError.Conflict(message) -> message
     _ -> "the connection could not be set up"
   }
@@ -313,7 +313,10 @@ fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
       True -> Try.Locked(message)
       False -> failed(code, message)
     }
-    Ok(None) -> Try.Ran(Answer([], [], 0))
+    Ok(None) -> case params {
+      [] -> Try.Ran(Answer([], [], 0))
+      _ -> Failure(SqlError.Rejected("SQLITE_RANGE", "the statement takes 0 parameters, and ${List.length(params)} were given"))
+    }
     Ok(Some(handle)) -> Resource.scoped(fn() { handle }, native_finalize, fn(prepared_statement) {
       bind_all(prepared_statement, params)
       let columns = native_columns(prepared_statement)

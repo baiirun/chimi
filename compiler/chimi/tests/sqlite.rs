@@ -235,6 +235,7 @@ test "the parameters must match the placeholders" {
   memory(fn(db) {
     Test.assert_equal(failure(fn() { Sql.query(db, "select ?, ?", [Value.Int(1)]) }), SqlError.Rejected("SQLITE_RANGE", "the statement takes 2 parameters, and 1 were given"))
     Test.assert_equal(failure(fn() { Sql.query(db, "select 1", [Value.Int(1)]) }), SqlError.Rejected("SQLITE_RANGE", "the statement takes 0 parameters, and 1 were given"))
+    Test.assert_equal(failure(fn() { Sql.execute(db, "-- nothing", [Value.Int(1)]) }), SqlError.Rejected("SQLITE_RANGE", "the statement takes 0 parameters, and 1 were given"))
   })
 }
 
@@ -467,6 +468,7 @@ test "a statement cannot reach another database file" {
   database(fn(db) {
     Test.assert_equal(failure(fn() { Sql.execute(db, "attach database '/tmp/chimi-attach.db' as other", []) }), SqlError.Rejected("SQLITE_AUTH", "not authorized"))
     Test.assert_equal(failure(fn() { Sql.execute(db, "vacuum into '/tmp/chimi-vacuum.db'", []) }), SqlError.Rejected("SQLITE_AUTH", "authorization denied"))
+    Test.assert_equal(failure(fn() { Sql.execute(db, "pragma temp_store_directory = '/tmp'", []) }), SqlError.Rejected("SQLITE_AUTH", "not authorized"))
   })
 }
 
