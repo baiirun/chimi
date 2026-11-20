@@ -1081,6 +1081,7 @@ test "a stream cannot be 204 or 304, and its body reads as empty" {
   Test.capture_defect(fn() { Http.streamed(304, [], fn(_out) { Void }) }) |> Test.assert_equal("Http: a 304 response has no body to stream")
   Http.response_body(Http.streamed(200, [], fn(_out) { Void })) |> Test.assert_equal(Bytes.empty())
   Http.status(Http.streamed(201, [("X-A", "b")], fn(_out) { Void })) |> Test.assert_equal(201)
+  Test.capture_defect(fn() { Http.streamed(700, [], fn(_out) { Void }) }) |> Test.assert_equal("Http: the status 700 is outside 200 to 599")
 }
 
 test "a client that leaves ends the stream at once" {
