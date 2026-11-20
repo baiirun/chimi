@@ -10,6 +10,7 @@ mod process_abi;
 #[cfg(test)]
 mod process_tests;
 mod reactor;
+mod ready;
 #[cfg(test)]
 mod reactor_tests;
 #[cfg(test)]
@@ -49,7 +50,7 @@ use crate::{
     ChimiFiber, ChimiFiberCommand, ChimiFiberConfig, ChimiFiberEntry, ChimiFiberEvent,
     ChimiFiberState, chimi_fiber_create, chimi_fiber_destroy, chimi_fiber_resume,
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -506,22 +507,63 @@ pub enum SchedulerError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskPhase {
     Runnable,
+    /// Its fiber is being resumed. With one carrier no other scheduler code
+    /// runs meanwhile, so nothing observes it; with several, a cancel,
+    /// force or defect decided elsewhere is recorded in `command` and the
+    /// task's flags and takes effect at its next park, as for `Runnable`.
+    Running,
     Parked,
     Draining(TaskOutcome),
     Terminal(TaskOutcome),
 }
 
-struct OwnedFiber(NonNull<ChimiFiber>);
+impl TaskPhase {
+    /// True while the task's fiber can still run: it is ready, running or
+    /// parked, not draining or terminal.
+    fn is_live(self) -> bool {
+        matches!(self, Self::Runnable | Self::Running | Self::Parked)
+    }
+}
 
-impl OwnedFiber {
+/// The carrier thread a fiber belongs to: the one that first resumed it. A
+/// started fiber's stack holds that thread's host frames and C runtime
+/// state, so it must be resumed and destroyed there and nowhere else
+/// (parallel-scheduler.md, "Step 3 plan"). An unstarted fiber has no home
+/// yet and may be handed to another carrier.
+#[derive(Debug, Default)]
+struct Home(Option<std::thread::ThreadId>);
+
+impl Home {
+    /// Claims the current thread on the first call. Ensures: false when a
+    /// later call comes from another thread.
+    fn enter(&mut self) -> bool {
+        let here = std::thread::current().id();
+        *self.0.get_or_insert(here) == here
+    }
+
+    /// True when the fiber never ran or runs on the current thread.
+    fn is_here(&self) -> bool {
+        self.0.is_none_or(|home| home == std::thread::current().id())
+    }
+}
+
+struct PinnedFiber {
+    home: Home,
+    fiber: NonNull<ChimiFiber>,
+}
+
+impl PinnedFiber {
     fn new(
         entry: ChimiFiberEntry,
         context: *mut c_void,
         config: ChimiFiberConfig,
     ) -> Result<Self, SchedulerError> {
-        let pointer = NonNull::new(unsafe { chimi_fiber_create(Some(entry), context, config) })
+        let fiber = NonNull::new(unsafe { chimi_fiber_create(Some(entry), context, config) })
             .ok_or(SchedulerError::FiberCreationFailed)?;
-        Ok(Self(pointer))
+        Ok(Self {
+            home: Home::default(),
+            fiber,
+        })
     }
 
     fn resume(
@@ -529,15 +571,17 @@ impl OwnedFiber {
         command: ChimiFiberCommand,
         context: scope::ResumeContext,
     ) -> ChimiFiberEvent {
+        assert!(self.home.enter(), "a fiber resumed off its home carrier");
         scope::set_resume_context(context);
-        unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
+        unsafe { chimi_fiber_resume(self.fiber.as_ptr(), command as u32) }
     }
 }
 
-impl Drop for OwnedFiber {
+impl Drop for PinnedFiber {
     fn drop(&mut self) {
+        assert!(self.home.is_here(), "a fiber destroyed off its home carrier");
         unsafe {
-            chimi_fiber_destroy(self.0.as_ptr());
+            chimi_fiber_destroy(self.fiber.as_ptr());
         }
     }
 }
@@ -550,7 +594,7 @@ struct Task {
     waiting_any: Vec<TaskId>,
     /// Stamped when the task becomes terminal; orders `REQUEST_TASK_ANY`.
     terminal_sequence: u64,
-    fiber: Option<OwnedFiber>,
+    fiber: Option<PinnedFiber>,
     phase: TaskPhase,
     observed: bool,
     /// No value names this task any more (`Scheduler::release_task`): once
@@ -585,6 +629,9 @@ struct Task {
     /// The outcome of a cancellation that waits for the task's releases
     /// (`Scheduler::cancel_task`).
     terminating: Option<TaskOutcome>,
+    /// The carrier whose ready queue holds this task, and whose thread its
+    /// fiber runs on: its parent's, or the current one for a root.
+    carrier: ready::Carrier,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -709,7 +756,9 @@ impl TaskValue {
 
 pub struct Scheduler {
     tasks: BTreeMap<TaskId, Task>,
-    runnable: VecDeque<TaskId>,
+    ready: ready::ReadyQueues,
+    /// The carrier running this scheduler's loop now.
+    current: ready::Carrier,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -819,7 +868,8 @@ impl Scheduler {
         );
         Self {
             tasks: BTreeMap::new(),
-            runnable: VecDeque::new(),
+            ready: ready::ReadyQueues::new(1),
+            current: ready::Carrier::default(),
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -1096,7 +1146,7 @@ impl Scheduler {
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
-        while let Some(task) = self.runnable.pop_front() {
+        while let Some(task) = self.ready.pop_front(self.current) {
             self.run(task);
             self.remove_released_terminal();
             self.collect_user_signals();
@@ -1126,10 +1176,11 @@ impl Scheduler {
             .ok_or(SchedulerError::UnknownTask(task))?;
         if record.phase == TaskPhase::Parked {
             record.phase = TaskPhase::Runnable;
+            let carrier = record.carrier;
             if front {
-                self.runnable.push_front(task);
+                self.ready.push_front(carrier, task);
             } else {
-                self.runnable.push_back(task);
+                self.ready.push_back(carrier, task);
             }
             self.emit(task, TaskEventKind::Woken, None, true);
         }
@@ -1600,7 +1651,8 @@ impl Scheduler {
     ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
         let started_at = self.channels.tick();
-        let fiber = OwnedFiber::new(
+        let carrier = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);
+        let fiber = PinnedFiber::new(
             entry,
             context,
             ChimiFiberConfig {
@@ -1642,6 +1694,7 @@ impl Scheduler {
                 io_wait: None,
                 started_at,
                 terminating: None,
+                carrier,
             },
         );
         if let Some(parent) = parent {
@@ -1652,7 +1705,7 @@ impl Scheduler {
                 .insert(id);
         }
         self.peak_tasks = self.peak_tasks.max(self.tasks.len());
-        self.runnable.push_back(id);
+        self.ready.push_back(carrier, id);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
     }
@@ -1671,6 +1724,7 @@ impl Scheduler {
             return;
         };
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
+        record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
@@ -2177,6 +2231,10 @@ impl Scheduler {
 
         let mut cleanup_parked = false;
         if !fiber_is_terminal {
+            // Another task's fiber resumed inline: it must be on its home
+            // carrier. With several carriers this becomes a job for that
+            // carrier (parallel-scheduler.md, "Step 3 plan", PR 5).
+            debug_assert_eq!(self.tasks[&task].carrier, self.current, "inline resume off home");
             self.emit(
                 task,
                 TaskEventKind::CancellationRequested,
@@ -2295,9 +2353,10 @@ impl Scheduler {
                 .waiting_on = None;
             match outcome {
                 TaskOutcome::Succeeded(_) => {
-                    self.tasks.get_mut(&parent).expect("waiting parent").phase =
-                        TaskPhase::Runnable;
-                    self.runnable.push_back(parent);
+                    let record = self.tasks.get_mut(&parent).expect("waiting parent");
+                    record.phase = TaskPhase::Runnable;
+                    let carrier = record.carrier;
+                    self.ready.push_back(carrier, parent);
                     self.emit(parent, TaskEventKind::Woken, Some(task), true);
                 }
                 TaskOutcome::Cancelled => {
@@ -2309,10 +2368,7 @@ impl Scheduler {
             }
         } else if outcome.is_defect()
             && let Some(parent) = parent.filter(|parent| {
-                matches!(
-                    self.tasks.get(parent).map(|record| record.phase),
-                    Some(TaskPhase::Runnable | TaskPhase::Parked)
-                )
+                self.tasks.get(parent).is_some_and(|record| record.phase.is_live())
             })
             && !self.absorbs_child_defect(parent)
         {
@@ -2378,7 +2434,7 @@ impl Scheduler {
             .unwrap_or_default();
         for child in children {
             match self.tasks.get(&child).map(|record| record.phase) {
-                Some(TaskPhase::Runnable | TaskPhase::Parked) => {
+                Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked) => {
                     self.force_terminal(child, TaskOutcome::Cancelled, false);
                 }
                 Some(TaskPhase::Draining(_)) => self.force_live_descendants(child),
@@ -2392,7 +2448,7 @@ impl Scheduler {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
                 self.tasks.get(child).is_some_and(|record| {
-                    matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
+                    record.phase.is_live()
                 }) || self.has_live_descendants(*child)
             })
         })
@@ -2469,10 +2525,7 @@ impl Scheduler {
         let Some(owner) = owner else {
             return;
         };
-        if matches!(
-            self.tasks.get(&owner).map(|record| record.phase),
-            Some(TaskPhase::Runnable | TaskPhase::Parked)
-        ) {
+        if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
@@ -2782,6 +2835,28 @@ fn cause(outcome: TaskOutcome) -> Option<TaskId> {
 mod tests {
     use super::*;
     use crate::{ChimiFiberResult, FIXTURE_LOCK};
+
+    /// A fiber's home is the thread of its first resume: later resumes and
+    /// its destruction must come from that thread, and a fiber that never ran
+    /// can go anywhere.
+    #[test]
+    fn a_fiber_home_is_the_thread_of_its_first_resume() {
+        let mut home = Home::default();
+        assert!(home.is_here(), "an unstarted fiber may be destroyed anywhere");
+        let mut elsewhere = std::thread::spawn(move || {
+            assert!(home.enter());
+            assert!(home.enter());
+            home
+        })
+        .join()
+        .expect("first carrier");
+        assert!(!elsewhere.is_here());
+        assert!(!elsewhere.enter());
+        let mut fresh = Home::default();
+        std::thread::spawn(move || assert!(fresh.enter()))
+            .join()
+            .expect("an unstarted fiber may move");
+    }
 
     unsafe extern "C" {
         fn chimi_fixture_generated_entry(context: *mut std::ffi::c_void) -> ChimiFiberResult;
