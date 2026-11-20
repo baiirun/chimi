@@ -53,5 +53,5 @@ KILLED       a two-digit status is accepted [http_client] (52s)  # at bc4561a, a
 KILLED       a non-numeric length reads to the end [http_client] (53s)  # at bc4561a, after tests were added for this survivor
 KILLED       brackets need not hold an IPv6 address [http_client] (53s)  # at bc4561a, after tests were added for this survivor
 KILLED       HTTP/2 is read as HTTP/1 [http_client] (53s)  # at bc4561a, after tests were added for this survivor
-KILLED       CONNECT is sent [http_client] (52s)  # at bc4561a, after tests were added for this survivor
+KILLED       CONNECT is sent [http_client] (52s)  # added at e89089a with the CONNECT refusal
 # result: every mutant killed (52 of 52; 4 first-run survivors killed by tests added at bc4561a, and CONNECT added then)
