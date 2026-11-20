@@ -677,10 +677,7 @@ impl Scheduler {
         self.set_signal_root(root);
         loop {
             let root_live = |scheduler: &Self| {
-                matches!(
-                    scheduler.tasks.get(&root).map(|record| record.phase),
-                    Some(TaskPhase::Runnable | TaskPhase::Parked)
-                )
+                scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
             };
             match self.run_until_idle() {
                 Idle::AwaitingHost => continue,
@@ -717,7 +714,7 @@ impl Scheduler {
                 continue;
             }
             self.shutdown_processes();
-            if !self.has_blocked_plans() && self.runnable.is_empty() {
+            if !self.has_blocked_plans() && self.ready.is_empty() {
                 break;
             }
         }

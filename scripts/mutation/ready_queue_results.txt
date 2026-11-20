@@ -1,0 +1,13 @@
+# mutation run at 1f2962bd6105ca86042ebb7f421485d353026866
+# ready_queue_mutations.py: 6 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_fiber_home_is_the_thread_of_its_first_resume] (15s)
+BASELINE ok  [lib -- each_carrier_keeps_its_own_order] (0s)
+BASELINE ok  [lib -- select_tests] (0s)
+KILLED       a fiber's home is never claimed [lib -- a_fiber_home_is_the_thread_of_its_first_resume] (6s)
+KILLED       a fiber may be destroyed anywhere [lib -- a_fiber_home_is_the_thread_of_its_first_resume] (6s)
+KILLED       a front push goes to the back [lib -- each_carrier_keeps_its_own_order] (5s)
+KILLED       remove takes only the front [lib -- each_carrier_keeps_its_own_order] (4s)
+KILLED       is_empty looks at carrier 0 only [lib -- each_carrier_keeps_its_own_order] (4s)
+SURVIVED     a woken task goes to the current carrier [lib -- select_tests] (3s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# The survivor is expected: with one carrier every task's carrier is the current one. PR 5's two-carrier tests must kill it.
