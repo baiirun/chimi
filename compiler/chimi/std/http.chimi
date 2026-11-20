@@ -20,7 +20,8 @@
 /// Each connection runs in its own process and keeps its connection open
 /// between requests (keep-alive) unless the client or the handler asks to
 /// close it. A request's body is read whole before the handler runs, up to a
-/// limit. A malformed request gets the matching error status (400, 413, 431,
+/// limit; a response's body is whole, or written while it is sent with
+/// `Http.streamed`. A malformed request gets the matching error status (400, 413, 431,
 /// 501 or 505) and its connection is closed; a handler's expected failure
 /// answers 500.
 /// A handler's defect ends only its own connection, which closes without an
@@ -81,11 +82,20 @@ pub struct Request {
   body: Bytes,
 }
 
-/// One response. Build it with `Http.response` or `Http.text`.
+/// One response. Build it with `Http.response`, `Http.text` or
+/// `Http.streamed`.
 pub struct Response {
   status: Int,
   headers: List<(Text, Text)>,
-  body: Bytes,
+  body: Body,
+}
+
+// A response's body: whole, or written by a producer while it is sent, which
+// returns whether it finished (a failure inside it is caught by
+// `Http.streamed`, so the server only has to know whether to end the body).
+enum Body {
+  Whole(bytes: Bytes)
+  Streamed(produce: fn(Writer<NetError>) -> Bool)
 }
 
 // 2. Reading requests.
@@ -158,7 +168,55 @@ pub fn request(method: Method, path: List<Text>, query: Text, headers: List<(Tex
 /// 304 keeps a `content-length` the handler gives.
 /// Cost: O(n) in the headers.
 pub fn response(status: Int, headers: List<(Text, Text)>, body: Bytes) -> Response {
-  Response(checked_status(status), List.map(headers, checked_header), body)
+  Response(checked_status(status), List.map(headers, checked_header), Body.Whole(body))
+}
+
+/// A response whose body `produce` writes while it is sent, for a body too
+/// large to hold or not known yet, such as a large export or a stream of
+/// events. The server sends the head, then calls `produce` with a writer for
+/// the body, and the body ends when `produce` returns. On HTTP/1.1 the body
+/// is sent chunked, one chunk per write, and the connection stays open for
+/// the next request; on HTTP/1.0 the connection closes after the body.
+/// `produce` is not called for a `HEAD` request. `Stream.close` on the writer
+/// does nothing; only returning ends the body.
+///
+/// Each write must reach the client within the server's `write_timeout`, and
+/// the response as a whole has no time limit. If `produce` fails, or a write
+/// does, the connection closes without ending the body, so the client sees
+/// the response cut short rather than complete.
+///
+/// `produce` runs after the handler has returned, so it cannot name a
+/// capability in a `needs` row: capture the capability while the handler
+/// builds the response and supply it inside, as in
+/// `let given = clock` and `Clock.sleep(pause) using { clock: given }`.
+///
+/// ```text
+/// fn events(request: Request) -> Response needs { clock: Clock } {
+///   let given = clock
+///   Http.streamed(200, [("content-type", "text/event-stream")], fn(out) {
+///     List.each([1, 2, 3], fn(n) {
+///       Stream.write(out, Bytes.from_text("data: ${n}\n\n"))
+///       Clock.sleep(Duration.seconds(1)) using { clock: given }
+///     })
+///   })
+/// }
+/// ```
+///
+/// Defects when: as for `Http.response`, and when `status` is 204 or 304,
+/// which have no body.
+/// Calls: `produce` once per response sent, after the head.
+/// Cost: O(n) in the headers.
+pub fn streamed<E>(status: Int, headers: List<(Text, Text)>, produce: fn(Writer<NetError>) -> Void errors E) -> Response {
+  let checked = case status == 204 or status == 304 {
+    True -> Debug.crash("Http: a ${status} response has no body to stream")
+    False -> checked_status(status)
+  }
+  Response(checked, List.map(headers, checked_header), Body.Streamed(fn(out) {
+    case Result.capture(fn() { produce(out) }) {
+      Ok(_) -> True
+      Err(_) -> False
+    }
+  }))
 }
 
 /// A plain-text response: `text` as UTF-8, with
@@ -184,11 +242,15 @@ pub fn response_headers(response: Response) -> List<(Text, Text)> {
   response.headers
 }
 
-/// The response's body.
+/// The response's body; empty for a streamed response, whose body exists
+/// only while it is sent.
 ///
 /// Cost: O(1).
 pub fn response_body(response: Response) -> Bytes {
-  response.body
+  case response.body {
+    Body.Whole(bytes) -> bytes
+    Body.Streamed(_) -> Bytes.empty()
+  }
 }
 
 // 4. Serving.
@@ -487,10 +549,8 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
       }
       Next.Arrived(request, keep_alive, minor, rest) -> {
         let answer = answer(request, handle)
-        let keep = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close") and not draining_now(signals)
-        Task.timeout(fn() {
-          write_response(writer, answer, now(), keep, minor, request.method == Method.Head)
-        }, bounds.write)
+        let asked = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close") and not draining_now(signals)
+        let keep = send(writer, answer, asked, minor, request.method == Method.Head, bounds.write)
         case keep {
           True -> rest
           False -> {
@@ -1111,6 +1171,87 @@ fn hex_digit(byte: Int) -> Int {
 
 // 9. Writing a response.
 
+// Writes `response`, and returns whether the connection stays open after it:
+// `keep_alive` unless the response is streamed on HTTP/1.0, which only the
+// end of the connection can end, or its producer did not finish.
+fn send(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: Int, head_only: Bool, limit: Duration) -> Bool needs {
+  clock: Clock
+} {
+  let keep = keep_alive and (minor == 1 or not is_streamed(response))
+  Task.timeout(fn() {
+    write_response(writer, response, now(), keep, minor, head_only)
+  }, limit)
+  case (response.body, head_only) {
+    (Body.Streamed(produce), False) -> {
+      let given = clock
+      let chunked = minor == 1
+      case produce(body_writer(writer, chunked, limit, given)) {
+        True -> {
+          case chunked {
+            True -> timed_write(writer, Bytes.from_text("0\r\n\r\n"), limit, given)
+            False -> Void
+          }
+          keep
+        }
+        False -> False
+      }
+    }
+    _ -> keep
+  }
+}
+
+fn is_streamed(response: Response) -> Bool {
+  case response.body {
+    Body.Whole(_) -> False
+    Body.Streamed(_) -> True
+  }
+}
+
+// The writer a producer writes a streamed body to: each write is one chunk
+// on HTTP/1.1 and raw bytes on HTTP/1.0, and must finish within `limit`.
+// Closing it does nothing, since the server ends the body.
+fn body_writer(writer: Writer<NetError>, chunked: Bool, limit: Duration, given: Clock) -> Writer<NetError> {
+  Stream.writer(fn(bytes) {
+    let framed = case chunked {
+      True -> Bytes.concat([Bytes.from_text("${hex(Bytes.length(bytes))}\r\n"), bytes, Bytes.from_text("\r\n")])
+      False -> bytes
+    }
+    timed_write(writer, framed, limit, given)
+  }, fn() { Void })
+}
+
+// Writes `bytes`, failing with `NetError.TimedOut` when that takes longer
+// than `limit`.
+fn timed_write(writer: Writer<NetError>, bytes: Bytes, limit: Duration, given: Clock) -> Void {
+  let written = Result.capture(fn() {
+    Task.timeout(fn() {
+      Result.capture(fn() { Stream.write(writer, bytes) })
+    }, limit) using { clock: given }
+  })
+  case written {
+    Ok(Ok(_)) -> Void
+    Ok(Err(error)) -> Failure(error)
+    Err(_) -> Failure(NetError.TimedOut)
+  }
+}
+
+// A positive `value` in lowercase hexadecimal.
+fn hex(value: Int) -> Text {
+  let digits = loop state = (value, []) {
+    let (left, digits) = state
+    let digit = case List.get(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"], left % 16) {
+      Some(digit) -> digit
+      None -> Debug.crash("Http: no hexadecimal digit for ${left}")
+    }
+    let more = List.concat([[digit], digits])
+    case left < 16 {
+      True -> break more
+      False -> (left / 16, more)
+    }
+  }
+  Text.concat(digits)
+}
+
 // Headers that frame the message or manage the connection, which the server
 // writes itself.
 fn is_framing_header(name: Text) -> Bool {
@@ -1136,7 +1277,11 @@ fn write_response(writer: Writer<NetError>, response: Response, date: Text, keep
       Some(length) -> [("content-length", length)]
       None -> []
     }
-    _ -> [("content-length", Int.to_text(Bytes.length(response.body)))]
+    _ -> case (response.body, minor) {
+      (Body.Whole(bytes), _) -> [("content-length", Int.to_text(Bytes.length(bytes)))]
+      (Body.Streamed(_), 1) -> [("transfer-encoding", "chunked")]
+      (Body.Streamed(_), _) -> []
+    }
   }
   let connection = case (keep_alive, minor) {
     (False, _) -> [("connection", "close")]
@@ -1148,9 +1293,9 @@ fn write_response(writer: Writer<NetError>, response: Response, date: Text, keep
     "${name}: ${value}\r\n"
   })
   let head = Text.concat(List.concat([["HTTP/1.1 ${response.status} ${reason(response.status)}\r\n"], lines, ["\r\n"]]))
-  let body = case head_only or response.status == 204 or response.status == 304 {
-    True -> Bytes.empty()
-    False -> response.body
+  let body = case (response.body, head_only or response.status == 204 or response.status == 304) {
+    (Body.Whole(bytes), False) -> bytes
+    _ -> Bytes.empty()
   }
   Stream.write(writer, Bytes.append(Bytes.from_text(head), body))
 }

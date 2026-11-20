@@ -966,3 +966,124 @@ test "busy connections drain together" {
     );
     assert_passed(&run, 8);
 }
+
+// Rejects a streamed response that is framed wrongly (chunk sizes, the last
+// chunk, HTTP/1.0 without a close, a body for HEAD), that keeps a
+// connection open after a failed producer, that bounds the whole response by
+// the write limit instead of each write, or that lets a client which stops
+// reading hold the connection forever.
+#[test]
+fn a_streamed_response_is_sent_chunked_as_it_is_written() {
+    let run = run_tests(
+        "streamed",
+        r#"
+fn streaming(request: Request) -> Response needs { clock: Clock } {
+  let given = clock
+  case Http.path(request) {
+    ["count"] -> Http.streamed(200, [("content-type", "text/plain")], fn(out) {
+      List.each(["one", "two", "three"], fn(word) {
+        Stream.write(out, Bytes.from_text(word))
+        Clock.sleep(Duration.milliseconds(5)) using { clock: given }
+      })
+    })
+    ["fail"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text("partial"))
+      Failure(Broken.Broken)
+    })
+    ["big"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text(Text.repeat("x", 300)))
+    })
+    _ -> Http.text(200, "plain")
+  }
+}
+
+fn stream_exchange(raw: Text) -> Text needs { clock: Clock } {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, streaming) })
+  Stream.write(Net.writer(client), Bytes.from_text(raw))
+  Stream.close(Net.writer(client))
+  let answer = Stream.read_all(Net.reader(client), 33554432)
+  Task.result(serving)
+  undated(answer)
+}
+
+test "chunked" {
+  stream_exchange("GET /count HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n5\r\nthree\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
+}
+
+test "big" {
+  stream_exchange("GET /big HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n12c\r\n${Text.repeat("x", 300)}\r\n0\r\n\r\n")
+}
+
+test "http 1.0" {
+  stream_exchange("GET /count HTTP/1.0\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\nonetwothree")
+}
+
+test "head" {
+  stream_exchange("HEAD /count HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
+}
+
+test "failure cuts it short" {
+  stream_exchange("GET /fail HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n7\r\npartial\r\n")
+}
+
+test "http 1.0 keep-alive still closes" {
+  stream_exchange("GET /count HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /other HTTP/1.0\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\nonetwothree")
+}
+
+fn slow_stream(request: Request) -> Response needs { clock: Clock } {
+  let given = clock
+  case Http.path(request) {
+    ["slow"] -> Http.streamed(200, [], fn(out) {
+      List.each([1, 2, 3, 4, 5], fn(_n) {
+        Clock.sleep(Duration.seconds(30)) using { clock: given }
+        Stream.write(out, Bytes.from_text("."))
+      })
+    })
+    _ -> Http.streamed(200, [], fn(out) {
+      loop _more = True {
+        Stream.write(out, Bytes.from_text(Text.repeat("y", 1000)))
+        True
+      }
+    })
+  }
+}
+
+test "a slow stream may outlast the write limit" {
+  let (client, server) = Net.pair(64)
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, slow_stream) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /slow HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+  let answer = undated(Stream.read_all(Net.reader(client), 1024))
+  Stream.close(Net.writer(client))
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(150))
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n1\r\n.\r\n1\r\n.\r\n1\r\n.\r\n1\r\n.\r\n1\r\n.\r\n0\r\n\r\n")
+}
+
+test "an endless stream to a client that never reads is dropped after the write limit" {
+  let (client, server) = Net.pair(8)
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, slow_stream) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /endless HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.seconds(62))
+}
+
+test "a stream cannot be 204 or 304, and its body reads as empty" {
+  Test.capture_defect(fn() { Http.streamed(204, [], fn(_out) { Void }) }) |> Test.assert_equal("Http: a 204 response has no body to stream")
+  Test.capture_defect(fn() { Http.streamed(304, [], fn(_out) { Void }) }) |> Test.assert_equal("Http: a 304 response has no body to stream")
+  Http.response_body(Http.streamed(200, [], fn(_out) { Void })) |> Test.assert_equal(Bytes.empty())
+  Http.status(Http.streamed(201, [("X-A", "b")], fn(_out) { Void })) |> Test.assert_equal(201)
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 9);
+}
