@@ -139,6 +139,8 @@ test "every kind of value comes back as it went in" {
     let row = Sql.one(db, "select * from things", [])
     Test.assert_equal(Sql.values(row), params)
     Test.assert_equal(Sql.columns(row), ["i", "b", "f", "d", "n", "t", "x", "e", "z"])
+    let precise = [Value.Float(0.30000000000000004), Value.Float(1.0000000000000002), Value.Float(-123456789.12345679)]
+    Test.assert_equal(Sql.values(Sql.one(db, "select ?, ?, ?", precise)), precise)
   })
 }
 
