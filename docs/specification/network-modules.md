@@ -7,8 +7,9 @@ This is the normative contract for the Phase 7b network modules of the
 the modules a service uses to talk over the network. It covers `std/net`
 (CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
 driver-independent layer (CHI-258), and `std/tls`'s client, server and
-listener (HTTPS serving), and `std/sqlite`, the SQLite driver for `std/sql`.
-The HTTP client and the Postgres driver add their sections as they land.
+listener (HTTPS serving), the `std/http` client, and `std/sqlite`, the
+SQLite driver for `std/sql`. The Postgres driver adds its section when it
+lands.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -324,7 +325,115 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   safe to. The same holds for a connection accepted as the listener closes
   whose request has not been read yet; Go instead treats a new connection
   as busy for its first 5 s.
-- The HTTP client. HTTPS serving is `Tls.listener` (see std/tls).
+
+## std/http (client)
+
+`Http.send(method, url, headers, body, settings) -> Response` sends one
+request and returns the reply with its body read whole, needing
+`{ network: Network, clock: Clock }`. The reply is the server's `Response`,
+read with `Http.status`, `Http.response_headers`, `Http.response_header` and
+`Http.response_body`, so a test can compare what a handler returns with what
+a client receives. There is one function, not `get` and `post` twins.
+`settings` is a record updated from `Http.client_defaults`: `roots`
+(`Tls.defaults.roots`), `timeout` (30 s), `max_head_bytes` (64 KiB),
+`max_headers` (100) and `max_body_bytes` (8 MiB).
+
+`Http.send_over(connection, method, url, headers, body, settings)` makes the
+same exchange over a connection the caller opened and closes, for tests over
+`Net.pair` and for tunnels. It needs only `clock`. `send` is `send_over` on a
+connection it opens itself, wrapped with `Tls.client` for `https`, the
+client's twin of `serve` and `serve_connection`.
+
+### URLs
+
+- A URL MUST be `http://` or `https://` (the scheme in any case), a host, an
+  optional port from 1 to 65535, and an optional path and query. The default
+  ports are 80 and 443, and an empty port is the default (RFC 3986 section
+  3.2.3).
+- A host MUST be ASCII letters, digits, `-`, `.`, `_` and `~` (an
+  international name is given in its `xn--` form), or an IPv6 literal in
+  brackets: hex digits, `:` and `.`. So a host another URL parser would read
+  differently, such as `x.com\y`, is refused rather than connected to.
+- A URL with a user name or password, no host, another character in the
+  host, a bad port, an unclosed or trailing-text IPv6 bracket, a space or
+  control character, or a path or query character RFC 3986 requires to be
+  percent-encoded (anything but unreserved characters, sub-delimiters, `:`,
+  `@`, `/`, `?` and `%`) MUST fail with `HttpError.BadUrl(reason)` before
+  any I/O.
+- The path and query MUST be sent as given; percent-encoding is the
+  caller's, as the server's `Http.path` decodes nothing. A query with no path
+  is sent as `/?query`, and a fragment is not sent.
+
+### The request
+
+- The request MUST be HTTP/1.1 with `host` (the host, with the port when it
+  is not the scheme's default), the caller's headers, and
+  `connection: close`: each request has a connection of its own until there
+  is a pool. A `host` the caller gives MUST stand in place of the URL's, and
+  more than one MUST defect.
+- `content-length` MUST be sent when there is a body or the method is
+  `POST`, `PUT` or `PATCH`. The caller's framing and connection headers
+  (`content-length`, `transfer-encoding`, `connection` and the like) MUST be
+  replaced, as the server replaces a handler's.
+- A header name that is not a token, a value with a control character other
+  than a tab, or a method that is not a token MUST defect, as for
+  `Http.response`. So MUST `CONNECT`, whose 2xx answer turns the connection
+  into a tunnel (RFC 9112 section 6.3) that a request and its reply cannot
+  hold. So MUST a setting that is not positive (`max_body_bytes`
+  may be 0).
+
+### The reply
+
+- The status line MUST be `HTTP/1.x`, a status from 100 to 599 and a
+  reason that may be empty. Interim 1xx replies MUST be skipped, up to 16;
+  a seventeenth is refused, since a server sending them is stalling. `101
+  Switching Protocols` MUST be refused, since the client speaks no other
+  protocol.
+- The body MUST be framed as RFC 9112 section 6.3 says: none for a `HEAD`
+  request (however its method is spelled), 204 or 304; chunked when the last
+  transfer coding is `chunked`; to the end of the connection when another
+  coding is last; otherwise `content-length`, where equal repeats are one
+  length and a conflict is refused; with no length, to the end of the
+  connection. `transfer-encoding` in an HTTP/1.0 reply (section 6.1), an
+  empty `transfer-encoding`, and chunked applied twice MUST be refused.
+- The head is read with the server's parser and limits: header names are
+  lowercased, and a reply whose head passes `max_head_bytes`, with more than
+  `max_headers` headers, or whose body passes `max_body_bytes` MUST fail with
+  `HttpError.TooLarge`. As for the server, a chunked body's framing and
+  trailers count toward `max_body_bytes`. A reply that breaks HTTP/1.1 MUST fail with
+  `HttpError.BadReply(reason)`.
+- A redirect MUST NOT be followed: a 3xx comes back as itself, with its
+  `location`. Following one changes the method, drops headers and can cross
+  from `https` to `http`, which is the caller's policy.
+- No `accept-encoding` is sent and nothing is decompressed.
+
+### Failures, time and closing
+
+- Besides `HttpError`, a send fails with the connection's own `NetError`
+  (`Refused`, `Reset`, `HostNotFound` and the rest) and, for `https`, the
+  handshake's `TlsError`, unchanged, so a caller can tell a refused
+  connection from a bad certificate.
+- The whole exchange, from connecting to the last byte of the body, MUST run
+  under `settings.timeout`, failing with `Timeout.TimedOut`.
+- `send` MUST open and close its connection inside `Resource.scoped`, so a
+  failure, a timeout or a cancel never leaks it. `send_over` MUST leave its
+  connection to the caller, who can still close it after a timeout.
+
+### Not yet
+
+- A connection pool and keep-alive.
+- Streamed request and response bodies.
+- Proxies, HTTP/2 and cookies.
+- Following redirects: a `follow` helper can come if programs repeat the
+  loop. Retries: a caller wraps `send` in `std/retry`.
+- Leniency the server's parser does not have: folded header lines
+  (obs-fold, which RFC 9112 section 5.2 has a user agent unfold), heads that
+  are not UTF-8 (obs-text in a reason or a value), and whitespace before a
+  chunk extension are refused.
+- Reading while sending: the whole request is written before the reply is
+  read, so a server that answers early (a 413 or 401) and closes without
+  reading a large body can make the write fail with `NetError.Reset`, and
+  its answer is lost.
 
 ## std/sql (driver-independent layer)
 
@@ -712,6 +821,15 @@ refuses the peer's versions.
 | TLS: a listener's accept waits for no client; the first read, or a first write, handshakes; a client that does not speak TLS fails the first read; sessions freed; closing and the address pass through | `tests/tls.rs` `a_tls_listener_hands_over_connections_that_handshake_when_first_used` |
 | HTTPS: `Http.serve` over `Tls.listener` answers over loopback while a silent connection is open, and frees every session | `tests/tls.rs` `http_serve_over_a_tls_listener_is_https` |
 | HTTPS: an OpenSSL client, TLS 1.3 and TLS 1.2, verifying the authority and the host name | `tests/tls.rs` `an_openssl_client_talks_to_a_tls_listener` |
+| HTTP client: the request line, `host` with and without a port and for IPv6, the caller's `host` standing, framing headers replaced, `content-length` for a body and for `POST`, `PUT` and `PATCH`, a fragment not sent, `HEAD` spelled as `Method.Other`, header, method, `CONNECT` and second-host defects | `tests/http_client.rs` `the_request_is_http_1_1_framed_by_the_client` |
+| HTTP client: each kind of bad URL refused before any I/O, including host and target characters; an empty port, IPv6 with a dotted tail, every allowed target character, and ports 1 and 65535 sent | `tests/http_client.rs` `a_url_the_client_cannot_send_to_fails_before_any_io` |
+| HTTP client: content-length (exact, repeated, split across reads), chunked over content-length, other codings and no length read to the end, no body for `HEAD`, 204 and 304, interim 1xx skipped and capped at 16, HTTP/1.0 and empty reasons, chunked twice, an empty coding and HTTP/1.0 codings refused, another coding read past its length | `tests/http_client.rs` `a_reply_body_is_framed_as_http_1_1_says` |
+| HTTP client: bad status lines and versions, statuses outside 100 to 599, 101, conflicting or non-numeric lengths, a cut body, bare LF, a header without a colon, a bad chunk; each limit met and passed; settings that cannot work | `tests/http_client.rs` `a_reply_that_breaks_http_1_1_or_a_limit_fails` |
+| HTTP client: `send` and `send_over` fail only with `HttpError`, `NetError` and `Timeout`, so the private `Refusal` never reaches a caller | `tests/http_client.rs` `a_send_fails_only_with_public_types` |
+| HTTP client: a silent server times out at the timeout | `tests/http_client.rs` `the_whole_exchange_runs_under_the_timeout` |
+| HTTP client: `Http.send` against `Http.serve` over loopback (GET with a query, POST with a body, HEAD, 404), a refused connection, and the client closing a connection the server left open | `tests/http_client.rs` `http_send_talks_to_http_serve_over_loopback` |
+| HTTPS client: `Http.send` against `Http.serve` over `Tls.listener`, `Untrusted` with the system's roots, `WrongHost` for an address the certificate does not name | `tests/tls.rs` `http_send_over_https_checks_the_certificate` |
+| HTTPS client: an OpenSSL `s_server -www` page with no length, read to the close | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
 | The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
