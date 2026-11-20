@@ -10,7 +10,7 @@ KILLED       closing does not free the session [tls] (68s)
 KILLED       closing the TLS listener leaves the inner one open [tls] (63s)
 KILLED       the listener has another address [tls] (72s)
 KILLED       two tasks drive one handshake [tls] (64s)
-KILLED       a waiting task is never woken [tls] (64s)
+KILLED       a waiting task is never woken [tls] (66s)  # rerun at 6a42ece, after waking moved to the latest count
 SURVIVED     a waiting task wakes at once [tls] (67s)
 KILLED       the claim is never given back [tls] (73s)
 KILLED       a connection is not encrypted [tls] (65s)
