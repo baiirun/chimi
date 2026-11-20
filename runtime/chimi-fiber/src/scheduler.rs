@@ -2829,6 +2829,111 @@ mod tests {
         Scheduler::with_options(options)
     }
 
+    /// A select that answers with a ready receiver takes the value in the same
+    /// step, so a rival receiver of the same queue served before the selecting
+    /// task's follow-up receive cannot take it (parallel-scheduler.md,
+    /// "Ordering rules under several carriers"). A value kept for a task that
+    /// ends before its receive is released, not lost or redelivered.
+    #[test]
+    fn a_committed_select_keeps_its_value_from_a_rival_receiver() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        for selector_ends_first in [false, true] {
+            RELEASED_VALUES.with(|values| values.borrow_mut().clear());
+            let mut options = SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real);
+            options.release_channel_value = Some(record_released_value);
+            let mut scheduler = Scheduler::with_options(options);
+            let selector = start_parked(&mut scheduler);
+            let rival = start_parked(&mut scheduler);
+            let sender = start_parked(&mut scheduler);
+            let channel = scheduler.create_channel(selector, 1).expect("channel");
+            let added = scheduler
+                .channel_add_receiver(selector, channel.receiver)
+                .expect("second receiver");
+            let rivals = scheduler
+                .transfer_receiver(selector, added, rival)
+                .expect("handed to the rival");
+            assert_eq!(
+                scheduler.channel_send(sender, channel.sender, 21),
+                Ok(SendResult::Accepted)
+            );
+            let mut sources = [ChimiSelectSource {
+                kind: SELECT_RECEIVE,
+                channel: channel.receiver.channel().get(),
+                owner: channel.receiver.owner().get(),
+                token: channel.receiver.token(),
+                task: 0,
+                deadline: 0,
+            }];
+            let mut request = SchedulerRequest {
+                kind: REQUEST_SELECT,
+                status: 0,
+                task: 0,
+                channel: 0,
+                owner: 0,
+                token: 0,
+                value: 1,
+                entry: None,
+                context: sources.as_mut_ptr().cast(),
+            };
+            scheduler.handle_select(selector, &mut request);
+            assert_eq!((request.status, request.value), (RESPONSE_OK, 0));
+            // The rival runs before the selector's receive.
+            assert_eq!(
+                scheduler.channel_receive(rival, rivals),
+                Ok(ReceiveResult::Pending),
+                "the committed value is the selector's"
+            );
+            if selector_ends_first {
+                scheduler.cancel(None, selector).expect("cancel selector");
+                assert_eq!(released_values(), [21], "released once");
+            } else {
+                assert_eq!(
+                    scheduler.take_receive_result(selector),
+                    Some(ReceiveResult::Received(21))
+                );
+                assert!(released_values().is_empty());
+            }
+        }
+    }
+
+    /// A select committed on a closed and drained channel keeps `Drained`
+    /// for its receive, as the receive itself would have answered.
+    #[test]
+    fn a_select_committed_on_a_drained_channel_keeps_drained() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = scheduler(TraceMode::Off);
+        let selector = start_parked(&mut scheduler);
+        let channel = scheduler.create_channel(selector, 1).expect("channel");
+        scheduler
+            .channel_close(selector, channel.completion)
+            .expect("close");
+        let mut sources = [ChimiSelectSource {
+            kind: SELECT_RECEIVE,
+            channel: channel.receiver.channel().get(),
+            owner: channel.receiver.owner().get(),
+            token: channel.receiver.token(),
+            task: 0,
+            deadline: 0,
+        }];
+        let mut request = SchedulerRequest {
+            kind: REQUEST_SELECT,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value: 1,
+            entry: None,
+            context: sources.as_mut_ptr().cast(),
+        };
+        scheduler.handle_select(selector, &mut request);
+        assert_eq!((request.status, request.value), (RESPONSE_OK, 0));
+        assert_eq!(
+            scheduler.take_receive_result(selector),
+            Some(ReceiveResult::Drained)
+        );
+    }
+
     #[test]
     fn a_released_task_is_removed_with_its_result_once_it_ends() {
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");

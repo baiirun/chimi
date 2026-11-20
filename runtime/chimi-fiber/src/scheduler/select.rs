@@ -2,13 +2,13 @@
 //! the first that is ready, in list order (time-and-outcomes.md, "Semantics of
 //! `Select.first`").
 //!
-//! The request never consumes anything. It answers with the index of the
-//! first ready source, and the host then performs that source's ordinary
-//! operation (receive, process receive, task result), which answers at once.
-//! That is atomic because every source belongs to the selecting task alone:
-//! a receiver and an inbox have one consumer, a task handle one owner, and
-//! the host issues the follow-up request before any other task runs (the
-//! reply wakes the selecting task at the front of the run queue).
+//! The request answers with the index of the first ready source, and the
+//! host then performs that source's ordinary operation (receive, process
+//! receive, task result), which answers at once. A receive source's value is
+//! taken in the select step itself and kept for that receive
+//! (`commit_receive`), so a rival receiver of the same queue can never take
+//! it in between. An inbox and a task handle have the selecting task as their
+//! only consumer, so they need nothing kept. A losing source is untouched.
 //!
 //! When nothing is ready, the task registers as a watcher on every source and
 //! parks. A watcher only wakes the task; the task then asks again, the
@@ -17,7 +17,7 @@
 
 use super::clock::Instant;
 use super::{
-    ChannelId, RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Receiver, Scheduler,
+    ChannelId, RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, ReceiveResult, Receiver, Scheduler,
     SchedulerRequest, TaskId, TaskPhase,
 };
 
@@ -69,7 +69,8 @@ enum Poll {
 impl Scheduler {
     /// Serves a select. Ensures: answers OK with the first ready source's
     /// index in `value`, or PENDING with the task registered on every source;
-    /// ERROR for an empty or malformed list. Must not consume any source.
+    /// ERROR for an empty or malformed list. Consumes only a committed
+    /// receive source's value, which it keeps for the task.
     pub(super) fn handle_select(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         self.clear_select(owner);
         let count = usize::try_from(request.value).unwrap_or(0);
@@ -96,6 +97,9 @@ impl Scheduler {
                     request.status = RESPONSE_OK;
                     self.emit_select(owner, super::ClockEventKind::SelectCommitted, index);
                     let _ = self.wake_front(owner);
+                    if source.kind == SELECT_RECEIVE {
+                        self.commit_receive(owner, source);
+                    }
                     return;
                 }
                 Poll::Violation => {
@@ -117,6 +121,26 @@ impl Scheduler {
         self.tasks.get_mut(&owner).expect("selecting task").select = Some(wait);
         request.status = RESPONSE_PENDING;
         self.emit_select(owner, super::ClockEventKind::SelectParked, 0);
+    }
+
+    /// Takes the value of a committed receive source in the same step as the
+    /// answer, keeping it for the task's follow-up receive
+    /// (`Operation::ReceiveReady`, which `REQUEST_CHANNEL_RECEIVE` reads
+    /// first). Another receiver of the same queue can then never take the
+    /// value between the answer and that receive, whichever carrier it runs
+    /// on; a value kept for a task that ends first is released with its other
+    /// operations. Requires: the source answered ready in this step.
+    fn commit_receive(&mut self, owner: TaskId, source: &ChimiSelectSource) {
+        let receiver = Receiver::from_raw(source.channel, source.owner, source.token);
+        match self.channels.receive(owner, receiver) {
+            Ok((result, transition)) => {
+                debug_assert!(!matches!(result, ReceiveResult::Pending), "a ready source");
+                self.apply_channel_transition(transition);
+            }
+            Err(error) => {
+                let _ = self.channel_violation::<()>(owner, error, super::REQUEST_SELECT, None);
+            }
+        }
     }
 
     fn poll_source(

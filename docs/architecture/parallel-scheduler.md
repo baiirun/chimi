@@ -245,7 +245,8 @@ is running tasks at the same moment.
     the value in between. Step 3 must make the commit atomic: the select's
     answer either takes the value, or reserves it for that task until its
     receive. The observable rule ("the other source keeps its value") stays
-    the same.
+    the same. Done in step 3 PR 1: the select step takes the value into
+    `Operation::ReceiveReady`, which the follow-up receive reads first.
   - IO wait order (host-capabilities-and-execution-properties.md, "Order").
     "An OK answer resumes the task before any other task runs" becomes "on
     its carrier". That is enough, because the wait is level-triggered and a
