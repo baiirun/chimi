@@ -283,11 +283,6 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ### Not yet
 
-- A connection accepted just before serving ends, whose serving has not
-  begun (its process, or the task inside it, has not run yet), is discarded
-  by the stop without being closed, so its client waits until the program
-  exits. This is a runtime gap: a discarded start argument or task capture
-  frees its memory but does not release the host handles it holds.
 - Streamed request and response bodies (they change the handler's shape,
   which is still an open decision).
 - A request whose first bytes arrive in the moment the drain starts may be

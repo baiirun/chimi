@@ -413,14 +413,22 @@ what reaches C and what C may do:
   value holds only the slot and its generation, so it copies between task
   heaps as plain data. Chimi code never sees an address, a length paired with
   a pointer, or a raw descriptor.
-- A handle's release runs exactly once: when the binding closes it, or when
-  the program's root ends. A wait names the handle its descriptor belongs to,
+- A handle's release runs exactly once: when the binding closes it, when no
+  value names it any more, or when the program's root ends. Every handle
+  value is counted, like a channel endpoint, so the release runs once the
+  last copy is freed, however its holder ended: a task that returned or was
+  cancelled (even before it ran), a process that was forced at its stop
+  deadline or stopped before its body ran, or a collection that found it
+  unreachable. No task can be waiting on its descriptors then, since a
+  waiting call holds the handle. A wait names the handle its descriptor belongs to,
   and closing a handle first wakes every task waiting on its descriptors
   (`CHIMI_REQUEST_IO_WITHDRAW`), whose wait then answers
   `CHIMI_BINDING_WAIT_CLOSED`, so no task stays parked on a descriptor number
   the release frees for reuse. A closed handle stays closed in every copy, even
-  after its slot is reused, and closing it again does nothing. There is no
-  finalizer; `Resource.scoped` is how code ties a handle to a scope.
+  after its slot is reused, and closing it again does nothing. Inside a
+  running task, when an unreachable handle is collected depends on the
+  collector, so `Resource.scoped` stays how code ties a handle to a scope;
+  the count is the backstop for ends that run no release.
 - `Debug.render` shows a handle as `<Name>`, with its type's name.
 - Binding code MUST NOT keep a pointer to a Chimi value after the call
   returns, and MUST NOT call Chimi code. Calls run on the scheduler thread,
@@ -461,6 +469,7 @@ what reaches C and what C may do:
 | A constant cannot call a binding (`E5201`) | `a_constant_cannot_call_a_binding` |
 | A handle is neither equatable nor ordered | `a_handle_is_neither_equatable_nor_ordered` |
 | Closing a handle ends another task's wait on it, even when a new handle reuses its descriptors | `a_handle_waits_through_the_scheduler_crosses_tasks_and_stays_closed` |
+| A socket no value names is closed at every end of its holder, and a copy that ends early leaves it open | `net.rs` `a_socket_no_value_names_is_closed_at_any_end` |
 
 Rules with no test yet, because the probe cannot reach them: `N3106` for a
 public binding, one type per binding `native type` declaration, invalid text
