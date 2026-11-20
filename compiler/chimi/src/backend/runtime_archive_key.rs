@@ -92,6 +92,24 @@ pub const BINDING_PACKAGE_FLAGS: &[(&str, &[&str])] = &[
             "-Imbedtls/tf-psa-crypto/extras",
         ],
     ),
+    // SQLite 3.54 with the options SQLite recommends for an embedded build
+    // (bindings/sqlite/sqlite/PROVENANCE.md). The feature macros expose the
+    // POSIX calls its file layer uses under -std=c11.
+    (
+        "sqlite",
+        &[
+            "-D_DEFAULT_SOURCE",
+            "-D_DARWIN_C_SOURCE",
+            "-DSQLITE_THREADSAFE=1",
+            "-DSQLITE_DQS=0",
+            "-DSQLITE_DEFAULT_MEMSTATUS=0",
+            "-DSQLITE_LIKE_DOESNT_MATCH_BLOBS",
+            "-DSQLITE_OMIT_DEPRECATED",
+            "-DSQLITE_OMIT_LOAD_EXTENSION",
+            "-DSQLITE_OMIT_SHARED_CACHE",
+            "-DSQLITE_USE_ALLOCA",
+        ],
+    ),
 ];
 
 /// The extra flags of `package`, in order; empty for most packages.
