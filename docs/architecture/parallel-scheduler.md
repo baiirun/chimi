@@ -327,10 +327,25 @@ four keep one carrier.
      the split of the loop into its own type wait for PR 4, which is where
      they change behavior.
 3. **C side.**
-   - `carrier` becomes a no-inline accessor.
+   - As landed (PR 3a): `carrier` is a thread-local pointer
+     (`carrier_this_thread`, initial-exec except on Apple, where the default
+     model is used), read directly. The plan's no-inline accessor was
+     measured and dropped: a call per access cost 32% on an allocation-heavy loop
+     (5.0 s against 6.8 s, median of 7 interleaved runs), while a direct
+     thread-local read is within noise of main (5.42 s against 5.29 s,
+     median of 11). A direct read is safe because a fiber never leaves the
+     thread of its first resume (PR 2's `PinnedFiber`), so a thread-local
+     address a compiler keeps across a scheduler request still names the
+     right carrier. `carrier_bind` sets it; the main thread binds carrier 0
+     at startup.
    - A per-carrier drain hook issues queued releases before the carrier
      idles and when it stops. It replaces `carrier_with_releases`.
-   - The host stack limit is kept per carrier.
+   - The host stack limit is stored per carrier (landed in PR 3a). Only the
+     main thread computes it today; PR 5's carrier threads must run
+     `carrier_bind` and then `guard_host_stack` before their first fiber,
+     or their stack check is off. A thread that never binds aliases
+     carrier 0, so PR 5 also adds a debug check that each carrier thread
+     bound its own carrier.
    - The memory counters become signed per-carrier deltas.
    - New test: a count reaches zero inside a release hook, on a carrier
      where no fiber requests again.

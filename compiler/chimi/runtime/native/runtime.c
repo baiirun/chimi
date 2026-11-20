@@ -563,6 +563,10 @@ typedef struct {
   uint64_t *released_handles;
   size_t released_handle_count;
   size_t released_handle_capacity;
+  /* The address below which a call on this carrier's own thread stack
+     defects (guard_host_stack); 0 disables the check. Each carrier thread has
+     its own stack. */
+  uintptr_t host_stack_limit;
 } Carrier;
 
 #ifdef CHIMI_CARRIER_SIMULATION
@@ -578,6 +582,8 @@ static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}},
                                                 {.fiber = {.heap = &main_heap}}};
 static Carrier *carrier = &carrier_states[0];
 
+static void carrier_bind(Carrier *chosen) { carrier = chosen; }
+
 /* Continues on the carrier other than `parked`, carrying the counters over from
    the one that ran last. */
 static void carrier_migrate(Carrier *parked) {
@@ -591,13 +597,33 @@ static void carrier_migrate(Carrier *parked) {
     to->process_heap_peak_value_bytes = from->process_heap_peak_value_bytes;
     to->copied_values = from->copied_values;
     to->copied_bytes = from->copied_bytes;
+    /* Both simulated carriers run on one thread, so they share its stack. */
+    to->host_stack_limit = from->host_stack_limit;
   }
   carrier = to;
 }
 #else
 #define CARRIER_COUNT 1
 static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}}};
-static Carrier *const carrier = &carrier_states[0];
+
+/* The carrier the calling thread runs. A fiber never leaves the thread of its
+   first resume (the scheduler's PinnedFiber), so a thread-local's address a
+   compiler keeps across a scheduler request inside one function still names
+   the right carrier; the read itself is one thread-pointer-relative load. */
+#if defined(__APPLE__)
+#define CARRIER_TLS_MODEL
+#else
+#define CARRIER_TLS_MODEL __attribute__((tls_model("initial-exec")))
+#endif
+/* Every thread starts on carrier 0, which is what the main thread and the C
+   test fixtures that include this file use. */
+static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_states[0];
+#define carrier carrier_this_thread
+
+/* Makes `chosen` the calling thread's carrier. A carrier thread calls it once,
+   before it runs anything that allocates; the main thread binds carrier 0 at
+   startup. */
+static void carrier_bind(Carrier *chosen) { carrier_this_thread = chosen; }
 
 static void carrier_migrate(Carrier *parked) { (void)parked; }
 #endif
@@ -1130,7 +1156,6 @@ static ChimiControl *defect(const char *message, int64_t node) { return new_cont
    out. Finding the bottom reads /proc/self/maps on Linux, so it runs once at
    startup, not per benchmark repeat. Zero disables the check: on a fiber the guard page catches overflow, and
    on a host whose stack bounds are unknown nothing better is available. */
-static uintptr_t host_stack_limit;
 enum { STACK_HEADROOM_BYTES = 256 * 1024 };
 #define STACK_UNLIMITED_BYTES ((uintptr_t)1 << 30)
 
@@ -1158,12 +1183,12 @@ static void guard_host_stack(void) {
   uintptr_t bottom = host_stack_bottom();
   uintptr_t here = (uintptr_t)__builtin_frame_address(0);
   if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
-  host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
+  carrier->host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
                                                          : bottom + STACK_HEADROOM_BYTES;
 }
 
 static bool host_stack_exhausted(void) {
-  return (uintptr_t)__builtin_frame_address(0) < host_stack_limit;
+  return (uintptr_t)__builtin_frame_address(0) < carrier->host_stack_limit;
 }
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
@@ -12328,6 +12353,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* A fatal runtime error exits from wherever it is; queued console lines still
      go out. A second stop signal (end_by_signal) skips this and drops them. */
+  carrier_bind(&carrier_states[0]);
   atexit(console_drain_all);
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);
