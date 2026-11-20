@@ -172,6 +172,7 @@ pub struct Response    // Http.status, Http.response_headers, Http.response_body
 pub fn request(method, path, query, headers, body) -> Request        // for testing handlers
 pub fn response(status: Int, headers, body: Bytes) -> Response
 pub fn text(status: Int, text: Text) -> Response
+pub fn streamed(status: Int, headers, produce: fn(Writer<StreamError>) -> Void errors E) -> Response
 pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int,
   request_timeout: Duration, write_timeout: Duration, max_connections: Int }
 pub fn serve(listener: Listener, settings, handle: fn(Request) -> Response errors E needs R)
@@ -238,6 +239,37 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   `content-length` of its body, except that a 204 carries none and a 304 keeps
   only a `content-length` its handler gave (the length of the body it stands
   for). `HEAD`, 204 and 304 answers send no body.
+- A streamed response (`Http.streamed`) sends its head, then runs its
+  producer in a task of its own with a `Writer<StreamError>` for the body;
+  the body ends when the producer returns or closes the writer. On HTTP/1.1
+  it carries `transfer-encoding: chunked`, each non-empty write is one
+  chunk, and the last chunk follows the end, so the connection can carry
+  on. On HTTP/1.0 it carries no framing header and `connection: close`,
+  whatever the request asked, because only the end of the connection can
+  end the body. A `HEAD` answer sends the same head and never calls the
+  producer. A 204 or 304 cannot be streamed (a defect when it is built).
+- Only the connection's task writes to the connection: the producer's
+  writes cross a one-chunk channel, so a write waits while the previous
+  chunk is being sent, and writes from several of the producer's tasks
+  arrive as whole chunks, never interleaved inside one. The writer is
+  shareable, so the producer may hand it to tasks of its own; those are
+  cancelled when it returns. A producer still running once its body has
+  ended (it closed the writer) or a chunk failed MUST be cancelled before
+  the connection goes on, so producers cannot pile up on one keep-alive
+  connection.
+- The write limit bounds each chunk's send, not the response, so a slow
+  stream of events may run as long as it keeps writing. A producer that
+  fails, or a chunk that fails to send or passes the limit, closes the
+  connection without the last chunk, even when the producer caught a
+  failure: part of the chunk may already be on the wire. On HTTP/1.1 the
+  client sees the body cut short; on HTTP/1.0 a close is also how a whole
+  body ends, so it cannot tell (RFC 9112 section 8). A producer's defect
+  ends the connection as a handler's does.
+- Once the body has ended or a chunk failed to send, writes MUST fail with
+  `StreamError.Closed` and nothing more is sent, so no write can follow the
+  last chunk into what the client reads as the next response.
+- A producer runs after the handler has returned and cannot carry a `needs`
+  row: it captures a capability as a value and supplies it with `using`.
 - An HTTP/1.1 connection stays open between requests unless the request or
   the response says `connection: close`; an HTTP/1.0 connection stays open
   only when the request says `connection: keep-alive`, and its answers then
@@ -284,13 +316,10 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ### Not yet
 
-- Streamed response bodies, planned as `Http.streamed(status, headers,
-  produce)`: the server calls `produce` with the connection's writer after
-  the head and sends the body chunked. A producer that needs a capability
-  captures it and supplies it with `using`, since a data type cannot carry
-  a `needs` row. Request
-  bodies stay buffered under `max_body_bytes` until a program needs a
-  larger upload.
+- Streamed request bodies: request bodies stay buffered under
+  `max_body_bytes` until a program needs a larger upload. A producer cannot
+  see the drain, so a stream that never ends holds the drain until the
+  timeout around `serve` cuts it.
 - A request whose first bytes arrive in the moment the drain starts may be
   closed as idle, as Go's can; a client retries such a request when it is
   safe to. The same holds for a connection accepted as the listener closes
@@ -633,6 +662,8 @@ refuses the peer's versions.
 | HTTP: control characters, bare CR and LF, two hosts, transfer codings across headers, transfer-encoding on HTTP/1.0, ASCII-only case folding, versions | `tests/http.rs` `ambiguous_requests_are_refused` |
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
+| HTTP: a streamed body chunked on HTTP/1.1 and kept alive, close-delimited on HTTP/1.0 even with `keep-alive`, its head alone for `HEAD`, cut short when the producer fails, defects or caught a failed write, bounded per write and not as a whole, a client that stops reading or leaves dropped, a drain under `serve` letting a stream finish, writes from the producer's tasks kept whole, writes after a close refused; 204 and 304 refused | `tests/http.rs` `a_streamed_response_is_sent_chunked_as_it_is_written` |
+| HTTP: a task the producer handed its writer to cannot write after the producer returns | `tests/http.rs` `a_task_cannot_write_a_streamed_body_after_its_producer_returns` |
 | HTTP: the write limit; a closing answer lingers up to 2 s for a client still sending; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
 | HTTP: closing the listener drains: idle connections close at once, a request in progress (or a pipelined one already read) is answered with `connection: close`, and a timeout around `serve` cuts the drain short | `tests/http.rs` `closing_the_listener_drains_the_connections` |
 | HTTP: `date` on every response at four clock starts (leap day, before 1970, 2100), and a handler's own `date` stands | `tests/http.rs` `every_response_carries_the_date` |
