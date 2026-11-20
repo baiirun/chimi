@@ -858,8 +858,23 @@ static void allocation_kind(void *value, AllocationKind kind) {
    CHIMI_REQUEST_TASK_RELEASE, and it drops the task's record once the task has
    ended. A raw task id held without a value (a select's hidden timer, a
    combinator's children) is safe because no collection runs inside one
-   intrinsic, so the value it came from is still live. */
+   intrinsic, so the value it came from is still live.
+
+   Native handles (sockets, listeners, TLS sessions, exec children and pipes)
+   are counted too, under NATIVE_HANDLE_KEY with their slot and generation, so
+   a handle that no value names any more is closed then, whichever end freed
+   its last copy: a forced or discarded process, a task cancelled before it
+   ran, or a collection (native_handle_unreferenced). An explicit close leaves
+   the count alone, and the later zero finds a newer generation and does
+   nothing. */
 #define TASK_HANDLE_KEY (UINT64_C(1) << 63)
+#define NATIVE_HANDLE_KEY (UINT64_C(1) << 62)
+
+static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
+  return NATIVE_HANDLE_KEY | (uint64_t)slot << 32 | generation;
+}
+
+static void native_handle_unreferenced(uint64_t key);
 typedef struct { uint64_t channel; size_t endpoints; } ChannelEndpoints;
 typedef struct {
   pthread_mutex_t lock;
@@ -884,6 +899,8 @@ static bool is_channel_endpoint(const ChimiValue *value) {
 static uint64_t counted_handle_key(const ChimiValue *value) {
   if (is_channel_endpoint(value)) return value->as.capability.channel;
   if (value->kind == VALUE_TASK) return value->as.task | TASK_HANDLE_KEY;
+  if (value->kind == VALUE_NATIVE_HANDLE)
+    return native_handle_key(value->as.handle.slot, value->as.handle.generation);
   return 0;
 }
 
@@ -979,8 +996,14 @@ static bool handle_table_release(uint64_t channel) {
   return last;
 }
 
+/* A channel or task key at zero waits for the next scheduler request; a native
+   handle closes at once, since its release issues no request. */
 static void channel_endpoint_drop(uint64_t channel) {
-  if (handle_table_release(channel)) release_queue_push(channel);
+  if (!handle_table_release(channel)) return;
+  if ((channel & (TASK_HANDLE_KEY | NATIVE_HANDLE_KEY)) == NATIVE_HANDLE_KEY)
+    native_handle_unreferenced(channel);
+  else
+    release_queue_push(channel);
 }
 
 /* Each execution starts a new scheduler, whose channel ids start over. Runs
@@ -6676,6 +6699,19 @@ static void release_binding_slot(BindingHandleSlot *entry, uint32_t slot, bool w
   if (type->release) type->release(state);
 }
 
+/* Closes the handle `key` names when it is still open: no value names it any
+   more. No task can be waiting on its descriptors, since a waiting binding
+   call holds the handle as an argument, so nothing is withdrawn; this runs
+   inside collections and scheduler hooks, where no request may be issued. */
+static void native_handle_unreferenced(uint64_t key) {
+  uint32_t slot = (uint32_t)((key & ~NATIVE_HANDLE_KEY) >> 32);
+  uint32_t generation = (uint32_t)key;
+  if (slot == 0 || slot >= binding_handle_count) return;
+  BindingHandleSlot *entry = &binding_handles[slot];
+  if (entry->type != NULL && entry->generation == generation)
+    release_binding_slot(entry, slot, false);
+}
+
 /* Runs every open handle's release once, when the program ends. */
 static void release_binding_handles(void) {
   for (uint32_t slot = 1; slot < binding_handle_count; ++slot)
@@ -6830,6 +6866,7 @@ ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const Chimi
   value->as.handle.slot = slot;
   value->as.handle.generation = entry->generation;
   value->as.handle.name = type->name;
+  channel_endpoint_retain(native_handle_key(slot, entry->generation));
   return binding_value(value);
 }
 

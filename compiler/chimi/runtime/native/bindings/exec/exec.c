@@ -384,7 +384,7 @@ static ChimiBindingResult *spawn_failure(ChimiBindingCall *call, int error) {
 
 /* The spawned child and its pipes as handles. If one cannot be made (the
    handle table is full), the child is killed and reaped at once; a pipe
-   handle made before that stays open until the program ends. */
+   handle made before that is closed when its value is freed. */
 static ChimiBindingResult *started(ChimiBindingCall *call, ChildProcess *child, int ends[3][2]) {
   ChimiBindingValue *parts[4];
   bool made = true;

@@ -415,6 +415,179 @@ test "read" {
     assert_passed(&run, 6);
 }
 
+// Rejects a runtime that closes a socket only through `Net.close` or a scope's
+// release: a socket that no value names any more is closed whichever way its
+// last holder ended. Each case leaves the server end of a connection to a task
+// or process that never closes it, then reads from the client end, which sees
+// the end of input (`Ok(None)`) only once the server end is closed. And a
+// copy that ends early must not close the socket under its other copies, nor
+// the late end of a closed handle's copies close the handle now in its slot.
+// The cases:
+// - a task that returns without closing it;
+// - a task cancelled while parked in a read on it;
+// - a task cancelled before it ran, holding it as a capture;
+// - a handoff process forced at its stop deadline while parked in a read;
+// - a handoff process stopped before its body ran, holding it as its argument.
+#[test]
+fn a_socket_no_value_names_is_closed_at_any_end() {
+    let source = format!(
+        "{IMPORTS}import std/process as Process
+import std/process.{{Inbox}}
+import std/supervisor as Supervisor
+{OUTCOME}{}",
+        r#"
+enum Message {
+  Ping
+}
+
+// Opens a connection whose server end is accepted inside a task that hands it
+// to the case `name` and then ends, so no copy stays with the caller; then
+// reports what the client end reads.
+fn peer_sees(name: Text) -> Text needs { network: Network } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))
+  let read = Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port(Net.listener_address(listener))
+    Resource.scoped(fn() { Net.connect("127.0.0.1", port) }, Net.close, fn(client) {
+      let holder = Task.start(fn() {
+        let server = Net.accept(listener)
+        case name {
+          "returns" -> {
+            let _ = Net.local_address(server)
+            Void
+          }
+          "parked" -> {
+            let reading = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(server)) }) })
+            Clock.sleep(Duration.milliseconds(20))
+            Task.cancel(reading)
+          }
+          // Its child is cancelled before it runs when this task ends.
+          "unrun" -> {
+            let _ = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(server)) }) })
+            Void
+          }
+          "forced" -> {
+            let _ = Result.capture(fn() { Supervisor.start_handoff(root, reader_spec(), server) })
+            Void
+          }
+          // The stop comes before this task parks again, so the new body
+          // never runs and its start argument is discarded.
+          _ -> {
+            let _ = Result.capture(fn() { Supervisor.start_handoff(root, reader_spec(), server) })
+            Supervisor.stop(root)
+          }
+        }
+      })
+      Task.result(holder)
+      case name {
+        "forced" -> Clock.sleep(Duration.milliseconds(20))
+        _ -> Void
+      }
+      case name {
+        "forced" -> Supervisor.stop(root)
+        _ -> Void
+      }
+      Result.capture(fn() {
+        Task.timeout(fn() { Stream.read(Net.reader(client)) }, Duration.seconds(5))
+      })
+    })
+  })
+  Supervisor.stop(root)
+  Debug.render(read)
+}
+
+// A handoff process that reads its connection and never closes it; its stop
+// deadline is 20 ms, so a stop while it is parked forces it.
+fn reader_spec() {
+  Process.handoff_spec(fn(inbox: Inbox<Message>, connection: Net.Connection) {
+    let _ = Result.capture(fn() { Stream.read(Net.reader(connection)) })
+    Void
+  }, 1, Duration.milliseconds(20))
+}
+
+// A copy that a task's end frees leaves the socket open for the others.
+fn copy_ends_then_write() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port(Net.listener_address(listener))
+    Resource.scoped(fn() { Net.connect("127.0.0.1", port) }, Net.close, fn(client) {
+      Resource.scoped(fn() { Net.accept(listener) }, Net.close, fn(server) {
+        Task.result(Task.start(fn() { Net.port(Net.local_address(server)) }))
+        Stream.write(Net.writer(server), Bytes.from_text("still open"))
+        let next = Stream.read(Net.reader(client))
+        case next {
+          Some(bytes) -> Bytes.to_text(bytes)
+          None -> "closed"
+        }
+      })
+    })
+  })
+}
+
+// A connection closed explicitly frees its slot, the next accept reuses it,
+// and the closed connection's copies are then freed when this task ends; the
+// new connection, handed out as the task's result, must stay open.
+fn reused_slot_stays_open() -> Text needs { network: Network } {
+  Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
+    let port = Net.port(Net.listener_address(listener))
+    let first = Net.connect("127.0.0.1", port)
+    let second = Net.connect("127.0.0.1", port)
+    let server = Task.result(Task.start(fn() {
+      let closed = Net.accept(listener)
+      Net.close(closed)
+      Net.accept(listener)
+    }))
+    Stream.write(Net.writer(server), Bytes.from_text("reused"))
+    let next = Stream.read(Net.reader(second))
+    let got = case next {
+      Some(bytes) -> Bytes.to_text(bytes)
+      None -> "closed"
+    }
+    Net.close(server)
+    Net.close(first)
+    Net.close(second)
+    got
+  })
+}
+
+test "a closed handle's copies leave its reused slot open" {
+  let outcome = reused_slot_stays_open() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("reused")
+}
+
+test "a copy's end leaves the socket open" {
+  let outcome = copy_ends_then_write() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("still open")
+}
+
+test "a task that returns" {
+  let outcome = peer_sees("returns") using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Ok(None)")
+}
+
+test "a task cancelled while parked" {
+  let outcome = peer_sees("parked") using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Ok(None)")
+}
+
+test "a task cancelled before it ran" {
+  let outcome = peer_sees("unrun") using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Ok(None)")
+}
+
+test "a forced process" {
+  let outcome = peer_sees("forced") using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Ok(None)")
+}
+
+test "a process stopped before it ran" {
+  let outcome = peer_sees("discarded") using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("Result.Ok(None)")
+}
+"#
+    );
+    let run = Scratch::new("unreferenced", &source).chimi(&["test", "cases.chimi", "--clock=real"]);
+    assert_passed(&run, 7);
+}
+
 // Rejects a fake pair that crosses its wires or does not end: each end reads
 // what the other writes, closing a writer ends the other reader, and a closed
 // end reads `Closed`. A fake network made of the pair satisfies `Network`.
