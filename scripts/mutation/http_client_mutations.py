@@ -178,4 +178,7 @@ MUTATIONS = [
     mutant("the exchange has no timeout",
            "  Task.timeout(fn() {\n    exchange(reader, writer, request, is_head(method), bounds)\n  }, settings.timeout)",
            "  exchange(reader, writer, request, is_head(method), bounds)"),
+    mutant("CONNECT is sent",
+           "    True -> Debug.crash(\"Http: CONNECT opens a tunnel, which Http.send does not\")",
+           "    True -> Void"),
 ]

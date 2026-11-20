@@ -1511,7 +1511,9 @@ pub const client_defaults: { roots: Roots, timeout: Duration, max_head_bytes: In
 /// `TlsError` from an `https` handshake; `Timeout.TimedOut` past
 /// `settings.timeout`.
 /// Defects when: a header name is not a token or a value holds a control
-/// character, as for `Http.response`, or a setting is not positive.
+/// character, as for `Http.response`, the method is not a token or is
+/// `CONNECT`, there is more than one `host` header, or a setting is not
+/// positive.
 pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Response needs {
   network: Network,
   clock: Clock
@@ -1700,6 +1702,12 @@ fn client_limits(settings: { roots: Roots, timeout: Duration, max_head_bytes: In
 }
 
 fn request_bytes(method: Method, target: Url, headers: List<(Text, Text)>, body: Bytes) -> Bytes {
+  // A 2xx answer to CONNECT turns the connection into a tunnel (RFC 9112
+  // section 6.3), which a request and its reply cannot hold.
+  case method_text(method) == "CONNECT" {
+    True -> Debug.crash("Http: CONNECT opens a tunnel, which Http.send does not")
+    False -> Void
+  }
   let given = List.filter(List.map(headers, checked_header), fn(header) {
     let (name, _) = header
     not is_framing_header(name)

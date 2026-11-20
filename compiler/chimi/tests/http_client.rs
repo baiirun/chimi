@@ -234,8 +234,9 @@ test "a header that is not a token defects" {
   let name = Test.capture_defect(fn() { request_of(Method.Get, "http://x/", [("bad name", "v")], "") })
   let value = Test.capture_defect(fn() { request_of(Method.Get, "http://x/", [("name", "a\r\nb: c")], "") })
   let method = Test.capture_defect(fn() { request_of(Method.Other("GET X"), "http://x/", [], "") })
-  "${name}|${value}|${method}"
-    |> Test.assert_equal("Http: the header name \"bad name\" is not a token|Http: the value of the header name holds a control character|Http: the method \"GET X\" is not a token")
+  let tunnel = Test.capture_defect(fn() { request_of(Method.Other("CONNECT"), "http://x/", [], "") })
+  "${name}|${value}|${method}|${tunnel}"
+    |> Test.assert_equal("Http: the header name \"bad name\" is not a token|Http: the value of the header name holds a control character|Http: the method \"GET X\" is not a token|Http: CONNECT opens a tunnel, which Http.send does not")
 }
 "#,
         "virtual",
@@ -353,9 +354,9 @@ fn a_reply_that_breaks_http_1_1_or_a_limit_fails() {
         "refused",
         r#"
 test "malformed replies" {
-  let replies = ["", "HTTP/1.1 200 OK\r\n", "HTTP/2 200 OK\r\n\r\n", "HTTP/1.1 20 OK\r\n\r\n", "HTTP/1.1 2000 OK\r\n\r\n", "HTTP/1.1 099 OK\r\n\r\n", "HTTP/1.1 600 OK\r\n\r\n", "HTTP/1.1 abc OK\r\n\r\n", "HTTP/1.1 101 Switching Protocols\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab", "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", "HTTP/1.1 200 OK\nContent-Length: 0\n\n", "HTTP/1.1 200 OK\r\nNoColon\r\n\r\n", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"]
+  let replies = ["", "HTTP/1.1 200 OK\r\n", "HTTP/2 200 OK\r\n\r\n", "HTTP/1.1 20 OK\r\n\r\n", "HTTP/1.1 2000 OK\r\n\r\n", "HTTP/1.1 0200 OK\r\n\r\n", "HTTP/1.1 099 OK\r\n\r\n", "HTTP/1.1 600 OK\r\n\r\n", "HTTP/1.1 abc OK\r\n\r\n", "HTTP/1.1 101 Switching Protocols\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab", "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", "HTTP/1.1 200 OK\nContent-Length: 0\n\n", "HTTP/1.1 200 OK\r\nNoColon\r\n\r\n", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"]
   Text.join(List.map(replies, fn(reply) { replied([reply]) }), "\n")
-    |> Test.assert_equal("HttpError.BadReply(\"the connection ended before a reply\")\nHttpError.BadReply(\"the connection ended inside a head\")\nHttpError.BadReply(\"not HTTP/1.x\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"101 Switching Protocols\")\nHttpError.BadReply(\"conflicting content-length\")\nHttpError.BadReply(\"content-length is not a number\")\nHttpError.BadReply(\"the connection ended inside a body\")\nHttpError.BadReply(\"the connection ended inside a head\")\nHttpError.BadReply(\"a header line has no colon\")\nHttpError.BadReply(\"bad chunk size\")")
+    |> Test.assert_equal("HttpError.BadReply(\"the connection ended before a reply\")\nHttpError.BadReply(\"the connection ended inside a head\")\nHttpError.BadReply(\"not HTTP/1.x\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"bad status line\")\nHttpError.BadReply(\"101 Switching Protocols\")\nHttpError.BadReply(\"conflicting content-length\")\nHttpError.BadReply(\"content-length is not a number\")\nHttpError.BadReply(\"the connection ended inside a body\")\nHttpError.BadReply(\"the connection ended inside a head\")\nHttpError.BadReply(\"a header line has no colon\")\nHttpError.BadReply(\"bad chunk size\")")
 }
 
 test "limits" {
