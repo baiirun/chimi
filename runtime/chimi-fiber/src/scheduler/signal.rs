@@ -323,11 +323,7 @@ impl Scheduler {
         let Some(root) = self.signals.root else {
             return self.signals.delivered;
         };
-        if self
-            .tasks
-            .get(&root)
-            .is_some_and(|record| record.phase.is_live())
-        {
+        if self.tasks.get(&root).is_some_and(|record| record.phase.is_live()) {
             return self.signals.delivered;
         }
         for timer in std::mem::take(&mut self.signals.user_timers) {

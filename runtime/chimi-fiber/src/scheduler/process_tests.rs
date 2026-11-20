@@ -6,8 +6,9 @@
 
 use super::process::Down;
 use super::process_abi::{
-    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, ChimiInjectedSignal, MEMBER_PROCESS,
-    MEMBER_SUPERVISOR, RESTART_NEVER, RESTART_ON_DEFECT, chimi_scheduler_run,
+    ChimiInjectedSignal,
+    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
+    RESTART_ON_DEFECT, chimi_scheduler_run,
 };
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_park, chimi_fiber_request};

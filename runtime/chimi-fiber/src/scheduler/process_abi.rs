@@ -354,8 +354,7 @@ impl Scheduler {
                 // The notice carries its capabilities as a message does: in
                 // flight until the watcher receives it, ended if it is
                 // dropped unread.
-                self.channels
-                    .dispatch_carried(owner, input.message as usize, &carried);
+                self.channels.dispatch_carried(owner, input.message as usize, &carried);
                 let monitor = self.process_monitor(watcher, target, input.message);
                 self.respond(waiter, RESPONSE_OK, |r| r.monitor = monitor.get());
             }
@@ -681,10 +680,7 @@ impl Scheduler {
         self.set_signal_root(root);
         loop {
             let root_live = |scheduler: &Self| {
-                scheduler
-                    .tasks
-                    .get(&root)
-                    .is_some_and(|record| record.phase.is_live())
+                scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
             };
             match self.run_until_idle() {
                 Idle::AwaitingHost => continue,

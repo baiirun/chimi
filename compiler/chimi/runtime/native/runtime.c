@@ -2917,7 +2917,8 @@ static ChimiFiberCommand carrier_request(void *request) {
 }
 
 /* Pops the last key `queue` holds as the release request that ends it; false
-   when the queue is empty. Only the queue's own carrier calls this. */
+   when the queue is empty. Only the queue's own carrier calls this, except in
+   the single-threaded simulation (carrier_release_take). */
 static bool release_queue_take(Carrier *queue, uint32_t *kind, uint64_t *id) {
   if (!queue->released_handle_count) return false;
   uint64_t key = queue->released_handles[--queue->released_handle_count];

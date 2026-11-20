@@ -10,9 +10,9 @@ mod process_abi;
 #[cfg(test)]
 mod process_tests;
 mod reactor;
+mod ready;
 #[cfg(test)]
 mod reactor_tests;
-mod ready;
 #[cfg(test)]
 mod release_tests;
 mod scope;
@@ -23,6 +23,7 @@ mod signal;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -34,7 +35,6 @@ pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
     ChimiSupervisorMember, ChimiSupervisorPolicy, DeadlockReport, RootRun,
 };
-pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 pub use self::scope::{
     ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending,
 };
@@ -383,9 +383,12 @@ impl ChimiCapabilityViolation {
                 Some(channel),
                 None,
             ),
-            ChannelError::WrongKind(channel) => {
-                (VIOLATION_WRONG_KIND, CAPABILITY_NONE, Some(channel), None)
-            }
+            ChannelError::WrongKind(channel) => (
+                VIOLATION_WRONG_KIND,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
             ChannelError::CapabilityInFlight { channel, kind } => (
                 VIOLATION_IN_FLIGHT,
                 match kind {
@@ -547,8 +550,7 @@ impl Home {
 
     /// True when the fiber never ran or runs on the current thread.
     fn is_here(&self) -> bool {
-        self.0
-            .is_none_or(|home| home == std::thread::current().id())
+        self.0.is_none_or(|home| home == std::thread::current().id())
     }
 }
 
@@ -584,10 +586,7 @@ impl PinnedFiber {
 
 impl Drop for PinnedFiber {
     fn drop(&mut self) {
-        assert!(
-            self.home.is_here(),
-            "a fiber destroyed off its home carrier"
-        );
+        assert!(self.home.is_here(), "a fiber destroyed off its home carrier");
         unsafe {
             chimi_fiber_destroy(self.fiber.as_ptr());
         }
@@ -1189,6 +1188,10 @@ impl Scheduler {
     /// Applies every release `take_release` hands over, with no task
     /// attributed; true if there was one. Runs only between resumes, never
     /// inside a channel transition, so the registry is never mid-update.
+    /// Keys the host queues after the last drive (during shutdown or the
+    /// scheduler's teardown) are not drained: teardown releases every value
+    /// the scheduler holds, so only their trace events are missing, and the
+    /// host clears its queues before the next run.
     fn drain_host_releases(&mut self) -> bool {
         let Some((take, context)) = self.take_release else {
             return false;
@@ -1359,7 +1362,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(receiver)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None)
+            }
         }
     }
 
@@ -1375,7 +1380,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(added)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None)
+            }
         }
     }
 
@@ -1568,7 +1575,8 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .ok_or(SchedulerError::UnknownTask(task))?;
-        let live_root = record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
+        let live_root =
+            record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
         if record.process.is_some() || record.handle_released || live_root {
             return Err(SchedulerError::TaskStillLive(task));
         }
@@ -2292,10 +2300,7 @@ impl Scheduler {
             // Another task's fiber resumed inline: it must be on its home
             // carrier. With several carriers this becomes a job for that
             // carrier (parallel-scheduler.md, "Step 3 plan", PR 5).
-            debug_assert_eq!(
-                self.tasks[&task].carrier, self.current,
-                "inline resume off home"
-            );
+            debug_assert_eq!(self.tasks[&task].carrier, self.current, "inline resume off home");
             self.emit(
                 task,
                 TaskEventKind::CancellationRequested,
@@ -2429,9 +2434,7 @@ impl Scheduler {
             }
         } else if outcome.is_defect()
             && let Some(parent) = parent.filter(|parent| {
-                self.tasks
-                    .get(parent)
-                    .is_some_and(|record| record.phase.is_live())
+                self.tasks.get(parent).is_some_and(|record| record.phase.is_live())
             })
             && !self.absorbs_child_defect(parent)
         {
@@ -2510,10 +2513,9 @@ impl Scheduler {
     pub(super) fn has_live_descendants(&self, task: TaskId) -> bool {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
-                self.tasks
-                    .get(child)
-                    .is_some_and(|record| record.phase.is_live())
-                    || self.has_live_descendants(*child)
+                self.tasks.get(child).is_some_and(|record| {
+                    record.phase.is_live()
+                }) || self.has_live_descendants(*child)
             })
         })
     }
@@ -2589,11 +2591,7 @@ impl Scheduler {
         let Some(owner) = owner else {
             return;
         };
-        if self
-            .tasks
-            .get(&owner)
-            .is_some_and(|record| record.phase.is_live())
-        {
+        if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
@@ -2910,10 +2908,7 @@ mod tests {
     #[test]
     fn a_fiber_home_is_the_thread_of_its_first_resume() {
         let mut home = Home::default();
-        assert!(
-            home.is_here(),
-            "an unstarted fiber may be destroyed anywhere"
-        );
+        assert!(home.is_here(), "an unstarted fiber may be destroyed anywhere");
         let mut elsewhere = std::thread::spawn(move || {
             assert!(home.enter());
             assert!(home.enter());
