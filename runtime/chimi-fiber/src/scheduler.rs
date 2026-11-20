@@ -10,6 +10,7 @@ mod process_abi;
 #[cfg(test)]
 mod process_tests;
 mod reactor;
+mod ready;
 #[cfg(test)]
 mod reactor_tests;
 #[cfg(test)]
@@ -49,7 +50,7 @@ use crate::{
     ChimiFiber, ChimiFiberCommand, ChimiFiberConfig, ChimiFiberEntry, ChimiFiberEvent,
     ChimiFiberState, chimi_fiber_create, chimi_fiber_destroy, chimi_fiber_resume,
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -620,6 +621,9 @@ struct Task {
     /// The outcome of a cancellation that waits for the task's releases
     /// (`Scheduler::cancel_task`).
     terminating: Option<TaskOutcome>,
+    /// The carrier whose ready queue holds this task, and whose thread its
+    /// fiber runs on: its parent's, or the current one for a root.
+    carrier: ready::Carrier,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -744,7 +748,9 @@ impl TaskValue {
 
 pub struct Scheduler {
     tasks: BTreeMap<TaskId, Task>,
-    runnable: VecDeque<TaskId>,
+    ready: ready::ReadyQueues,
+    /// The carrier running this scheduler's loop now.
+    current: ready::Carrier,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -854,7 +860,8 @@ impl Scheduler {
         );
         Self {
             tasks: BTreeMap::new(),
-            runnable: VecDeque::new(),
+            ready: ready::ReadyQueues::new(1),
+            current: ready::Carrier::default(),
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -1131,7 +1138,7 @@ impl Scheduler {
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
-        while let Some(task) = self.runnable.pop_front() {
+        while let Some(task) = self.ready.pop_front(self.current) {
             self.run(task);
             self.remove_released_terminal();
             self.collect_user_signals();
@@ -1161,10 +1168,11 @@ impl Scheduler {
             .ok_or(SchedulerError::UnknownTask(task))?;
         if record.phase == TaskPhase::Parked {
             record.phase = TaskPhase::Runnable;
+            let carrier = record.carrier;
             if front {
-                self.runnable.push_front(task);
+                self.ready.push_front(carrier, task);
             } else {
-                self.runnable.push_back(task);
+                self.ready.push_back(carrier, task);
             }
             self.emit(task, TaskEventKind::Woken, None, true);
         }
@@ -1635,6 +1643,7 @@ impl Scheduler {
     ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
         let started_at = self.channels.tick();
+        let carrier = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);
         let fiber = PinnedFiber::new(
             entry,
             context,
@@ -1677,6 +1686,7 @@ impl Scheduler {
                 io_wait: None,
                 started_at,
                 terminating: None,
+                carrier,
             },
         );
         if let Some(parent) = parent {
@@ -1687,7 +1697,7 @@ impl Scheduler {
                 .insert(id);
         }
         self.peak_tasks = self.peak_tasks.max(self.tasks.len());
-        self.runnable.push_back(id);
+        self.ready.push_back(carrier, id);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
     }
@@ -2213,6 +2223,10 @@ impl Scheduler {
 
         let mut cleanup_parked = false;
         if !fiber_is_terminal {
+            // Another task's fiber resumed inline: it must be on its home
+            // carrier. With several carriers this becomes a job for that
+            // carrier (parallel-scheduler.md, "Step 3 plan", PR 5).
+            debug_assert_eq!(self.tasks[&task].carrier, self.current, "inline resume off home");
             self.emit(
                 task,
                 TaskEventKind::CancellationRequested,
@@ -2331,9 +2345,10 @@ impl Scheduler {
                 .waiting_on = None;
             match outcome {
                 TaskOutcome::Succeeded(_) => {
-                    self.tasks.get_mut(&parent).expect("waiting parent").phase =
-                        TaskPhase::Runnable;
-                    self.runnable.push_back(parent);
+                    let record = self.tasks.get_mut(&parent).expect("waiting parent");
+                    record.phase = TaskPhase::Runnable;
+                    let carrier = record.carrier;
+                    self.ready.push_back(carrier, parent);
                     self.emit(parent, TaskEventKind::Woken, Some(task), true);
                 }
                 TaskOutcome::Cancelled => {

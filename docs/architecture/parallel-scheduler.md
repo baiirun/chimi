@@ -310,6 +310,15 @@ four keep one carrier.
      from `force`, `begin_shutdown`, `shutdown_processes` and the shutdown
      deadline. Those jobs run on the fiber's home carrier, inline when that
      carrier is the current one.
+   - As landed: the `Running` phase, `PinnedFiber` (its home is the thread of
+     its first resume, checked on every resume and on destruction), and the
+     per-carrier ready queues (`scheduler/ready.rs`, each task queued on its
+     home carrier, a started task on its parent's). The two inline resumes
+     assert that they run on the fiber's home carrier. Turning them into
+     jobs moves to PR 5, the first PR where another carrier exists to run
+     them, so the job path is tested when it is written. The kernel lock and
+     the split of the loop into its own type wait for PR 4, which is where
+     they change behavior.
 3. **C side.**
    - `carrier` becomes a no-inline accessor.
    - A per-carrier drain hook issues queued releases before the carrier

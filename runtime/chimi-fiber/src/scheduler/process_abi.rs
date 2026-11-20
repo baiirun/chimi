@@ -717,7 +717,7 @@ impl Scheduler {
                 continue;
             }
             self.shutdown_processes();
-            if !self.has_blocked_plans() && self.runnable.is_empty() {
+            if !self.has_blocked_plans() && self.ready.is_empty() {
                 break;
             }
         }

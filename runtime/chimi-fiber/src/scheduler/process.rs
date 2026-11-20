@@ -1870,11 +1870,11 @@ impl Scheduler {
             if self.tasks[&task].phase != TaskPhase::Runnable {
                 break;
             }
-            if self.runnable.front() == Some(&task) {
-                self.runnable.pop_front();
-            } else {
-                self.runnable.retain(|queued| *queued != task);
-            }
+            let carrier = self.tasks[&task].carrier;
+            // Runs the incarnation's fiber inline, which only its home
+            // carrier may do; see `begin_terminal`.
+            debug_assert_eq!(carrier, self.current, "inline resume off home");
+            self.ready.remove(carrier, task);
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
@@ -2093,7 +2093,8 @@ impl Scheduler {
             self.disarm_wake_sources(task);
             let task_record = self.tasks.get_mut(&task).expect("incarnation task");
             task_record.phase = TaskPhase::Runnable;
-            self.runnable.push_front(task);
+            let carrier = task_record.carrier;
+            self.ready.push_front(carrier, task);
         }
         let terminated = self.await_incarnation(incarnation);
         debug_assert!(
