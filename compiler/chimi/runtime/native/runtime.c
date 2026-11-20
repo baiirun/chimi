@@ -2926,18 +2926,33 @@ static bool release_queue_take(Carrier *queue, uint32_t *kind, uint64_t *id) {
   return true;
 }
 
+/* The next release the running carrier should issue: its own queue's. The
+   simulation runs both carriers' loops as one, on one thread, and that loop
+   is never idle while any fiber runs, so the carrier a fiber just left
+   could not drain its queue as a real idle carrier does. A fiber there also
+   takes the other carrier's queue, standing for that carrier's idle loop. */
+static bool carrier_release_take(uint32_t *kind, uint64_t *id) {
+  if (release_queue_take(carrier, kind, id)) return true;
+#ifdef CHIMI_CARRIER_SIMULATION
+  for (size_t index = 0; index < CARRIER_COUNT; ++index)
+    if (release_queue_take(&carrier_states[index], kind, id)) return true;
+#endif
+  return false;
+}
+
 /* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
    value was freed, and CHIMI_REQUEST_TASK_RELEASE for each task whose last handle
    was. The scheduler serves a request as soon as the task parks, so a release is
    done even when the task resumes with CHIMI_FIBER_CANCEL. Only the running
    carrier's queue is drained; a key left on another carrier is that carrier's
-   to drain (take_carrier_release). */
+   to drain, when one of its fibers requests or its loop idles
+   (take_carrier_release). */
 static ChimiFiberCommand flush_channel_releases(void) {
   /* `carrier` is read again on every pass: the request below parks, and the
      fiber may resume on another carrier. */
   uint32_t kind;
   uint64_t id;
-  while (release_queue_take(carrier, &kind, &id)) {
+  while (carrier_release_take(&kind, &id)) {
     ChimiSchedulerRequest request = {.kind = kind};
     if (kind == CHIMI_REQUEST_TASK_RELEASE) request.task = id;
     else request.channel = id;
@@ -2949,16 +2964,10 @@ static ChimiFiberCommand flush_channel_releases(void) {
 /* The scheduler's take_release hook: it calls this on the host stack whenever
    the carrier has no ready task, for the releases no fiber's request carried
    (a count that reached zero inside a release hook, or one queued by a fiber
-   that then ended). The simulation runs both carriers' loops on one thread,
-   so its loop idling stands for each carrier idling in turn. */
+   that then ended). */
 static bool take_carrier_release(void *context, uint32_t *kind, uint64_t *id) {
   (void)context;
-  if (release_queue_take(carrier, kind, id)) return true;
-#ifdef CHIMI_CARRIER_SIMULATION
-  for (size_t index = 0; index < CARRIER_COUNT; ++index)
-    if (release_queue_take(&carrier_states[index], kind, id)) return true;
-#endif
-  return false;
+  return carrier_release_take(kind, id);
 }
 
 /* Every scheduler request goes through here. A fiber resumes only by returning from
