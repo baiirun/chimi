@@ -2368,10 +2368,7 @@ impl Scheduler {
             }
         } else if outcome.is_defect()
             && let Some(parent) = parent.filter(|parent| {
-                matches!(
-                    self.tasks.get(parent).map(|record| record.phase),
-                    Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
-                )
+                self.tasks.get(parent).is_some_and(|record| record.phase.is_live())
             })
             && !self.absorbs_child_defect(parent)
         {
@@ -2528,10 +2525,7 @@ impl Scheduler {
         let Some(owner) = owner else {
             return;
         };
-        if matches!(
-            self.tasks.get(&owner).map(|record| record.phase),
-            Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
-        ) {
+        if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
