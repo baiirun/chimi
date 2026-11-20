@@ -47,7 +47,7 @@ MUTATIONS = [
            "    case native_claim(session) {",
            "    case True {"),
     mutant("a waiting task is never woken",
-           "        let _ = Result.capture(fn() { Watch.publish(turns, seen + 1) })\n",
+           "        let _ = Result.capture(fn() { Watch.publish(turns, turn(turns) + 1) })\n",
            ""),
     mutant("a waiting task wakes at once",
            "        Receive.Received(count) -> case count == seen {",
