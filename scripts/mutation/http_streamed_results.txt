@@ -1,0 +1,23 @@
+# Two runs: the 17 mutants at 1e697de, then the one added with the producer's cancellation at 6308830.
+# mutation run at 1e697de1a4d4386048057a5a94e75d366b678f53
+# http_streamed_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok  [http] (124s)
+KILLED       HTTP/1.0 keeps a streamed connection open [http] (62s)
+KILLED       a cut-short stream keeps the connection [http] (63s)
+KILLED       HTTP/1.0 is sent chunked [http] (61s)
+KILLED       the last chunk is never sent [http] (68s)
+KILLED       HEAD runs the producer [http] (65s)
+KILLED       a chunk's size is decimal [http] (69s)
+KILLED       hexadecimal digits come out reversed [http] (62s)
+KILLED       a chunk has no line break after its data [http] (62s)
+KILLED       a chunk's send has no limit [http] (62s)
+KILLED       a failed chunk is skipped and the body goes on [http] (114s)
+KILLED       a failed producer ends the body as whole [http] (61s)
+KILLED       a producer's failure counts as finished [http] (60s)
+KILLED       closing the writer does not end the body [http] (59s)
+KILLED       writes after a close go through [http] (60s)
+KILLED       the producer writes straight to the connection [http] (53s)
+KILLED       a 304 may be streamed [http] (62s)
+KILLED       a streamed response's status is not checked [http] (61s)
+KILLED       a producer that ended its body runs on [http] (65s)  # at 6308830
+# result: every mutant killed (18 of 18)
