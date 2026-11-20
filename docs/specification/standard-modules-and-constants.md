@@ -420,7 +420,10 @@ what reaches C and what C may do:
   cancelled (even before it ran), a process that was forced at its stop
   deadline or stopped before its body ran, or a collection that found it
   unreachable. No task can be waiting on its descriptors then, since a
-  waiting call holds the handle. A wait names the handle its descriptor belongs to,
+  waiting call holds the handle. One end still frees nothing: a forced body
+  that parks again (for example inside a release that waits) is abandoned
+  with its heap, so the handles only it holds stay open until the program
+  ends. A wait names the handle its descriptor belongs to,
   and closing a handle first wakes every task waiting on its descriptors
   (`CHIMI_REQUEST_IO_WITHDRAW`), whose wait then answers
   `CHIMI_BINDING_WAIT_CLOSED`, so no task stays parked on a descriptor number

@@ -465,9 +465,15 @@ fn peer_sees(name: Text) -> Text needs { network: Network } {
             let _ = Task.start(fn() { Result.capture(fn() { Stream.read(Net.reader(server)) }) })
             Void
           }
-          _ -> {
+          "forced" -> {
             let _ = Result.capture(fn() { Supervisor.start_handoff(root, reader_spec(), server) })
             Void
+          }
+          // The stop comes before this task parks again, so the new body
+          // never runs and its start argument is discarded.
+          _ -> {
+            let _ = Result.capture(fn() { Supervisor.start_handoff(root, reader_spec(), server) })
+            Supervisor.stop(root)
           }
         }
       })
@@ -478,7 +484,6 @@ fn peer_sees(name: Text) -> Text needs { network: Network } {
       }
       case name {
         "forced" -> Supervisor.stop(root)
-        "discarded" -> Supervisor.stop(root)
         _ -> Void
       }
       Result.capture(fn() {
