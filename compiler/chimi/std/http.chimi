@@ -1525,9 +1525,9 @@ pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes,
         True -> Resource.scoped(fn() {
           Tls.client(raw, target.host, { roots: settings.roots })
         }, Net.close, fn(secured) {
-          exchange(Net.reader(secured), Net.writer(secured), request, method == Method.Head, bounds)
+          exchange(Net.reader(secured), Net.writer(secured), request, is_head(method), bounds)
         })
-        False -> exchange(Net.reader(raw), Net.writer(raw), request, method == Method.Head, bounds)
+        False -> exchange(Net.reader(raw), Net.writer(raw), request, is_head(method), bounds)
       }
     })
   }, settings.timeout)
@@ -1548,7 +1548,7 @@ pub fn send_over(connection: Connection, method: Method, url: Text, headers: Lis
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
   Task.timeout(fn() {
-    exchange(reader, writer, request, method == Method.Head, bounds)
+    exchange(reader, writer, request, is_head(method), bounds)
   }, settings.timeout)
 }
 
@@ -1582,6 +1582,10 @@ fn parse_url(url: Text) -> Url {
     True -> Failure(HttpError.BadUrl("a user name or password in the URL"))
     False -> Void
   }
+  case List.all(Bytes.to_list(Bytes.from_text(target)), is_target_byte) {
+    True -> Void
+    False -> Failure(HttpError.BadUrl("a character the path or query must percent-encode"))
+  }
   let default_port = case secure {
     True -> 443
     False -> 80
@@ -1611,33 +1615,48 @@ fn split_authority(rest: Text) -> (Text, Text) {
   }
 }
 
-// The host and port of an authority; an IPv6 literal keeps no brackets.
+// The host and port of an authority; an IPv6 literal keeps no brackets. A
+// name is ASCII letters, digits, `-`, `.`, `_` and `~` (an international
+// name is sent in its `xn--` form); an IPv6 literal is hex digits, `:` and
+// `.`. An empty port is the default (RFC 3986 section 3.2.3).
 fn split_host(authority: Text, default_port: Int) -> (Text, Int) {
   let (host, port_text) = case Text.starts_with(authority, "[") {
     True -> case Text.split_once(drop_bytes(authority, 1), "]") {
-      Some((inside, "")) -> (inside, None)
+      Some((inside, "")) -> (inside, "")
       Some((inside, after)) -> case Text.starts_with(after, ":") {
-        True -> (inside, Some(drop_bytes(after, 1)))
+        True -> (inside, drop_bytes(after, 1))
         False -> Failure(HttpError.BadUrl("text after an IPv6 address"))
       }
       None -> Failure(HttpError.BadUrl("an IPv6 address without its closing bracket"))
     }
     False -> case Text.split_once(authority, ":") {
-      Some((name, port)) -> (name, Some(port))
-      None -> (authority, None)
+      Some((name, port)) -> (name, port)
+      None -> (authority, "")
     }
   }
-  case Text.is_empty(host) or Text.contains(host, "[") or Text.contains(host, "]") {
+  let bytes = Bytes.to_list(Bytes.from_text(host))
+  let literal = Text.starts_with(authority, "[")
+  let usable = case literal {
+    True -> Text.contains(host, ":") and List.all(bytes, fn(byte) {
+      is_hex_digit(byte) or byte == 58 or byte == 46
+    })
+    False -> List.all(bytes, is_name_byte)
+  }
+  case Text.is_empty(host) {
     True -> Failure(HttpError.BadUrl("no host"))
     False -> Void
   }
-  let port = case port_text {
-    None -> default_port
-    Some(digits) -> case all_digits(digits) and Text.byte_length(digits) <= 5 {
-      True -> case Result.capture(fn() { Int.parse(digits) }) {
+  case usable {
+    True -> Void
+    False -> Failure(HttpError.BadUrl("a character a host cannot hold"))
+  }
+  let port = case Text.is_empty(port_text) {
+    True -> default_port
+    False -> case all_digits(port_text) and Text.byte_length(port_text) <= 5 {
+      True -> case Result.capture(fn() { Int.parse(port_text) }) {
         Ok(number) -> case number >= 1 and number <= 65535 {
           True -> number
-          False -> Failure(HttpError.BadUrl("the port ${digits} is outside 1 to 65535"))
+          False -> Failure(HttpError.BadUrl("the port ${port_text} is outside 1 to 65535"))
         }
         Err(_) -> Failure(HttpError.BadUrl("a bad port"))
       }
@@ -1645,6 +1664,24 @@ fn split_host(authority: Text, default_port: Int) -> (Text, Int) {
     }
   }
   (host, port)
+}
+
+fn is_hex_digit(byte: Int) -> Bool {
+  is_digit(byte) or (byte >= 65 and byte <= 70) or (byte >= 97 and byte <= 102)
+}
+
+fn is_letter(byte: Int) -> Bool {
+  (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+}
+
+fn is_name_byte(byte: Int) -> Bool {
+  is_letter(byte) or is_digit(byte) or List.contains([45, 46, 95, 126], byte)
+}
+
+// What RFC 3986 allows unencoded in a path and query: unreserved
+// characters, sub-delimiters, `:`, `@`, `/`, `?` and `%`.
+fn is_target_byte(byte: Int) -> Bool {
+  is_name_byte(byte) or List.contains([33, 36, 38, 39, 40, 41, 42, 43, 44, 59, 61, 58, 64, 47, 63, 37], byte)
 }
 
 // A host as it appears in a `host` header: an IPv6 literal in brackets.
@@ -1667,9 +1704,14 @@ fn request_bytes(method: Method, target: Url, headers: List<(Text, Text)>, body:
     let (name, _) = header
     not is_framing_header(name)
   })
-  let host = case find_header(given, "host") {
-    Some(_) -> []
-    None -> [("host", target.authority)]
+  let hosts = List.filter(given, fn(header) {
+    let (name, _) = header
+    name == "host"
+  })
+  let host = case hosts {
+    [] -> [("host", target.authority)]
+    [_] -> []
+    _ -> Debug.crash("Http: a request has one host header")
   }
   let measured = not Bytes.is_empty(body) or List.contains([Method.Post, Method.Put, Method.Patch], method)
   let length = case measured {
@@ -1700,39 +1742,62 @@ fn method_text(method: Method) -> Text {
   }
 }
 
-// Writes the request, then reads the reply, past any interim 1xx replies.
+// A `HEAD` request's reply has no body, however the method is spelled.
+fn is_head(method: Method) -> Bool {
+  method_text(method) == "HEAD"
+}
+
+// Writes the request, then reads the reply. A refusal of the reply becomes
+// an `HttpError`; the connection's own failures pass through. Each failure
+// is named, so the private `Refusal` stays out of `send`'s failures.
 fn exchange(reader: Reader<NetError>, writer: Writer<NetError>, request: Bytes, head_only: Bool, bounds: Limits) -> Response {
   Stream.write(writer, request)
-  let outcome = Result.capture(fn() {
-    loop cursor = Cursor(Bytes.empty(), 0) {
-      let found = read_head(reader, cursor, bounds.head_bytes)
-      case found {
-        None -> Failure(HttpError.BadReply("the connection ended before a reply"))
-        Some((head, rest)) -> {
-          let (status, headers) = parse_reply_head(head, bounds)
-          case status < 200 {
-            True -> rest
-            False -> break Response(status, headers, Body.Whole(reply_body(reader, status, headers, rest, head_only, bounds)))
-          }
-        }
-      }
-    }
-  })
-  case outcome {
+  case Result.capture(fn() { read_reply(reader, head_only, bounds) }) {
     Ok(response) -> response
     Err(Refusal.Malformed(reason)) -> Failure(HttpError.BadReply(reason))
     Err(Refusal.NotImplemented(reason)) -> Failure(HttpError.BadReply(reason))
     Err(Refusal.BadVersion) -> Failure(HttpError.BadReply("not HTTP/1.x"))
     Err(Refusal.HeadTooLarge) -> Failure(HttpError.TooLarge)
     Err(Refusal.BodyTooLarge) -> Failure(HttpError.TooLarge)
-    Err(other) -> Failure(other)
+    Err(NetError.Refused) -> Failure(NetError.Refused)
+    Err(NetError.Unreachable) -> Failure(NetError.Unreachable)
+    Err(NetError.Reset) -> Failure(NetError.Reset)
+    Err(NetError.Closed) -> Failure(NetError.Closed)
+    Err(NetError.AddressInUse) -> Failure(NetError.AddressInUse)
+    Err(NetError.HostNotFound(host)) -> Failure(NetError.HostNotFound(host))
+    Err(NetError.TooManyOpen) -> Failure(NetError.TooManyOpen)
+    Err(NetError.TimedOut) -> Failure(NetError.TimedOut)
+    Err(NetError.Failed(message)) -> Failure(NetError.Failed(message))
   }
 }
 
-// The status and headers of a reply's head. `101 Switching Protocols`
-// would hand the connection to another protocol, which this client does
-// not speak.
-fn parse_reply_head(bytes: Bytes, bounds: Limits) -> (Int, List<(Text, Text)>) {
+// How many interim replies a reply may follow; a server that sends more is
+// stalling.
+const max_interim_replies: Int = 16
+
+// The reply, past any interim 1xx replies.
+fn read_reply(reader: Reader<NetError>, head_only: Bool, bounds: Limits) -> Response {
+  loop state = (Cursor(Bytes.empty(), 0), 0) {
+    let (cursor, interim) = state
+    let found = read_head(reader, cursor, bounds.head_bytes)
+    case found {
+      None -> Failure(Refusal.Malformed("the connection ended before a reply"))
+      Some((head, rest)) -> {
+        let (minor, status, headers) = parse_reply_head(head, bounds)
+        case (status < 200, interim >= max_interim_replies) {
+          (True, True) -> Failure(Refusal.Malformed("more than ${max_interim_replies} interim replies"))
+          (True, False) -> (rest, interim + 1)
+          (False, _) -> break Response(status, headers, Body.Whole(reply_body(reader, minor, status, headers, rest, head_only, bounds)))
+        }
+      }
+    }
+  }
+}
+
+// The minor version, status and headers of a reply's head. `101 Switching
+// Protocols` would hand the connection to another protocol, which this
+// client does not speak.
+fn parse_reply_head(bytes: Bytes, bounds: Limits) -> (Int, Int, List<(Text, Text)>) {
   case List.any(Bytes.to_list(bytes), is_control) {
     True -> Failure(Refusal.Malformed("a control character in the head"))
     False -> Void
@@ -1755,27 +1820,27 @@ fn parse_reply_head(bytes: Bytes, bounds: Limits) -> (Int, List<(Text, Text)>) {
         True -> Failure(Refusal.HeadTooLarge)
         False -> Void
       }
-      let status = parse_status_line(status_line)
+      let (minor, status) = parse_status_line(status_line)
       case status == 101 {
         True -> Failure(Refusal.Malformed("101 Switching Protocols"))
         False -> Void
       }
-      (status, List.map(header_lines, parse_header))
+      (minor, status, List.map(header_lines, parse_header))
     }
   }
 }
 
-// `HTTP/1.1 200 OK`: an HTTP/1.x version, a status from 100 to 599,
-// and a reason that may be empty.
-fn parse_status_line(line: Text) -> Int {
+// `HTTP/1.1 200 OK`: an HTTP/1.x version, a status from 100 to 599, and a
+// reason that may be empty.
+fn parse_status_line(line: Text) -> (Int, Int) {
   let (version, rest) = case Text.split_once(line, " ") {
     Some(parts) -> parts
     None -> Failure(Refusal.Malformed("bad status line"))
   }
   let bytes = Bytes.to_list(Bytes.from_text(version))
-  case (Text.starts_with(version, "HTTP/1."), bytes) {
-    (True, [_, _, _, _, _, _, _, minor]) -> case is_digit(minor) {
-      True -> Void
+  let minor = case (Text.starts_with(version, "HTTP/1."), bytes) {
+    (True, [_, _, _, _, _, _, _, digit]) -> case is_digit(digit) {
+      True -> digit - 48
       False -> Failure(Refusal.Malformed("not HTTP/1.x"))
     }
     _ -> Failure(Refusal.Malformed("not HTTP/1.x"))
@@ -1787,7 +1852,7 @@ fn parse_status_line(line: Text) -> Int {
   case all_digits(code) and Text.byte_length(code) == 3 {
     True -> case Result.capture(fn() { Int.parse(code) }) {
       Ok(status) -> case status >= 100 and status <= 599 {
-        True -> status
+        True -> (minor, status)
         False -> Failure(Refusal.Malformed("bad status line"))
       }
       Err(_) -> Failure(Refusal.Malformed("bad status line"))
@@ -1797,28 +1862,49 @@ fn parse_status_line(line: Text) -> Int {
 }
 
 // A reply's body (RFC 9112 section 6.3): none for `HEAD`, 204 or 304;
-// chunked when the last transfer coding is chunked; to the end of the
-// connection for any other coding or when there is no length; otherwise
-// its `content-length`.
-fn reply_body(reader: Reader<NetError>, status: Int, headers: List<(Text, Text)>, cursor: Cursor, head_only: Bool, bounds: Limits) -> Bytes {
-  let codings = header_tokens(headers, "transfer-encoding")
-  let lengths = header_tokens(headers, "content-length")
-  let measured = List.any(headers, fn(header) {
-    let (name, _) = header
-    name == "content-length"
-  })
-  case (head_only or status == 204 or status == 304, List.last(codings), lengths) {
-    (True, _, _) -> Bytes.empty()
-    (False, Some("chunked"), _) -> {
+// chunked when the last transfer coding is chunked, read to the end of the
+// connection when another coding is last, refused when chunked is applied
+// twice or the reply is HTTP/1.0 (section 6.1);
+// otherwise its `content-length`, or to the end when there is none. As for
+// the server, a chunked body's framing and trailers count toward the limit.
+fn reply_body(reader: Reader<NetError>, minor: Int, status: Int, headers: List<(Text, Text)>, cursor: Cursor, head_only: Bool, bounds: Limits) -> Bytes {
+  let named = fn(wanted) {
+    List.any(headers, fn(header) {
+      let (name, _) = header
+      name == wanted
+    })
+  }
+  case (head_only or status == 204 or status == 304, named("transfer-encoding")) {
+    (True, _) -> Bytes.empty()
+    (False, True) -> encoded_body(reader, minor, header_tokens(headers, "transfer-encoding"), cursor, bounds)
+    (False, False) -> measured_body(reader, header_tokens(headers, "content-length"), named("content-length"), cursor, bounds)
+  }
+}
+
+fn encoded_body(reader: Reader<NetError>, minor: Int, codings: List<Text>, cursor: Cursor, bounds: Limits) -> Bytes {
+  case minor == 0 {
+    True -> Failure(Refusal.Malformed("transfer-encoding in HTTP/1.0"))
+    False -> Void
+  }
+  let chunked = List.length(List.filter(codings, fn(coding) { coding == "chunked" }))
+  case (List.last(codings), chunked > 1) {
+    (None, _) -> Failure(Refusal.Malformed("an empty transfer-encoding"))
+    (_, True) -> Failure(Refusal.Malformed("chunked is applied twice"))
+    (Some("chunked"), False) -> {
       let (body, _) = read_chunked(reader, cursor, bounds)
       body
     }
-    (False, Some(_), _) -> read_to_end(reader, cursor, bounds.body_bytes)
-    (False, None, []) -> case measured {
+    (Some(_), False) -> read_to_end(reader, cursor, bounds.body_bytes)
+  }
+}
+
+fn measured_body(reader: Reader<NetError>, lengths: List<Text>, measured: Bool, cursor: Cursor, bounds: Limits) -> Bytes {
+  case lengths {
+    [] -> case measured {
       True -> Failure(Refusal.Malformed("content-length is not a number"))
       False -> read_to_end(reader, cursor, bounds.body_bytes)
     }
-    (False, None, [first, ..rest]) -> case List.all(rest, fn(other) { other == first }) {
+    [first, ..rest] -> case List.all(rest, fn(other) { other == first }) {
       True -> {
         let length = parse_length(first)
         case length > bounds.body_bytes {

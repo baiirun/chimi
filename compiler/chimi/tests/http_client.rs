@@ -215,6 +215,16 @@ test "a body is framed by its length" {
     |> Test.assert_equal("POST /echo HTTP/1.1\r\nhost: x\r\ncontent-type: text/plain\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello|POST / HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n|PUT / HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n|PATCH / HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n|DELETE / HTTP/1.1\r\nhost: x\r\ncontent-length: 4\r\nconnection: close\r\n\r\ngone|PURGE / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
 }
 
+test "a HEAD spelled as another method reads no body" {
+  let exchanged = scripted_with(Http.client_defaults, Method.Other("HEAD"), "http://x/", [], "", ["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"])
+  exchanged |> Test.assert_equal("HEAD / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n=>200 [content-length=5] ")
+}
+
+test "two host headers defect" {
+  Test.capture_defect(fn() { request_of(Method.Get, "http://x/", [("Host", "a"), ("host", "b")], "") })
+    |> Test.assert_equal("Http: a request has one host header")
+}
+
 test "the caller's host stands" {
   request_of(Method.Get, "http://10.0.0.1/", [("Host", "api.example.com")], "")
     |> Test.assert_equal("GET / HTTP/1.1\r\nhost: api.example.com\r\nconnection: close\r\n\r\n")
@@ -230,7 +240,7 @@ test "a header that is not a token defects" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 7);
 }
 
 // Rejects a URL parser that sends what it should refuse, or refuses what it
@@ -242,16 +252,18 @@ fn a_url_the_client_cannot_send_to_fails_before_any_io() {
         "urls",
         r#"
 test "refused URLs" {
-  let urls = ["ftp://x/", "x/", "http://user:pw@x/", "http:///a", "http://:80/", "http://x:0/", "http://x:65536/", "http://x:8a/", "http://x:/", "http://x:123456/", "http://[::1/", "http://[::1]x/", "http://x y/", "http://x/a b", "http://x/\t"]
+  let urls = ["ftp://x/", "x/", "http://user:pw@x/", "http:///a", "http://:80/", "http://x:0/", "http://x:65536/", "http://x:8a/", "http://x:123456/", "http://[::1/", "http://[::1]x/", "http://x y/", "http://x/a b", "http://x/\t", "http://x.com\\y/", "http://[example.com]/", "http://ex%41mple.com/", "http://é.com/", "http://x/a{b}", "http://x/a\"b", "http://x/é", "http://x/a\\b"]
   Text.join(List.map(urls, refused_url), "\n")
-    |> Test.assert_equal("HttpError.BadUrl(\"not an http or https URL\")\nHttpError.BadUrl(\"not an http or https URL\")\nHttpError.BadUrl(\"a user name or password in the URL\")\nHttpError.BadUrl(\"no host\")\nHttpError.BadUrl(\"no host\")\nHttpError.BadUrl(\"the port 0 is outside 1 to 65535\")\nHttpError.BadUrl(\"the port 65536 is outside 1 to 65535\")\nHttpError.BadUrl(\"a bad port\")\nHttpError.BadUrl(\"a bad port\")\nHttpError.BadUrl(\"a bad port\")\nHttpError.BadUrl(\"an IPv6 address without its closing bracket\")\nHttpError.BadUrl(\"text after an IPv6 address\")\nHttpError.BadUrl(\"a space or control character\")\nHttpError.BadUrl(\"a space or control character\")\nHttpError.BadUrl(\"a space or control character\")")
+    |> Test.assert_equal("HttpError.BadUrl(\"not an http or https URL\")\nHttpError.BadUrl(\"not an http or https URL\")\nHttpError.BadUrl(\"a user name or password in the URL\")\nHttpError.BadUrl(\"no host\")\nHttpError.BadUrl(\"no host\")\nHttpError.BadUrl(\"the port 0 is outside 1 to 65535\")\nHttpError.BadUrl(\"the port 65536 is outside 1 to 65535\")\nHttpError.BadUrl(\"a bad port\")\nHttpError.BadUrl(\"a bad port\")\nHttpError.BadUrl(\"an IPv6 address without its closing bracket\")\nHttpError.BadUrl(\"text after an IPv6 address\")\nHttpError.BadUrl(\"a space or control character\")\nHttpError.BadUrl(\"a space or control character\")\nHttpError.BadUrl(\"a space or control character\")\nHttpError.BadUrl(\"a character a host cannot hold\")\nHttpError.BadUrl(\"a character a host cannot hold\")\nHttpError.BadUrl(\"a character a host cannot hold\")\nHttpError.BadUrl(\"a character a host cannot hold\")\nHttpError.BadUrl(\"a character the path or query must percent-encode\")\nHttpError.BadUrl(\"a character the path or query must percent-encode\")\nHttpError.BadUrl(\"a character the path or query must percent-encode\")\nHttpError.BadUrl(\"a character the path or query must percent-encode\")")
 }
 
 test "edge ports are sent" {
+  let empty = scripted(Method.Get, "http://x:/", ["HTTP/1.1 204 No Content\r\n\r\n"])
+  let six = scripted(Method.Get, "http://[::FFFF:1.2.3.4]:/a%20b!$&'()*+,;=:@/?q=%7B~", ["HTTP/1.1 204 No Content\r\n\r\n"])
   let low = scripted(Method.Get, "http://x:1/", ["HTTP/1.1 204 No Content\r\n\r\n"])
   let high = scripted(Method.Get, "http://x:65535/", ["HTTP/1.1 204 No Content\r\n\r\n"])
-  "${low}|${high}"
-    |> Test.assert_equal("GET / HTTP/1.1\r\nhost: x:1\r\nconnection: close\r\n\r\n=>204 [] |GET / HTTP/1.1\r\nhost: x:65535\r\nconnection: close\r\n\r\n=>204 [] ")
+  "${empty}|${six}|${low}|${high}"
+    |> Test.assert_equal("GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n=>204 [] |GET /a%20b!$&'()*+,;=:@/?q=%7B~ HTTP/1.1\r\nhost: [::FFFF:1.2.3.4]\r\nconnection: close\r\n\r\n=>204 [] |GET / HTTP/1.1\r\nhost: x:1\r\nconnection: close\r\n\r\n=>204 [] |GET / HTTP/1.1\r\nhost: x:65535\r\nconnection: close\r\n\r\n=>204 [] ")
 }
 "#,
         "virtual",
@@ -287,6 +299,22 @@ test "chunked" {
     |> Test.assert_equal("200 [transfer-encoding=chunked;content-length=1] hello world|200 [transfer-encoding=gzip, chunked] abc|200 [transfer-encoding=chunked, gzip] raw to the end")
 }
 
+test "codings the client refuses or reads to the end" {
+  let twice = replied(["HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"])
+  let empty = replied(["HTTP/1.1 200 OK\r\nTransfer-Encoding:\r\nContent-Length: 2\r\n\r\nhi"])
+  let old = replied(["HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"])
+  let coded = replied(["HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 2\r\n\r\nhi and the rest"])
+  "${twice}|${empty}|${old}|${coded}"
+    |> Test.assert_equal("HttpError.BadReply(\"chunked is applied twice\")|HttpError.BadReply(\"an empty transfer-encoding\")|HttpError.BadReply(\"transfer-encoding in HTTP/1.0\")|200 [transfer-encoding=gzip;content-length=2] hi and the rest")
+}
+
+test "interim replies are bounded" {
+  let sixteen = replied([Text.concat(List.repeat("HTTP/1.1 100 Continue\r\n\r\n", 16)), "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"])
+  let seventeen = replied([Text.concat(List.repeat("HTTP/1.1 100 Continue\r\n\r\n", 17)), "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"])
+  "${sixteen}|${seventeen}"
+    |> Test.assert_equal("200 [content-length=0] |HttpError.BadReply(\"more than 16 interim replies\")")
+}
+
 test "to the end of the connection" {
   replied(["HTTP/1.1 200 OK\r\n\r\nall ", "of ", "it"])
     |> Test.assert_equal("200 [] all of it")
@@ -311,7 +339,7 @@ test "interim answers are skipped" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 5);
+    assert_passed(&run, 7);
 }
 
 // Rejects a client that returns a reply it should refuse, or refuses one it
@@ -339,9 +367,17 @@ test "limits" {
       None -> "no outcome"
     }
   }
-  let replies = ["HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\n\r\n1234", "HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n", "HTTP/1.1 200 OK\r\nA: 12345678901234567890\r\n\r\n", "HTTP/1.1 200 OK\r\nA: 123456789012345678901\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n12345", "HTTP/1.1 200 OK\r\n\r\n12345", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n12345\r\n0\r\n\r\n"]
+  let replies = ["HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\n\r\n1234", "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n1234", "HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n", "HTTP/1.1 200 OK\r\nA: 12345678901234567890\r\n\r\n", "HTTP/1.1 200 OK\r\nA: 123456789012345678901\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n12345", "HTTP/1.1 200 OK\r\n\r\n12345", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n12345\r\n0\r\n\r\n"]
+  // A chunked body's framing counts toward the limit, as for the server:
+  // `1\r\na\r\n0\r\n\r\n` is 11 bytes.
+  let framed = { ..Http.client_defaults, max_body_bytes: 11 }
+  let tight = { ..Http.client_defaults, max_body_bytes: 10 }
+  let chunked = ["HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\n"]
+  let at_limit = scripted_with(framed, Method.Get, "http://x/", [], "", chunked)
+  let past = scripted_with(tight, Method.Get, "http://x/", [], "", chunked)
+  "${at_limit}|${past}" |> Test.assert_equal("GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n=>200 [transfer-encoding=chunked] a|GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n=>HttpError.TooLarge")
   Text.join(List.map(replies, shown), "\n")
-    |> Test.assert_equal("200 [a=1;b=2] 1234\nHttpError.TooLarge\n200 [a=12345678901234567890] \nHttpError.TooLarge\nHttpError.TooLarge\nHttpError.TooLarge\nHttpError.TooLarge")
+    |> Test.assert_equal("200 [a=1;b=2] 1234\n200 [content-length=4] 1234\nHttpError.TooLarge\n200 [a=12345678901234567890] \nHttpError.TooLarge\nHttpError.TooLarge\nHttpError.TooLarge\nHttpError.TooLarge")
 }
 
 test "a setting that is not positive defects" {
@@ -354,6 +390,36 @@ test "a setting that is not positive defects" {
         "virtual",
     );
     assert_passed(&run, 3);
+}
+
+// Rejects a client whose failures name a private type: a caller handles
+// exactly `HttpError`, `NetError` and `Timeout`.
+#[test]
+fn a_send_fails_only_with_public_types() {
+    let run = run_tests(
+        "failure-set",
+        r#"
+import std/http.{HttpError}
+import std/task.{Timeout}
+
+fn exact(operation: fn() -> Response errors HttpError | NetError | Timeout needs { clock: Clock }) -> Text needs { clock: Clock } {
+  case Result.capture(operation) {
+    Ok(reply) -> rendered(reply)
+    Err(failure) -> Debug.render(failure)
+  }
+}
+
+test "the failure set" {
+  let (client, server) = Net.pair(64)
+  let outcome = exact(fn() { Http.send_over(client, Method.Get, "http://[x/", [], Bytes.empty(), Http.client_defaults) })
+  Net.close(client)
+  Net.close(server)
+  outcome |> Test.assert_equal("HttpError.BadUrl(\"an IPv6 address without its closing bracket\")")
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 1);
 }
 
 // Rejects a client that waits forever for a server that never answers, or
@@ -432,6 +498,30 @@ fn round_trip() -> Text needs { network: Network, clock: Clock } {
   "${host}|${short(posted)}|${short(headed)} ${Debug.render(Http.response_header(headed, "content-length"))}|${short(missing)}|${closed}"
 }
 
+// A server that keeps the connection open after its reply: the client must
+// close it, so the server's next read ends.
+fn closes() -> Text needs { network: Network, clock: Clock } {
+  let listener = Net.listen("127.0.0.1", 0)
+  let port = Net.port(Net.listener_address(listener))
+  let serving = Task.start(fn() {
+    let connection = Net.accept(listener)
+    let _ = read_request(connection, 0)
+    Stream.write(Net.writer(connection), Bytes.from_text("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+    let after = Task.timeout(fn() { Stream.read(Net.reader(connection)) }, Duration.seconds(5))
+    Net.close(connection)
+    Debug.render(after)
+  })
+  let reply = Http.send(Method.Get, "http://127.0.0.1:${port}/", [], Bytes.empty(), Http.client_defaults)
+  let after = Task.result(serving)
+  Net.close_listener(listener)
+  "${short(reply)} ${after}"
+}
+
+test "the client closes its connection" {
+  let outcome = closes() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("200 ok None")
+}
+
 test "round trips" {
   let outcome = round_trip() using { network: Net.host_for_tests() }
   outcome |> Test.assert_equal("200 user 7 full=1 Some(\"HOST\")|201 ping|200  Some(\"2\")|404 not found|refused")
@@ -439,5 +529,5 @@ test "round trips" {
 "#,
         "real",
     );
-    assert_passed(&run, 1);
+    assert_passed(&run, 2);
 }

@@ -348,10 +348,18 @@ client's twin of `serve` and `serve_connection`.
 
 - A URL MUST be `http://` or `https://` (the scheme in any case), a host, an
   optional port from 1 to 65535, and an optional path and query. The default
-  ports are 80 and 443. An IPv6 literal is written in brackets.
-- A URL with a user name or password, no host, a bad port, an unclosed or
-  trailing-text IPv6 bracket, or a space or control character MUST fail with
-  `HttpError.BadUrl(reason)` before any I/O.
+  ports are 80 and 443, and an empty port is the default (RFC 3986 section
+  3.2.3).
+- A host MUST be ASCII letters, digits, `-`, `.`, `_` and `~` (an
+  international name is given in its `xn--` form), or an IPv6 literal in
+  brackets: hex digits, `:` and `.`. So a host another URL parser would read
+  differently, such as `x.com\y`, is refused rather than connected to.
+- A URL with a user name or password, no host, another character in the
+  host, a bad port, an unclosed or trailing-text IPv6 bracket, a space or
+  control character, or a path or query character RFC 3986 requires to be
+  percent-encoded (anything but unreserved characters, sub-delimiters, `:`,
+  `@`, `/`, `?` and `%`) MUST fail with `HttpError.BadUrl(reason)` before
+  any I/O.
 - The path and query MUST be sent as given; percent-encoding is the
   caller's, as the server's `Http.path` decodes nothing. A query with no path
   is sent as `/?query`, and a fragment is not sent.
@@ -361,7 +369,8 @@ client's twin of `serve` and `serve_connection`.
 - The request MUST be HTTP/1.1 with `host` (the host, with the port when it
   is not the scheme's default), the caller's headers, and
   `connection: close`: each request has a connection of its own until there
-  is a pool. A `host` the caller gives MUST stand in place of the URL's.
+  is a pool. A `host` the caller gives MUST stand in place of the URL's, and
+  more than one MUST defect.
 - `content-length` MUST be sent when there is a body or the method is
   `POST`, `PUT` or `PATCH`. The caller's framing and connection headers
   (`content-length`, `transfer-encoding`, `connection` and the like) MUST be
@@ -374,18 +383,22 @@ client's twin of `serve` and `serve_connection`.
 ### The reply
 
 - The status line MUST be `HTTP/1.x`, a status from 100 to 599 and a
-  reason that may be empty. Interim 1xx replies MUST be skipped. `101
+  reason that may be empty. Interim 1xx replies MUST be skipped, up to 16;
+  a seventeenth is refused, since a server sending them is stalling. `101
   Switching Protocols` MUST be refused, since the client speaks no other
   protocol.
-- The body MUST be framed as RFC 9112 section 6.3 says: none for `HEAD`, 204
-  or 304; chunked when the last transfer coding is `chunked`; to the end of
-  the connection for any other coding; otherwise `content-length`, where
-  equal repeats are one length and a conflict is refused; with no length, to
-  the end of the connection.
+- The body MUST be framed as RFC 9112 section 6.3 says: none for a `HEAD`
+  request (however its method is spelled), 204 or 304; chunked when the last
+  transfer coding is `chunked`; to the end of the connection when another
+  coding is last; otherwise `content-length`, where equal repeats are one
+  length and a conflict is refused; with no length, to the end of the
+  connection. `transfer-encoding` in an HTTP/1.0 reply (section 6.1), an
+  empty `transfer-encoding`, and chunked applied twice MUST be refused.
 - The head is read with the server's parser and limits: header names are
   lowercased, and a reply whose head passes `max_head_bytes`, with more than
   `max_headers` headers, or whose body passes `max_body_bytes` MUST fail with
-  `HttpError.TooLarge`. A reply that breaks HTTP/1.1 MUST fail with
+  `HttpError.TooLarge`. As for the server, a chunked body's framing and
+  trailers count toward `max_body_bytes`. A reply that breaks HTTP/1.1 MUST fail with
   `HttpError.BadReply(reason)`.
 - A redirect MUST NOT be followed: a 3xx comes back as itself, with its
   `location`. Following one changes the method, drops headers and can cross
@@ -411,6 +424,14 @@ client's twin of `serve` and `serve_connection`.
 - Proxies, HTTP/2 and cookies.
 - Following redirects: a `follow` helper can come if programs repeat the
   loop. Retries: a caller wraps `send` in `std/retry`.
+- Leniency the server's parser does not have: folded header lines
+  (obs-fold, which RFC 9112 section 5.2 has a user agent unfold), heads that
+  are not UTF-8 (obs-text in a reason or a value), and whitespace before a
+  chunk extension are refused.
+- Reading while sending: the whole request is written before the reply is
+  read, so a server that answers early (a 413 or 401) and closes without
+  reading a large body can make the write fail with `NetError.Reset`, and
+  its answer is lost.
 
 ## std/sql (driver-independent layer)
 
@@ -802,8 +823,9 @@ refuses the peer's versions.
 | HTTP client: each kind of bad URL refused before any I/O; ports 1 and 65535 sent | `tests/http_client.rs` `a_url_the_client_cannot_send_to_fails_before_any_io` |
 | HTTP client: content-length (exact, repeated, split across reads), chunked over content-length, other codings and no length read to the end, no body for `HEAD`, 204 and 304, interim 1xx skipped, HTTP/1.0 and empty reasons | `tests/http_client.rs` `a_reply_body_is_framed_as_http_1_1_says` |
 | HTTP client: bad status lines and versions, statuses outside 100 to 599, 101, conflicting or non-numeric lengths, a cut body, bare LF, a header without a colon, a bad chunk; each limit met and passed; settings that cannot work | `tests/http_client.rs` `a_reply_that_breaks_http_1_1_or_a_limit_fails` |
+| HTTP client: `send` and `send_over` fail only with `HttpError`, `NetError` and `Timeout`, so the private `Refusal` never reaches a caller | `tests/http_client.rs` `a_send_fails_only_with_public_types` |
 | HTTP client: a silent server times out at the timeout | `tests/http_client.rs` `the_whole_exchange_runs_under_the_timeout` |
-| HTTP client: `Http.send` against `Http.serve` over loopback (GET with a query, POST with a body, HEAD, 404) and a refused connection | `tests/http_client.rs` `http_send_talks_to_http_serve_over_loopback` |
+| HTTP client: `Http.send` against `Http.serve` over loopback (GET with a query, POST with a body, HEAD, 404), a refused connection, and the client closing a connection the server left open | `tests/http_client.rs` `http_send_talks_to_http_serve_over_loopback` |
 | HTTPS client: `Http.send` against `Http.serve` over `Tls.listener`, `Untrusted` with the system's roots, `WrongHost` for an address the certificate does not name | `tests/tls.rs` `http_send_over_https_checks_the_certificate` |
 | HTTPS client: an OpenSSL `s_server -www` page with no length, read to the close | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
 | The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
