@@ -122,7 +122,6 @@ pub struct ChannelMetrics {
     pub waiting_receiver: bool,
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SendResult {
     Pending,
@@ -348,10 +347,14 @@ impl Channel {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
-    Sending { channel: ChannelId },
+    Sending {
+        channel: ChannelId,
+    },
     SendReady(SendResult),
     /// `channel` is the queue the task waits on (a tap's queue, not the tap).
-    Receiving { channel: ChannelId },
+    Receiving {
+        channel: ChannelId,
+    },
     ReceiveReady(ReceiveResult),
 }
 
@@ -482,7 +485,11 @@ impl ChannelRegistry {
             owner,
             token: 1,
         };
-        (Sender { channel: id }, completion, self.created(id, owner, capacity))
+        (
+            Sender { channel: id },
+            completion,
+            self.created(id, owner, capacity),
+        )
     }
 
     /// A new subscription of the hub `publisher` names, owned by `task`: a
@@ -597,7 +604,11 @@ impl ChannelRegistry {
             + channel
                 .taps
                 .iter()
-                .filter(|tap| self.channels.get(tap).is_some_and(|tap| !tap.receiver_ended))
+                .filter(|tap| {
+                    self.channels
+                        .get(tap)
+                        .is_some_and(|tap| !tap.receiver_ended)
+                })
                 .count()
     }
 
@@ -622,7 +633,11 @@ impl ChannelRegistry {
             .taps
             .iter()
             .copied()
-            .filter(|tap| self.channels.get(tap).is_some_and(|tap| !tap.receiver_ended))
+            .filter(|tap| {
+                self.channels
+                    .get(tap)
+                    .is_some_and(|tap| !tap.receiver_ended)
+            })
             .chain((!channel.receiver_ended).then_some(queue))
             .peekable();
         live.peek().is_some() && live.all(carries)
@@ -787,10 +802,14 @@ impl ChannelRegistry {
             SendResult::Accepted | SendResult::Published(_) => {
                 (ChannelEventKind::SendAccepted, self.observe_full)
             }
-            SendResult::Closed(_) => (ChannelEventKind::SendRejectedClosed, self.observe_boundaries),
-            SendResult::Aborted(_) => {
-                (ChannelEventKind::SendRejectedAborted, self.observe_boundaries)
-            }
+            SendResult::Closed(_) => (
+                ChannelEventKind::SendRejectedClosed,
+                self.observe_boundaries,
+            ),
+            SendResult::Aborted(_) => (
+                ChannelEventKind::SendRejectedAborted,
+                self.observe_boundaries,
+            ),
             SendResult::Pending => unreachable!("a pending send has no result yet"),
         };
         let channel = self.channels.get(&id).expect("sent-to channel");
@@ -1221,7 +1240,10 @@ impl ChannelRegistry {
         );
         let subscriptions = std::mem::take(&mut hub.hub.as_mut().expect("hub").subscriptions);
         for subscription in subscriptions {
-            self.channels.get_mut(&subscription).expect("subscription").feed = None;
+            self.channels
+                .get_mut(&subscription)
+                .expect("subscription")
+                .feed = None;
             transition.merge(self.close_queue(subscription, task));
         }
         transition
@@ -1280,7 +1302,9 @@ impl ChannelRegistry {
             return;
         };
         if let Some(state) = self.channels.get_mut(&hub).and_then(|hub| hub.hub.as_mut()) {
-            state.subscriptions.retain(|subscription| *subscription != queue);
+            state
+                .subscriptions
+                .retain(|subscription| *subscription != queue);
         }
         self.admit_publishers(hub, transition);
     }
@@ -1296,9 +1320,10 @@ impl ChannelRegistry {
     /// A release is not one of `task`'s operations: the host issues it for
     /// any task's freed endpoints ahead of `task`'s next request, which may
     /// be the one that collects a result already linearized for `task`.
+    /// `None` is a release the carrier drained with no task running.
     pub fn release_unreferenced(
         &mut self,
-        task: TaskId,
+        task: Option<TaskId>,
         id: ChannelId,
     ) -> Result<Transition, ChannelError> {
         let channel = self
@@ -1307,7 +1332,7 @@ impl ChannelRegistry {
             .ok_or(ChannelError::UnknownChannel(id))?;
         let mut transition = Transition::default();
         if channel.hub.is_some() {
-            transition.merge(self.abort_hub(id, Some(task), ChannelEventKind::Released));
+            transition.merge(self.abort_hub(id, task, ChannelEventKind::Released));
             let hub = self.channels.get_mut(&id).expect("hub");
             if let Some(state) = hub.hub.as_mut() {
                 transition.discarded.extend(state.current.take());
@@ -1319,7 +1344,7 @@ impl ChannelRegistry {
             }
             self.forget(id);
         } else if let Some(queue) = channel.tap_of {
-            transition.merge(self.end_receiver(id, Some(task), false));
+            transition.merge(self.end_receiver(id, task, false));
             self.forget(id);
             let queue_state = self.channels.get_mut(&queue).expect("tap's queue");
             queue_state.taps.retain(|tap| *tap != id);
@@ -1327,15 +1352,15 @@ impl ChannelRegistry {
                 self.forget(queue);
             }
         } else if channel.taps.is_empty() {
-            transition.merge(self.abort_queue(id, Some(task), ChannelEventKind::Released));
+            transition.merge(self.abort_queue(id, task, ChannelEventKind::Released));
             self.leave_hub(id, &mut transition);
             self.forget(id);
         } else {
             let unfed = channel.feed.is_none();
-            transition.merge(self.end_receiver(id, Some(task), false));
+            transition.merge(self.end_receiver(id, task, false));
             let open = self.channels[&id].lifecycle == Lifecycle::Open;
             if open && unfed {
-                transition.merge(self.abort_queue(id, Some(task), ChannelEventKind::Released));
+                transition.merge(self.abort_queue(id, task, ChannelEventKind::Released));
             }
             self.channels.get_mut(&id).expect("queue").released = true;
         }
@@ -1883,7 +1908,9 @@ impl ChannelRegistry {
             }
             Operation::Receiving { channel } => {
                 let channel_state = self.channels.get_mut(&channel).expect("pending channel");
-                channel_state.waiting_receivers.retain(|waiter| *waiter != task);
+                channel_state
+                    .waiting_receivers
+                    .retain(|waiter| *waiter != task);
                 observe_channel(
                     &mut transition,
                     self.observe_full,
@@ -1970,7 +1997,10 @@ impl ChannelRegistry {
         transition.discarded.extend(state.current.take());
         let subscriptions = std::mem::take(&mut state.subscriptions);
         for subscription in subscriptions {
-            self.channels.get_mut(&subscription).expect("subscription").feed = None;
+            self.channels
+                .get_mut(&subscription)
+                .expect("subscription")
+                .feed = None;
             transition.merge(self.abort_queue(subscription, cause, ChannelEventKind::Aborted));
         }
         transition
@@ -2484,7 +2514,12 @@ mod parcel_tests {
         };
         assert_eq!(
             channels
-                .send_carrying(PARENT, route.sender, MESSAGE, &[carried_receiver(route), tap])
+                .send_carrying(
+                    PARENT,
+                    route.sender,
+                    MESSAGE,
+                    &[carried_receiver(route), tap]
+                )
                 .map(|_| ()),
             Err(ChannelError::OwnReceiver(route.sender.channel()))
         );
@@ -2547,7 +2582,12 @@ mod variant_tests {
         result
     }
 
-    fn send(channels: &mut ChannelRegistry, task: TaskId, sender: Sender, value: usize) -> SendResult {
+    fn send(
+        channels: &mut ChannelRegistry,
+        task: TaskId,
+        sender: Sender,
+        value: usize,
+    ) -> SendResult {
         let (result, _) = channels
             .send_carrying(task, sender, value, &[])
             .expect("a valid send");
@@ -2561,17 +2601,31 @@ mod variant_tests {
     fn receivers_of_one_queue_each_take_a_different_value_in_parking_order() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 0);
-        let (added, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (added, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         let (second, _) = channels.transfer_receiver(OWNER, added, WORKER).unwrap();
-        assert_eq!(receive(&mut channels, WORKER, second), ReceiveResult::Pending);
-        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Pending);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 7), SendResult::Accepted);
+        assert_eq!(
+            receive(&mut channels, WORKER, second),
+            ReceiveResult::Pending
+        );
+        assert_eq!(
+            receive(&mut channels, OWNER, queue.receiver),
+            ReceiveResult::Pending
+        );
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 7),
+            SendResult::Accepted
+        );
         assert_eq!(
             channels.take_receive_result(WORKER),
             Some(ReceiveResult::Received(7))
         );
         assert_eq!(channels.take_receive_result(OWNER), None);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 8), SendResult::Accepted);
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 8),
+            SendResult::Accepted
+        );
         assert_eq!(
             channels.take_receive_result(OWNER),
             Some(ReceiveResult::Received(8))
@@ -2582,39 +2636,77 @@ mod variant_tests {
     fn aborting_one_receiver_leaves_the_queue_to_the_others_until_the_last_ends() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 2);
-        let (second, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (second, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         channels.abort(OWNER, queue.receiver).unwrap();
-        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Aborted);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 1), SendResult::Accepted);
-        assert_eq!(receive(&mut channels, OWNER, second), ReceiveResult::Received(1));
+        assert_eq!(
+            receive(&mut channels, OWNER, queue.receiver),
+            ReceiveResult::Aborted
+        );
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 1),
+            SendResult::Accepted
+        );
+        assert_eq!(
+            receive(&mut channels, OWNER, second),
+            ReceiveResult::Received(1)
+        );
         channels.abort(OWNER, second).unwrap();
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 2), SendResult::Aborted(2));
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 2),
+            SendResult::Aborted(2)
+        );
     }
 
     #[test]
     fn a_receiver_added_through_an_ended_one_is_ended() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 1);
-        let (second, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (second, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         channels.abort(OWNER, queue.receiver).unwrap();
-        let (third, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (third, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         assert_eq!(receive(&mut channels, OWNER, third), ReceiveResult::Aborted);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 1), SendResult::Accepted);
-        assert_eq!(receive(&mut channels, OWNER, second), ReceiveResult::Received(1));
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 1),
+            SendResult::Accepted
+        );
+        assert_eq!(
+            receive(&mut channels, OWNER, second),
+            ReceiveResult::Received(1)
+        );
     }
 
     #[test]
     fn a_worker_exit_ends_only_its_receiver() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 1);
-        let (mine, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (mine, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         let (moved, _) = channels.transfer_receiver(OWNER, mine, WORKER).unwrap();
-        assert_eq!(receive(&mut channels, WORKER, moved), ReceiveResult::Pending);
+        assert_eq!(
+            receive(&mut channels, WORKER, moved),
+            ReceiveResult::Pending
+        );
         channels.cleanup_task(WORKER);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 5), SendResult::Accepted);
-        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Received(5));
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 5),
+            SendResult::Accepted
+        );
+        assert_eq!(
+            receive(&mut channels, OWNER, queue.receiver),
+            ReceiveResult::Received(5)
+        );
         channels.cleanup_task(OWNER);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 6), SendResult::Aborted(6));
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 6),
+            SendResult::Aborted(6)
+        );
     }
 
     #[test]
@@ -2622,7 +2714,9 @@ mod variant_tests {
         let mut channels = registry();
         let (route, _) = channels.create(WORKER, 1);
         let (queue, _) = channels.create(OWNER, 1);
-        let (added, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (added, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         let carried = Carried {
             channel: added.channel(),
             kind: CapabilityKind::Receiver,
@@ -2633,19 +2727,32 @@ mod variant_tests {
             .unwrap();
         assert_eq!(sent, SendResult::Accepted);
         channels.take_send_result(OWNER);
-        channels.transfer_completion(OWNER, queue.completion, OTHER).unwrap();
+        channels
+            .transfer_completion(OWNER, queue.completion, OTHER)
+            .unwrap();
         channels.cleanup_task(OWNER);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 1), SendResult::Accepted);
-        assert_eq!(receive(&mut channels, WORKER, route.receiver), ReceiveResult::Received(99));
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 1),
+            SendResult::Accepted
+        );
+        assert_eq!(
+            receive(&mut channels, WORKER, route.receiver),
+            ReceiveResult::Received(99)
+        );
         let landed = Receiver::from_raw(added.channel().get(), WORKER.get(), added.token() + 1);
-        assert_eq!(receive(&mut channels, WORKER, landed), ReceiveResult::Received(1));
+        assert_eq!(
+            receive(&mut channels, WORKER, landed),
+            ReceiveResult::Received(1)
+        );
     }
 
     #[test]
     fn select_on_a_shared_queue_wakes_every_watcher() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 1);
-        let (added, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (added, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         let (second, _) = channels.transfer_receiver(OWNER, added, WORKER).unwrap();
         assert_eq!(channels.select_receive(OWNER, queue.receiver), Ok(false));
         assert_eq!(channels.select_receive(WORKER, second), Ok(false));
@@ -2658,7 +2765,9 @@ mod variant_tests {
     fn select_on_an_ended_receiver_is_ready() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 1);
-        let (second, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (second, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         channels.abort(OWNER, second).unwrap();
         assert_eq!(channels.select_receive(OWNER, second), Ok(true));
         assert_eq!(channels.select_receive(OWNER, queue.receiver), Ok(false));
@@ -2668,13 +2777,22 @@ mod variant_tests {
     fn a_released_queue_still_drains_to_its_taps_once_closed() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 2);
-        let (tap, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
+        let (tap, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
         send(&mut channels, OWNER, queue.sender, 4);
         channels.close(OWNER, queue.completion).unwrap();
-        channels.release_unreferenced(OWNER, queue.sender.channel()).unwrap();
-        assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Received(4));
+        channels
+            .release_unreferenced(Some(OWNER), queue.sender.channel())
+            .unwrap();
+        assert_eq!(
+            receive(&mut channels, OWNER, tap),
+            ReceiveResult::Received(4)
+        );
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Drained);
-        channels.release_unreferenced(OWNER, tap.channel()).unwrap();
+        channels
+            .release_unreferenced(Some(OWNER), tap.channel())
+            .unwrap();
         assert_eq!(channels.len(), 0);
     }
 
@@ -2682,8 +2800,12 @@ mod variant_tests {
     fn a_released_open_queue_aborts_its_taps() {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 2);
-        let (tap, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
-        channels.release_unreferenced(OWNER, queue.sender.channel()).unwrap();
+        let (tap, _) = channels
+            .add_receiver(OWNER, queue.receiver)
+            .unwrap_err_none();
+        channels
+            .release_unreferenced(Some(OWNER), queue.sender.channel())
+            .unwrap();
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Aborted);
     }
 
@@ -2692,9 +2814,17 @@ mod variant_tests {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 0);
         let (other, _) = channels.create(OWNER, 1);
-        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Pending);
-        assert_eq!(send(&mut channels, OTHER, queue.sender, 7), SendResult::Accepted);
-        channels.release_unreferenced(OWNER, other.sender.channel()).unwrap();
+        assert_eq!(
+            receive(&mut channels, OWNER, queue.receiver),
+            ReceiveResult::Pending
+        );
+        assert_eq!(
+            send(&mut channels, OTHER, queue.sender, 7),
+            SendResult::Accepted
+        );
+        channels
+            .release_unreferenced(Some(OWNER), other.sender.channel())
+            .unwrap();
         assert_eq!(
             channels.take_receive_result(OWNER),
             Some(ReceiveResult::Received(7))
@@ -2702,7 +2832,8 @@ mod variant_tests {
     }
 
     fn broadcast(channels: &mut ChannelRegistry, capacity: usize) -> (Sender, Completion) {
-        let (publisher, completion, _) = channels.create_hub(OWNER, HubKind::Broadcast, capacity, None);
+        let (publisher, completion, _) =
+            channels.create_hub(OWNER, HubKind::Broadcast, capacity, None);
         (publisher, completion)
     }
 
@@ -2712,11 +2843,18 @@ mod variant_tests {
         let (publisher, _) = broadcast(&mut channels, 2);
         let (first, _) = channels.subscribe(WORKER, publisher).unwrap();
         let (second, _) = channels.subscribe(OTHER, publisher).unwrap();
-        assert_eq!(send(&mut channels, OWNER, publisher, 5), SendResult::Published(2));
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 5),
+            SendResult::Published(2)
+        );
         let one = receive(&mut channels, WORKER, first);
         let two = receive(&mut channels, OTHER, second);
-        let ReceiveResult::Received(one) = one else { panic!("{one:?}") };
-        let ReceiveResult::Received(two) = two else { panic!("{two:?}") };
+        let ReceiveResult::Received(one) = one else {
+            panic!("{one:?}")
+        };
+        let ReceiveResult::Received(two) = two else {
+            panic!("{two:?}")
+        };
         assert_ne!(one, two);
         assert!([one, two].contains(&5));
         assert!([one, two].contains(&5001));
@@ -2730,9 +2868,18 @@ mod variant_tests {
         send(&mut channels, OWNER, publisher, 1);
         let (late, _) = channels.subscribe(OTHER, publisher).unwrap();
         send(&mut channels, OWNER, publisher, 2);
-        assert_eq!(receive(&mut channels, WORKER, early), ReceiveResult::Received(1));
-        assert_eq!(receive(&mut channels, WORKER, early), ReceiveResult::Received(2));
-        assert_eq!(receive(&mut channels, OTHER, late), ReceiveResult::Received(2));
+        assert_eq!(
+            receive(&mut channels, WORKER, early),
+            ReceiveResult::Received(1)
+        );
+        assert_eq!(
+            receive(&mut channels, WORKER, early),
+            ReceiveResult::Received(2)
+        );
+        assert_eq!(
+            receive(&mut channels, OTHER, late),
+            ReceiveResult::Received(2)
+        );
         assert_eq!(receive(&mut channels, OTHER, late), ReceiveResult::Pending);
     }
 
@@ -2751,11 +2898,23 @@ mod variant_tests {
         let (publisher, _) = broadcast(&mut channels, 1);
         let (slow, _) = channels.subscribe(WORKER, publisher).unwrap();
         let (fast, _) = channels.subscribe(OTHER, publisher).unwrap();
-        assert_eq!(send(&mut channels, OWNER, publisher, 1), SendResult::Published(2));
-        assert_eq!(receive(&mut channels, OTHER, fast), ReceiveResult::Received(1));
-        assert_eq!(send(&mut channels, OWNER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 1),
+            SendResult::Published(2)
+        );
+        assert_eq!(
+            receive(&mut channels, OTHER, fast),
+            ReceiveResult::Received(1)
+        );
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 2),
+            SendResult::Pending
+        );
         assert_eq!(receive(&mut channels, OTHER, fast), ReceiveResult::Pending);
-        assert_eq!(receive(&mut channels, WORKER, slow), ReceiveResult::Received(1));
+        assert_eq!(
+            receive(&mut channels, WORKER, slow),
+            ReceiveResult::Received(1)
+        );
         assert_eq!(
             channels.take_send_result(OWNER),
             Some(SendResult::Published(2))
@@ -2774,13 +2933,19 @@ mod variant_tests {
         let (fast, _) = channels.subscribe(OTHER, publisher).unwrap();
         send(&mut channels, OWNER, publisher, 1);
         receive(&mut channels, OTHER, fast);
-        assert_eq!(send(&mut channels, OWNER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 2),
+            SendResult::Pending
+        );
         channels.abort(WORKER, slow).unwrap();
         assert_eq!(
             channels.take_send_result(OWNER),
             Some(SendResult::Published(1))
         );
-        assert_eq!(receive(&mut channels, OTHER, fast), ReceiveResult::Received(2));
+        assert_eq!(
+            receive(&mut channels, OTHER, fast),
+            ReceiveResult::Received(2)
+        );
     }
 
     #[test]
@@ -2789,14 +2954,20 @@ mod variant_tests {
         let (publisher, _) = broadcast(&mut channels, 1);
         let (slow, _) = channels.subscribe(WORKER, publisher).unwrap();
         send(&mut channels, OWNER, publisher, 1);
-        assert_eq!(send(&mut channels, OWNER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 2),
+            SendResult::Pending
+        );
         let (late, _) = channels.subscribe(OTHER, publisher).unwrap();
         receive(&mut channels, WORKER, slow);
         assert_eq!(
             channels.take_send_result(OWNER),
             Some(SendResult::Published(2))
         );
-        assert_eq!(receive(&mut channels, OTHER, late), ReceiveResult::Received(2));
+        assert_eq!(
+            receive(&mut channels, OTHER, late),
+            ReceiveResult::Received(2)
+        );
     }
 
     #[test]
@@ -2805,10 +2976,16 @@ mod variant_tests {
         let (publisher, _) = broadcast(&mut channels, 1);
         let (slow, _) = channels.subscribe(WORKER, publisher).unwrap();
         send(&mut channels, OWNER, publisher, 1);
-        assert_eq!(send(&mut channels, OWNER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 2),
+            SendResult::Pending
+        );
         let transition = channels.cancel_pending(OWNER);
         assert_eq!(transition.discarded, vec![2]);
-        assert_eq!(receive(&mut channels, WORKER, slow), ReceiveResult::Received(1));
+        assert_eq!(
+            receive(&mut channels, WORKER, slow),
+            ReceiveResult::Received(1)
+        );
         assert_eq!(receive(&mut channels, WORKER, slow), ReceiveResult::Pending);
     }
 
@@ -2818,14 +2995,29 @@ mod variant_tests {
         let (publisher, completion) = broadcast(&mut channels, 1);
         let (sub, _) = channels.subscribe(WORKER, publisher).unwrap();
         send(&mut channels, OTHER, publisher, 1);
-        assert_eq!(send(&mut channels, OTHER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OTHER, publisher, 2),
+            SendResult::Pending
+        );
         channels.close(OWNER, completion).unwrap();
-        assert_eq!(channels.take_send_result(OTHER), Some(SendResult::Closed(2)));
-        assert_eq!(send(&mut channels, OTHER, publisher, 3), SendResult::Closed(3));
-        assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Received(1));
+        assert_eq!(
+            channels.take_send_result(OTHER),
+            Some(SendResult::Closed(2))
+        );
+        assert_eq!(
+            send(&mut channels, OTHER, publisher, 3),
+            SendResult::Closed(3)
+        );
+        assert_eq!(
+            receive(&mut channels, WORKER, sub),
+            ReceiveResult::Received(1)
+        );
         assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Drained);
         let (after, _) = channels.subscribe(WORKER, publisher).unwrap();
-        assert_eq!(receive(&mut channels, WORKER, after), ReceiveResult::Drained);
+        assert_eq!(
+            receive(&mut channels, WORKER, after),
+            ReceiveResult::Drained
+        );
     }
 
     #[test]
@@ -2834,12 +3026,21 @@ mod variant_tests {
         let (publisher, _) = broadcast(&mut channels, 1);
         let (sub, _) = channels.subscribe(WORKER, publisher).unwrap();
         send(&mut channels, OTHER, publisher, 1);
-        assert_eq!(send(&mut channels, OTHER, publisher, 2), SendResult::Pending);
+        assert_eq!(
+            send(&mut channels, OTHER, publisher, 2),
+            SendResult::Pending
+        );
         channels.cleanup_task(OWNER);
-        assert_eq!(channels.take_send_result(OTHER), Some(SendResult::Aborted(2)));
+        assert_eq!(
+            channels.take_send_result(OTHER),
+            Some(SendResult::Aborted(2))
+        );
         assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Aborted);
         let (after, _) = channels.subscribe(WORKER, publisher).unwrap();
-        assert_eq!(receive(&mut channels, WORKER, after), ReceiveResult::Aborted);
+        assert_eq!(
+            receive(&mut channels, WORKER, after),
+            ReceiveResult::Aborted
+        );
     }
 
     #[test]
@@ -2853,10 +3054,15 @@ mod variant_tests {
             token: 1,
         };
         assert_eq!(
-            channels.send_carrying(OWNER, publisher, 1, &[carried]).map(|(result, _)| result),
+            channels
+                .send_carrying(OWNER, publisher, 1, &[carried])
+                .map(|(result, _)| result),
             Err(ChannelError::PublishedCapability(publisher.channel()))
         );
-        assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Pending);
+        assert_eq!(
+            receive(&mut channels, OWNER, queue.receiver),
+            ReceiveResult::Pending
+        );
     }
 
     #[test]
@@ -2864,13 +3070,16 @@ mod variant_tests {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 1);
         assert_eq!(
-            channels.subscribe(OWNER, queue.sender).map(|(receiver, _)| receiver.channel()),
+            channels
+                .subscribe(OWNER, queue.sender)
+                .map(|(receiver, _)| receiver.channel()),
             Err(ChannelError::WrongKind(queue.sender.channel()))
         );
     }
 
     fn watch(channels: &mut ChannelRegistry, initial: usize) -> (Sender, Completion) {
-        let (publisher, completion, _) = channels.create_hub(OWNER, HubKind::Watch, 1, Some(initial));
+        let (publisher, completion, _) =
+            channels.create_hub(OWNER, HubKind::Watch, 1, Some(initial));
         (publisher, completion)
     }
 
@@ -2879,9 +3088,15 @@ mod variant_tests {
         let mut channels = copying_registry();
         let (publisher, _) = watch(&mut channels, 10);
         let (sub, _) = channels.subscribe(WORKER, publisher).unwrap();
-        assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Received(10_001));
+        assert_eq!(
+            receive(&mut channels, WORKER, sub),
+            ReceiveResult::Received(10_001)
+        );
         assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Pending);
-        assert_eq!(send(&mut channels, OWNER, publisher, 11), SendResult::Accepted);
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 11),
+            SendResult::Accepted
+        );
         assert_eq!(
             channels.take_receive_result(WORKER),
             Some(ReceiveResult::Received(11_002))
@@ -2896,8 +3111,14 @@ mod variant_tests {
         let (_, transition) = channels.send_carrying(OWNER, publisher, 2, &[]).unwrap();
         channels.take_send_result(OWNER);
         assert!(transition.discarded.contains(&1));
-        assert_eq!(send(&mut channels, OWNER, publisher, 3), SendResult::Accepted);
-        assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Received(3));
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 3),
+            SendResult::Accepted
+        );
+        assert_eq!(
+            receive(&mut channels, WORKER, sub),
+            ReceiveResult::Received(3)
+        );
         assert_eq!(receive(&mut channels, WORKER, sub), ReceiveResult::Pending);
     }
 
@@ -2909,11 +3130,20 @@ mod variant_tests {
         receive(&mut channels, WORKER, seen);
         send(&mut channels, OWNER, publisher, 2);
         channels.close(OWNER, completion).unwrap();
-        assert_eq!(send(&mut channels, OWNER, publisher, 3), SendResult::Closed(3));
-        assert_eq!(receive(&mut channels, WORKER, seen), ReceiveResult::Received(2));
+        assert_eq!(
+            send(&mut channels, OWNER, publisher, 3),
+            SendResult::Closed(3)
+        );
+        assert_eq!(
+            receive(&mut channels, WORKER, seen),
+            ReceiveResult::Received(2)
+        );
         assert_eq!(receive(&mut channels, WORKER, seen), ReceiveResult::Drained);
         let (late, _) = channels.subscribe(OTHER, publisher).unwrap();
-        assert_eq!(receive(&mut channels, OTHER, late), ReceiveResult::Received(2));
+        assert_eq!(
+            receive(&mut channels, OTHER, late),
+            ReceiveResult::Received(2)
+        );
         assert_eq!(receive(&mut channels, OTHER, late), ReceiveResult::Drained);
     }
 
@@ -2921,7 +3151,9 @@ mod variant_tests {
     fn releasing_a_watch_releases_its_current_value() {
         let mut channels = registry();
         let (publisher, _) = watch(&mut channels, 7);
-        let transition = channels.release_unreferenced(OWNER, publisher.channel()).unwrap();
+        let transition = channels
+            .release_unreferenced(Some(OWNER), publisher.channel())
+            .unwrap();
         assert_eq!(transition.discarded, vec![7]);
         assert_eq!(channels.len(), 0);
     }

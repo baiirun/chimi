@@ -134,8 +134,12 @@ impl Scope {
     /// whether the task is at a wait.
     fn holds_off(&self, waiting: bool) -> bool {
         match self.kind {
-            ScopeKind::Resource { mask: Mask::Releasing } => true,
-            ScopeKind::Resource { mask: Mask::Acquiring } => !waiting,
+            ScopeKind::Resource {
+                mask: Mask::Releasing,
+            } => true,
+            ScopeKind::Resource {
+                mask: Mask::Acquiring,
+            } => !waiting,
             _ => false,
         }
     }
@@ -332,10 +336,9 @@ impl Scheduler {
             return false;
         };
         self.pop_entries(task, index + 1);
-        self.tasks.get_mut(&task).expect("live task").scopes[index].kind =
-            ScopeKind::Resource {
-                mask: Mask::Releasing,
-            };
+        self.tasks.get_mut(&task).expect("live task").scopes[index].kind = ScopeKind::Resource {
+            mask: Mask::Releasing,
+        };
         true
     }
 
@@ -495,7 +498,9 @@ impl Scheduler {
         if withdraw
             && self.tasks[&task].phase == TaskPhase::Parked
             && is_withdrawable(self.parked_kind(task))
-            && self.deliverable_scope(task, self.parked_kind(task) != 0).is_some()
+            && self
+                .deliverable_scope(task, self.parked_kind(task) != 0)
+                .is_some()
         {
             let waiting = self.parked_kind(task) != 0;
             self.disarm_wake_sources(task);
@@ -520,9 +525,11 @@ impl Scheduler {
             })
             .collect();
         for child in children {
-            if self.tasks.get(&child).is_some_and(|record| {
-                record.phase.is_live()
-            }) {
+            if self
+                .tasks
+                .get(&child)
+                .is_some_and(|record| record.phase.is_live())
+            {
                 self.cancel_task(child, TaskOutcome::Cancelled);
             }
         }
@@ -610,7 +617,10 @@ impl Scheduler {
         };
         let record = self.tasks.get_mut(&task).expect("live task");
         record.scopes[index].draining = true;
-        let nested: Vec<ScopeId> = record.scopes[index..].iter().map(|entry| entry.id).collect();
+        let nested: Vec<ScopeId> = record.scopes[index..]
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
         for child in self.scope_children(task, &nested) {
             self.cancel_task(child, TaskOutcome::Cancelled);
         }

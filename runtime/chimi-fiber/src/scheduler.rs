@@ -10,9 +10,9 @@ mod process_abi;
 #[cfg(test)]
 mod process_tests;
 mod reactor;
-mod ready;
 #[cfg(test)]
 mod reactor_tests;
+mod ready;
 #[cfg(test)]
 mod release_tests;
 mod scope;
@@ -23,7 +23,6 @@ mod signal;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
-pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -35,6 +34,7 @@ pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
     ChimiSupervisorMember, ChimiSupervisorPolicy, DeadlockReport, RootRun,
 };
+pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 pub use self::scope::{
     ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending,
 };
@@ -289,6 +289,13 @@ pub type ValueCopy = unsafe extern "C" fn(*mut c_void, i64) -> i64;
 /// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
 pub type TaskContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+/// Takes one release the carrier running now queued while no task was
+/// running, such as a count that reached zero inside a release hook. Writes
+/// `REQUEST_CHANNEL_RELEASE` or `REQUEST_TASK_RELEASE` and its id and returns
+/// true, or returns false once the queue is empty. See `ChimiReleaseTake` in
+/// `include/chimi_fiber.h`.
+pub type ReleaseTake = unsafe extern "C" fn(*mut c_void, *mut u32, *mut u64) -> bool;
+
 /// Why a channel request broke the capability contract. See
 /// `ChimiCapabilityViolation` in `include/chimi_fiber.h`.
 pub const VIOLATION_WRONG_OWNER: u32 = 1;
@@ -376,12 +383,9 @@ impl ChimiCapabilityViolation {
                 Some(channel),
                 None,
             ),
-            ChannelError::WrongKind(channel) => (
-                VIOLATION_WRONG_KIND,
-                CAPABILITY_NONE,
-                Some(channel),
-                None,
-            ),
+            ChannelError::WrongKind(channel) => {
+                (VIOLATION_WRONG_KIND, CAPABILITY_NONE, Some(channel), None)
+            }
             ChannelError::CapabilityInFlight { channel, kind } => (
                 VIOLATION_IN_FLIGHT,
                 match kind {
@@ -543,7 +547,8 @@ impl Home {
 
     /// True when the fiber never ran or runs on the current thread.
     fn is_here(&self) -> bool {
-        self.0.is_none_or(|home| home == std::thread::current().id())
+        self.0
+            .is_none_or(|home| home == std::thread::current().id())
     }
 }
 
@@ -579,7 +584,10 @@ impl PinnedFiber {
 
 impl Drop for PinnedFiber {
     fn drop(&mut self) {
-        assert!(self.home.is_here(), "a fiber destroyed off its home carrier");
+        assert!(
+            self.home.is_here(),
+            "a fiber destroyed off its home carrier"
+        );
         unsafe {
             chimi_fiber_destroy(self.fiber.as_ptr());
         }
@@ -717,6 +725,10 @@ pub struct SchedulerOptions {
     /// `violation_context`, when the scheduler defects the violating task.
     pub capability_violation_report: Option<CapabilityViolationReport>,
     pub violation_context: *mut c_void,
+    /// Called with `release_context` whenever this carrier's ready queue is
+    /// empty, until it returns false: the releases it hands over are applied
+    /// with no task attributed.
+    pub take_release: Option<ReleaseTake>,
 }
 
 impl SchedulerOptions {
@@ -734,6 +746,7 @@ impl SchedulerOptions {
             release_context: std::ptr::null_mut(),
             capability_violation_report: None,
             violation_context: std::ptr::null_mut(),
+            take_release: None,
         }
     }
 }
@@ -776,6 +789,7 @@ pub struct Scheduler {
     release_task_value: Option<(ValueRelease, *mut c_void)>,
     release_channel_value: Option<(ValueRelease, *mut c_void)>,
     release_task_context: Option<(TaskContextRelease, *mut c_void)>,
+    take_release: Option<(ReleaseTake, *mut c_void)>,
     capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
@@ -852,6 +866,7 @@ impl Scheduler {
             release_context,
             capability_violation_report,
             violation_context,
+            take_release,
         } = options;
         let mut channels =
             ChannelRegistry::new(trace_mode != TraceMode::Off, trace_mode == TraceMode::Full);
@@ -887,6 +902,7 @@ impl Scheduler {
             release_task_value: release_task_value.map(|release| (release, release_context)),
             release_channel_value: release_channel_value.map(|release| (release, release_context)),
             release_task_context: release_task_context.map(|release| (release, release_context)),
+            take_release: take_release.map(|take| (take, release_context)),
             capability_violation_report: capability_violation_report
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
@@ -1146,18 +1162,65 @@ impl Scheduler {
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
-        while let Some(task) = self.ready.pop_front(self.current) {
-            self.run(task);
-            self.remove_released_terminal();
-            self.collect_user_signals();
-            self.deliver_signal();
-            resumes = resumes.wrapping_add(1);
-            if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
-                if !self.reactor.is_empty() {
-                    self.poll_io_now();
+        loop {
+            while let Some(task) = self.ready.pop_front(self.current) {
+                self.run(task);
+                self.remove_released_terminal();
+                self.collect_user_signals();
+                self.deliver_signal();
+                resumes = resumes.wrapping_add(1);
+                if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
+                    if !self.reactor.is_empty() {
+                        self.poll_io_now();
+                    }
+                    self.recheck_children();
                 }
-                self.recheck_children();
             }
+            // Releases a fiber's request did not carry (one queued in a
+            // release hook, or by a fiber that ended without another
+            // request) are drained before the carrier idles. Their wakes
+            // refill the ready queue.
+            if !self.drain_host_releases() {
+                break;
+            }
+        }
+    }
+
+    /// Applies every release `take_release` hands over, with no task
+    /// attributed; true if there was one. Runs only between resumes, never
+    /// inside a channel transition, so the registry is never mid-update.
+    fn drain_host_releases(&mut self) -> bool {
+        let Some((take, context)) = self.take_release else {
+            return false;
+        };
+        let mut drained = false;
+        loop {
+            let (mut kind, mut id) = (0_u32, 0_u64);
+            // SAFETY: the configuring caller keeps the hook and its context
+            // valid until execution returns; both outputs are writable.
+            if !unsafe { take(context, &mut kind, &mut id) } {
+                return drained;
+            }
+            drained = true;
+            let applied = match kind {
+                REQUEST_CHANNEL_RELEASE => {
+                    match self
+                        .channels
+                        .release_unreferenced(None, ChannelId::from_raw(id))
+                    {
+                        Ok(transition) => {
+                            self.apply_channel_transition(transition);
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                REQUEST_TASK_RELEASE => self.release_task(TaskId(id)).is_ok(),
+                _ => false,
+            };
+            // The host's count table names only ids it was handed, each once.
+            debug_assert!(applied, "the host drained an unknown release {kind} {id}");
+            self.remove_released_terminal();
         }
     }
 
@@ -1296,9 +1359,7 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(receiver)
             }
-            Err(error) => {
-                self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None)
-            }
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None),
         }
     }
 
@@ -1314,9 +1375,7 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(added)
             }
-            Err(error) => {
-                self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None)
-            }
+            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None),
         }
     }
 
@@ -1405,7 +1464,7 @@ impl Scheduler {
         channel: ChannelId,
     ) -> Result<(), SchedulerError> {
         self.require_parked_task(task)?;
-        match self.channels.release_unreferenced(task, channel) {
+        match self.channels.release_unreferenced(Some(task), channel) {
             Ok(transition) => {
                 self.apply_channel_transition(transition);
                 Ok(())
@@ -1509,8 +1568,7 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .ok_or(SchedulerError::UnknownTask(task))?;
-        let live_root =
-            record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
+        let live_root = record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
         if record.process.is_some() || record.handle_released || live_root {
             return Err(SchedulerError::TaskStillLive(task));
         }
@@ -2234,7 +2292,10 @@ impl Scheduler {
             // Another task's fiber resumed inline: it must be on its home
             // carrier. With several carriers this becomes a job for that
             // carrier (parallel-scheduler.md, "Step 3 plan", PR 5).
-            debug_assert_eq!(self.tasks[&task].carrier, self.current, "inline resume off home");
+            debug_assert_eq!(
+                self.tasks[&task].carrier, self.current,
+                "inline resume off home"
+            );
             self.emit(
                 task,
                 TaskEventKind::CancellationRequested,
@@ -2368,7 +2429,9 @@ impl Scheduler {
             }
         } else if outcome.is_defect()
             && let Some(parent) = parent.filter(|parent| {
-                self.tasks.get(parent).is_some_and(|record| record.phase.is_live())
+                self.tasks
+                    .get(parent)
+                    .is_some_and(|record| record.phase.is_live())
             })
             && !self.absorbs_child_defect(parent)
         {
@@ -2447,9 +2510,10 @@ impl Scheduler {
     pub(super) fn has_live_descendants(&self, task: TaskId) -> bool {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
-                self.tasks.get(child).is_some_and(|record| {
-                    record.phase.is_live()
-                }) || self.has_live_descendants(*child)
+                self.tasks
+                    .get(child)
+                    .is_some_and(|record| record.phase.is_live())
+                    || self.has_live_descendants(*child)
             })
         })
     }
@@ -2525,7 +2589,11 @@ impl Scheduler {
         let Some(owner) = owner else {
             return;
         };
-        if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
+        if self
+            .tasks
+            .get(&owner)
+            .is_some_and(|record| record.phase.is_live())
+        {
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
@@ -2842,7 +2910,10 @@ mod tests {
     #[test]
     fn a_fiber_home_is_the_thread_of_its_first_resume() {
         let mut home = Home::default();
-        assert!(home.is_here(), "an unstarted fiber may be destroyed anywhere");
+        assert!(
+            home.is_here(),
+            "an unstarted fiber may be destroyed anywhere"
+        );
         let mut elsewhere = std::thread::spawn(move || {
             assert!(home.enter());
             assert!(home.enter());

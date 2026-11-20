@@ -1652,9 +1652,7 @@ impl Scheduler {
             .tasks
             .iter()
             .filter(|(_, record)| {
-                record.parent.is_none()
-                    && record.process.is_none()
-                    && record.phase.is_live()
+                record.parent.is_none() && record.process.is_none() && record.phase.is_live()
             })
             .map(|(task, _)| *task)
             .collect();

@@ -6,7 +6,7 @@ use super::process::{
     ProcessSpec, Receipt, Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
-    CapabilityViolationReport, MessageRelease, ProcessDefectReport, SendFailure,
+    CapabilityViolationReport, MessageRelease, ProcessDefectReport, ReleaseTake, SendFailure,
     SpecContextRelease, TaskContextRelease, ValueCopy, ValueRelease,
 };
 use super::{
@@ -159,6 +159,9 @@ pub struct ChimiSchedulerConfig {
     /// or null and 0.
     pub injected_user_signals: *const ChimiInjectedSignal,
     pub injected_user_signal_count: usize,
+    /// Hands over the releases the carrier queued with no task running, with
+    /// `release_context`; see `SchedulerOptions::take_release`. May be null.
+    pub take_release: Option<ReleaseTake>,
 }
 
 /// A `std/signal` signal to latch when the clock reaches `at` nanoseconds:
@@ -351,7 +354,8 @@ impl Scheduler {
                 // The notice carries its capabilities as a message does: in
                 // flight until the watcher receives it, ended if it is
                 // dropped unread.
-                self.channels.dispatch_carried(owner, input.message as usize, &carried);
+                self.channels
+                    .dispatch_carried(owner, input.message as usize, &carried);
                 let monitor = self.process_monitor(watcher, target, input.message);
                 self.respond(waiter, RESPONSE_OK, |r| r.monitor = monitor.get());
             }
@@ -677,7 +681,10 @@ impl Scheduler {
         self.set_signal_root(root);
         loop {
             let root_live = |scheduler: &Self| {
-                scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
+                scheduler
+                    .tasks
+                    .get(&root)
+                    .is_some_and(|record| record.phase.is_live())
             };
             match self.run_until_idle() {
                 Idle::AwaitingHost => continue,
@@ -805,6 +812,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         release_context: config.release_context,
         capability_violation_report: config.capability_violation_report,
         violation_context: config.capability_violation_context,
+        take_release: config.take_release,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
     scheduler

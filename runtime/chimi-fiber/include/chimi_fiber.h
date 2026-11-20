@@ -1,10 +1,11 @@
 #ifndef CHIMI_FIBER_H
 #define CHIMI_FIBER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 27u
+#define CHIMI_FIBER_ABI_VERSION 28u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -685,6 +686,10 @@ typedef int64_t (*ChimiValueCopy)(void *context, int64_t value);
    runs under the same conditions as ChimiValueRelease. */
 typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
 
+/* Takes one release the host queued while no task was running; see
+   ChimiSchedulerConfig.take_release. Returns false when there is none. */
+typedef bool (*ChimiReleaseTake)(void *context, uint32_t *kind, uint64_t *id);
+
 /* The arguments of chimi_scheduler_run. */
 typedef struct {
   ChimiFiberEntry entry;
@@ -742,6 +747,14 @@ typedef struct {
      --signal=HUP@... option); `count` entries, or null and 0. */
   const ChimiInjectedSignal *injected_user_signals;
   size_t injected_user_signal_count;
+  /* Called with `release_context` whenever the carrier running the loop has
+     no ready task, until it returns false. Each true return hands over one
+     release the host queued while no task was running (a count that reached
+     zero inside a release hook, or one a fiber freed and ended without
+     another request): `*kind` is CHIMI_REQUEST_CHANNEL_RELEASE or
+     CHIMI_REQUEST_TASK_RELEASE, and `*id` its channel or task. The scheduler
+     applies it with no task attributed. May be null. */
+  ChimiReleaseTake take_release;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

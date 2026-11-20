@@ -218,6 +218,7 @@ fn run_on(entry: ChimiFiberEntry, clock_mode: u32) -> (SchedulerOutcome, Vec<i64
         user_signals: std::ptr::null_mut(),
         injected_user_signals: std::ptr::null(),
         injected_user_signal_count: 0,
+        take_release: None,
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
     (outcome, SEEN.with(|seen| seen.borrow().clone()))
@@ -481,7 +482,9 @@ fn a_scope_cancel_stops_the_scope_children_and_not_the_caller() {
     assert_eq!(seen, [99, 1, 0]);
 }
 
-unsafe extern "C" fn sleep_inside_a_scope_without_deadline(_context: *mut c_void) -> ChimiFiberResult {
+unsafe extern "C" fn sleep_inside_a_scope_without_deadline(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
     let start_time = now();
     let scope = enter_without_deadline();
     let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
