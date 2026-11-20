@@ -325,7 +325,7 @@ impl Scheduler {
         };
         if matches!(
             self.tasks.get(&root).map(|record| record.phase),
-            Some(TaskPhase::Runnable | TaskPhase::Parked)
+            Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
         ) {
             return self.signals.delivered;
         }

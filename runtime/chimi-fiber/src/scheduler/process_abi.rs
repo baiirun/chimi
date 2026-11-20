@@ -679,7 +679,7 @@ impl Scheduler {
             let root_live = |scheduler: &Self| {
                 matches!(
                     scheduler.tasks.get(&root).map(|record| record.phase),
-                    Some(TaskPhase::Runnable | TaskPhase::Parked)
+                    Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
                 )
             };
             match self.run_until_idle() {

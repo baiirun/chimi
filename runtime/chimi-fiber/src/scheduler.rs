@@ -506,22 +506,55 @@ pub enum SchedulerError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskPhase {
     Runnable,
+    /// Its fiber is being resumed. With one carrier no other scheduler code
+    /// runs meanwhile, so nothing observes it; with several, a cancel,
+    /// force or defect decided elsewhere is recorded in `command` and the
+    /// task's flags and takes effect at its next park, as for `Runnable`.
+    Running,
     Parked,
     Draining(TaskOutcome),
     Terminal(TaskOutcome),
 }
 
-struct OwnedFiber(NonNull<ChimiFiber>);
+/// The carrier thread a fiber belongs to: the one that first resumed it. A
+/// started fiber's stack holds that thread's host frames and C runtime
+/// state, so it must be resumed and destroyed there and nowhere else
+/// (parallel-scheduler.md, "Step 3 plan"). An unstarted fiber has no home
+/// yet and may be handed to another carrier.
+#[derive(Debug, Default)]
+struct Home(Option<std::thread::ThreadId>);
 
-impl OwnedFiber {
+impl Home {
+    /// Claims the current thread on the first call. Ensures: false when a
+    /// later call comes from another thread.
+    fn enter(&mut self) -> bool {
+        let here = std::thread::current().id();
+        *self.0.get_or_insert(here) == here
+    }
+
+    /// True when the fiber never ran or runs on the current thread.
+    fn is_here(&self) -> bool {
+        self.0.is_none_or(|home| home == std::thread::current().id())
+    }
+}
+
+struct PinnedFiber {
+    home: Home,
+    fiber: NonNull<ChimiFiber>,
+}
+
+impl PinnedFiber {
     fn new(
         entry: ChimiFiberEntry,
         context: *mut c_void,
         config: ChimiFiberConfig,
     ) -> Result<Self, SchedulerError> {
-        let pointer = NonNull::new(unsafe { chimi_fiber_create(Some(entry), context, config) })
+        let fiber = NonNull::new(unsafe { chimi_fiber_create(Some(entry), context, config) })
             .ok_or(SchedulerError::FiberCreationFailed)?;
-        Ok(Self(pointer))
+        Ok(Self {
+            home: Home::default(),
+            fiber,
+        })
     }
 
     fn resume(
@@ -529,15 +562,17 @@ impl OwnedFiber {
         command: ChimiFiberCommand,
         context: scope::ResumeContext,
     ) -> ChimiFiberEvent {
+        assert!(self.home.enter(), "a fiber resumed off its home carrier");
         scope::set_resume_context(context);
-        unsafe { chimi_fiber_resume(self.0.as_ptr(), command as u32) }
+        unsafe { chimi_fiber_resume(self.fiber.as_ptr(), command as u32) }
     }
 }
 
-impl Drop for OwnedFiber {
+impl Drop for PinnedFiber {
     fn drop(&mut self) {
+        assert!(self.home.is_here(), "a fiber destroyed off its home carrier");
         unsafe {
-            chimi_fiber_destroy(self.0.as_ptr());
+            chimi_fiber_destroy(self.fiber.as_ptr());
         }
     }
 }
@@ -550,7 +585,7 @@ struct Task {
     waiting_any: Vec<TaskId>,
     /// Stamped when the task becomes terminal; orders `REQUEST_TASK_ANY`.
     terminal_sequence: u64,
-    fiber: Option<OwnedFiber>,
+    fiber: Option<PinnedFiber>,
     phase: TaskPhase,
     observed: bool,
     /// No value names this task any more (`Scheduler::release_task`): once
@@ -1600,7 +1635,7 @@ impl Scheduler {
     ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
         let started_at = self.channels.tick();
-        let fiber = OwnedFiber::new(
+        let fiber = PinnedFiber::new(
             entry,
             context,
             ChimiFiberConfig {
@@ -1671,6 +1706,7 @@ impl Scheduler {
             return;
         };
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
+        record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
         record.ran = true;
         record.entry_context = std::ptr::null_mut();
@@ -2311,7 +2347,7 @@ impl Scheduler {
             && let Some(parent) = parent.filter(|parent| {
                 matches!(
                     self.tasks.get(parent).map(|record| record.phase),
-                    Some(TaskPhase::Runnable | TaskPhase::Parked)
+                    Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
                 )
             })
             && !self.absorbs_child_defect(parent)
@@ -2378,7 +2414,7 @@ impl Scheduler {
             .unwrap_or_default();
         for child in children {
             match self.tasks.get(&child).map(|record| record.phase) {
-                Some(TaskPhase::Runnable | TaskPhase::Parked) => {
+                Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked) => {
                     self.force_terminal(child, TaskOutcome::Cancelled, false);
                 }
                 Some(TaskPhase::Draining(_)) => self.force_live_descendants(child),
@@ -2392,7 +2428,7 @@ impl Scheduler {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
                 self.tasks.get(child).is_some_and(|record| {
-                    matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
+                    matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
                 }) || self.has_live_descendants(*child)
             })
         })
@@ -2471,7 +2507,7 @@ impl Scheduler {
         };
         if matches!(
             self.tasks.get(&owner).map(|record| record.phase),
-            Some(TaskPhase::Runnable | TaskPhase::Parked)
+            Some(TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
         ) {
             self.force_terminal(
                 owner,
@@ -2781,6 +2817,28 @@ fn cause(outcome: TaskOutcome) -> Option<TaskId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fiber's home is the thread of its first resume: later resumes and
+    /// its destruction must come from that thread, and a fiber that never ran
+    /// can go anywhere.
+    #[test]
+    fn a_fiber_home_is_the_thread_of_its_first_resume() {
+        let mut home = Home::default();
+        assert!(home.is_here(), "an unstarted fiber may be destroyed anywhere");
+        let mut elsewhere = std::thread::spawn(move || {
+            assert!(home.enter());
+            assert!(home.enter());
+            home
+        })
+        .join()
+        .expect("first carrier");
+        assert!(!elsewhere.is_here());
+        assert!(!elsewhere.enter());
+        let mut fresh = Home::default();
+        std::thread::spawn(move || assert!(fresh.enter()))
+            .join()
+            .expect("an unstarted fiber may move");
+    }
     use crate::{ChimiFiberResult, FIXTURE_LOCK};
 
     unsafe extern "C" {

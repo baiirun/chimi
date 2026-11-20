@@ -1654,7 +1654,7 @@ impl Scheduler {
             .filter(|(_, record)| {
                 record.parent.is_none()
                     && record.process.is_none()
-                    && matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)
+                    && matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
             })
             .map(|(task, _)| *task)
             .collect();
@@ -1955,7 +1955,9 @@ impl Scheduler {
         }
         let task_record = self.tasks.get_mut(&task).expect("incarnation task");
         match task_record.phase {
-            TaskPhase::Runnable if forced || (!task_record.ran && nothing_accepted) => {
+            TaskPhase::Runnable | TaskPhase::Running
+                if forced || (!task_record.ran && nothing_accepted) =>
+            {
                 task_record.command = ChimiFiberCommand::Cancel;
                 set_status(task_record.request, RESPONSE_FORCED, forced);
             }
@@ -1970,6 +1972,7 @@ impl Scheduler {
                 let _ = self.wake_front(task);
             }
             TaskPhase::Runnable
+            | TaskPhase::Running
             | TaskPhase::Parked
             | TaskPhase::Draining(_)
             | TaskPhase::Terminal(_) => {}
