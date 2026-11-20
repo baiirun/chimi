@@ -9720,10 +9720,10 @@ static void cancel_user_timers(ChimiRuntime *runtime, const ChimiSelectSource *s
 }
 
 /* Takes the committed event's value: its source's own operation, which answers
-   at once because the scheduler reported it ready, nothing else can consume it,
-   and no other task runs before this request (the select's reply woke this task
-   at the front of the run queue). Nothing may be issued between the select and
-   this. A timer's value is its event value. */
+   at once. A receive source's value was already taken by the select and kept
+   for this task; an inbox or a task handle has this task as its only consumer.
+   Nothing may be issued between the select and this. A timer's value is its
+   event value. */
 static ChimiControl *select_take(ChimiRuntime *runtime, ChimiValue *event, uint64_t user_timer_task,
                                  uint64_t span, uint32_t call_node, ChimiEnvironment *environment) {
   int64_t kind = select_value(event, "kind")->as.integer;

@@ -1516,18 +1516,20 @@ program.
   built. Its failure-set argument is covariant, so
   `[Select.receive(jobs, f), Select.at(next, Wake.Beat)]` joins to
   `List<Event<Wake, ChannelError>>`.
-- **One request, nothing consumed.** `Select.first` issues
+- **One request, one commit.** `Select.first` issues
   `CHIMI_REQUEST_SELECT` with every event in list order. The scheduler
   answers with the index of the first ready source, or registers the task
   on every source (one watcher per channel and inbox, the child's terminal,
   and one wake timer at the earliest deadline) and parks it. A wake only
   makes the task ask again; each request first withdraws every earlier
-  registration. The request itself takes nothing from any source, so a
-  cancelled or interrupted select leaves every channel and inbox as it was.
-  After a commit the runtime performs the source's own operation (receive,
-  process receive, or `Task.result`), which answers at once: each source
-  belongs to the selecting task alone, and the reply wakes that task at the
-  front of the run queue, so nothing else can take the value first.
+  registration, so a cancelled or interrupted select that has not committed
+  leaves every channel and inbox as it was. After a commit the runtime
+  performs the source's own operation (receive, process receive, or
+  `Task.result`), which answers at once. A committed receive's value was
+  already taken in the select step and kept for that receive, so no other
+  receiver of the same queue can take it first, on any carrier; if the task
+  ends before the receive, the kept value is released. An inbox and a task
+  handle have the selecting task as their only consumer.
 - **Commit outcomes.** A committed receive on an aborted channel fails with
   `ChannelError.Aborted` without calling the mapping function. A committed
   task event's failure is the select's failure. The mapping function runs

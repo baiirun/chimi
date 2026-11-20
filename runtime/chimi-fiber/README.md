@@ -82,8 +82,9 @@ every request first fires the task's own due scope deadlines.
 caller's inbox, a child task, or an execution-clock deadline). It answers
 with the index of the first ready source in list order, or registers the task
 on every source and parks it; a wake only makes the host ask again, and each
-request withdraws the previous registrations. It never consumes anything: the
-host then issues the committed source's own request, which answers at once.
+request withdraws the previous registrations. The host then issues the
+committed source's own request, which answers at once; a committed receive's
+value is taken in the select step and kept for that request.
 `clock_select_parked` and `clock_select_committed` are its trace events.
 
 `CHIMI_REQUEST_IO_WAIT` (`scheduler/reactor.rs`) is the IO reactor: a task

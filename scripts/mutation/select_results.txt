@@ -31,3 +31,8 @@ KILLED       a request leaves an abandoned select registered [lib -- select_test
 # rerun at the next commit after a stronger test:
 KILLED       user timers are never cancelled [select]
 # result: every mutant killed
+# mutation run at a704a8fb23b7da757f4ba0def3dfa01cfe4138f1
+# select_fiber_mutations.py: 2 mutants against runtime/chimi-fiber
+KILLED       a request leaves an abandoned select registered [lib -- select_tests] (6s)
+KILLED       a committed receive leaves its value in the queue [lib -- a_committed_select] (5s)
+# result: every mutant killed
