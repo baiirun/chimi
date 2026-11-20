@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::clock::{Instant, TimerId, TimerTarget};
 use super::{
     ClockEvent, ClockEventKind, RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler,
-    SchedulerRequest, TaskId, TaskOutcome, TaskPhase,
+    SchedulerRequest, TaskId, TaskOutcome,
 };
 
 /// The `std/signal` signal codes, 1 to `USER_SIGNAL_CODES`; code `n` is
