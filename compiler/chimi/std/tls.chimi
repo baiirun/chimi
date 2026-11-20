@@ -148,10 +148,11 @@ pub fn server(connection: Connection, identity: Identity) -> Connection {
 /// or silent client holds only its own connection, under that task's
 /// timeouts, never the accept loop (as Go's `tls.NewListener` does). A
 /// handshake that fails there fails the read or write with
-/// `NetError.Failed`, naming what went wrong; after the handshake the
-/// connection behaves as one from `Tls.server`. While one task drives the
-/// handshake, a read or write from another waits for it. Closing the
-/// listener closes `listener`.
+/// `NetError.Failed`, naming what went wrong, or with the accepted
+/// connection's own `NetError`, and every later read or write fails the
+/// same way; after the handshake the connection behaves as one from
+/// `Tls.server`. While one task drives the handshake, a read or write from
+/// another waits for it. Closing the listener closes `listener`.
 ///
 /// Fails with (from `Net.accept`): what `listener` fails with, and
 /// `NetError.Failed` when the session cannot be made; the accepted
@@ -170,8 +171,9 @@ pub fn listener(listener: Listener, identity: Identity) -> Listener {
   }, Net.listener_address(listener), fn() { Net.close_listener(listener) })
 }
 
-/// How many TLS sessions this program holds: made, and not yet freed by
-/// `Net.close` or a failed handshake. For tests that check nothing leaks.
+/// How many TLS sessions this program holds: made, and not yet freed. A
+/// session is freed by `Net.close`, and a `Tls.client` or `Tls.server`
+/// session also by a failed handshake. For tests that check nothing leaks.
 /// Test-only (`T4401`).
 pub fn live_sessions_for_tests() -> Int {
   native_live_sessions()
@@ -233,7 +235,9 @@ fn settle(connection: Connection, session: TlsSession, turns: Watch.Publisher<In
     case native_claim(session) {
       True -> break Resource.scoped(fn() { Void }, fn(_) {
         native_unclaim(session)
-        let _ = Result.capture(fn() { Watch.publish(turns, seen + 1) })
+        // Past the current count, not `seen`: only the holder of the claim
+        // publishes, so the count it reads now is the latest one.
+        let _ = Result.capture(fn() { Watch.publish(turns, turn(turns) + 1) })
         Void
       }, fn(_) { drive(connection, session) })
       False -> {
