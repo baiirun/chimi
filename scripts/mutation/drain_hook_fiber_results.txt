@@ -1,0 +1,6 @@
+# mutation run at 6f6217aa194d52f1c87353363f4648afd4c23f6c
+# drain_hook_fiber_mutations.py: 2 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_release_queued_in_a_release_hook_is_applied_before_the_carrier_idles] (14s)
+KILLED       the loop never drains [lib -- a_release_queued_in_a_release_hook_is_applied_before_the_carrier_idles] (3s)
+KILLED       a drained channel release is not applied [lib -- a_release_queued_in_a_release_hook_is_applied_before_the_carrier_idles] (3s)
+# result: every mutant killed
