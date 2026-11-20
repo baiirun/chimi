@@ -4,6 +4,9 @@ releases no fiber's request carried before it idles.
 Run: scripts/mutation/mutate.py scripts/mutation/drain_hook_fiber_mutations.py
 Each mutant must turn the chimi-fiber unit tests red.
 Results: scripts/mutation/drain_hook_fiber_results.txt.
+
+A drain that returns after its first release is an equivalent mutant: drive
+loops while a drain returns true, so it asks again at once.
 """
 
 CRATE = "runtime/chimi-fiber"
@@ -27,8 +30,4 @@ MUTATIONS = [
         "                        Ok(transition) => {\n"
         "                            drop(transition);\n"
         "                            true")]),
-    m("the drain stops after the first release", [(
-        "            drained = true;",
-        "            if drained {\n                return true;\n            }\n"
-        "            drained = true;")]),
 ]

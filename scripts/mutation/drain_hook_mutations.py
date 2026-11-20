@@ -21,7 +21,8 @@ MUTATIONS = [
     m("the hook hands over nothing", [(
         "  return carrier_release_take(kind, id);",
         "  (void)kind; (void)id;\n  return false;")]),
-    m("a task key is handed over as a channel", [(
+    dict(name="a task key is handed over as a channel", file=R, edits=[(
         "  *kind = key & TASK_HANDLE_KEY ? CHIMI_REQUEST_TASK_RELEASE : CHIMI_REQUEST_CHANNEL_RELEASE;",
-        "  *kind = CHIMI_REQUEST_CHANNEL_RELEASE;")]),
+        "  *kind = CHIMI_REQUEST_CHANNEL_RELEASE;")], targets=["task_release"],
+        filter="a_loop_of_finished_tasks_holds_a_bounded_number_of_records"),
 ]
