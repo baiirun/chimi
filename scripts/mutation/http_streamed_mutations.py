@@ -1,6 +1,7 @@
 """Mutants of Http.streamed (CHI-263): framing a streamed body on HTTP/1.1
 and HTTP/1.0, HEAD, the last chunk, a producer's failure, the write limit on
-each write, and a client that stops reading or leaves. A mutant that makes a
+each write, a client that stops reading or leaves, a write failure the
+producer caught, and a writer handed to a task. A mutant that makes a
 wait hang shows as TIMEOUT, which counts as caught.
 
 Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/http_streamed_mutations.py
@@ -47,8 +48,20 @@ MUTATIONS = [
            "    }, limit) using { clock: given }",
            "    }, Duration.seconds(100000)) using { clock: given }"),
     mutant("the write limit bounds the whole stream",
-           "      case produce(body_writer(writer, chunked, limit, given)) {",
-           "      case Task.timeout(fn() { produce(body_writer(writer, chunked, limit, given)) }, limit) using { clock: given } {"),
+           "      let finished = produce(body_writer(writer, chunked, limit, given, broken, ended))",
+           "      let finished = Task.timeout(fn() { produce(body_writer(writer, chunked, limit, given, broken, ended)) }, limit) using { clock: given }"),
+    mutant("a writer handed to a task works after the producer returns",
+           "      set(ended)\n      case finished",
+           "      Void\n      case finished"),
+    mutant("a write failure the producer caught leaves the body whole",
+           "      case finished and not is_set(broken) {",
+           "      case finished {"),
+    mutant("a failed write does not break the writer",
+           "        set(broken)\n        Failure(error)",
+           "        Failure(error)"),
+    mutant("writes after a failed one are let through",
+           "    case is_set(broken) or is_set(ended) {",
+           "    case is_set(ended) {"),
     mutant("a failed write is ignored",
            "    Ok(Err(error)) -> Failure(error)",
            "    Ok(Err(_)) -> Void"),

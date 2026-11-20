@@ -251,7 +251,14 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 - The write limit bounds each write of a streamed body, not the response,
   so a slow stream of events may run as long as it keeps writing. A
   producer that fails, or a write that fails or passes the limit, closes the
-  connection without the last chunk, so the client sees the body cut short.
+  connection without the last chunk, even when the producer caught the
+  write's failure: part of the chunk may already be on the wire. On HTTP/1.1
+  the client sees the body cut short; on HTTP/1.0 a close is also how a
+  whole body ends, so it cannot tell (RFC 9112 section 8).
+- After a write fails, and once the producer has returned, every write to
+  its writer MUST fail with `NetError.Closed`, so a task the producer handed
+  the writer to cannot write after the last chunk, into what the client
+  reads as the next response.
   A producer runs after the handler has returned and cannot carry a `needs`
   row: it captures a capability as a value and supplies it with `using`.
 - An HTTP/1.1 connection stays open between requests unless the request or
@@ -300,6 +307,9 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 
 ### Not yet
 
+- A task the producer handed its writer to that is in the middle of a
+  write when the producer returns can still finish that one write after
+  the last chunk; only its later writes fail.
 - A connection accepted just before serving ends, whose serving has not
   begun (its process, or the task inside it, has not run yet), is discarded
   by the stop without being closed, so its client waits until the program
@@ -651,7 +661,8 @@ refuses the peer's versions.
 | HTTP: control characters, bare CR and LF, two hosts, transfer codings across headers, transfer-encoding on HTTP/1.0, ASCII-only case folding, versions | `tests/http.rs` `ambiguous_requests_are_refused` |
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
-| HTTP: a streamed body chunked on HTTP/1.1 and kept alive, close-delimited on HTTP/1.0 even with `keep-alive`, its head alone for `HEAD`, cut short when the producer fails, bounded per write and not as a whole, a client that stops reading dropped; 204 and 304 refused | `tests/http.rs` `a_streamed_response_is_sent_chunked_as_it_is_written` |
+| HTTP: a streamed body chunked on HTTP/1.1 and kept alive, close-delimited on HTTP/1.0 even with `keep-alive`, its head alone for `HEAD`, cut short when the producer fails or a write it caught failed, bounded per write and not as a whole, a client that stops reading or leaves dropped, a drain under `serve` letting a stream finish; 204 and 304 refused | `tests/http.rs` `a_streamed_response_is_sent_chunked_as_it_is_written` |
+| HTTP: a task the producer handed its writer to cannot write after the producer returns | `tests/http.rs` `a_task_cannot_write_a_streamed_body_after_its_producer_returns` |
 | HTTP: the write limit; a closing answer lingers up to 2 s for a client still sending; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
 | HTTP: closing the listener drains: idle connections close at once, a request in progress (or a pipelined one already read) is answered with `connection: close`, and a timeout around `serve` cuts the drain short | `tests/http.rs` `closing_the_listener_drains_the_connections` |
 | HTTP: `date` on every response at four clock starts (leap day, before 1970, 2100), and a handler's own `date` stands | `tests/http.rs` `every_response_carries_the_date` |

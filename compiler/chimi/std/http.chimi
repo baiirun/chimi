@@ -182,8 +182,12 @@ pub fn response(status: Int, headers: List<(Text, Text)>, body: Bytes) -> Respon
 ///
 /// Each write must reach the client within the server's `write_timeout`, and
 /// the response as a whole has no time limit. If `produce` fails, or a write
-/// does, the connection closes without ending the body, so the client sees
-/// the response cut short rather than complete.
+/// does (even one `produce` catches), the connection closes without ending
+/// the body: on HTTP/1.1 the client sees the response cut short, and on
+/// HTTP/1.0, where only the close ends a body, it cannot tell. After a write
+/// fails, and after `produce` returns, every write fails with
+/// `NetError.Closed`, so a task `produce` handed the writer to cannot write
+/// into the next response.
 ///
 /// `produce` runs after the handler has returned, so it cannot name a
 /// capability in a `needs` row: capture the capability while the handler
@@ -1185,7 +1189,13 @@ fn send(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: I
     (Body.Streamed(produce), False) -> {
       let given = clock
       let chunked = minor == 1
-      case produce(body_writer(writer, chunked, limit, given)) {
+      let broken = Watch.starting_with(False).publisher
+      let ended = Watch.starting_with(False).publisher
+      let finished = produce(body_writer(writer, chunked, limit, given, broken, ended))
+      // A task the producer handed the writer to may outlive it; its writes
+      // fail from here on, so they cannot land after the last chunk.
+      set(ended)
+      case finished and not is_set(broken) {
         True -> {
           case chunked {
             True -> timed_write(writer, Bytes.from_text("0\r\n\r\n"), limit, given)
@@ -1209,14 +1219,28 @@ fn is_streamed(response: Response) -> Bool {
 
 // The writer a producer writes a streamed body to: each write is one chunk
 // on HTTP/1.1 and raw bytes on HTTP/1.0, and must finish within `limit`.
+// The first failed write sets `broken`, since part of a chunk may already
+// be on the wire, and every later write fails with `NetError.Closed`, so a
+// producer that catches the failure cannot go on to end the body as if it
+// were whole. Writes fail the same way once the server sets `ended`.
 // Closing it does nothing, since the server ends the body.
-fn body_writer(writer: Writer<NetError>, chunked: Bool, limit: Duration, given: Clock) -> Writer<NetError> {
+fn body_writer(writer: Writer<NetError>, chunked: Bool, limit: Duration, given: Clock, broken: Watch.Publisher<Bool>, ended: Watch.Publisher<Bool>) -> Writer<NetError> {
   Stream.writer(fn(bytes) {
+    case is_set(broken) or is_set(ended) {
+      True -> Failure(NetError.Closed)
+      False -> Void
+    }
     let framed = case chunked {
       True -> Bytes.concat([Bytes.from_text("${hex(Bytes.length(bytes))}\r\n"), bytes, Bytes.from_text("\r\n")])
       False -> bytes
     }
-    timed_write(writer, framed, limit, given)
+    case Result.capture(fn() { timed_write(writer, framed, limit, given) }) {
+      Ok(_) -> Void
+      Err(error) -> {
+        set(broken)
+        Failure(error)
+      }
+    }
   }, fn() { Void })
 }
 

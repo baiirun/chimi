@@ -971,7 +971,9 @@ test "busy connections drain together" {
 // chunk, HTTP/1.0 without a close, a body for HEAD), that keeps a
 // connection open after a failed producer, that bounds the whole response by
 // the write limit instead of each write, or that lets a client which stops
-// reading, or that leaves, hold the connection forever.
+// reading, or that leaves, hold the connection forever. Also rejects a body
+// ended as whole after a write failed that the producer caught, and a drain
+// under `serve` that cuts a stream in progress short.
 #[test]
 fn a_streamed_response_is_sent_chunked_as_it_is_written() {
     let run = run_tests(
@@ -1094,8 +1096,112 @@ test "a client that leaves ends the stream at once" {
   Task.result(serving)
   Clock.since(start) |> Test.assert_equal(Duration.zero)
 }
+
+fn careless(request: Request) -> Response needs { clock: Clock } {
+  let given = clock
+  case Http.path(request) {
+    ["caught"] -> Http.streamed(200, [], fn(out) {
+      List.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], fn(_n) {
+        let _ = Result.capture(fn() { Stream.write(out, Bytes.from_text(Text.repeat("c", 1000))) })
+        Void
+      })
+      Stream.write(out, Bytes.from_text("z"))
+    })
+    _ -> Http.text(200, "plain")
+  }
+}
+
+test "a write failure the producer caught still cuts the body short" {
+  let (client, server) = Net.pair(8)
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, careless) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /caught HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.seconds(70))
+  let answer = undated(Stream.read_all(Net.reader(client), 1048576))
+  Stream.close(Net.writer(client))
+  Task.result(serving)
+  (Text.contains(answer, "1\r\nz"), Text.contains(answer, "0\r\n\r\n"), Text.contains(answer, "plain")) |> Test.assert_equal((False, False, False))
+  Text.starts_with(answer, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3e8\r\nccc") |> Test.assert_equal(True)
+}
+
+// A listener that hands over `connection`, then closes once `plan` ends.
+fn handing(connection: Connection, plan: Reader<StreamError>) -> Listener {
+  Net.listener(fn() {
+    case Result.capture(fn() { Stream.read(plan) }) {
+      Ok(Some(_)) -> connection
+      _ -> Failure(NetError.Closed)
+    }
+  }, Net.address("fake", 3), fn() { Void })
+}
+
+test "under serve, a drain lets a stream in progress finish, then closes" {
+  let (client, server) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let start = Clock.now()
+  let serving = Task.start(fn() {
+    Http.serve(handing(server, plan), Http.defaults, streaming)
+    Clock.since(start)
+  })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /count HTTP/1.1\r\nHost: x\r\n\r\n"))
+  Clock.sleep(Duration.milliseconds(7))
+  Stream.close(script)
+  let answer = undated(Stream.read_all(Net.reader(client), 1048576))
+  Stream.close(Net.writer(client))
+  Task.result(serving) |> Test.assert_equal(Duration.milliseconds(15))
+  answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n5\r\nthree\r\n0\r\n\r\n")
+}
 "#,
         "virtual",
     );
-    assert_passed(&run, 10);
+    assert_passed(&run, 12);
+}
+
+// Rejects a streamed body whose writer still works after the producer
+// returns: a task the producer handed it to would write after the last
+// chunk, into what the client reads as the next response. Over loopback,
+// because a fake pair's channel ends belong to the task that last used them.
+#[test]
+fn a_task_cannot_write_a_streamed_body_after_its_producer_returns() {
+    let run = run_tests(
+        "streamed-loopback",
+        r#"
+fn leaky(request: Request) -> Response needs { clock: Clock } {
+  let given = clock
+  case Http.path(request) {
+    ["leak"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text("a"))
+      let _late = Task.start(fn() {
+        Clock.sleep(Duration.milliseconds(20)) using { clock: given }
+        Stream.write(out, Bytes.from_text("LATE"))
+      })
+      Void
+    })
+    _ -> {
+      Clock.sleep(Duration.milliseconds(50)) using { clock: given }
+      Http.text(200, "plain")
+    }
+  }
+}
+
+fn leaked() -> Text needs { network: Network, clock: Clock } {
+  let listener = Net.listen("127.0.0.1", 0)
+  let port = Net.port(Net.listener_address(listener))
+  let server = Task.start(fn() { Http.serve(listener, Http.defaults, leaky) })
+  let answer = Resource.scoped(fn() { Net.connect("127.0.0.1", port) }, Net.close, fn(connection) {
+    Stream.write(Net.writer(connection), Bytes.from_text("GET /leak HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+    Task.timeout(fn() { undated(Stream.read_all(Net.reader(connection), 1048576)) }, Duration.seconds(5))
+  })
+  Net.close_listener(listener)
+  Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
+  answer
+}
+
+test "a task the producer started cannot write after it returns" {
+  let outcome = leaked() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\nconnection: close\r\n\r\nplain")
+}
+"#,
+        "real",
+    );
+    assert_passed(&run, 1);
 }
