@@ -94,6 +94,16 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   timeout that fires, `Task.cancel`, a parent that ends, or a child's
   defect. It takes effect at the first cancellation point after the release
   returns.
+- **Acquire.** While `acquire` runs, cancellation from outside MUST be held
+  off except at a request that waits or may wait (a receive, a send, a sleep,
+  an IO wait, waiting on a task, a select): there it MUST still be delivered,
+  because nothing is acquired until the wait ends. Once acquire stops waiting,
+  the cancellation MUST wait until it returns. If it succeeded, `use` MUST NOT
+  run, `release` MUST run, and the cancellation takes effect after it (CHI-268).
+  So a timeout around the whole call still ends a slow connect, and a
+  cancellation can never land between acquire getting the resource and the
+  call owning it. An acquire that takes one thing and then waits for another
+  SHOULD nest a `scoped` call for the first, as Haskell's `bracket` advises.
 - **Timeouts inside a release.** A `Task.timeout` or `Task.deadline` written
   inside `release` MUST still fire and be delivered. A release that may wait
   on something slow SHOULD bound itself this way.
@@ -187,6 +197,8 @@ with that call's span.
 | A process child stuck in a release is forced at the deadline | `a_process_child_stuck_in_its_release_is_forced_at_the_deadline` |
 | A process body runs its release when a child defects | `a_process_body_runs_its_release_when_a_child_defects` |
 | A defect in `use` outranks a defect in `release`; a failed acquire runs no release | `std-tests/resource/use_defect_outranks_release_defect.chimi`, `failed_acquire_skips_release.chimi` |
+| A cancellation after acquire stops waiting is held off, skips use, and runs release | `a_cancel_after_acquire_stops_waiting_still_runs_the_release` |
+| A timeout around the call still ends a wait inside acquire | `a_timeout_ends_a_wait_inside_acquire` |
 | A timed-out scope aborts channels it created | `a_timed_out_scope_aborts_channels_it_created` |
 | A child result handed back inside a timed-out scope stays open | `a_child_result_handed_back_inside_a_timed_out_scope_stays_open` |
 
@@ -195,13 +207,18 @@ with that call's span.
 - **Interpreter** (`execution/resource_operations.rs`). The interpreter has
   no scheduler, so there is nothing to mask; it applies the outcome order.
 - **Native runtime** (`runtime.c` `resource_scoped`). It issues
-  `REQUEST_RESOURCE_ENTER` before `acquire`, `REQUEST_RESOURCE_RELEASE`
-  before `release`, and `REQUEST_RESOURCE_EXIT` after it. The exit reply says
+  `REQUEST_RESOURCE_ENTER` before `acquire`, `REQUEST_RESOURCE_USE` once it
+  succeeds, `REQUEST_RESOURCE_RELEASE` before `release`, and
+  `REQUEST_RESOURCE_EXIT` after it. When the use reply says a cancellation
+  acquire held off is now delivered, it skips `use` and runs `release`. The exit reply says
   whether a cancellation is waiting, which `scoped` then returns unless the
   outcome is a defect. A fiber resumed as terminal issues none of them.
 - **Scheduler** (`runtime/chimi-fiber/src/scheduler/scope.rs`). A resource is
-  an entry on the task's scope stack. Release masks it; only scopes above the
-  innermost mask are deliverable. Cancelling a task that holds a resource
+  an entry on the task's scope stack, pushed in the acquiring state, opened
+  for use, and set to releasing for release. Only scopes above the innermost
+  entry that holds them off are deliverable: a releasing entry always holds
+  them off, and an acquiring one does except at a waiting request (a park a
+  firing scope can withdraw). Cancelling a task that holds a resource
   inserts a fired *root* entry at the bottom of the stack and records the
   outcome in `terminating`, which `begin_terminal` applies once the fiber
   finishes. Forced paths go through `force_terminal`, which keeps the old

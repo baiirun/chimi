@@ -25,8 +25,7 @@
 ///
 /// A pool takes its settings as a record: start from `Sql.defaults` and name
 /// what differs, as `{ ..Sql.defaults, max_connections: 20 }`. A transaction
-/// inside a transaction is a savepoint, which is provisional (decisions.md,
-/// 2026-11-16).
+/// inside a transaction is a savepoint.
 
 import std/bytes.{Bytes}
 import std/channel as Channel
@@ -40,6 +39,7 @@ import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok}
 import std/task as Task
+import std/watch as Watch
 
 // 1. Values, rows and failures.
 
@@ -66,6 +66,9 @@ pub enum SqlError {
   PoolTimedOut(limit: Duration)
   /// The pool was closed.
   PoolClosed
+  /// A statement ran on a transaction's database after the transaction
+  /// ended, as when the database escaped its body.
+  TransactionEnded
   /// The database refused the statement, as for a syntax error or a missing
   /// permission; `code` is the database's own code.
   Rejected(code: Text, message: Text)
@@ -109,9 +112,9 @@ pub struct Reply {
 /// `Sql.connection`.
 pub struct Connection {
   run: fn(Text, List<Value>) -> Reply errors SqlError,
-  begin: fn() -> Void errors SqlError,
-  commit: fn() -> Void errors SqlError,
-  rollback: fn() -> Void errors SqlError,
+  begin: fn(Int) -> Void errors SqlError,
+  commit: fn(Int) -> Void errors SqlError,
+  rollback: fn(Int) -> Void errors SqlError,
   reset: fn() -> Void errors SqlError,
   close: fn() -> Void,
 }
@@ -131,18 +134,26 @@ pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver {
   Driver(connect)
 }
 
-/// A connection from its operations, for writing a driver. `run` runs one
-/// statement with its parameters; `begin`, `commit` and `rollback` manage a
-/// transaction; `reset` returns the connection to a clean state before the
-/// pool reuses it (rolling back anything left open) and fails when the
-/// connection is no longer usable; `close` releases it.
+/// A connection from its operations, for writing a driver. Tasks that share
+/// a transaction call one connection, so its operations must accept calls
+/// from several tasks. `run` runs one statement with its parameters. `begin`, `commit` and `rollback` take a
+/// depth: 0 is the transaction, and n is the nth savepoint nested inside it,
+/// so a driver writes its own database's statements for both (`BEGIN` and
+/// `SAVEPOINT chimi_1`, or SQL Server's `SAVE TRANSACTION`). Rolling back a
+/// savepoint undoes its statements and ends it, as `ROLLBACK TO SAVEPOINT`
+/// then `RELEASE SAVEPOINT` do. A savepoint whose commit fails is rolled
+/// back next, so that rollback must also work when the failed commit already
+/// ended it. A transaction whose commit fails is left to `reset`. `reset`
+/// returns the connection to a clean state before the pool reuses it
+/// (rolling back anything left open) and fails when the connection is no
+/// longer usable; `close` releases it.
 ///
 /// Cost: O(1).
 pub fn connection(
   run: fn(Text, List<Value>) -> Reply errors SqlError,
-  begin: fn() -> Void errors SqlError,
-  commit: fn() -> Void errors SqlError,
-  rollback: fn() -> Void errors SqlError,
+  begin: fn(Int) -> Void errors SqlError,
+  commit: fn(Int) -> Void errors SqlError,
+  rollback: fn(Int) -> Void errors SqlError,
   reset: fn() -> Void errors SqlError,
   close: fn() -> Void,
 ) -> Connection {
@@ -161,9 +172,9 @@ pub fn reply(columns: List<Text>, rows: List<List<Value>>, affected: Int) -> Rep
 pub enum Call {
   Connected(target: Text)
   Ran(sql: Text, params: List<Value>)
-  Began
-  Committed
-  RolledBack
+  Began(depth: Int)
+  Committed(depth: Int)
+  RolledBack(depth: Int)
   Reset
   Closed
 }
@@ -181,14 +192,14 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver {
     let _ = answer(Call.Connected(target))
     Connection(fn(sql, params) {
       answer(Call.Ran(sql, params))
-    }, fn() {
-      let _ = answer(Call.Began)
+    }, fn(depth) {
+      let _ = answer(Call.Began(depth))
       Void
-    }, fn() {
-      let _ = answer(Call.Committed)
+    }, fn(depth) {
+      let _ = answer(Call.Committed(depth))
       Void
-    }, fn() {
-      let _ = answer(Call.RolledBack)
+    }, fn(depth) {
+      let _ = answer(Call.RolledBack(depth))
       Void
     }, fn() {
       let _ = answer(Call.Reset)
@@ -216,10 +227,12 @@ pub struct Database {
 }
 
 // Where a database's statements run: on a connection from the pool, or on
-// the connection a transaction holds, `depth` transactions deep.
+// the connection a transaction holds, `depth` transactions deep, until the
+// transaction or any transaction around it publishes on its watch in
+// `ended` (innermost first) that it has ended.
 enum Place {
   Pooled(asks: Channel.Sender<Ask>, driver: Driver, target: Text, bounds: Limits)
-  Pinned(connection: Connection, depth: Int)
+  Pinned(connection: Connection, depth: Int, ended: List<Watch.Publisher<Bool>>)
 }
 
 /// A pool's settings, to update with what differs: at most
@@ -268,14 +281,16 @@ pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: 
 /// Runs a statement that returns no rows and gives the number of rows it
 /// changed.
 ///
-/// Fails with: what the driver fails with, and the pool's failures.
+/// Fails with: what the driver fails with, the pool's failures, and
+/// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn execute(db: Database, sql: Text, params: List<Value>) -> Int {
   run(db, sql, params).affected
 }
 
 /// Runs a query and gives its rows.
 ///
-/// Fails with: what the driver fails with, and the pool's failures.
+/// Fails with: what the driver fails with, the pool's failures, and
+/// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn query(db: Database, sql: Text, params: List<Value>) -> List<Row> {
   let answer = run(db, sql, params)
   List.map(answer.rows, fn(values) { Row(answer.columns, values) })
@@ -284,7 +299,8 @@ pub fn query(db: Database, sql: Text, params: List<Value>) -> List<Row> {
 /// Runs a query that must give exactly one row, and gives it.
 ///
 /// Fails with: `SqlError.NoRows` or `SqlError.ManyRows` when it gives none
-/// or several, what the driver fails with, and the pool's failures.
+/// or several, what the driver fails with, the pool's failures, and
+/// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn one(db: Database, sql: Text, params: List<Value>) -> Row {
   let rows = query(db, sql, params)
   case rows {
@@ -296,22 +312,25 @@ pub fn one(db: Database, sql: Text, params: List<Value>) -> Row {
 
 /// Runs a query and gives its first row, or `None` when it gives none.
 ///
-/// Fails with: what the driver fails with, and the pool's failures.
+/// Fails with: what the driver fails with, the pool's failures, and
+/// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn first(db: Database, sql: Text, params: List<Value>) -> Option<Row> {
   List.first(query(db, sql, params))
 }
 
 /// Runs `body` in a transaction: it commits when `body` succeeds, and rolls
 /// back when `body` fails, defects or is cancelled. Every statement `body`
-/// runs on the database it is given uses the transaction's connection.
-/// A transaction inside a transaction is a savepoint, so its failure undoes
-/// only its own statements.
+/// runs on the database it is given uses the transaction's connection, and
+/// once `body` has ended, a statement on that database fails with
+/// `TransactionEnded`. A transaction inside a transaction is a savepoint, so
+/// its failure undoes only its own statements.
 ///
 /// Fails with: what `body` fails with (after the rollback), a failed commit,
-/// what the driver fails with, and the pool's failures.
+/// what the driver fails with, the pool's failures, and
+/// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R {
   case db.place {
-    Place.Pinned(connection, depth) -> savepoint(connection, depth, body)
+    Place.Pinned(connection, depth, ended) -> pinned(connection, ended, fn(_) { savepoint(connection, depth, ended, body) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { outermost(connection, body) })
   }
 }
@@ -460,38 +479,39 @@ fn kind(value: Value) -> Text {
 
 fn run(db: Database, sql: Text, params: List<Value>) -> Reply {
   case db.place {
-    Place.Pinned(connection, _) -> connection.run(sql, params)
+    Place.Pinned(connection, _, ended) -> pinned(connection, ended, fn(held) { held.run(sql, params) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { connection.run(sql, params) })
   }
 }
 
 fn outermost<T, E, R>(connection: Connection, body: fn(Database) -> T errors E needs R) -> T needs R {
-  connection.begin()
-  case Result.capture(fn() {
-    body(Database(Place.Pinned(connection, 1)))
-  }) {
+  connection.begin(0)
+  case Result.capture(fn() { gated(connection, 1, [], body) }) {
     Ok(result) -> {
-      connection.commit()
+      connection.commit(0)
       result
     }
     Err(error) -> {
       // A failed rollback leaves the connection for the pool's reset, which
       // closes it if it cannot be cleaned.
-      let _ = Result.capture(fn() { connection.rollback() })
+      let _ = Result.capture(fn() { connection.rollback(0) })
       Failure(error)
     }
   }
 }
 
-// A savepoint named for its depth, so nested ones never collide. It is
+// A savepoint at its depth, so a driver can name nested ones apart. It is
 // undone unless its body succeeded and it was released: a failure, defect or
 // cancellation inside it (such as a timeout the outer body survives) rolls
 // back only its own statements, and the body's failure stays the failure even
 // when the rollback itself fails.
-fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> T errors E needs R) -> T needs R {
-  let name = "chimi_${depth}"
+//
+// Its commit and rollback, like its statements, never reach the driver once
+// a transaction around it has ended: a task can still be inside a savepoint
+// when the outer body returns.
+fn savepoint<T, E, R>(connection: Connection, depth: Int, enclosing: List<Watch.Publisher<Bool>>, body: fn(Database) -> T errors E needs R) -> T needs R {
   Resource.scoped(fn() {
-    let _ = connection.run("SAVEPOINT ${name}", [])
+    connection.begin(depth)
     Channel.bounded(1)
   }, fn(settled) {
     let clean = released(settled.completion, settled.receiver)
@@ -499,17 +519,14 @@ fn savepoint<T, E, R>(connection: Connection, depth: Int, body: fn(Database) -> 
       True -> Void
       False -> {
         let _ = Result.capture(fn() {
-          connection.run("ROLLBACK TO SAVEPOINT ${name}", [])
-        })
-        let _ = Result.capture(fn() {
-          connection.run("RELEASE SAVEPOINT ${name}", [])
+          pinned(connection, enclosing, fn(held) { held.rollback(depth) })
         })
         Void
       }
     }
   }, fn(settled) {
-    let result = body(Database(Place.Pinned(connection, depth + 1)))
-    let _ = connection.run("RELEASE SAVEPOINT ${name}", [])
+    let result = gated(connection, depth + 1, enclosing, body)
+    pinned(connection, enclosing, fn(held) { held.commit(depth) })
     // The mark's channel has room for it, so this send cannot fail.
     let _ = Result.capture(fn() { Channel.send(settled.sender, Void) })
     result
@@ -527,7 +544,40 @@ fn released(completion: Channel.Completion<Void>, mark: Channel.Receiver<Void>) 
   }
 }
 
-// 6. The pool.
+// 6. Whether a transaction has ended.
+
+// Runs `body` on a database pinned to `connection`, which works only until
+// `body` or an enclosing transaction ends: the release publishes the end on
+// every way out, a defect or a cancellation included, and closes the watch.
+fn gated<T, E, R>(connection: Connection, depth: Int, enclosing: List<Watch.Publisher<Bool>>, body: fn(Database) -> T errors E needs R) -> T needs R {
+  Resource.scoped(fn() { Watch.starting_with(False) }, fn(live) {
+    let ending = live.publisher
+    let _ = Result.capture(fn() { Watch.publish(ending, True) })
+    Channel.close(live.completion)
+  }, fn(live) {
+    body(Database(Place.Pinned(connection, depth, List.append([live.publisher], enclosing))))
+  })
+}
+
+// Runs `use` on `connection` unless its transaction, or one around it, has
+// ended.
+fn pinned<T, E, R>(connection: Connection, ended: List<Watch.Publisher<Bool>>, use: fn(Connection) -> T errors E needs R) -> T needs R {
+  case List.any(ended, has_ended) {
+    True -> Failure(SqlError.TransactionEnded)
+    False -> use(connection)
+  }
+}
+
+// A fresh follower's first receive is the watch's latest value at once, so
+// this never waits; a closed watch reads as ended.
+fn has_ended(ended: Watch.Publisher<Bool>) -> Bool {
+  case Result.capture(fn() { Watch.receive(Watch.subscribe(ended)) }) {
+    Ok(Receive.Received(False)) -> False
+    _ -> True
+  }
+}
+
+// 7. The pool.
 
 // The pool's settings, as the keeper and borrowers use them.
 struct Limits {
@@ -656,7 +706,7 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
 // mid-statement, so such a connection is never reused.
 fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R {
   case db.place {
-    Place.Pinned(connection, _) -> use(connection)
+    Place.Pinned(connection, _, ended) -> pinned(connection, ended, use)
     Place.Pooled(asks, driver, target, bounds) -> Resource.scoped(fn() { take(asks, bounds.wait) }, fn(_) {
       let _ = tell(asks, Ask.Done)
       Void

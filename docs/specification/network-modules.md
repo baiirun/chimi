@@ -6,8 +6,9 @@ This is the normative contract for the Phase 7b network modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-253):
 the modules a service uses to talk over the network. It covers `std/net`
 (CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
-driver-independent layer (CHI-258). `std/tls`, the HTTP client, and the SQL
-drivers add their sections as they land.
+driver-independent layer (CHI-258), and `std/tls`'s client and server over
+a connection. `Tls.listener`, HTTPS, the HTTP client, and the SQL drivers add
+their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -267,9 +268,18 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
 - A failed accept (out of file descriptors, a client that reset before it
   was accepted) is retried after a pause that grows from 10 ms to 1 s and
   starts again at 10 ms after a success; only closing the listener ends
-  serving. When serving ends, by the listener closing or the calling task
-  being cancelled, the supervisor is stopped and the connections still open
-  are closed at once.
+  serving.
+- Closing the listener drains the server, as Go's `Server.Shutdown` does.
+  A connection that is idle, waiting for its next request, MUST close at
+  once. A connection in the middle of a request (from its first byte until
+  its answer is written) MUST finish it, and that answer carries
+  `connection: close`, so nothing after it is read. Bytes the server has
+  already read count as a request begun, so a pipelined request read before
+  the drain MUST be answered the same way. `serve` returns once
+  every connection has closed, after its linger.
+- The drain has no bound of its own: a caller bounds it with `Task.timeout`
+  around `serve`. When the calling task is cancelled, the supervisor is
+  stopped and the connections still open are closed at once, drain or not.
 
 ### Not yet
 
@@ -279,25 +289,26 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   exits. This is a runtime gap: a discarded start argument or task capture
   frees its memory but does not release the host handles it holds.
 - Streamed request and response bodies (they change the handler's shape,
-  which is still an open decision), and a graceful drain that lets open
-  connections finish their current request when serving stops. A drain
-  through `Supervisor.stop` would wait for connections one after another, so
-  it needs a signal every connection sees at once (CHI-263).
+  which is still an open decision).
+- A request whose first bytes arrive in the moment the drain starts may be
+  closed as idle, as Go's can; a client retries such a request when it is
+  safe to. The same holds for a connection accepted as the listener closes
+  whose request has not been read yet; Go instead treats a new connection
+  as busy for its first 5 s.
 - The HTTP client, and HTTPS after `std/tls`.
 
 ## std/sql (driver-independent layer)
 
-Nested transactions are **provisional**: they follow the recommendation on an
-open decision card (a transaction inside a transaction is a savepoint). A
+A transaction inside a transaction is a savepoint (Byron, 2026-11-17). A
 pool takes its settings as a record, `Sql.defaults` updated with what differs,
-as std/http does. Which database the first driver
-talks to is also open; this layer has no driver of its own beyond `Sql.fake`.
+as std/http does. The first real driver is SQLite,
+then Postgres; this layer has no driver of its own beyond `Sql.fake`.
 `std/sql` is written in Chimi with no binding package, but its pool uses
 bounded channels, so it runs on the native backend only.
 
 ```text
 pub enum Value { Null, Bool, Int, Float, Decimal, Text, Bytes }
-pub enum SqlError { ConnectFailed, ConnectionLost, PoolTimedOut, PoolClosed, Rejected,
+pub enum SqlError { ConnectFailed, ConnectionLost, PoolTimedOut, PoolClosed, TransactionEnded, Rejected,
   ConstraintFailed, Conflict, NoRows, ManyRows, NoColumn, WrongType, UnexpectedNull, Failed }
 pub struct Database   // a pool, or the transaction a body is given
 pub struct Row        // Sql.value, Sql.int, Sql.float, Sql.decimal, Sql.text, Sql.bool,
@@ -367,12 +378,37 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   `body` succeeds it commits, and a failed commit is the outcome. When `body`
   fails it rolls back and the body's failure is the outcome. When `body`
   defects or is cancelled, the pool's reset rolls the transaction back.
-- A transaction inside a transaction is a savepoint (`SAVEPOINT chimi_<n>`,
-  then `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT`), so an inner failure
+- Once a transaction or savepoint has ended, however its body ended, a
+  statement, nested transaction, or savepoint commit or rollback on its
+  database or on a savepoint inside it MUST fail with
+  `TransactionEnded` and never reach the driver, as when the database escaped
+  its body or a task kept it (Go's `ErrTxDone`). There is no static check
+  that it stays inside, which matches the rule for scope-owned resources
+  (decisions.md, 2026-11-15). Inside a savepoint the outer database still
+  works and runs inside the savepoint.
+- Tasks that share a transaction's database share its one connection, and
+  their statements are not queued. A driver's connection MUST therefore
+  accept calls from several tasks, as a native binding that locks its handle
+  does. A statement another task is running while the transaction ends may
+  still finish after it.
+- A transaction inside a transaction is a savepoint, so an inner failure
   that the outer body catches undoes only the inner statements. A savepoint
   is undone whenever its body does not succeed, including a defect or a
   cancellation the outer body survives (a `Task.timeout` inside it), and the
-  body's failure stays the outcome even when `ROLLBACK TO SAVEPOINT` fails.
+  body's failure stays the outcome even when rolling the savepoint back fails.
+  A savepoint whose commit fails is rolled back, and the failed commit is its
+  outcome. A transaction whose commit fails is not rolled back here; the
+  pool's reset cleans the connection.
+- The driver writes every transaction statement. `begin`, `commit` and
+  `rollback` take a depth: 0 is the transaction, and n is the nth savepoint
+  nested inside it. A standard-SQL driver sends `BEGIN`, `COMMIT` and
+  `ROLLBACK` at depth 0, and `SAVEPOINT`, `RELEASE SAVEPOINT`, and
+  `ROLLBACK TO SAVEPOINT` then `RELEASE SAVEPOINT` at depth n. SQL Server's
+  `SAVE TRANSACTION` fits the same three functions. Rolling back a savepoint
+  MUST leave it ended, so the next savepoint at that depth can reuse its name.
+  It MUST also work after a failed `commit` at the same depth, even when that
+  commit already ended the savepoint. A failed rollback is ignored, and the
+  failure that caused it stays the outcome.
 
 ### Drivers and tests
 
@@ -380,8 +416,90 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
   driver that needs the network or the file system takes that capability when
   it is built, so the capability still appears in `main`.
 - `Sql.fake(answer)` is a driver that hands every call (`Connected`, `Ran`,
-  `Began`, `Committed`, `RolledBack`, `Reset`, `Closed`) to `answer`. Tests
+  `Began(depth)`, `Committed(depth)`, `RolledBack(depth)`, `Reset`, `Closed`)
+  to `answer`. Tests
   record the calls with `Test.recorder` and script failures in `answer`.
+
+## std/tls
+
+`std/tls` puts TLS over any `Net.Connection` and gives back a
+`Net.Connection`, so every layer above (`std/http`, `std/sql` drivers) runs
+over either kind with no second API. It is mbedTLS 4.1 LTS, vendored
+unmodified under `runtime/native/bindings/tls/mbedtls/` with its provenance and
+a checksum manifest.
+
+### Wrapping a connection
+
+- `Tls.client(connection, host, settings)` MUST finish the handshake before it
+  returns. It checks the server's certificate against `settings.roots` and
+  against `host`, and sends `host` as the server name (SNI). There MUST be no
+  way to skip the check.
+- `Tls.server(connection, identity)` MUST finish the handshake before it
+  returns. It does not ask for a client certificate.
+- `Tls.defaults` is `{ roots }`, and its roots are the system's: the file
+  `SSL_CERT_FILE` names when it is set, otherwise the first of
+  `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+  `/etc/ssl/cert.pem` and `/etc/ssl/ca-bundle.pem` that holds a certificate.
+  When none loads, the client MUST fail with `TlsError.NoRoots` and MUST NOT
+  trust anything.
+- `Tls.roots(pem)` and `Tls.identity(certificate, key)` MUST check their input
+  where they are made and fail with `TlsError.Invalid`, including a key that
+  is not the certificate's.
+- TLS 1.2 and 1.3 are offered, with mbedTLS's default suites and groups.
+
+### The wrapped connection
+
+- Its reader gives plaintext, one record (at most 16 KiB) per read. It ends
+  when the peer sends `close_notify`. An inner stream that ends without one
+  MUST fail the read with `NetError.Failed`, because the data may have been
+  cut short.
+- Its writer encrypts each write whole and writes the records to the inner
+  writer. Closing it sends `close_notify`, then closes the inner writer.
+- `Net.close` releases the session and closes the inner connection. Later
+  reads and writes fail with `NetError.Closed`.
+- After the handshake every failure is a `NetError`, as for any connection.
+  A record that fails to decrypt is `NetError.Failed` with mbedTLS's words.
+- Encryption runs in memory: the wrapper moves ciphertext through the inner
+  connection's streams, so a TLS connection waits where its inner one waits,
+  and a `Net.pair` fake behaves as a socket does. Each call on a session
+  holds the session's lock, since the reader and the writer may be used from
+  different tasks. The lock covers the session's own state; running sessions
+  on parallel carriers will also need mbedTLS's threading support.
+- A read MUST NOT wait for input while records it was given are unread: a
+  record with no data (a TLS 1.3 session ticket, a warning alert, an empty
+  data record) is skipped, and the read goes on to what follows it.
+- The session is made and handshaken inside `Resource.scoped`, so it MUST be
+  freed however the handshake ends, including a timeout or a cancel.
+  `Tls.live_sessions_for_tests()` (test-only) counts the sessions a program
+  holds.
+
+### Failures
+
+`TlsError` is `Untrusted`, `Expired` (also not yet valid), `WrongHost(host)`,
+`Unacceptable(reason)` (no common TLS version), `NoRoots`,
+`Handshake(message)` (an alert from the peer, a peer that is not speaking TLS,
+or one that ended during the handshake), and `Invalid(message)`. A failed
+handshake still sends the alert mbedTLS queued, as far as the connection
+allows, and leaves the inner connection open for its owner to close. A
+chain that does not reach a trusted root is `Untrusted` whatever else is
+wrong with it, so a stranger's expired certificate is not reported as
+`Expired`. A version mismatch usually reaches the client as the server's
+alert, so `Handshake`; `Unacceptable` is what this side reports when it
+refuses the peer's versions.
+
+### Not yet
+
+- `Tls.listener(listener, identity)` and HTTPS in `std/http`.
+- Caching parsed roots: each client parses its roots again.
+- Client certificates, ALPN, session resumption, and choosing suites.
+- An alert queued while reading (after a record fails to decrypt) is sent
+  with the next write or close, not at once, because only the writer side
+  writes to the inner connection.
+- A numeric `host` is still sent as SNI, which RFC 6066 does not allow.
+- A TLS 1.3 KeyUpdate from the peer ends the connection with
+  `NetError.Failed`: mbedTLS 4.1 does not handle it. Long-lived connections
+  to a server that rotates its keys will need it.
+- The licence notices in a build's report.
 
 ## Decisions
 
@@ -413,13 +531,25 @@ pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver
 | HTTP: heads, bodies and chunks split across reads; a head that never ends is 431 in one read or many; empty lines skipped; 100 header lines accepted; repeated equal lengths; absolute and `*` targets; `100 Continue` before the body is sent, and not on HTTP/1.0 | `tests/http.rs` `requests_arrive_however_they_are_split_and_in_every_target_form` |
 | HTTP: the handler's framing headers are replaced; 204 and 304 lengths | `tests/http.rs` `the_server_frames_every_response_itself` |
 | HTTP: the write limit; a closing answer lingers up to 2 s for a client still sending; a handler's defect closes the connection; failed accepts are retried with a growing pause | `tests/http.rs` `slow_clients_and_failed_accepts_do_not_stop_the_server_and_a_defect_closes_its_connection` |
+| HTTP: closing the listener drains: idle connections close at once, a request in progress (or a pipelined one already read) is answered with `connection: close`, and a timeout around `serve` cuts the drain short | `tests/http.rs` `closing_the_listener_drains_the_connections` |
 | HTTP: `date` on every response at four clock starts (leap day, before 1970, 2100), and a handler's own `date` stands | `tests/http.rs` `every_response_carries_the_date` |
 | HTTP: a handler failure is 500; the idle limit; status and header defects; `Http.request` for handler tests | `tests/http.rs` `a_handler_failure_answers_500_and_an_idle_client_is_closed` |
 | HTTP: connections served at once over loopback (within a time limit, so a server that answers one at a time fails); closing the listener ends `serve` and closes open connections; a handler's defect closes only its connection; past `max_connections` a client waits | `tests/http.rs` `a_server_on_loopback_serves_clients_at_once_and_stops_with_its_listener` |
 | SQL: rows read by name, each typed accessor, nulls, missing columns, wrong kinds, `one` and `first` | `tests/sql.rs` `rows_are_read_by_column_name_with_typed_accessors` |
 | SQL: lazy connections, reuse, parameters unchanged, a failed reset or connect, sharing across tasks, use after close | `tests/sql.rs` `a_pool_opens_connections_lazily_reuses_them_and_closes_them` |
 | SQL: the pool's size and wait, and a waiter that gave up | `tests/sql.rs` `a_full_pool_makes_statements_wait_up_to_its_limit` |
-| SQL: commit, rollback, defect, cancellation, a failed commit, savepoints | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
+| SQL: commit, rollback, defect, cancellation, a failed commit, savepoints, a driver's own savepoint statements | `tests/sql.rs` `a_transaction_commits_or_rolls_back_however_its_body_ends` |
+| SQL: an ended transaction's or savepoint's database fails, whether it escaped, was kept by a task, or its body defected or was cancelled | `tests/sql.rs` `a_transactions_database_fails_once_the_transaction_has_ended` |
+| TLS: a short exchange, 1 MiB across many records, and ciphertext on the wire | `tests/tls.rs` `a_client_and_a_server_exchange_bytes_over_a_fake_pair` |
+| TLS: `Untrusted`, `WrongHost(host)`, `Expired` and not yet valid on the client, `Handshake` on the server, a stranger's expired certificate is `Untrusted`, an empty host | `tests/tls.rs` `the_client_refuses_an_untrusted_wrong_or_expired_certificate` |
+| TLS: bad roots, an empty bundle, a bad key, a key that is not the certificate's | `tests/tls.rs` `bad_roots_and_identities_fail_where_they_are_made` |
+| TLS: a peer leaving during the handshake, a peer not speaking TLS, an end without `close_notify`, a closed connection | `tests/tls.rs` `a_peer_that_leaves_or_speaks_something_else_fails_the_connection` |
+| TLS: the system's roots, `SSL_CERT_FILE`, and `NoRoots` | `tests/tls.rs` `the_defaults_trust_the_systems_roots` |
+| TLS over loopback sockets | `tests/tls.rs` `a_tls_connection_runs_over_loopback_sockets` |
+| TLS: no session outlives a failed or timed-out handshake, or `Net.close` | `tests/tls.rs` `no_session_outlives_its_connection_or_its_handshake` |
+| TLS: an OpenSSL server, TLS 1.3 with session tickets and TLS 1.2, twenty exchanges each | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
+| TLS: empty data records, and up to forty session tickets in one record, are read past | `tests/tls.rs` `the_engine_reads_past_records_without_data` |
+| The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
 | `Refused`, `AddressInUse`, `HostNotFound(host)` (also for a host holding U+0000), and the port defect | `tests/net.rs` `the_operating_systems_failures_become_net_errors` |

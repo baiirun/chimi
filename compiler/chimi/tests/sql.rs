@@ -326,7 +326,7 @@ test "a reset slower than its timeout drops the connection" {
   let stuck = never.receiver
   let driver = Sql.driver(fn(target) {
     Test.record(calls, Call.Connected(target))
-    Sql.connection(fn(_, _) { Sql.done() }, fn() { Void }, fn() { Void }, fn() { Void }, fn() {
+    Sql.connection(fn(_, _) { Sql.done() }, fn(_) { Void }, fn(_) { Void }, fn(_) { Void }, fn() {
       let _ = Result.capture(fn() { Channel.receive(stuck) })
       Void
     }, fn() { Void })
@@ -384,7 +384,7 @@ test "a connection returned while the pool closes is closed" {
     })
   })
   Task.result(outer)
-  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Committed, Call.Reset, Call.Closed])
+  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began(0), Call.Committed(0), Call.Reset, Call.Closed])
 }
 
 test "statements waiting when the pool closes fail at once" {
@@ -435,7 +435,7 @@ test "success commits" {
     })
   })
   result |> Test.assert_equal(2)
-  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Ran("a", [Value.Int(1)]), Call.Ran("b", [Value.Int(1)]), Call.Committed, Call.Reset, Call.Closed])
+  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began(0), Call.Ran("a", [Value.Int(1)]), Call.Ran("b", [Value.Int(1)]), Call.Committed(0), Call.Reset, Call.Closed])
 }
 
 test "a failure rolls back and is the outcome" {
@@ -449,7 +449,7 @@ test "a failure rolls back and is the outcome" {
     })
   })
   outcome |> Test.assert_equal(Err(Oops.Oops))
-  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, ran("a"), Call.RolledBack, Call.Reset, Call.Closed])
+  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began(0), ran("a"), Call.RolledBack(0), Call.Reset, Call.Closed])
   let failed = Test.recorder()
   Result.capture(fn() { Sql.open(recording(failed), "app.db", Sql.defaults, fn(db) { Sql.transaction(db, fn(tx) { Sql.execute(tx, "fail", []) }) }) })
     |> Test.assert_equal(Err(SqlError.ConstraintFailed("users_email_key", "duplicate")))
@@ -460,7 +460,7 @@ test "a defect or a cancellation leaves no transaction open" {
   Test.capture_defect(fn() {
     Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) { Sql.transaction(db, fn(_) { Debug.crash("boom") }) })
   }) |> Test.assert_equal("boom")
-  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Reset, Call.Closed])
+  Test.recorded(calls) |> Test.assert_equal([Call.Connected("app.db"), Call.Began(0), Call.Reset, Call.Closed])
   let cancelled = Test.recorder()
   let timed = Result.capture(fn() {
     Task.timeout(fn() {
@@ -474,7 +474,7 @@ test "a defect or a cancellation leaves no transaction open" {
     Err(_) -> True
   }
   timed_out |> Test.assert_equal(True)
-  Test.recorded(cancelled) |> Test.assert_equal([Call.Connected("app.db"), Call.Began, Call.Reset, Call.Closed])
+  Test.recorded(cancelled) |> Test.assert_equal([Call.Connected("app.db"), Call.Began(0), Call.Reset, Call.Closed])
 }
 
 test "a failed commit is the outcome" {
@@ -482,7 +482,7 @@ test "a failed commit is the outcome" {
   let driver = Sql.fake(fn(call) {
     Test.record(calls, call)
     case call {
-      Call.Committed -> Failure(SqlError.Conflict("serialization"))
+      Call.Committed(0) -> Failure(SqlError.Conflict("serialization"))
       _ -> Sql.done()
     }
   })
@@ -501,10 +501,10 @@ test "a transaction inside one is a savepoint" {
     })
   })
   Test.recorded(calls) |> Test.assert_equal([
-    Call.Connected("app.db"), Call.Began, ran("a"),
-    ran("SAVEPOINT chimi_1"), ran("fail"), ran("ROLLBACK TO SAVEPOINT chimi_1"), ran("RELEASE SAVEPOINT chimi_1"),
-    ran("SAVEPOINT chimi_1"), ran("SAVEPOINT chimi_2"), ran("b"), ran("RELEASE SAVEPOINT chimi_2"), ran("RELEASE SAVEPOINT chimi_1"),
-    Call.Committed, Call.Reset, Call.Closed,
+    Call.Connected("app.db"), Call.Began(0), ran("a"),
+    Call.Began(1), ran("fail"), Call.RolledBack(1),
+    Call.Began(1), Call.Began(2), ran("b"), Call.Committed(2), Call.Committed(1),
+    Call.Committed(0), Call.Reset, Call.Closed,
   ])
 }
 test "a savepoint cut off by a timeout the outer body survives is undone" {
@@ -524,16 +524,16 @@ test "a savepoint cut off by a timeout the outer body survives is undone" {
     })
   })
   Test.recorded(calls) |> Test.assert_equal([
-    Call.Connected("app.db"), Call.Began, ran("a"),
-    ran("SAVEPOINT chimi_1"), ran("b"), ran("ROLLBACK TO SAVEPOINT chimi_1"), ran("RELEASE SAVEPOINT chimi_1"),
-    Call.Committed, Call.Reset, Call.Closed,
+    Call.Connected("app.db"), Call.Began(0), ran("a"),
+    Call.Began(1), ran("b"), Call.RolledBack(1),
+    Call.Committed(0), Call.Reset, Call.Closed,
   ])
 }
 
 test "a savepoint's failure stays its failure when the rollback fails" {
   let driver = Sql.fake(fn(call) {
     case call {
-      Call.Ran("ROLLBACK TO SAVEPOINT chimi_1", _) -> Failure(SqlError.Rejected("25P02", "aborted"))
+      Call.RolledBack(1) -> Failure(SqlError.Rejected("25P02", "aborted"))
       Call.Ran("fail", _) -> Failure(SqlError.ConstraintFailed("c", "duplicate"))
       _ -> Sql.done()
     }
@@ -544,7 +544,241 @@ test "a savepoint's failure stays its failure when the rollback fails" {
     })
   }) |> Test.assert_equal(Some(SqlError.ConstraintFailed("c", "duplicate")))
 }
+
+test "a driver writes its own transaction and savepoint statements" {
+  let statements = Test.recorder()
+  // A SQL Server-style dialect: no RELEASE, so committing a savepoint sends
+  // nothing, and rolling one back is one statement.
+  let driver = Sql.driver(fn(_) {
+    let send = fn(sql) { Test.record(statements, sql) }
+    Sql.connection(fn(sql, _) {
+      send(sql)
+      case sql == "fail" {
+        True -> Failure(SqlError.ConstraintFailed("c", "duplicate"))
+        False -> Sql.done()
+      }
+    }, fn(depth) {
+      case depth {
+        0 -> send("BEGIN TRANSACTION")
+        n -> send("SAVE TRANSACTION s${n}")
+      }
+    }, fn(depth) {
+      case depth {
+        0 -> send("COMMIT TRANSACTION")
+        _ -> Void
+      }
+    }, fn(depth) {
+      case depth {
+        0 -> send("ROLLBACK TRANSACTION")
+        n -> send("ROLLBACK TRANSACTION s${n}")
+      }
+    }, fn() { Void }, fn() { Void })
+  })
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let _ = Result.capture(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "fail", []) }) })
+      Sql.transaction(tx, fn(nested) { Sql.execute(nested, "b", []) })
+    })
+  })
+  Test.recorded(statements) |> Test.assert_equal([
+    "BEGIN TRANSACTION", "SAVE TRANSACTION s1", "fail", "ROLLBACK TRANSACTION s1",
+    "SAVE TRANSACTION s1", "b", "COMMIT TRANSACTION",
+  ])
+}
+
+test "a savepoint whose commit fails is undone and fails" {
+  let calls = Test.recorder()
+  let driver = Sql.fake(fn(call) {
+    Test.record(calls, call)
+    case call {
+      Call.Committed(1) -> Failure(SqlError.Conflict("release"))
+      _ -> Sql.done()
+    }
+  })
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      failed(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "b", []) }) })
+    })
+  }) |> Test.assert_equal(Some(SqlError.Conflict("release")))
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began(0),
+    Call.Began(1), ran("b"), Call.Committed(1), Call.RolledBack(1),
+    Call.Committed(0), Call.Reset, Call.Closed,
+  ])
+}
+
+test "a savepoint that defects is undone and the defect is the outcome" {
+  let calls = Test.recorder()
+  Test.capture_defect(fn() {
+    Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+      Sql.transaction(db, fn(tx) { Sql.transaction(tx, fn(_) { Debug.crash("boom") }) })
+    })
+  }) |> Test.assert_equal("boom")
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began(0), Call.Began(1), Call.RolledBack(1), Call.Reset, Call.Closed,
+  ])
+}
+
+test "a savepoint's failed commit stays the outcome when its rollback fails too" {
+  let driver = Sql.fake(fn(call) {
+    case call {
+      Call.Committed(1) -> Failure(SqlError.Conflict("release"))
+      Call.RolledBack(1) -> Failure(SqlError.ConnectionLost)
+      _ -> Sql.done()
+    }
+  })
+  Sql.open(driver, "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      failed(fn() { Sql.transaction(tx, fn(nested) { Sql.execute(nested, "b", []) }) })
+    })
+  }) |> Test.assert_equal(Some(SqlError.Conflict("release")))
+}
 "#,
     );
-    assert_passed(&run, 7);
+    assert_passed(&run, 11);
+}
+
+// Rejects a transaction's database that still reaches the connection after
+// the transaction or savepoint ended (returned from its body, kept by a task
+// that outlives it, or ended by a defect or a cancellation), and a check that
+// refuses the outer database inside one of its savepoints.
+#[test]
+fn a_transactions_database_fails_once_the_transaction_has_ended() {
+    let run = run_tests(
+        "transaction-ended",
+        r#"
+fn kept(calls: Recorder<Call>) -> List<Call> {
+  List.filter(Test.recorded(calls), fn(call) {
+    case call {
+      Call.Ran(sql, _) -> sql != "a"
+      _ -> False
+    }
+  })
+}
+
+test "a database returned from its transaction fails and never reaches the driver" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let escaped = Sql.transaction(db, fn(tx) { tx })
+    failed(fn() { Sql.execute(escaped, "late", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+    failed(fn() { Sql.transaction(escaped, fn(nested) { Sql.execute(nested, "later", []) }) })
+      |> Test.assert_equal(Some(SqlError.TransactionEnded))
+    let inner = Sql.transaction(db, fn(tx) {
+      let nested = Sql.transaction(tx, fn(nested) { nested })
+      failed(fn() { Sql.execute(nested, "inner", []) }) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Sql.execute(tx, "a", [])
+    })
+    inner |> Test.assert_equal(0)
+  })
+  kept(calls) |> Test.assert_equal([])
+}
+
+test "a task that keeps a transaction's database fails once it has ended" {
+  let calls = Test.recorder()
+  let outcome = Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let later = Sql.transaction(db, fn(tx) {
+      Task.start(fn() {
+        Clock.sleep(Duration.seconds(1))
+        failed(fn() { Sql.execute(tx, "late", []) })
+      })
+    })
+    Task.result(later)
+  })
+  outcome |> Test.assert_equal(Some(SqlError.TransactionEnded))
+  kept(calls) |> Test.assert_equal([])
+}
+
+// Waits for a database on `handed`, then runs `sql` on it after `seconds`.
+fn run_later(handed: Channel.Receiver<Database>, seconds: Int, sql: Text) -> Option<SqlError> needs { clock: Clock } {
+  case Result.capture(fn() { Channel.receive(handed) }) {
+    Ok(Channel.Receive.Received(db)) -> {
+      Clock.sleep(Duration.seconds(seconds))
+      failed(fn() { Sql.execute(db, sql, []) })
+    }
+    _ -> Some(SqlError.Failed("no database"))
+  }
+}
+
+test "a savepoint's database ends when the savepoint is cancelled or defects" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let cut = Channel.bounded(1)
+      let cut_handed = cut.receiver
+      let after_cut = Task.start(fn() { run_later(cut_handed, 3, "cut") })
+      let cut_sender = cut.sender
+      let _ = Result.capture(fn() {
+        Task.timeout(fn() {
+          Sql.transaction(tx, fn(nested) {
+            let _ = Result.capture(fn() { Channel.send(cut_sender, nested) })
+            Clock.sleep(Duration.seconds(5))
+          })
+        }, Duration.seconds(1))
+      })
+      let crash = Channel.bounded(1)
+      let crash_handed = crash.receiver
+      let after_crash = Task.start(fn() { run_later(crash_handed, 1, "crash") })
+      let crash_sender = crash.sender
+      let defected = Test.capture_defect(fn() {
+        Sql.transaction(tx, fn(nested) {
+          let _ = Result.capture(fn() { Channel.send(crash_sender, nested) })
+          Debug.crash("boom")
+        })
+      })
+      defected |> Test.assert_equal("boom")
+      Task.result(after_cut) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Task.result(after_crash) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+      Sql.execute(tx, "still", [])
+    })
+  })
+  kept(calls) |> Test.assert_equal([ran("still")])
+}
+
+// Waits for a database on `handed`, opens a savepoint on it, and after
+// `seconds` inside it runs `sql` and a deeper savepoint.
+fn savepoint_later(handed: Channel.Receiver<Database>, seconds: Int, sql: Text) -> Option<SqlError> needs { clock: Clock } {
+  case Result.capture(fn() { Channel.receive(handed) }) {
+    Ok(Channel.Receive.Received(db)) -> failed(fn() {
+      Sql.transaction(db, fn(nested) {
+        Clock.sleep(Duration.seconds(seconds))
+        let late = failed(fn() { Sql.execute(nested, sql, []) })
+        let deeper = failed(fn() { Sql.transaction(nested, fn(_) { Void }) })
+        (late, deeper) |> Test.assert_equal((Some(SqlError.TransactionEnded), Some(SqlError.TransactionEnded)))
+      })
+    })
+    _ -> Some(SqlError.Failed("no database"))
+  }
+}
+
+test "a savepoint still open in a task ends with the transaction around it" {
+  let calls = Test.recorder()
+  let hand = Channel.bounded(1)
+  let handed = hand.receiver
+  let sender = hand.sender
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    let worker = Task.start(fn() { savepoint_later(handed, 2, "late") })
+    Sql.transaction(db, fn(tx) {
+      let _ = Result.capture(fn() { Channel.send(sender, tx) })
+      Clock.sleep(Duration.seconds(1))
+    })
+    // The savepoint's own commit is refused too.
+    Task.result(worker) |> Test.assert_equal(Some(SqlError.TransactionEnded))
+  })
+  Test.recorded(calls) |> Test.assert_equal([
+    Call.Connected("app.db"), Call.Began(0), Call.Began(1), Call.Committed(0), Call.Reset, Call.Closed,
+  ])
+}
+
+test "the outer database still works inside one of its savepoints" {
+  let calls = Test.recorder()
+  Sql.open(recording(calls), "app.db", Sql.defaults, fn(db) {
+    Sql.transaction(db, fn(tx) {
+      Sql.transaction(tx, fn(_) { Sql.execute(tx, "outer", []) })
+    })
+  })
+  kept(calls) |> Test.assert_equal([ran("outer")])
+}
+"#,
+    );
+    assert_passed(&run, 5);
 }

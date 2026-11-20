@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 26u
+#define CHIMI_FIBER_ABI_VERSION 27u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -138,11 +138,14 @@ enum {
      for an empty list or an unknown kind. A cancellation point. */
   CHIMI_REQUEST_SELECT = 32,
   /* ChimiSchedulerRequest: Resource.scoped's entry on the scope stack. ENTER
-     (before acquire) replies with the entry in `token`. RELEASE(`token`)
-     masks it before release: cancellation of the scopes beneath waits.
-     EXIT(`token`) leaves it and replies `value` 1 when a cancellation it held
-     off is now delivered: return a cancellation. None is a cancellation point;
-     issue none after a terminal cancel. */
+     (before acquire) pushes it masked, so cancellation of the scopes beneath
+     waits while acquire runs, and replies with the entry in `token`.
+     USE(`token`) unmasks it once acquire succeeded, and replies `value` 1
+     when a cancellation it held off is now delivered: run release without
+     use. RELEASE(`token`) masks it again before release. EXIT(`token`)
+     leaves it and replies `value` 1 when a cancellation it held off is now
+     delivered: return a cancellation. None is a cancellation point; issue
+     none after a terminal cancel. */
   CHIMI_REQUEST_RESOURCE_ENTER = 33,
   CHIMI_REQUEST_RESOURCE_RELEASE = 34,
   CHIMI_REQUEST_RESOURCE_EXIT = 35,
@@ -235,6 +238,8 @@ enum {
      unknown task, a process body, a live root, or a second release. Never
      parks, and not a cancellation point. */
   CHIMI_REQUEST_TASK_RELEASE = 46,
+  /* ChimiSchedulerRequest: see CHIMI_REQUEST_RESOURCE_ENTER. */
+  CHIMI_REQUEST_RESOURCE_USE = 49,
 };
 
 /* Interest and ready conditions of CHIMI_REQUEST_IO_WAIT. HANGUP and ERROR

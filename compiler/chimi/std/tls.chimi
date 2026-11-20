@@ -1,0 +1,270 @@
+/// TLS over any `Net.Connection`. `Tls.client` and `Tls.server` take an
+/// open connection, finish the handshake, and give back a connection whose
+/// streams carry plaintext, so code written for `Net.Connection` (std/http,
+/// std/sql) runs over either kind.
+///
+/// ```text
+/// pub fn main() -> Void needs { network: Network } {
+///   Resource.scoped(fn() { Tls.client(Net.connect("example.com", 443), "example.com", Tls.defaults) }, Net.close, fn(connection) {
+///     Stream.write(Net.writer(connection), Bytes.from_text("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n"))
+///     Stream.read_all(Net.reader(connection), 1048576)
+///   })
+/// }
+/// ```
+///
+/// A client always checks the server's certificate against its trusted roots
+/// and the host name; there is no way to turn the check off. `Tls.defaults`
+/// trusts the system's roots: the file `SSL_CERT_FILE` names, else the usual
+/// bundle paths. A test trusts its own fixture authority with
+/// `{ ..Tls.defaults, roots: Tls.roots(pem) }`. A server proves itself with an
+/// `Identity` made from a PEM certificate chain and its unencrypted PEM key.
+///
+/// TLS 1.2 and 1.3 are offered, through mbedTLS 4.1 (vendored under
+/// `runtime/native/bindings/tls/`). Closing the writer sends `close_notify`
+/// before it closes the inner writer; a peer that ends its stream without
+/// `close_notify` fails the read with `NetError.Failed`, since the data may
+/// have been cut short. `Net.close` releases the session and the inner
+/// connection.
+///
+/// Encryption runs in memory and the wrapper moves bytes through the inner
+/// connection's streams, so a TLS connection waits wherever its inner
+/// connection waits, and a fake from `Net.pair` works the same as a socket.
+
+import std/bytes as Bytes
+import std/bytes.{Bytes}
+import std/net as Net
+import std/net.{Connection, NetError}
+import std/resource as Resource
+import std/result as Result
+import std/result.{Err, Ok, Result}
+import std/stream as Stream
+
+// 1. Public types.
+
+/// The certificate authorities a client trusts: the system's (in
+/// `Tls.defaults`) or a PEM bundle from `Tls.roots`.
+pub struct Roots {
+  pem: Option<Bytes>,
+}
+
+/// A server's certificate chain and private key, from `Tls.identity`.
+pub struct Identity {
+  certificate: Bytes,
+  key: Bytes,
+}
+
+// 2. Failure types.
+
+/// Why a TLS handshake, or making its settings, failed.
+pub enum TlsError {
+  /// The server's certificate does not chain to a trusted root.
+  Untrusted
+  /// The server's certificate is expired or not yet valid.
+  Expired
+  /// The server's certificate is for another host than `host`.
+  WrongHost(host: Text)
+  /// The two sides share no TLS version or cipher.
+  Unacceptable(reason: Text)
+  /// The client trusts the system's roots, and none were found.
+  NoRoots
+  /// The handshake failed some other way, with mbedTLS's words: a peer that
+  /// is not speaking TLS, an alert from the peer, or a connection that ended
+  /// part way.
+  Handshake(message: Text)
+  /// A certificate, key or host name is not usable.
+  Invalid(message: Text)
+}
+
+// 3. Settings.
+
+/// A client's settings: start from these and name what differs, as
+/// `{ ..Tls.defaults, roots: Tls.roots(pem) }`. The default roots are the
+/// system's.
+pub const defaults: { roots: Roots } = { roots: Roots(None) }
+
+/// Roots that trust exactly the certificates in `pem`, one or more PEM
+/// `CERTIFICATE` blocks.
+///
+/// Fails with: `TlsError.Invalid` when `pem` holds no certificate mbedTLS
+/// can parse.
+/// Cost: O(n) in the size of `pem`, parsed once here and again per client.
+pub fn roots(pem: Bytes) -> Roots {
+  let _ = tls(native_check_roots(pem), "")
+  Roots(Some(pem))
+}
+
+/// A server identity: a PEM certificate chain, leaf first, and the leaf's
+/// unencrypted PEM private key.
+///
+/// Fails with: `TlsError.Invalid` when either does not parse or the key does
+/// not match the certificate.
+pub fn identity(certificate: Bytes, key: Bytes) -> Identity {
+  tls(native_check_identity(certificate, key), "")
+  Identity(certificate, key)
+}
+
+// 4. Wrapping a connection.
+
+/// The client end of a TLS connection over `connection`, to the server
+/// named `host`, once the handshake is done. `host` is checked against the
+/// server's certificate and sent as the server name (SNI).
+///
+/// Fails with: `TlsError.Untrusted`, `Expired`, `WrongHost`, `Unacceptable`,
+/// `NoRoots`, `Handshake` or `Invalid`, and what the inner connection's
+/// streams fail with. On a failure the inner connection is left open, for
+/// the caller that opened it to close.
+pub fn client(connection: Connection, host: Text, settings: { roots: Roots }) -> Connection {
+  secured(connection, host, fn() {
+    case settings.roots.pem {
+      Some(pem) -> tls(native_client(pem, host), host)
+      None -> tls(native_client_system(host), host)
+    }
+  })
+}
+
+/// The server end of a TLS connection over `connection`, proving itself
+/// with `identity`, once the handshake is done.
+///
+/// Fails with: `TlsError.Unacceptable`, `Handshake` or `Invalid`, and what
+/// the inner connection's streams fail with. On a failure the inner
+/// connection is left open.
+pub fn server(connection: Connection, identity: Identity) -> Connection {
+  secured(connection, "", fn() {
+    tls(native_server(identity.certificate, identity.key), "")
+  })
+}
+
+/// How many TLS sessions this program holds: made, and not yet freed by
+/// `Net.close` or a failed handshake. For tests that check nothing leaks.
+/// Test-only (`T4401`).
+pub fn live_sessions_for_tests() -> Int {
+  native_live_sessions()
+}
+
+// 5. The session over the inner connection.
+
+// The session is made and handshaken inside Resource.scoped, so it is freed
+// however the handshake ends (a failure, a cancel, a timeout), and handed to
+// a handle of its own once the handshake is done.
+fn secured(connection: Connection, host: Text, start: fn() -> TlsSession errors TlsError | NetError) -> Connection {
+  let session = Resource.scoped(start, native_free, fn(starting) {
+    handshake(connection, starting, host)
+    tls(native_handoff(starting), host)
+  })
+  Net.connection(
+    Stream.reader(fn() { receive(connection, session) }, fn() { Stream.stop(Net.reader(connection)) }),
+    Stream.writer(fn(bytes) { send(connection, session, bytes) }, fn() { finish(connection, session) }),
+    Net.local_address(connection),
+    Net.peer_address(connection),
+    fn() {
+      native_free(session)
+      Net.close(connection)
+    },
+  )
+}
+
+// A failed step still sends what the session queued (an alert telling the
+// peer why), as far as the connection allows.
+fn handshake(connection: Connection, session: TlsSession, host: Text) -> Void {
+  loop _ = Void {
+    let step = native_handshake(session)
+    case step {
+      Ok(_) -> flush(connection, session)
+      Err(_) -> {
+        let _ = Result.capture(fn() { flush(connection, session) })
+        Void
+      }
+    }
+    let done = tls(step, host)
+    case done {
+      True -> break Void
+      False -> {
+        let next = Stream.read(Net.reader(connection))
+        case next {
+          Some(bytes) -> tls(native_feed(session, bytes), host)
+          None -> Failure(TlsError.Handshake("the peer ended the connection during the handshake"))
+        }
+      }
+    }
+  }
+}
+
+fn receive(connection: Connection, session: TlsSession) -> Option<Bytes> {
+  loop _ = Void {
+    let (status, bytes) = net(native_receive(session))
+    case status {
+      0 -> break Some(bytes)
+      2 -> break None
+      _ -> {
+        let next = Stream.read(Net.reader(connection))
+        case next {
+          Some(more) -> net(native_feed(session, more))
+          None -> Failure(NetError.Failed("TLS: the peer ended the connection without close_notify"))
+        }
+      }
+    }
+  }
+}
+
+fn send(connection: Connection, session: TlsSession, bytes: Bytes) -> Void {
+  net(native_send(session, bytes))
+  flush(connection, session)
+}
+
+fn finish(connection: Connection, session: TlsSession) -> Void {
+  native_close_notify(session)
+  flush(connection, session)
+  Stream.close(Net.writer(connection))
+}
+
+fn flush(connection: Connection, session: TlsSession) -> Void {
+  let pending = native_take(session)
+  let empty = Bytes.is_empty(pending)
+  case empty {
+    True -> Void
+    False -> Stream.write(Net.writer(connection), pending)
+  }
+}
+
+// The binding's failure codes (runtime/native/bindings/tls/tls_session.h).
+// `host` names the server for `WrongHost`.
+fn tls<T>(result: Result<T, (Int, Text)>, host: Text) -> T {
+  case result {
+    Ok(value) -> value
+    Err((1, _)) -> Failure(TlsError.Untrusted)
+    Err((2, _)) -> Failure(TlsError.Expired)
+    Err((3, _)) -> Failure(TlsError.WrongHost(host))
+    Err((4, message)) -> Failure(TlsError.Unacceptable(message))
+    Err((5, message)) -> Failure(TlsError.Handshake(message))
+    Err((7, _)) -> Failure(NetError.Closed)
+    Err((8, _)) -> Failure(TlsError.NoRoots)
+    Err((_, message)) -> Failure(TlsError.Invalid(message))
+  }
+}
+
+// After the handshake a connection fails only with `NetError`, as any
+// `Net.Connection` does.
+fn net<T>(result: Result<T, (Int, Text)>) -> T {
+  case result {
+    Ok(value) -> value
+    Err((7, _)) -> Failure(NetError.Closed)
+    Err((_, message)) -> Failure(NetError.Failed("TLS: ${message}"))
+  }
+}
+
+native type TlsSession
+
+native fn native_client(roots: Bytes, host: Text) -> Result<TlsSession, (Int, Text)>
+native fn native_client_system(host: Text) -> Result<TlsSession, (Int, Text)>
+native fn native_server(certificate: Bytes, key: Bytes) -> Result<TlsSession, (Int, Text)>
+native fn native_check_roots(pem: Bytes) -> Result<Int, (Int, Text)>
+native fn native_check_identity(certificate: Bytes, key: Bytes) -> Result<Void, (Int, Text)>
+native fn native_handshake(session: TlsSession) -> Result<Bool, (Int, Text)>
+native fn native_feed(session: TlsSession, bytes: Bytes) -> Result<Void, (Int, Text)>
+native fn native_take(session: TlsSession) -> Bytes
+native fn native_send(session: TlsSession, bytes: Bytes) -> Result<Void, (Int, Text)>
+native fn native_receive(session: TlsSession) -> Result<(Int, Bytes), (Int, Text)>
+native fn native_close_notify(session: TlsSession) -> Void
+native fn native_handoff(session: TlsSession) -> Result<TlsSession, (Int, Text)>
+native fn native_free(session: TlsSession) -> Void
+native fn native_live_sessions() -> Int
