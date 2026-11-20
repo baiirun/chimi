@@ -188,6 +188,13 @@ The unlocked `handles_live()` read also assumes that moving a value to
 another carrier synchronises (the hand-off is a scheduler request), which
 step 3 must keep true.
 
+Native handles are counted in the same table (2026-11-20), and a handle
+whose count reaches zero is closed at once, on the carrier that dropped it,
+without a scheduler request. The binding handle table (`binding_handles`)
+has no lock yet. Step 3 must add one before a second real carrier runs,
+because a close on one carrier can race a binding call or a new handle on
+another.
+
 Two tests check this step:
 - `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
   references from one thread to another under ThreadSanitizer.
