@@ -189,7 +189,9 @@ pub fn response(status: Int, headers: List<(Text, Text)>, body: Bytes) -> Respon
 /// HTTP/1.0, where only the close ends a body, it cannot tell. After that,
 /// and after `produce` returns, every write fails with `StreamError.Closed`,
 /// and tasks `produce` started are cancelled when it returns, so nothing it
-/// left behind can write into the next response.
+/// left behind can write into the next response. A `produce` still running
+/// once its body has ended (it closed the writer) or failed to send is
+/// cancelled before the connection goes on.
 ///
 /// `produce` runs after the handler has returned, so it cannot name a
 /// capability in a `needs` row: capture the capability while the handler
@@ -1225,7 +1227,7 @@ fn send_streamed(writer: Writer<NetError>, produce: fn(Writer<StreamError>) -> V
     set(ended)
     hand(sender, Piece.End)
   })
-  let _producing = Task.start(fn() {
+  let producing = Task.start(fn() {
     let last = case Result.capture(fn() { produce(out) }) {
       Ok(_) -> Piece.End
       Err(_) -> Piece.Failed
@@ -1257,6 +1259,9 @@ fn send_streamed(writer: Writer<NetError>, produce: fn(Writer<StreamError>) -> V
     }
   }
   let _ = Result.capture(fn() { Channel.close(completion) })
+  // A producer that closed its writer, or whose chunk failed, has nothing
+  // left to do for this response, so it must not run on beside the next.
+  Task.cancel(producing)
   case (whole, chunked) {
     (True, True) -> {
       Task.timeout(fn() {

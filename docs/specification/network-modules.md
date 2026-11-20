@@ -253,7 +253,10 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   chunk is being sent, and writes from several of the producer's tasks
   arrive as whole chunks, never interleaved inside one. The writer is
   shareable, so the producer may hand it to tasks of its own; those are
-  cancelled when it returns.
+  cancelled when it returns. A producer still running once its body has
+  ended (it closed the writer) or a chunk failed MUST be cancelled before
+  the connection goes on, so producers cannot pile up on one keep-alive
+  connection.
 - The write limit bounds each chunk's send, not the response, so a slow
   stream of events may run as long as it keeps writing. A producer that
   fails, or a chunk that fails to send or passes the limit, closes the

@@ -1176,6 +1176,15 @@ fn racing(request: Request) -> Response needs { clock: Clock } {
       Stream.write(out, Bytes.from_text("a"))
       Debug.crash("producer")
     })
+    ["done"] -> Http.streamed(200, [], fn(out) {
+      Stream.close(out)
+      Clock.sleep(Duration.milliseconds(10)) using { clock: given }
+      Debug.crash("a producer ran on after its body ended")
+    })
+    ["later"] -> {
+      Clock.sleep(Duration.milliseconds(50))
+      Http.text(200, "plain")
+    }
     _ -> Http.text(200, "plain")
   }
 }
@@ -1196,6 +1205,11 @@ test "closing the writer ends the body, and later writes fail" {
   race_exchange("GET /closed HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
     |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
 }
+test "a producer that closed its writer is stopped before the next request" {
+  race_exchange("GET /done HTTP/1.1\r\nHost: x\r\n\r\nGET /later HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
+}
+
 test "under serve, a producer's defect closes only its connection" {
   let (client, server) = Net.pair(64)
   let (script, plan) = Stream.pipe(8)
@@ -1214,7 +1228,7 @@ test "under serve, a producer's defect closes only its connection" {
 "#,
         "virtual",
     );
-    assert_passed(&run, 15);
+    assert_passed(&run, 16);
 }
 
 // Rejects a streamed body whose writer still works after the producer
