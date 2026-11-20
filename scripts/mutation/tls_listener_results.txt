@@ -1,0 +1,25 @@
+# mutation run at 300b06edeb06c0c47bfbf7e04fc1de12c9ecbfe3
+# tls_listener_mutations.py: 13 mutants against compiler/chimi
+BASELINE ok  [tls] (154s)
+KILLED       a read does not handshake [tls] (75s)
+KILLED       a write does not handshake [tls] (125s)
+KILLED       accept waits for the handshake [tls] (118s)
+KILLED       a failed handshake is ignored [tls] (65s)
+KILLED       a failed handshake does not say it is one [tls] (63s)
+KILLED       closing does not free the session [tls] (68s)
+KILLED       closing the TLS listener leaves the inner one open [tls] (63s)
+KILLED       the listener has another address [tls] (72s)
+KILLED       two tasks drive one handshake [tls] (64s)
+KILLED       a waiting task is never woken [tls] (66s)  # rerun at 6a42ece, after waking moved to the latest count
+SURVIVED     a waiting task wakes at once [tls] (67s)
+KILLED       the claim is never given back [tls] (73s)
+KILLED       a connection is not encrypted [tls] (65s)
+# result: 12 of 13 killed. The survivor, "a waiting task wakes at once", is
+# performance-only: a task that never sleeps between turns still finds the
+# claim taken, calls Watch.receive (which yields) and tries again, so every
+# outcome is the same and only CPU time differs. The verifier measured the
+# real code with two waiting writers and a reader idle for 3 s: about 0.57 s
+# of CPU for the whole run, compile included, so nothing spins. A test of it
+# needs the virtual clock, which does not advance while loopback sockets wait,
+# and a fake pair's channel ends belong to one task, so two tasks cannot share
+# one; it stays untested.
