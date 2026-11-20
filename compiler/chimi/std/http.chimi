@@ -44,7 +44,7 @@ import std/duration.{Duration}
 import std/int as Int
 import std/list as List
 import std/net as Net
-import std/net.{Connection, Listener, NetError}
+import std/net.{Connection, Listener, NetError, Network}
 import std/process as Process
 import std/process.{HandoffSpec, Inbox}
 import std/resource as Resource
@@ -57,6 +57,8 @@ import std/supervisor as Supervisor
 import std/supervisor.{HandoffError, Running}
 import std/task as Task
 import std/text as Text
+import std/tls as Tls
+import std/tls.{Roots}
 import std/watch as Watch
 
 // 1. Public types.
@@ -248,6 +250,14 @@ pub fn status(response: Response) -> Int {
 /// Cost: O(1).
 pub fn response_headers(response: Response) -> List<(Text, Text)> {
   response.headers
+}
+
+/// The first value of the response's header `name`, matched without regard
+/// to case, as a client reads a reply's `location` or `content-type`.
+///
+/// Cost: O(n) in the headers.
+pub fn response_header(response: Response, name: Text) -> Option<Text> {
+  find_header(response.headers, ascii_lowercase(name))
 }
 
 /// The response's body; empty for a streamed response, whose body exists
@@ -558,7 +568,7 @@ fn exchange_all<E, R>(connection: Connection, bounds: Limits, handle: fn(Request
       Next.Arrived(request, keep_alive, minor, rest) -> {
         let answer = answer(request, handle)
         let asked = keep_alive and not List.contains(header_tokens(answer.headers, "connection"), "close") and not draining_now(signals)
-        let keep = send(writer, answer, asked, minor, request.method == Method.Head, bounds.write)
+        let keep = send_reply(writer, answer, asked, minor, request.method == Method.Head, bounds.write)
         case keep {
           True -> rest
           False -> {
@@ -1054,7 +1064,7 @@ fn collect_until(reader: Reader<NetError>, first: Bytes, needle: Bytes, limit: I
     let (parts, total, tail) = state
     let read = Stream.read(reader)
     case read {
-      None -> Failure(Refusal.Malformed("the connection ended inside a request"))
+      None -> Failure(Refusal.Malformed("the connection ended inside a head"))
       Some(chunk) -> {
         let probe = Bytes.append(tail, chunk)
         let grown = total + Bytes.length(chunk)
@@ -1182,7 +1192,7 @@ fn hex_digit(byte: Int) -> Int {
 // Writes `response`, and returns whether the connection stays open after it:
 // `keep_alive` unless the response is streamed on HTTP/1.0, which only the
 // end of the connection can end, or its body was cut short.
-fn send(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: Int, head_only: Bool, limit: Duration) -> Bool needs {
+fn send_reply(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: Int, head_only: Bool, limit: Duration) -> Bool needs {
   clock: Clock
 } {
   let keep = keep_alive and (minor == 1 or not is_streamed(response))
@@ -1451,7 +1461,398 @@ fn reason(status: Int) -> Text {
   }
 }
 
-// 10. Helpers.
+// 10. Sending requests.
+
+/// Why a request sent with `Http.send` failed, besides the connection's
+/// own `NetError` and, for `https`, the certificate checks' `TlsError`.
+pub enum HttpError {
+  /// The URL is not an `http` or `https` URL this client can send to.
+  BadUrl(reason: Text)
+  /// The reply is not HTTP/1.1 this client can read.
+  BadReply(reason: Text)
+  /// The reply's head or body is over its limit.
+  TooLarge
+}
+
+/// A client's settings, to update with what differs: `roots` are the
+/// authorities trusted for `https` (the system's by default), `timeout`
+/// bounds the whole exchange from connecting to the last byte of the
+/// reply, and a reply whose head passes `max_head_bytes`, with more than
+/// `max_headers` headers, or whose body passes `max_body_bytes` fails with
+/// `HttpError.TooLarge`. The defaults are the system's roots, 30 s, 64 KiB,
+/// 100 headers and 8 MiB.
+pub const client_defaults: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int } = {
+  roots: Tls.defaults.roots,
+  timeout: Duration.seconds(30),
+  max_head_bytes: 65536,
+  max_headers: 100,
+  max_body_bytes: 8388608,
+}
+
+/// Sends a request to `url` and returns the reply, its body read whole.
+/// `url` is `http://` or `https://`, a host, an optional port, and a path
+/// and query sent as given (percent-encode them yourself); a fragment is
+/// not sent. An `https` server's certificate is checked against
+/// `settings.roots` and the host, as `Tls.client` does.
+///
+/// The request is HTTP/1.1 with `host` (the caller's own `host` header
+/// stands), `content-length` when there is a body or the method is `POST`,
+/// `PUT` or `PATCH`, and `connection: close`: each request has a connection
+/// of its own. The caller's framing and connection headers are replaced.
+/// Interim `1xx` replies are skipped. A redirect is not followed: a `3xx`
+/// comes back as it is, with its `location` header.
+///
+/// ```text
+/// let reply = Http.send(Method.Get, "https://example.com/", [], Bytes.empty(), Http.client_defaults)
+/// Http.status(reply)
+/// ```
+///
+/// Fails with: `HttpError`; `NetError` from connecting or the connection;
+/// `TlsError` from an `https` handshake; `Timeout.TimedOut` past
+/// `settings.timeout`.
+/// Defects when: a header name is not a token or a value holds a control
+/// character, as for `Http.response`, or a setting is not positive.
+pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Response needs {
+  network: Network,
+  clock: Clock
+} {
+  let target = parse_url(url)
+  let bounds = client_limits(settings)
+  let request = request_bytes(method, target, headers, body)
+  Task.timeout(fn() {
+    Resource.scoped(fn() { Net.connect(target.host, target.port) }, Net.close, fn(raw) {
+      case target.secure {
+        True -> Resource.scoped(fn() {
+          Tls.client(raw, target.host, { roots: settings.roots })
+        }, Net.close, fn(secured) {
+          exchange(Net.reader(secured), Net.writer(secured), request, method == Method.Head, bounds)
+        })
+        False -> exchange(Net.reader(raw), Net.writer(raw), request, method == Method.Head, bounds)
+      }
+    })
+  }, settings.timeout)
+}
+
+/// `Http.send` over `connection`, which the caller opened and closes: for
+/// tests over `Net.pair`, and for a connection through a tunnel. `url`
+/// names the host and target as for `Http.send`, and its scheme is not used
+/// to wrap `connection`.
+///
+/// Fails with: as `Http.send`, except connecting and the TLS handshake.
+pub fn send_over(connection: Connection, method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Response needs {
+  clock: Clock
+} {
+  let target = parse_url(url)
+  let bounds = client_limits(settings)
+  let request = request_bytes(method, target, headers, body)
+  let reader = Net.reader(connection)
+  let writer = Net.writer(connection)
+  Task.timeout(fn() {
+    exchange(reader, writer, request, method == Method.Head, bounds)
+  }, settings.timeout)
+}
+
+// Where a request goes: the host to connect to (without an IPv6 literal's
+// brackets), the port, the `host` header, and the target to send.
+struct Url {
+  secure: Bool,
+  host: Text,
+  port: Int,
+  authority: Text,
+  target: Text,
+}
+
+fn parse_url(url: Text) -> Url {
+  let lowered = ascii_lowercase(url)
+  let (secure, rest) = case (Text.starts_with(lowered, "http://"), Text.starts_with(lowered, "https://")) {
+    (True, _) -> (False, drop_bytes(url, 7))
+    (_, True) -> (True, drop_bytes(url, 8))
+    _ -> Failure(HttpError.BadUrl("not an http or https URL"))
+  }
+  let unfragmented = case Text.split_once(rest, "#") {
+    Some((before, _)) -> before
+    None -> rest
+  }
+  let (authority, target) = split_authority(unfragmented)
+  case is_visible(authority) and is_visible(target) {
+    True -> Void
+    False -> Failure(HttpError.BadUrl("a space or control character"))
+  }
+  case Text.contains(authority, "@") {
+    True -> Failure(HttpError.BadUrl("a user name or password in the URL"))
+    False -> Void
+  }
+  let default_port = case secure {
+    True -> 443
+    False -> 80
+  }
+  let (host, port) = split_host(authority, default_port)
+  let shown = case port == default_port {
+    True -> host_text(host)
+    False -> "${host_text(host)}:${port}"
+  }
+  Url(secure, host, port, shown, target)
+}
+
+// `host:port/path?query` as `("host:port", "/path?query")`.
+fn split_authority(rest: Text) -> (Text, Text) {
+  let bytes = Bytes.to_list(Bytes.from_text(rest))
+  let end = List.find_index(bytes, fn(byte) { byte == 47 or byte == 63 })
+  case end {
+    None -> (rest, "/")
+    Some(at) -> {
+      let authority = Bytes.to_text_lossy(Bytes.slice(Bytes.from_text(rest), 0..at))
+      let target = drop_bytes(rest, at)
+      case Text.starts_with(target, "?") {
+        True -> (authority, "/${target}")
+        False -> (authority, target)
+      }
+    }
+  }
+}
+
+// The host and port of an authority; an IPv6 literal keeps no brackets.
+fn split_host(authority: Text, default_port: Int) -> (Text, Int) {
+  let (host, port_text) = case Text.starts_with(authority, "[") {
+    True -> case Text.split_once(drop_bytes(authority, 1), "]") {
+      Some((inside, "")) -> (inside, None)
+      Some((inside, after)) -> case Text.starts_with(after, ":") {
+        True -> (inside, Some(drop_bytes(after, 1)))
+        False -> Failure(HttpError.BadUrl("text after an IPv6 address"))
+      }
+      None -> Failure(HttpError.BadUrl("an IPv6 address without its closing bracket"))
+    }
+    False -> case Text.split_once(authority, ":") {
+      Some((name, port)) -> (name, Some(port))
+      None -> (authority, None)
+    }
+  }
+  case Text.is_empty(host) or Text.contains(host, "[") or Text.contains(host, "]") {
+    True -> Failure(HttpError.BadUrl("no host"))
+    False -> Void
+  }
+  let port = case port_text {
+    None -> default_port
+    Some(digits) -> case all_digits(digits) and Text.byte_length(digits) <= 5 {
+      True -> case Result.capture(fn() { Int.parse(digits) }) {
+        Ok(number) -> case number >= 1 and number <= 65535 {
+          True -> number
+          False -> Failure(HttpError.BadUrl("the port ${digits} is outside 1 to 65535"))
+        }
+        Err(_) -> Failure(HttpError.BadUrl("a bad port"))
+      }
+      False -> Failure(HttpError.BadUrl("a bad port"))
+    }
+  }
+  (host, port)
+}
+
+// A host as it appears in a `host` header: an IPv6 literal in brackets.
+fn host_text(host: Text) -> Text {
+  case Text.contains(host, ":") {
+    True -> "[${host}]"
+    False -> host
+  }
+}
+
+fn client_limits(settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Limits {
+  case settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0 and positive(settings.timeout) {
+    True -> Limits(settings.max_head_bytes, settings.max_headers, settings.max_body_bytes, settings.timeout, settings.timeout)
+    False -> Debug.crash("Http: max_head_bytes, max_headers and timeout must be positive, and max_body_bytes not negative")
+  }
+}
+
+fn request_bytes(method: Method, target: Url, headers: List<(Text, Text)>, body: Bytes) -> Bytes {
+  let given = List.filter(List.map(headers, checked_header), fn(header) {
+    let (name, _) = header
+    not is_framing_header(name)
+  })
+  let host = case find_header(given, "host") {
+    Some(_) -> []
+    None -> [("host", target.authority)]
+  }
+  let measured = not Bytes.is_empty(body) or List.contains([Method.Post, Method.Put, Method.Patch], method)
+  let length = case measured {
+    True -> [("content-length", Int.to_text(Bytes.length(body)))]
+    False -> []
+  }
+  let lines = List.map(List.concat([host, given, length, [("connection", "close")]]), fn(header) {
+    let (name, value) = header
+    "${name}: ${value}\r\n"
+  })
+  let head = Text.concat(List.concat([["${method_text(method)} ${target.target} HTTP/1.1\r\n"], lines, ["\r\n"]]))
+  Bytes.append(Bytes.from_text(head), body)
+}
+
+fn method_text(method: Method) -> Text {
+  case method {
+    Method.Get -> "GET"
+    Method.Head -> "HEAD"
+    Method.Post -> "POST"
+    Method.Put -> "PUT"
+    Method.Patch -> "PATCH"
+    Method.Delete -> "DELETE"
+    Method.Options -> "OPTIONS"
+    Method.Other(name) -> case is_token(name) {
+      True -> name
+      False -> Debug.crash("Http: the method \"${name}\" is not a token")
+    }
+  }
+}
+
+// Writes the request, then reads the reply, past any interim 1xx replies.
+fn exchange(reader: Reader<NetError>, writer: Writer<NetError>, request: Bytes, head_only: Bool, bounds: Limits) -> Response {
+  Stream.write(writer, request)
+  let outcome = Result.capture(fn() {
+    loop cursor = Cursor(Bytes.empty(), 0) {
+      let found = read_head(reader, cursor, bounds.head_bytes)
+      case found {
+        None -> Failure(HttpError.BadReply("the connection ended before a reply"))
+        Some((head, rest)) -> {
+          let (status, headers) = parse_reply_head(head, bounds)
+          case status < 200 {
+            True -> rest
+            False -> break Response(status, headers, Body.Whole(reply_body(reader, status, headers, rest, head_only, bounds)))
+          }
+        }
+      }
+    }
+  })
+  case outcome {
+    Ok(response) -> response
+    Err(Refusal.Malformed(reason)) -> Failure(HttpError.BadReply(reason))
+    Err(Refusal.NotImplemented(reason)) -> Failure(HttpError.BadReply(reason))
+    Err(Refusal.BadVersion) -> Failure(HttpError.BadReply("not HTTP/1.x"))
+    Err(Refusal.HeadTooLarge) -> Failure(HttpError.TooLarge)
+    Err(Refusal.BodyTooLarge) -> Failure(HttpError.TooLarge)
+    Err(other) -> Failure(other)
+  }
+}
+
+// The status and headers of a reply's head. `101 Switching Protocols`
+// would hand the connection to another protocol, which this client does
+// not speak.
+fn parse_reply_head(bytes: Bytes, bounds: Limits) -> (Int, List<(Text, Text)>) {
+  case List.any(Bytes.to_list(bytes), is_control) {
+    True -> Failure(Refusal.Malformed("a control character in the head"))
+    False -> Void
+  }
+  let text = case Result.capture(fn() { Bytes.to_text(bytes) }) {
+    Ok(text) -> text
+    Err(_) -> Failure(Refusal.Malformed("the head is not UTF-8"))
+  }
+  let lines = Text.split(text, "\r\n")
+  case List.any(lines, fn(line) {
+    Text.contains(line, "\r") or Text.contains(line, "\n")
+  }) {
+    True -> Failure(Refusal.Malformed("a line break that is not CRLF"))
+    False -> Void
+  }
+  case lines {
+    [] -> Failure(Refusal.Malformed("no status line"))
+    [status_line, ..header_lines] -> {
+      case List.length(header_lines) > bounds.header_count {
+        True -> Failure(Refusal.HeadTooLarge)
+        False -> Void
+      }
+      let status = parse_status_line(status_line)
+      case status == 101 {
+        True -> Failure(Refusal.Malformed("101 Switching Protocols"))
+        False -> Void
+      }
+      (status, List.map(header_lines, parse_header))
+    }
+  }
+}
+
+// `HTTP/1.1 200 OK`: an HTTP/1.x version, a status from 100 to 599,
+// and a reason that may be empty.
+fn parse_status_line(line: Text) -> Int {
+  let (version, rest) = case Text.split_once(line, " ") {
+    Some(parts) -> parts
+    None -> Failure(Refusal.Malformed("bad status line"))
+  }
+  let bytes = Bytes.to_list(Bytes.from_text(version))
+  case (Text.starts_with(version, "HTTP/1."), bytes) {
+    (True, [_, _, _, _, _, _, _, minor]) -> case is_digit(minor) {
+      True -> Void
+      False -> Failure(Refusal.Malformed("not HTTP/1.x"))
+    }
+    _ -> Failure(Refusal.Malformed("not HTTP/1.x"))
+  }
+  let code = case Text.split_once(rest, " ") {
+    Some((code, _)) -> code
+    None -> rest
+  }
+  case all_digits(code) and Text.byte_length(code) == 3 {
+    True -> case Result.capture(fn() { Int.parse(code) }) {
+      Ok(status) -> case status >= 100 and status <= 599 {
+        True -> status
+        False -> Failure(Refusal.Malformed("bad status line"))
+      }
+      Err(_) -> Failure(Refusal.Malformed("bad status line"))
+    }
+    False -> Failure(Refusal.Malformed("bad status line"))
+  }
+}
+
+// A reply's body (RFC 9112 section 6.3): none for `HEAD`, 204 or 304;
+// chunked when the last transfer coding is chunked; to the end of the
+// connection for any other coding or when there is no length; otherwise
+// its `content-length`.
+fn reply_body(reader: Reader<NetError>, status: Int, headers: List<(Text, Text)>, cursor: Cursor, head_only: Bool, bounds: Limits) -> Bytes {
+  let codings = header_tokens(headers, "transfer-encoding")
+  let lengths = header_tokens(headers, "content-length")
+  let measured = List.any(headers, fn(header) {
+    let (name, _) = header
+    name == "content-length"
+  })
+  case (head_only or status == 204 or status == 304, List.last(codings), lengths) {
+    (True, _, _) -> Bytes.empty()
+    (False, Some("chunked"), _) -> {
+      let (body, _) = read_chunked(reader, cursor, bounds)
+      body
+    }
+    (False, Some(_), _) -> read_to_end(reader, cursor, bounds.body_bytes)
+    (False, None, []) -> case measured {
+      True -> Failure(Refusal.Malformed("content-length is not a number"))
+      False -> read_to_end(reader, cursor, bounds.body_bytes)
+    }
+    (False, None, [first, ..rest]) -> case List.all(rest, fn(other) { other == first }) {
+      True -> {
+        let length = parse_length(first)
+        case length > bounds.body_bytes {
+          True -> Failure(Refusal.BodyTooLarge)
+          False -> {
+            let (body, _) = read_exact(reader, cursor, length)
+            body
+          }
+        }
+      }
+      False -> Failure(Refusal.Malformed("conflicting content-length"))
+    }
+  }
+}
+
+// What is left of the connection, as long as it is at most `limit` bytes.
+fn read_to_end(reader: Reader<NetError>, cursor: Cursor, limit: Int) -> Bytes {
+  let first = rest_of(cursor)
+  let parts = loop state = ([first], Bytes.length(first)) {
+    let (parts, size) = state
+    case size > limit {
+      True -> Failure(Refusal.BodyTooLarge)
+      False -> Void
+    }
+    let read = Stream.read(reader)
+    case read {
+      None -> break parts
+      Some(chunk) -> (List.push(parts, chunk), size + Bytes.length(chunk))
+    }
+  }
+  Bytes.concat(parts)
+}
+
+// 11. Helpers.
 
 fn find_header(headers: List<(Text, Text)>, name: Text) -> Option<Text> {
   List.find_map(headers, fn(header) {
