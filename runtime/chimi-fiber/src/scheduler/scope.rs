@@ -450,7 +450,7 @@ impl Scheduler {
         let Some(record) = self.tasks.get(&task) else {
             return;
         };
-        let live = matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked);
+        let live = record.phase.is_live();
         // A forced incarnation keeps shutdown's own cancellation; a draining
         // one still times out.
         let stopping = self.is_forced(task);
@@ -521,7 +521,7 @@ impl Scheduler {
             .collect();
         for child in children {
             if self.tasks.get(&child).is_some_and(|record| {
-                matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
+                record.phase.is_live()
             }) {
                 self.cancel_task(child, TaskOutcome::Cancelled);
             }
@@ -539,7 +539,7 @@ impl Scheduler {
         let Some(record) = self.tasks.get_mut(&task) else {
             return;
         };
-        if !matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked) {
+        if !record.phase.is_live() {
             return;
         }
         if let Some(recorded) = record.terminating.as_mut() {

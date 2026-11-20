@@ -517,6 +517,14 @@ enum TaskPhase {
     Terminal(TaskOutcome),
 }
 
+impl TaskPhase {
+    /// True while the task's fiber can still run: it is ready, running or
+    /// parked, not draining or terminal.
+    fn is_live(self) -> bool {
+        matches!(self, Self::Runnable | Self::Running | Self::Parked)
+    }
+}
+
 /// The carrier thread a fiber belongs to: the one that first resumed it. A
 /// started fiber's stack holds that thread's host frames and C runtime
 /// state, so it must be resumed and destroyed there and nowhere else
@@ -2443,7 +2451,7 @@ impl Scheduler {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
                 self.tasks.get(child).is_some_and(|record| {
-                    matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
+                    record.phase.is_live()
                 }) || self.has_live_descendants(*child)
             })
         })
@@ -2832,6 +2840,7 @@ fn cause(outcome: TaskOutcome) -> Option<TaskId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ChimiFiberResult, FIXTURE_LOCK};
 
     /// A fiber's home is the thread of its first resume: later resumes and
     /// its destruction must come from that thread, and a fiber that never ran
@@ -2854,7 +2863,6 @@ mod tests {
             .join()
             .expect("an unstarted fiber may move");
     }
-    use crate::{ChimiFiberResult, FIXTURE_LOCK};
 
     unsafe extern "C" {
         fn chimi_fixture_generated_entry(context: *mut std::ffi::c_void) -> ChimiFiberResult;

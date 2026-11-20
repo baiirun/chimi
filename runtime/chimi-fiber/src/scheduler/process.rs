@@ -1654,7 +1654,7 @@ impl Scheduler {
             .filter(|(_, record)| {
                 record.parent.is_none()
                     && record.process.is_none()
-                    && matches!(record.phase, TaskPhase::Runnable | TaskPhase::Running | TaskPhase::Parked)
+                    && record.phase.is_live()
             })
             .map(|(task, _)| *task)
             .collect();
