@@ -971,7 +971,7 @@ test "busy connections drain together" {
 // chunk, HTTP/1.0 without a close, a body for HEAD), that keeps a
 // connection open after a failed producer, that bounds the whole response by
 // the write limit instead of each write, or that lets a client which stops
-// reading hold the connection forever.
+// reading, or that leaves, hold the connection forever.
 #[test]
 fn a_streamed_response_is_sent_chunked_as_it_is_written() {
     let run = run_tests(
@@ -1082,8 +1082,19 @@ test "a stream cannot be 204 or 304, and its body reads as empty" {
   Http.response_body(Http.streamed(200, [], fn(_out) { Void })) |> Test.assert_equal(Bytes.empty())
   Http.status(Http.streamed(201, [("X-A", "b")], fn(_out) { Void })) |> Test.assert_equal(201)
 }
+
+test "a client that leaves ends the stream at once" {
+  let (client, server) = Net.pair(8)
+  let start = Clock.now()
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, slow_stream) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /endless HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let _ = Stream.read(Net.reader(client))
+  Net.close(client)
+  Task.result(serving)
+  Clock.since(start) |> Test.assert_equal(Duration.zero)
+}
 "#,
         "virtual",
     );
-    assert_passed(&run, 9);
+    assert_passed(&run, 10);
 }
