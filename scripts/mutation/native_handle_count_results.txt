@@ -1,0 +1,9 @@
+# mutation run at 1d2340a8516d113285d686fd149c260a7a31280e
+# native_handle_count_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [net -- a_socket_no_value_names_is_closed_at_any_end] (80s)
+KILLED       a new handle is not counted [net -- a_socket_no_value_names_is_closed_at_any_end] (20s)
+KILLED       a value never names its handle's key [net -- a_socket_no_value_names_is_closed_at_any_end] (25s)
+KILLED       an unreferenced handle is not closed [net -- a_socket_no_value_names_is_closed_at_any_end] (25s)
+KILLED       an unreferenced key ignores the generation [net -- a_socket_no_value_names_is_closed_at_any_end] (15s)
+KILLED       a native key is queued like a channel [net -- a_socket_no_value_names_is_closed_at_any_end] (15s)
+# result: every mutant killed
