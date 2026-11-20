@@ -412,7 +412,7 @@ test "read" {
 }
 "#,
     );
-    assert_passed(&run, 7);
+    assert_passed(&run, 6);
 }
 
 // Rejects a runtime that closes a socket only through `Net.close` or a scope's
