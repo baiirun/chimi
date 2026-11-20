@@ -1,7 +1,9 @@
 /// TLS over any `Net.Connection`. `Tls.client` and `Tls.server` take an
 /// open connection, finish the handshake, and give back a connection whose
 /// streams carry plaintext, so code written for `Net.Connection` (std/http,
-/// std/sql) runs over either kind.
+/// std/sql) runs over either kind. `Tls.listener` wraps a listener, so
+/// `Http.serve(Tls.listener(listener, identity), Http.defaults, handle)` is
+/// an HTTPS server.
 ///
 /// ```text
 /// pub fn main() -> Void needs { network: Network } {
@@ -33,7 +35,7 @@
 import std/bytes as Bytes
 import std/bytes.{Bytes}
 import std/net as Net
-import std/net.{Connection, NetError}
+import std/net.{Connection, Listener, NetError}
 import std/resource as Resource
 import std/result as Result
 import std/result.{Err, Ok, Result}
@@ -134,6 +136,37 @@ pub fn server(connection: Connection, identity: Identity) -> Connection {
   })
 }
 
+/// A listener whose connections are the server ends of TLS connections
+/// over those `listener` accepts, proving the server with `identity`. So
+/// `Http.serve(Tls.listener(listener, identity), Http.defaults, handle)`
+/// serves HTTPS.
+///
+/// Accepting does not wait for the client: the handshake runs on the
+/// connection's first read or write, in whatever task serves it, so a slow
+/// or silent client holds only its own connection, under that task's
+/// timeouts, never the accept loop (as Go's `tls.NewListener` does). A
+/// handshake that fails there fails the read or write with
+/// `NetError.Failed`, naming what went wrong; after the handshake the
+/// connection behaves as one from `Tls.server`. Closing the listener closes
+/// `listener`.
+///
+/// Fails with (from `Net.accept`): what `listener` fails with, and
+/// `NetError.Failed` when the session cannot be made; the accepted
+/// connection is then closed.
+/// Cost: O(1) to make; each accept parses `identity` again.
+pub fn listener(listener: Listener, identity: Identity) -> Listener {
+  Net.listener(fn() {
+    let accepted = Net.accept(listener)
+    case native_server(identity.certificate, identity.key) {
+      Ok(session) -> deferred(accepted, session)
+      Err((_, message)) -> {
+        Net.close(accepted)
+        Failure(NetError.Failed("TLS: ${message}"))
+      }
+    }
+  }, Net.listener_address(listener), fn() { Net.close_listener(listener) })
+}
+
 /// How many TLS sessions this program holds: made, and not yet freed by
 /// `Net.close` or a failed handshake. For tests that check nothing leaks.
 /// Test-only (`T4401`).
@@ -161,6 +194,54 @@ fn secured(connection: Connection, host: Text, start: fn() -> TlsSession errors 
       Net.close(connection)
     },
   )
+}
+
+// A server connection whose handshake runs on its first read or write. A
+// finished handshake answers at once, so later calls cost one check.
+fn deferred(connection: Connection, session: TlsSession) -> Connection {
+  Net.connection(
+    Stream.reader(fn() {
+      settle(connection, session)
+      receive(connection, session)
+    }, fn() { Stream.stop(Net.reader(connection)) }),
+    Stream.writer(fn(bytes) {
+      settle(connection, session)
+      send(connection, session, bytes)
+    }, fn() { finish(connection, session) }),
+    Net.local_address(connection),
+    Net.peer_address(connection),
+    fn() {
+      native_free(session)
+      Net.close(connection)
+    },
+  )
+}
+
+// The handshake of a deferred connection, failing as a connection does.
+fn settle(connection: Connection, session: TlsSession) -> Void {
+  case Result.capture(fn() { handshake(connection, session, "") }) {
+    Ok(_) -> Void
+    Err(TlsError.Untrusted) -> failed("the client's certificate is not trusted")
+    Err(TlsError.Expired) -> failed("the client's certificate has expired")
+    Err(TlsError.WrongHost(_)) -> failed("the client's certificate is for another host")
+    Err(TlsError.Unacceptable(reason)) -> failed(reason)
+    Err(TlsError.NoRoots) -> failed("no trusted roots")
+    Err(TlsError.Handshake(message)) -> failed(message)
+    Err(TlsError.Invalid(message)) -> failed(message)
+    Err(NetError.Refused) -> Failure(NetError.Refused)
+    Err(NetError.Unreachable) -> Failure(NetError.Unreachable)
+    Err(NetError.Reset) -> Failure(NetError.Reset)
+    Err(NetError.Closed) -> Failure(NetError.Closed)
+    Err(NetError.AddressInUse) -> Failure(NetError.AddressInUse)
+    Err(NetError.HostNotFound(host)) -> Failure(NetError.HostNotFound(host))
+    Err(NetError.TooManyOpen) -> Failure(NetError.TooManyOpen)
+    Err(NetError.TimedOut) -> Failure(NetError.TimedOut)
+    Err(NetError.Failed(message)) -> Failure(NetError.Failed(message))
+  }
+}
+
+fn failed(message: Text) -> Void {
+  Failure(NetError.Failed("TLS: the handshake failed: ${message}"))
 }
 
 // A failed step still sends what the session queued (an alert telling the

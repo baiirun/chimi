@@ -672,3 +672,226 @@ fn the_vendored_mbedtls_matches_its_manifest() {
         String::from_utf8_lossy(&check.stderr)
     );
 }
+
+// Rejects a TLS listener that handshakes in `accept` (a silent client would
+// then hold every other client), one whose connections skip the handshake
+// or report its failure as anything but a connection failure, and one that
+// leaks the sessions of connections it accepted.
+#[test]
+fn a_tls_listener_hands_over_connections_that_handshake_when_first_used() {
+    let result = run(
+        "listener",
+        r#"
+// A listener that hands over `first`, then `second`, then fails as closed.
+fn handing(first: Connection, second: Connection) -> Net.Listener {
+  let (script, plan) = Stream.pipe(4)
+  Stream.write(script, Bytes.from([1]))
+  Stream.write(script, Bytes.from([2]))
+  Stream.close(script)
+  Net.listener(fn() {
+    case Result.capture(fn() { Stream.read(plan) }) {
+      Ok(Some(step)) -> case step == Bytes.from([1]) {
+        True -> first
+        False -> second
+      }
+      _ -> Failure(NetError.Closed)
+    }
+  }, Net.address("fake", 443), fn() { Void })
+}
+
+test "accepting waits for no client, and the first read handshakes" {
+  let (silent, silent_end) = Net.pair(4)
+  let (client_end, server_end) = Net.pair(4)
+  let listener = Tls.listener(handing(silent_end, server_end), server_identity(SERVER_CERT))
+  // The first client never says anything; accepting it does not wait.
+  let quiet = Net.accept(listener)
+  let served = Net.accept(listener)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(2)
+  let server = Task.start(fn() {
+    let got = Stream.read_all(Net.reader(served), 1024)
+    Stream.write(Net.writer(served), Bytes.append(Bytes.from_text("got "), got))
+    Stream.close(Net.writer(served))
+    Net.close(served)
+  })
+  let client = Tls.client(client_end, "localhost", trusting(CA))
+  Stream.write(Net.writer(client), Bytes.from_text("hello"))
+  Stream.close(Net.writer(client))
+  Bytes.to_text(Stream.read_all(Net.reader(client), 1024)) |> Test.assert_equal("got hello")
+  Task.result(server)
+  Net.close(client)
+  Net.close(quiet)
+  Net.close(silent)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+  Net.listener_address(listener) |> Test.assert_equal(Net.address("fake", 443))
+  attempt(fn() { Net.accept(listener) }) |> Test.assert_equal("Err(NetError.Closed)")
+}
+
+test "a client that does not speak TLS fails the first read" {
+  let (client_end, server_end) = Net.pair(4)
+  let (_unused, other) = Net.pair(4)
+  let listener = Tls.listener(handing(server_end, other), server_identity(SERVER_CERT))
+  let served = Net.accept(listener)
+  Stream.write(Net.writer(client_end), Bytes.from_text("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let read = attempt(fn() { Stream.read(Net.reader(served)) })
+  Text.starts_with(read, "Err(NetError.Failed(\"TLS: the handshake failed: ") |> Test.assert_equal(True)
+  Net.close(served)
+  Net.close(client_end)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+}
+
+test "a server that writes first handshakes on its write" {
+  let (client_end, server_end) = Net.pair(4)
+  let (_unused, other) = Net.pair(4)
+  let listener = Tls.listener(handing(server_end, other), server_identity(SERVER_CERT))
+  let served = Net.accept(listener)
+  let server = Task.start(fn() {
+    Stream.write(Net.writer(served), Bytes.from_text("220 ready"))
+    Stream.close(Net.writer(served))
+    Net.close(served)
+  })
+  let client = Tls.client(client_end, "localhost", trusting(CA))
+  Bytes.to_text(Stream.read_all(Net.reader(client), 1024)) |> Test.assert_equal("220 ready")
+  Task.result(server)
+  Net.close(client)
+  Tls.live_sessions_for_tests() |> Test.assert_equal(0)
+}
+"#,
+    );
+    assert_passed(&result, 3);
+}
+
+// Rejects HTTPS that a silent client can stall: `Http.serve` over a TLS
+// listener answers a client over loopback while another connection that
+// never sends a byte is open, and frees every session once serving ends.
+#[test]
+fn http_serve_over_a_tls_listener_is_https() {
+    let result = Scratch::new(
+        "https",
+        &suite(
+            r#"
+import std/clock.{Clock}
+import std/http as Http
+import std/http.{Request, Response}
+
+fn hello(request: Request) -> Response {
+  Http.text(200, "hello ${Text.join(Http.path(request), "/")}")
+}
+
+fn https() -> Text needs { network: Network, clock: Clock } {
+  let listener = Tls.listener(Net.listen("127.0.0.1", 0), server_identity(SERVER_CERT))
+  let port = Net.port(Net.listener_address(listener))
+  let server = Task.start(fn() { Http.serve(listener, Http.defaults, hello) })
+  let silent = Net.connect("127.0.0.1", port)
+  let answer = Task.timeout(fn() {
+    Resource.scoped(fn() { Tls.client(Net.connect("127.0.0.1", port), "localhost", trusting(CA)) }, Net.close, fn(connection) {
+      Stream.write(Net.writer(connection), Bytes.from_text("GET /a/b HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+      Bytes.to_text(Stream.read_all(Net.reader(connection), 65536))
+    })
+  }, Duration.seconds(5))
+  Net.close_listener(listener)
+  Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
+  Net.close(silent)
+  let body = case Text.split_once(answer, "\r\n\r\n") {
+    Some((_, body)) -> body
+    None -> answer
+  }
+  "${Debug.render(Text.starts_with(answer, "HTTP/1.1 200 OK\r\n"))} ${body} ${Tls.live_sessions_for_tests()}"
+}
+
+test "https" {
+  let outcome = https() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("True hello a/b 0")
+}
+"#,
+        ),
+    )
+    .test(&[], &["--clock=real"]);
+    assert_passed(&result, 1);
+}
+
+// Rejects a TLS listener that only mbedTLS can talk to: OpenSSL's client,
+// over TLS 1.3 and TLS 1.2, gets an HTTPS answer from `Http.serve` over
+// `Tls.listener`, checking the fixture authority and the name `localhost`.
+#[test]
+fn an_openssl_client_talks_to_a_tls_listener() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let tests = format!(
+        r#"
+import std/clock.{{Clock}}
+import std/http as Http
+import std/http.{{Request, Response}}
+
+fn hello(request: Request) -> Response {{
+  Http.text(200, "hello from chimi")
+}}
+
+fn serve_for_a_while() -> Text needs {{ network: Network, clock: Clock }} {{
+  let listener = Tls.listener(Net.listen("127.0.0.1", {port}), server_identity(SERVER_CERT))
+  let _ = Result.capture(fn() {{ Task.timeout(fn() {{ Http.serve(listener, Http.defaults, hello) }}, Duration.seconds(8)) }})
+  "served"
+}}
+
+test "serve" {{
+  let outcome = serve_for_a_while() using {{ network: Net.host_for_tests() }}
+  outcome |> Test.assert_equal("served")
+}}
+"#
+    );
+    let scratch = Scratch::new("openssl-client", &suite(&tests));
+    std::fs::write(scratch.0.join("ca.pem"), CA).unwrap();
+    let directory = scratch.0.clone();
+    let serving = std::thread::spawn(move || {
+        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&directory)
+            .env_remove("SSL_CERT_FILE")
+            .args(["test", "cases.chimi", "--clock=real"])
+            .output()
+            .expect("run chimi");
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    });
+    let started = std::time::Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "the Chimi server did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    for version in ["-tls1_3", "-tls1_2"] {
+        let mut client = Command::new("openssl")
+            .current_dir(&scratch.0)
+            .args(["s_client", "-quiet", "-verify_return_error", version])
+            .args(["-CAfile", "ca.pem", "-servername", "localhost"])
+            .args(["-verify_hostname", "localhost"])
+            .args(["-connect", &format!("127.0.0.1:{port}")])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("openssl s_client runs (the TLS interop test needs OpenSSL)");
+        use std::io::Write;
+        client
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let output = client.wait_with_output().unwrap();
+        let answer = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            answer.starts_with("HTTP/1.1 200 OK\r\n") && answer.ends_with("hello from chimi"),
+            "{version}: {answer}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let (status, stdout, stderr) = serving.join().unwrap();
+    assert_eq!(status, Some(0), "{stdout}{stderr}");
+}

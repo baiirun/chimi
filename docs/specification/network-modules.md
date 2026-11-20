@@ -6,10 +6,9 @@ This is the normative contract for the Phase 7b network modules of the
 [language completion plan](../plans/language-completion-plan.md) (CHI-253):
 the modules a service uses to talk over the network. It covers `std/net`
 (CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
-driver-independent layer (CHI-258), and `std/tls`'s client and server over
-a connection, and `std/sqlite`, the SQLite driver for `std/sql`.
-`Tls.listener`, HTTPS, the HTTP client, and the Postgres driver add their
-sections as they land.
+driver-independent layer (CHI-258), and `std/tls`'s client, server and
+listener (HTTPS serving), and `std/sqlite`, the SQLite driver for `std/sql`.
+The HTTP client and the Postgres driver add their sections as they land.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -325,7 +324,7 @@ pub fn serve_connection(connection: Connection, settings, handle) -> Void needs 
   safe to. The same holds for a connection accepted as the listener closes
   whose request has not been read yet; Go instead treats a new connection
   as busy for its first 5 s.
-- The HTTP client, and HTTPS after `std/tls`.
+- The HTTP client. HTTPS serving is `Tls.listener` (see std/tls).
 
 ## std/sql (driver-independent layer)
 
@@ -568,6 +567,20 @@ a checksum manifest.
   way to skip the check.
 - `Tls.server(connection, identity)` MUST finish the handshake before it
   returns. It does not ask for a client certificate.
+- `Tls.listener(listener, identity)` is a `Net.Listener` whose `accept`
+  takes the next connection from `listener` and returns at once, without
+  waiting for the client. The connection's first read or write runs the
+  handshake as `Tls.server` would, in the task that serves it, so a slow
+  or silent client holds only its own connection, bounded by that task's
+  timeouts, never the accept loop (Go's `tls.NewListener` does the same).
+  A handshake that fails there fails that read or write with
+  `NetError.Failed("TLS: the handshake failed: ...")`, or with the inner
+  connection's own `NetError`; after it, the connection behaves as one from
+  `Tls.server`. Its session lives from `accept` until `Net.close`. Closing
+  the TLS listener closes `listener`, and its address is `listener`'s.
+- HTTPS is `Http.serve(Tls.listener(listener, identity), settings, handle)`:
+  std/http needs nothing of its own, and the handshake falls under the
+  connection's `request_timeout`.
 - `Tls.defaults` is `{ roots }`, and its roots are the system's: the file
   `SSL_CERT_FILE` names when it is set, otherwise the first of
   `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
@@ -621,8 +634,11 @@ refuses the peer's versions.
 
 ### Not yet
 
-- `Tls.listener(listener, identity)` and HTTPS in `std/http`.
-- Caching parsed roots: each client parses its roots again.
+- Caching parsed roots and identities: each client parses its roots
+  again, and each accepted connection its identity.
+- A deferred handshake driven from two tasks at once (one reading, one
+  writing before the first returns) may feed the session out of order.
+  `Http.serve` uses one task per connection, so it never does.
 - Client certificates, ALPN, session resumption, and choosing suites.
 - An alert queued while reading (after a record fails to decrypt) is sent
   with the next write or close, not at once, because only the writer side
@@ -689,6 +705,9 @@ refuses the peer's versions.
 | TLS: no session outlives a failed or timed-out handshake, or `Net.close` | `tests/tls.rs` `no_session_outlives_its_connection_or_its_handshake` |
 | TLS: an OpenSSL server, TLS 1.3 with session tickets and TLS 1.2, twenty exchanges each | `tests/tls.rs` `a_client_talks_to_an_openssl_server` |
 | TLS: empty data records, and up to forty session tickets in one record, are read past | `tests/tls.rs` `the_engine_reads_past_records_without_data` |
+| TLS: a listener's accept waits for no client; the first read, or a first write, handshakes; a client that does not speak TLS fails the first read; sessions freed; closing and the address pass through | `tests/tls.rs` `a_tls_listener_hands_over_connections_that_handshake_when_first_used` |
+| HTTPS: `Http.serve` over `Tls.listener` answers over loopback while a silent connection is open, and frees every session | `tests/tls.rs` `http_serve_over_a_tls_listener_is_https` |
+| HTTPS: an OpenSSL client, TLS 1.3 and TLS 1.2, verifying the authority and the host name | `tests/tls.rs` `an_openssl_client_talks_to_a_tls_listener` |
 | The vendored mbedTLS matches its manifest | `tests/tls.rs` `the_vendored_mbedtls_matches_its_manifest` |
 | Bytes cross loopback both ways, a body larger than one read arrives whole, half-close, addresses and port 0 | `tests/net.rs` `a_loopback_connection_carries_bytes_both_ways_after_a_half_close` |
 | A name resolves through the lookup thread (that the scheduler keeps running during a slow lookup is not tested: no lookup in the test environment is slow) | `tests/net.rs` `a_name_resolves_on_the_lookup_thread` |
