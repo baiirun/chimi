@@ -34,6 +34,7 @@
 
 import std/bytes as Bytes
 import std/bytes.{Bytes}
+import std/channel as Channel
 import std/channel.{Receive}
 import std/clock as Clock
 import std/clock.{Clock}
@@ -51,7 +52,7 @@ import std/result as Result
 import std/select as Select
 import std/result.{Err, Ok}
 import std/stream as Stream
-import std/stream.{Reader, Writer}
+import std/stream.{Reader, StreamError, Writer}
 import std/supervisor as Supervisor
 import std/supervisor.{HandoffError, Running}
 import std/task as Task
@@ -90,12 +91,12 @@ pub struct Response {
   body: Body,
 }
 
-// A response's body: whole, or written by a producer while it is sent, which
-// returns whether it finished (a failure inside it is caught by
-// `Http.streamed`, so the server only has to know whether to end the body).
+// A response's body: whole, or written by a producer while it is sent.
+// `Http.streamed` turns any failure of the producer into
+// `StreamError.Aborted`, so the server only has to know that it failed.
 enum Body {
   Whole(bytes: Bytes)
-  Streamed(produce: fn(Writer<NetError>) -> Bool)
+  Streamed(produce: fn(Writer<StreamError>) -> Void errors StreamError)
 }
 
 // 2. Reading requests.
@@ -174,20 +175,21 @@ pub fn response(status: Int, headers: List<(Text, Text)>, body: Bytes) -> Respon
 /// A response whose body `produce` writes while it is sent, for a body too
 /// large to hold or not known yet, such as a large export or a stream of
 /// events. The server sends the head, then calls `produce` with a writer for
-/// the body, and the body ends when `produce` returns. On HTTP/1.1 the body
-/// is sent chunked, one chunk per write, and the connection stays open for
-/// the next request; on HTTP/1.0 the connection closes after the body.
-/// `produce` is not called for a `HEAD` request. `Stream.close` on the writer
-/// does nothing; only returning ends the body.
+/// the body, in a task of its own, and the body ends when `produce` returns
+/// or closes the writer. On HTTP/1.1 the body is sent chunked, one chunk per
+/// write, and the connection stays open for the next request; on HTTP/1.0
+/// the connection closes after the body. `produce` is not called for a
+/// `HEAD` request. A write waits while the previous one is still being sent,
+/// so a slow client slows the producer down.
 ///
 /// Each write must reach the client within the server's `write_timeout`, and
 /// the response as a whole has no time limit. If `produce` fails, or a write
-/// does (even one `produce` catches), the connection closes without ending
-/// the body: on HTTP/1.1 the client sees the response cut short, and on
-/// HTTP/1.0, where only the close ends a body, it cannot tell. After a write
-/// fails, and after `produce` returns, every write fails with
-/// `NetError.Closed`, so a task `produce` handed the writer to cannot write
-/// into the next response.
+/// does not reach the client, the connection closes without ending the
+/// body: on HTTP/1.1 the client sees the response cut short, and on
+/// HTTP/1.0, where only the close ends a body, it cannot tell. After that,
+/// and after `produce` returns, every write fails with `StreamError.Closed`,
+/// and tasks `produce` started are cancelled when it returns, so nothing it
+/// left behind can write into the next response.
 ///
 /// `produce` runs after the handler has returned, so it cannot name a
 /// capability in a `needs` row: capture the capability while the handler
@@ -210,15 +212,15 @@ pub fn response(status: Int, headers: List<(Text, Text)>, body: Bytes) -> Respon
 /// which have no body.
 /// Calls: `produce` once per response sent, after the head.
 /// Cost: O(n) in the headers.
-pub fn streamed<E>(status: Int, headers: List<(Text, Text)>, produce: fn(Writer<NetError>) -> Void errors E) -> Response {
+pub fn streamed<E>(status: Int, headers: List<(Text, Text)>, produce: fn(Writer<StreamError>) -> Void errors E) -> Response {
   let checked = case status == 204 or status == 304 {
     True -> Debug.crash("Http: a ${status} response has no body to stream")
     False -> checked_status(status)
   }
   Response(checked, List.map(headers, checked_header), Body.Streamed(fn(out) {
     case Result.capture(fn() { produce(out) }) {
-      Ok(_) -> True
-      Err(_) -> False
+      Ok(_) -> Void
+      Err(_) -> Failure(StreamError.Aborted)
     }
   }))
 }
@@ -1177,7 +1179,7 @@ fn hex_digit(byte: Int) -> Int {
 
 // Writes `response`, and returns whether the connection stays open after it:
 // `keep_alive` unless the response is streamed on HTTP/1.0, which only the
-// end of the connection can end, or its producer did not finish.
+// end of the connection can end, or its body was cut short.
 fn send(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: Int, head_only: Bool, limit: Duration) -> Bool needs {
   clock: Clock
 } {
@@ -1187,26 +1189,96 @@ fn send(writer: Writer<NetError>, response: Response, keep_alive: Bool, minor: I
   }, limit)
   case (response.body, head_only) {
     (Body.Streamed(produce), False) -> {
-      let given = clock
-      let chunked = minor == 1
-      let broken = Watch.starting_with(False).publisher
-      let ended = Watch.starting_with(False).publisher
-      let finished = produce(body_writer(writer, chunked, limit, given, broken, ended))
-      // A task the producer handed the writer to may outlive it; its writes
-      // fail from here on, so they cannot land after the last chunk.
-      set(ended)
-      case finished and not is_set(broken) {
-        True -> {
-          case chunked {
-            True -> timed_write(writer, Bytes.from_text("0\r\n\r\n"), limit, given)
-            False -> Void
-          }
-          keep
-        }
-        False -> False
-      }
+      let whole = send_streamed(writer, produce, minor == 1, limit)
+      keep and whole
     }
     _ -> keep
+  }
+}
+
+// Sends what `produce` writes, and returns whether the body ended whole.
+// The producer runs in a task of its own and hands each write over a
+// one-chunk channel, so only this task writes to the connection: writes
+// from several of the producer's tasks cannot interleave inside a chunk.
+// Its writer holds only the channel's sender, so the producer may hand it
+// to tasks of its own, which are cancelled when it returns. The body ends
+// at the first `Piece.End`, from a close or the producer's return. Both set
+// `ended` first, so a later write fails, and the channel is closed once the
+// end arrives, so nothing queued behind it is sent.
+// The first chunk that fails to send aborts the channel, so the producer's
+// next write fails even if it caught the failure, and the body is never
+// ended as whole.
+fn send_streamed(writer: Writer<NetError>, produce: fn(Writer<StreamError>) -> Void errors StreamError, chunked: Bool, limit: Duration) -> Bool needs {
+  clock: Clock
+} {
+  let made = Channel.bounded(1)
+  let sender = made.sender
+  let receiver = made.receiver
+  let completion = made.completion
+  let ended = Watch.starting_with(False).publisher
+  let out = Stream.writer(fn(bytes) {
+    case is_set(ended) {
+      True -> Failure(StreamError.Closed)
+      False -> hand(sender, Piece.Data(bytes))
+    }
+  }, fn() {
+    set(ended)
+    hand(sender, Piece.End)
+  })
+  let _producing = Task.start(fn() {
+    let last = case Result.capture(fn() { produce(out) }) {
+      Ok(_) -> Piece.End
+      Err(_) -> Piece.Failed
+    }
+    set(ended)
+    let _ = Result.capture(fn() { hand(sender, last) })
+    Void
+  })
+  let whole = loop _sent = 0 {
+    case Channel.receive(receiver) {
+      Success(Receive.Received(Piece.Data(bytes))) -> {
+        let framed = case chunked {
+          True -> Bytes.concat([Bytes.from_text("${hex(Bytes.length(bytes))}\r\n"), bytes, Bytes.from_text("\r\n")])
+          False -> bytes
+        }
+        case Result.capture(fn() {
+          Task.timeout(fn() { Stream.write(writer, framed) }, limit)
+        }) {
+          Ok(_) -> 0
+          Err(_) -> {
+            Channel.abort(receiver)
+            break False
+          }
+        }
+      }
+      Success(Receive.Received(Piece.End)) -> break True
+      Success(_) -> break False
+      Failure(_) -> break False
+    }
+  }
+  let _ = Result.capture(fn() { Channel.close(completion) })
+  case (whole, chunked) {
+    (True, True) -> {
+      Task.timeout(fn() {
+        Stream.write(writer, Bytes.from_text("0\r\n\r\n"))
+      }, limit)
+      True
+    }
+    _ -> whole
+  }
+}
+
+// What a streamed body's producer hands to the connection's task.
+enum Piece {
+  Data(bytes: Bytes)
+  End
+  Failed
+}
+
+fn hand(sender: Channel.Sender<Piece>, piece: Piece) -> Void {
+  case Channel.send(sender, piece) {
+    Success(_) -> Void
+    Failure(_) -> Failure(StreamError.Closed)
   }
 }
 
@@ -1214,48 +1286,6 @@ fn is_streamed(response: Response) -> Bool {
   case response.body {
     Body.Whole(_) -> False
     Body.Streamed(_) -> True
-  }
-}
-
-// The writer a producer writes a streamed body to: each write is one chunk
-// on HTTP/1.1 and raw bytes on HTTP/1.0, and must finish within `limit`.
-// The first failed write sets `broken`, since part of a chunk may already
-// be on the wire, and every later write fails with `NetError.Closed`, so a
-// producer that catches the failure cannot go on to end the body as if it
-// were whole. Writes fail the same way once the server sets `ended`.
-// Closing it does nothing, since the server ends the body.
-fn body_writer(writer: Writer<NetError>, chunked: Bool, limit: Duration, given: Clock, broken: Watch.Publisher<Bool>, ended: Watch.Publisher<Bool>) -> Writer<NetError> {
-  Stream.writer(fn(bytes) {
-    case is_set(broken) or is_set(ended) {
-      True -> Failure(NetError.Closed)
-      False -> Void
-    }
-    let framed = case chunked {
-      True -> Bytes.concat([Bytes.from_text("${hex(Bytes.length(bytes))}\r\n"), bytes, Bytes.from_text("\r\n")])
-      False -> bytes
-    }
-    case Result.capture(fn() { timed_write(writer, framed, limit, given) }) {
-      Ok(_) -> Void
-      Err(error) -> {
-        set(broken)
-        Failure(error)
-      }
-    }
-  }, fn() { Void })
-}
-
-// Writes `bytes`, failing with `NetError.TimedOut` when that takes longer
-// than `limit`.
-fn timed_write(writer: Writer<NetError>, bytes: Bytes, limit: Duration, given: Clock) -> Void {
-  let written = Result.capture(fn() {
-    Task.timeout(fn() {
-      Result.capture(fn() { Stream.write(writer, bytes) })
-    }, limit) using { clock: given }
-  })
-  case written {
-    Ok(Ok(_)) -> Void
-    Ok(Err(error)) -> Failure(error)
-    Err(_) -> Failure(NetError.TimedOut)
   }
 }
 

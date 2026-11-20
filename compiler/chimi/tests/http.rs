@@ -973,7 +973,9 @@ test "busy connections drain together" {
 // the write limit instead of each write, or that lets a client which stops
 // reading, or that leaves, hold the connection forever. Also rejects a body
 // ended as whole after a write failed that the producer caught, and a drain
-// under `serve` that cuts a stream in progress short.
+// under `serve` that cuts a stream in progress short, writes from the
+// producer's tasks that interleave inside a chunk, a write after the writer
+// was closed, and a producer's defect that leaves the connection open.
 #[test]
 fn a_streamed_response_is_sent_chunked_as_it_is_written() {
     let run = run_tests(
@@ -1150,10 +1152,69 @@ test "under serve, a drain lets a stream in progress finish, then closes" {
   Task.result(serving) |> Test.assert_equal(Duration.milliseconds(15))
   answer |> Test.assert_equal("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n5\r\nthree\r\n0\r\n\r\n")
 }
+fn racing(request: Request) -> Response needs { clock: Clock } {
+  let given = clock
+  case Http.path(request) {
+    ["race"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text("a"))
+      let _other = Task.start(fn() {
+        Clock.sleep(Duration.milliseconds(10)) using { clock: given }
+        Stream.write(out, Bytes.from_text(Text.repeat("L", 100000)))
+      })
+      Clock.sleep(Duration.milliseconds(100)) using { clock: given }
+    })
+    ["closed"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text("a"))
+      Stream.close(out)
+      let late = Result.capture(fn() { Stream.write(out, Bytes.from_text("b")) })
+      case late {
+        Ok(_) -> Debug.crash("a write after close went through")
+        Err(_) -> Void
+      }
+    })
+    ["crash"] -> Http.streamed(200, [], fn(out) {
+      Stream.write(out, Bytes.from_text("a"))
+      Debug.crash("producer")
+    })
+    _ -> Http.text(200, "plain")
+  }
+}
+fn race_exchange(raw: Text) -> Text needs { clock: Clock } {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, racing) })
+  Stream.write(Net.writer(client), Bytes.from_text(raw))
+  Stream.close(Net.writer(client))
+  let answer = Stream.read_all(Net.reader(client), 33554432)
+  let _ = Result.capture(fn() { Task.result(serving) })
+  undated(answer)
+}
+test "writes from the producer's tasks stay whole chunks of the body" {
+  race_exchange("GET /race HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n186a0\r\n${Text.repeat("L", 100000)}\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
+}
+test "closing the writer ends the body, and later writes fail" {
+  race_exchange("GET /closed HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+    |> Test.assert_equal("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\nHTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 5\r\n\r\nplain")
+}
+test "under serve, a producer's defect closes only its connection" {
+  let (client, server) = Net.pair(64)
+  let (script, plan) = Stream.pipe(8)
+  Stream.write(script, Bytes.from([1]))
+  let serving = Task.start(fn() { Http.serve(handing(server, plan), Http.defaults, racing) })
+  Stream.write(Net.writer(client), Bytes.from_text("GET /crash HTTP/1.1\r\nHost: x\r\n\r\nGET /other HTTP/1.1\r\nHost: x\r\n\r\n"))
+  let answer = undated(Stream.read_all(Net.reader(client), 1048576))
+  Stream.close(Net.writer(client))
+  Stream.close(script)
+  Task.result(serving)
+  // The defect cancels the connection's task, so a chunk not yet sent is
+  // lost with it; what matters is that the body never ends as whole.
+  Text.starts_with(answer, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n") |> Test.assert_equal(True)
+  (Text.contains(answer, "0\r\n\r\n"), Text.contains(answer, "plain")) |> Test.assert_equal((False, False))
+}
 "#,
         "virtual",
     );
-    assert_passed(&run, 12);
+    assert_passed(&run, 15);
 }
 
 // Rejects a streamed body whose writer still works after the producer
