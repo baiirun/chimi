@@ -96,7 +96,7 @@ unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
 /// Runs `test` on another thread and aborts the test binary if it has not
 /// finished within `limit`: a carrier that waits forever is a lost wake,
 /// and a hang would otherwise only time the whole suite out.
-fn under_watchdog(limit: Duration, test: impl FnOnce() + Send) {
+pub(super) fn under_watchdog(limit: Duration, test: impl FnOnce() + Send) {
     let (done, finished) = mpsc::channel();
     std::thread::scope(|scope| {
         let runner = scope.spawn(move || {

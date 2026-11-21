@@ -4710,9 +4710,11 @@ fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
 #[test]
 fn a_run_on_carrier_threads_stops_its_members_at_home() {
     let one = stop_members_at_the_end_of_a_run_on_threads(1);
-    for _ in 0..20 {
-        assert_eq!(stop_members_at_the_end_of_a_run_on_threads(3), one);
-    }
+    super::thread_tests::under_watchdog(Duration::from_secs(60), || {
+        for _ in 0..20 {
+            assert_eq!(stop_members_at_the_end_of_a_run_on_threads(3), one);
+        }
+    });
 }
 
 /// A process incarnation runs on its membership id modulo the carrier
