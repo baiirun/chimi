@@ -38,4 +38,7 @@ MUTATIONS = [
     m("a waiting carrier takes a wake without a decision as a run",
       "            if let Some(run) = *decision {\n                return run;\n            }",
       "            if let Some(run) = *decision {\n                return run;\n            }\n            return true;"),
+    m("carriers start into the last run's end",
+      "        held.begin_run(root);\n        assert!(",
+      "        assert!("),
 ]

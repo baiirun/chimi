@@ -823,8 +823,10 @@ pub(super) fn run_on_carriers(
     let kernel = Mutex::new(scheduler);
     let carriers = {
         let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
-        // Before any carrier starts, so none sees the last run's end.
+        // Before any carrier starts, so none sees the last run's end and
+        // leaves before carrier 0's `run_root` would clear it.
         held.begin_run(root);
+        assert!(held.run_end.is_none(), "a carrier would start into the last run's end");
         // Work the caller queued through the kernel directly marked the
         // carriers it is for without waking them. Every carrier of the run
         // drives before it first waits, so it finds that work anyway; the
@@ -834,6 +836,9 @@ pub(super) fn run_on_carriers(
     };
     let gate = StartGate::default();
     let run = std::thread::scope(|scope| {
+        // Should anything below unwind, the scope would join carriers still
+        // waiting at the gate; send them away first.
+        let _undecided = CloseOnUnwind(&gate);
         for index in 1..carriers {
             let (kernel, gate) = (&kernel, &gate);
             let body = move || {
@@ -900,6 +905,16 @@ impl StartGate {
         self.opened.notify_all();
     }
 
+    /// Opens the gate with `false` unless it was already decided.
+    fn close_if_undecided(&self) {
+        let mut decision = self.decision.lock().unwrap_or_else(PoisonError::into_inner);
+        if decision.is_none() {
+            *decision = Some(false);
+            drop(decision);
+            self.opened.notify_all();
+        }
+    }
+
     fn wait(&self) -> bool {
         let mut decision = self.decision.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -908,6 +923,16 @@ impl StartGate {
             }
             decision = self.opened.wait(decision).unwrap_or_else(PoisonError::into_inner);
         }
+    }
+}
+
+/// Sends the carriers waiting at a gate away when dropped undecided, as
+/// when the spawning loop unwinds.
+struct CloseOnUnwind<'gate>(&'gate StartGate);
+
+impl Drop for CloseOnUnwind<'_> {
+    fn drop(&mut self) {
+        self.0.close_if_undecided();
     }
 }
 
@@ -932,10 +957,11 @@ pub(super) fn run_root_on_threads(
 }
 
 /// Runs `body`, aborting the process if it panics (the panic hook has
-/// printed the message by then).
+/// printed the message by then): with several carriers the others would
+/// wait for this one forever.
 fn abort_on_panic<R>(body: impl FnOnce() -> R) -> R {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
-        eprintln!("a carrier panicked; the others would wait for it forever");
+        eprintln!("a carrier panicked; the run cannot go on without it, so the process aborts");
         std::process::abort()
     })
 }
