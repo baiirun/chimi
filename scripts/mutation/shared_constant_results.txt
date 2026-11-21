@@ -1,0 +1,13 @@
+# shared_constant_mutations.py: 5 mutants against compiler/chimi (R4 step 3 PR 5d-1)
+BASELINE ok  [runtime_state]
+KILLED       a shared constant is compacted [runtime_state]
+KILLED       a constant is shared on one carrier too [runtime_state]
+KILLED       no constant is shared [runtime_state]
+KILLED       every list is shared on threads [runtime_state]
+KILLED       a shared constant's window is shared, not copied [runtime_state]
+# result: every mutant killed
+
+The first run left two survivors: copying every list's window on threads,
+and sharing a constant's vector instead of copying the window. The stress
+fixture now checks that a carrier's own list still compacts and that a
+constant's window holds only its elements, which kills both.
