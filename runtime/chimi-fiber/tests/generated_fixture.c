@@ -219,6 +219,78 @@ ChimiFiberResult chimi_fixture_es01_main(void *context) {
   return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
 }
 
+/* ES01 with each member crashed once instead of the counter twice, so the
+   outcome does not depend on when the restart lands: the second crash,
+   whichever member takes it last, is past restarts(1, 30s) and escalates.
+   Runs alike on carriers on threads, where the members run alongside. */
+ChimiFiberResult chimi_fixture_two_crashes_main(void *context) {
+  (void)context;
+  ChimiSupervisorMember members[2] = {
+      {.kind = CHIMI_MEMBER_PROCESS,
+       .restart = CHIMI_RESTART_ON_DEFECT,
+       .process = fixture_spec(fixture_counter, 1, 5 * FIXTURE_S)},
+      {.kind = CHIMI_MEMBER_PROCESS,
+       .restart = CHIMI_RESTART_ON_DEFECT,
+       .process = fixture_spec(fixture_counter, 2, 5 * FIXTURE_S)},
+  };
+  ChimiSupervisorPolicy policy = {
+      .members = members,
+      .member_count = 2,
+      .capacity = 16,
+      .restart_limit = 1,
+      .restart_within = 30 * FIXTURE_S,
+  };
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  if (chimi_fiber_request(&start, 0) == CHIMI_FIBER_CANCEL ||
+      start.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+  }
+  if (fixture_send_named(1, FIXTURE_CRASH) != CHIMI_RESPONSE_OK ||
+      fixture_send_named(2, FIXTURE_CRASH) != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 2};
+  }
+  ChimiProcessRequest wait = {
+      .kind = CHIMI_REQUEST_SUPERVISOR_WAIT,
+      .supervisor = start.supervisor,
+  };
+  if (chimi_fiber_request(&wait, 0) == CHIMI_FIBER_CANCEL) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+  }
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
+}
+
+/* One member, which waits for a message that never comes, and a root that
+   waits on the supervisor: under the real clock nothing can wake either, so
+   the run returns parked with the member's fiber parked on its carrier. */
+ChimiFiberResult chimi_fixture_waits_on_a_member_main(void *context) {
+  (void)context;
+  ChimiSupervisorMember member = {
+      .kind = CHIMI_MEMBER_PROCESS,
+      .restart = CHIMI_RESTART_ON_DEFECT,
+      .process = fixture_spec(fixture_counter, 1, 5 * FIXTURE_S),
+  };
+  ChimiSupervisorPolicy policy = {
+      .members = &member,
+      .member_count = 1,
+      .capacity = 1,
+      .restart_limit = 0,
+      .restart_within = FIXTURE_S,
+  };
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  if (chimi_fiber_request(&start, 0) == CHIMI_FIBER_CANCEL ||
+      start.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+  }
+  ChimiProcessRequest wait = {
+      .kind = CHIMI_REQUEST_SUPERVISOR_WAIT,
+      .supervisor = start.supervisor,
+  };
+  if (chimi_fiber_request(&wait, 0) == CHIMI_FIBER_CANCEL) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+  }
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
+}
+
 static int sd04_ran_after_forced = 0;
 static int sd04_forced_replies = 0;
 
@@ -360,6 +432,9 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSchedulerConfig, injected_user_signals),
       LAYOUT(ChimiSchedulerConfig, injected_user_signal_count),
       LAYOUT(ChimiSchedulerConfig, take_release),
+      LAYOUT(ChimiSchedulerConfig, carriers),
+      LAYOUT(ChimiSchedulerConfig, carrier_enter),
+      LAYOUT(ChimiSchedulerConfig, carrier_context),
       sizeof(ChimiInjectedSignal),
       LAYOUT(ChimiInjectedSignal, code),
       LAYOUT(ChimiInjectedSignal, at),

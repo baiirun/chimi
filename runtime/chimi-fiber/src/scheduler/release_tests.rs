@@ -151,6 +151,9 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 injected_user_signals: std::ptr::null(),
                 injected_user_signal_count: 0,
                 take_release: None,
+                carriers: 0,
+                carrier_enter: None,
+                carrier_context: ptr::null_mut(),
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }
@@ -883,6 +886,9 @@ fn run_with_take_release(entry: ChimiFiberEntry, take: Option<ReleaseTake>) -> L
         injected_user_signals: std::ptr::null(),
         injected_user_signal_count: 0,
         take_release: take,
+        carriers: 0,
+        carrier_enter: None,
+        carrier_context: ptr::null_mut(),
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
     assert_eq!(

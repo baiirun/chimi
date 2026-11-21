@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 28u
+#define CHIMI_FIBER_ABI_VERSION 29u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -701,7 +701,26 @@ typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
    ChimiSchedulerConfig.take_release. Returns false when there is none. */
 typedef bool (*ChimiReleaseTake)(void *context, uint32_t *kind, uint64_t *id);
 
-/* The arguments of chimi_scheduler_run. */
+/* Called on a carrier thread other than the caller's, with `carrier_context`
+   and the carrier's index (1 and up), before that carrier runs any fiber or
+   any other hook; see ChimiSchedulerConfig.carriers. It runs outside the
+   scheduler's lock, so it may run at the same time as another carrier's
+   enter hook or any other hook, and never when a carrier could not get a
+   thread. */
+typedef void (*ChimiCarrierEnter)(void *context, uint32_t carrier);
+
+/* The arguments of chimi_scheduler_run.
+
+   Threads: the entry and every task run on their carrier's thread, without
+   the scheduler's lock, and carrier_enter as it says. Every other hook (the
+   trace sink, the release, copy and take hooks, and the violation and
+   defect reports) runs one call at a time: during the run on whichever
+   carrier thread holds the lock, so with several carriers it may run on a
+   thread the host did not start, and before and after the run (starting
+   the entry, tearing the scheduler down) on the calling thread;
+   take_release runs on the carrier whose queue it drains. The deadlock
+   report runs on the calling thread before chimi_scheduler_run returns.
+   With one carrier, everything runs on the calling thread. */
 typedef struct {
   ChimiFiberEntry entry;
   void *context;
@@ -766,6 +785,19 @@ typedef struct {
      CHIMI_REQUEST_TASK_RELEASE, and `*id` its channel or task. The scheduler
      applies it with no task attributed. May be null. */
   ChimiReleaseTake take_release;
+  /* How many carriers run the program: 0 or 1 runs one, on the calling
+     thread; n above 1 runs carrier 0 there and carriers 1 to n-1 on threads
+     the scheduler starts and joins before it returns. A root other than the
+     entry starts on carrier 0. More than one with CHIMI_SCHEDULER_CLOCK_VIRTUAL,
+     or a carrier that cannot get a thread or a wake pipe, defects with
+     CHIMI_SCHEDULER_DEFECT_CODE before any task runs. A run that returns
+     CHIMI_FIBER_PARKED on several carriers can never be continued. */
+  uint32_t carriers;
+  /* Called on each carrier thread the scheduler starts, before the carrier
+     runs a fiber, so the host can bind its per-thread state (see
+     ChimiCarrierEnter). May be null. */
+  ChimiCarrierEnter carrier_enter;
+  void *carrier_context;
 } ChimiSchedulerConfig;
 
 /* The arguments of chimi_scheduler_execute_with_config. The release hooks

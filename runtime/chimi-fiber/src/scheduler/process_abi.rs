@@ -165,6 +165,38 @@ pub struct ChimiSchedulerConfig {
     /// Hands over the releases the carrier queued with no task running, with
     /// `release_context`; see `SchedulerOptions::take_release`. May be null.
     pub take_release: Option<ReleaseTake>,
+    /// How many carriers run the program: 0 or 1 runs one on the calling
+    /// thread, n above 1 runs carriers 1 to n-1 on threads of their own.
+    /// Above 1 with the virtual clock is a defect.
+    pub carriers: u32,
+    /// Called on each carrier thread the scheduler starts, before its first
+    /// fiber, with `carrier_context` and the carrier's index. May be null.
+    pub carrier_enter: Option<CarrierEnter>,
+    pub carrier_context: *mut c_void,
+}
+
+pub type CarrierEnter = unsafe extern "C" fn(*mut c_void, u32);
+
+/// A host's carrier-enter hook and its context, called on each carrier
+/// thread `run_on_carriers` starts.
+#[derive(Clone, Copy)]
+pub(super) struct EnterHook {
+    pub(super) hook: CarrierEnter,
+    pub(super) context: *mut c_void,
+}
+
+// SAFETY: the host that passes the hook promises, by
+// `ChimiSchedulerConfig::carrier_enter`'s contract, that it may be called
+// with its context on any carrier thread, at the same time as on another,
+// for the length of the run.
+unsafe impl Send for EnterHook {}
+
+impl EnterHook {
+    fn call(self, carrier: u32) {
+        // SAFETY: the host keeps the hook and its context valid until
+        // `chimi_scheduler_run` returns, which is after every carrier joins.
+        unsafe { (self.hook)(self.context, carrier) };
+    }
 }
 
 /// A `std/signal` signal to latch when the clock reaches `at` nanoseconds:
@@ -819,6 +851,7 @@ pub(super) fn run_on_carriers(
     scheduler: Scheduler,
     root: TaskId,
     deadlock_code: i64,
+    enter: Option<EnterHook>,
 ) -> (RootRun, Scheduler) {
     let kernel = Mutex::new(scheduler);
     let carriers = {
@@ -844,6 +877,9 @@ pub(super) fn run_on_carriers(
             let body = move || {
                 if gate.wait() {
                     abort_on_panic(|| {
+                        if let Some(enter) = enter {
+                            enter.call(index);
+                        }
                         super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
                     });
                 }
@@ -947,7 +983,8 @@ pub(super) fn run_root_on_threads(
 ) -> RootRun {
     let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
     let carriers = scheduler.ready.carriers();
-    let (run, kernel) = run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code);
+    let (run, kernel) =
+        run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code, None);
     drop(std::mem::replace(scheduler, kernel));
     assert!(
         carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,
@@ -1027,7 +1064,11 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         CLOCK_VIRTUAL => ClockMode::Virtual,
         _ => return defect_outcome(SCHEDULER_DEFECT_CODE),
     };
-    let mut scheduler = Scheduler::with_options(SchedulerOptions {
+    let carriers = config.carriers.max(1);
+    if carriers > 1 && clock == ClockMode::Virtual {
+        return defect_outcome(SCHEDULER_DEFECT_CODE);
+    }
+    let options = SchedulerOptions {
         stack_bytes: config.stack_bytes,
         trace_mode,
         clock,
@@ -1041,6 +1082,13 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         capability_violation_report: config.capability_violation_report,
         violation_context: config.capability_violation_context,
         take_release: config.take_release,
+    };
+    let Ok(mut scheduler) = Scheduler::with_options_carriers(options, carriers) else {
+        return defect_outcome(SCHEDULER_DEFECT_CODE);
+    };
+    let enter = config.carrier_enter.map(|hook| EnterHook {
+        hook,
+        context: config.carrier_context,
     });
     scheduler.set_trace_sink(config.trace_sink, config.trace_context);
     scheduler
@@ -1077,7 +1125,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     };
     // The carrier loop runs against the kernel behind its lock even with
     // one carrier, so the performance gates measure the lock.
-    let (run, scheduler) = run_on_carriers(scheduler, root, DEADLOCK_DEFECT_CODE);
+    let (run, scheduler) = run_on_carriers(scheduler, root, DEADLOCK_DEFECT_CODE, enter);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
     if let Some(report) = config.deadlock_report

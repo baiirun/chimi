@@ -1399,10 +1399,6 @@ impl Scheduler {
     /// descriptor limit).
     ///
     /// Requires: `carriers` is at least 1.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the carrier threads (PR 5c-6) and --carriers (5d) build kernels")
-    )]
     pub(crate) fn with_options_carriers(
         options: SchedulerOptions,
         carriers: u32,
@@ -1414,10 +1410,6 @@ impl Scheduler {
 
     /// Gives a kernel with no ready task or job `carriers` carriers. The
     /// kernel is unchanged when a wake pipe fails.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the carrier threads (PR 5c-6) and --carriers (5d) build kernels")
-    )]
     fn install_carriers(&mut self, carriers: u32) -> Result<(), SchedulerError> {
         assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
         let wakes = wake::Wakes::new(carriers)
