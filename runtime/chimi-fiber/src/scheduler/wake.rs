@@ -71,6 +71,11 @@ pub(super) struct Marked(Vec<i32>);
 
 impl Marked {
     pub(super) fn write(self) {
+        #[cfg(test)]
+        assert!(
+            self.0.is_empty() || !super::carrier::kernel_held(),
+            "a wake is written only once the kernel lock is released"
+        );
         for fd in self.0 {
             sys::write_byte(fd);
         }
