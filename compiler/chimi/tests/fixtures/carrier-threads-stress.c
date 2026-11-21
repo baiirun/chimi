@@ -20,7 +20,8 @@
    the profile and the recorder saw every call, the random draws are the
    seeded stream's, and the closed handle reads as closed. Built with
    ThreadSanitizer when the compiler supports it, so an access outside the
-   locks fails the run. Two single-threaded checks come first: a close during
+   locks fails the run. Last, every thread slices one module constant,
+   which must not be compacted under the others. Two single-threaded checks come first: a close during
    a read leaves the descriptor open until the read gives it back, and a task
    started on a thread that never entered its carrier aborts.
 
@@ -459,6 +460,48 @@ static void a_waiting_call_lets_its_handle_go(bool child) {
   close(wait_pipe[1]);
 }
 
+/* A module constant that shares a vector eight times its length, so a short
+   window of it would compact it in place on one carrier. */
+enum { CONSTANT_LENGTH = 8, CONSTANT_VECTOR = 64, SLICE_ROUNDS = 2000 };
+static ChimiValue *shared_constant;
+
+static void *slice_thread(void *raw_index) {
+  size_t index = (size_t)(uintptr_t)raw_index;
+  carrier_thread_enter(index + 1);
+  RuntimeHeap *heap = heap_create();
+  carrier->fiber.heap = heap;
+  for (uint32_t round = 0; round < SLICE_ROUNDS; ++round) {
+    ChimiValue *window = list_slice(shared_constant, 1, 5);
+    CHECK(window && list_length(window) == 4, "a window of the constant");
+    for (uint32_t at = 0; at < 4; ++at)
+      CHECK(list_get(window, at)->as.integer == (int64_t)at + 1, "element %u of a window", at);
+  }
+  heap_destroy(heap);
+  carrier->fiber.heap = &main_heap;
+  return NULL;
+}
+
+/* Every carrier slices one module constant at once. Each window is a copy
+   in the slicing carrier's heap, and the constant keeps its vector: a
+   compaction would rewrite it, and allocate in the static area, under the
+   other threads, which ThreadSanitizer reports. */
+static void slicing_a_shared_constant_from_every_thread(void) {
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = &static_area;
+  ChimiValue *elements[CONSTANT_VECTOR];
+  for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
+  ChimiValue *whole = list_from_values(elements, CONSTANT_VECTOR);
+  shared_constant = list_value(whole->as.list.vector, 0, CONSTANT_LENGTH);
+  carrier->fiber.target = previous;
+  pthread_t threads[THREADS];
+  for (size_t index = 0; index < THREADS; ++index)
+    CHECK(pthread_create(&threads[index], NULL, slice_thread, (void *)(uintptr_t)index) == 0, "start");
+  for (size_t index = 0; index < THREADS; ++index) pthread_join(threads[index], NULL);
+  CHECK(shared_constant->as.list.vector.root == whole->as.list.vector.root &&
+        shared_constant->as.list.vector.length == CONSTANT_VECTOR,
+        "the constant was compacted while carriers ran on threads");
+}
+
 static int compare_words(const void *left, const void *right) {
   uint64_t a = *(const uint64_t *)left, b = *(const uint64_t *)right;
   return a < b ? -1 : a > b;
@@ -628,6 +671,7 @@ int main(void) {
   one_call_runs_on_a_handle_at_a_time();
   a_waiting_call_lets_its_handle_go(false);
   a_waiting_call_lets_its_handle_go(true);
+  slicing_a_shared_constant_from_every_thread();
   puts("ok");
   return 0;
 }
