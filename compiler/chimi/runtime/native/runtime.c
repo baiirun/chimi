@@ -479,7 +479,18 @@ static ProfileRow *profile_rows;
 
 static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }
 
-static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+/* Ends the process for a fatal runtime error, from any carrier thread. exit
+   is not safe to call twice at once, so only the first caller runs it (and
+   its atexit drain of queued console lines); a carrier that fails at the
+   same time ends the process at once with the same code, since it may hold
+   a lock the drain needs. */
+static atomic_flag runtime_exiting = ATOMIC_FLAG_INIT;
+static _Noreturn void runtime_exit(int code) {
+  if (atomic_flag_test_and_set(&runtime_exiting)) _exit(code);
+  exit(code);
+}
+
+static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
 
 /* Freed blocks of up to SMALL_BLOCK_LIMIT bytes are kept on per-size free lists and
    reused, because a message or a pass allocates and frees many small blocks and the
@@ -676,7 +687,7 @@ static void carriers_create(size_t count) {
   carrier_others = calloc(count - 1, sizeof(*carrier_others));
   if (!carrier_others) {
     fputs("Chimi runtime exhausted memory\n", stderr);
-    exit(70);
+    runtime_exit(70);
   }
   for (size_t index = 0; index + 1 < count; ++index) carrier_others[index].fiber.heap = &main_heap;
   carrier_count = count;
@@ -900,7 +911,7 @@ static void *allocate(size_t count, size_t size) {
   size_t bytes;
   if (__builtin_mul_overflow(count, size, &bytes) ||
       bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
-    fputs("Chimi runtime allocation overflow\n", stderr); exit(70);
+    fputs("Chimi runtime allocation overflow\n", stderr); runtime_exit(70);
   }
   AllocationScope *innermost = carrier->fiber.target ? NULL : carrier->fiber.heap->innermost;
   if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
@@ -1215,7 +1226,7 @@ static RuntimeHeap *heap_create(void) {
 /* Requires: no region of `heap` is open. Frees every allocation the heap owns,
    adopted fragments included, without touching any other heap. */
 static void heap_destroy(RuntimeHeap *heap) {
-  if (heap->innermost) { fputs("Chimi runtime destroyed a heap with an open region\n", stderr); exit(70); }
+  if (heap->innermost) { fputs("Chimi runtime destroyed a heap with an open region\n", stderr); runtime_exit(70); }
   area_release_all(&heap->base);
   while (heap->adopted) {
     AllocationArea *area = heap->adopted;
@@ -1519,7 +1530,7 @@ static ListNode *vector_push_leaf(const ListNode *node, uint32_t first_index, Li
 }
 /* Amortized O(1): copies at most one 32-slot tail plus one root-to-leaf path. */
 static ListVector vector_push(ListVector vector, ChimiValue *item) {
-  if (vector.length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); exit(70); }
+  if (vector.length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); runtime_exit(70); }
   uint32_t tail_length = vector.length - vector_tail_offset(vector.length);
   if (vector.length == 0 || tail_length < LIST_WIDTH) {
     ListNode *next = vector.length == 0 ? list_node(0, 1) : list_node_copy(vector.tail, tail_length + 1);
@@ -1565,7 +1576,7 @@ static ListVector vector_from_values(ChimiValue *const *values, uint32_t length)
   uint32_t level_count = tail_offset >> LIST_BITS;
   if (level_count == 0) return (ListVector){NULL, tail, length};
   ListNode **level = malloc(level_count * sizeof(*level));
-  if (!level) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (!level) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   for (uint32_t index = 0; index < level_count; ++index) {
     level[index] = list_node(0, LIST_WIDTH);
     memcpy(level[index]->slots, values + ((size_t)index << LIST_BITS), sizeof(level[index]->slots[0]) * LIST_WIDTH);
@@ -1676,7 +1687,7 @@ static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
 }
 
 static void allocation_graph_inconsistent(void) {
-  fputs("Chimi runtime allocation graph is inconsistent\n", stderr); exit(70);
+  fputs("Chimi runtime allocation graph is inconsistent\n", stderr); runtime_exit(70);
 }
 
 static void pointer_stack_push(PointerStack *stack, void *pointer) {
@@ -2026,7 +2037,7 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
                                          ChimiControl **control, bool full, bool ending) {
   carrier->collecting_epoch = atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);
   if (carrier->collecting_epoch == UINT64_MAX) {
-    fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); exit(70);
+    fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
   }
   flush_young_counts(scope);
   carrier->collecting_scope = scope;
@@ -2623,7 +2634,7 @@ static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLO
 static const char *numeric_message(const char *format, ...) {
   va_list arguments; va_start(arguments, format);
   char *message = malloc(256);
-  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
   vsnprintf(message, 256, format, arguments); va_end(arguments);
   return message;
 }
@@ -2634,7 +2645,7 @@ static const char *numeric_message(const char *format, ...) {
 static const char *lasting_message(const char *raw) {
   size_t length = strlen(raw);
   char *message = malloc(length + 1);
-  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
   memcpy(message, raw, length + 1);
   return message;
 }
@@ -3486,7 +3497,7 @@ static void compare_push(CompareStack *stack, const ChimiValue *left, const Chim
     size_t capacity = stack->capacity * 2;
     bool on_heap = stack->steps != stack->inline_steps;
     CompareStep *steps = realloc(on_heap ? stack->steps : NULL, capacity * sizeof(*steps));
-    if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+    if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
     if (!on_heap) memcpy(steps, stack->inline_steps, stack->length * sizeof(*steps));
     stack->steps = steps; stack->capacity = capacity;
   }
@@ -3505,7 +3516,7 @@ typedef struct { bool negative; unsigned char *digits; size_t length; } DecimalE
 static DecimalExponent decimal_exponent(bool negative, const unsigned char *digits, size_t length, unsigned char zero) {
   while (length > 0 && *digits == zero) { ++digits; --length; }
   DecimalExponent exponent = {negative && length > 0, malloc(length ? length : 1), length};
-  if (exponent.digits == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (exponent.digits == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   for (size_t index = 0; index < length; ++index) exponent.digits[index] = (unsigned char)(digits[index] - zero);
   return exponent;
 }
@@ -3527,7 +3538,7 @@ static DecimalExponent decimal_exponent_sum(const DecimalExponent *left, const D
   bool subtract = left->negative != right->negative;
   size_t length = larger->length + 1;
   unsigned char *result = malloc(length);
-  if (result == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (result == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   int carry = 0;
   for (size_t place = 0; place < length; ++place) {
     int big = place < larger->length ? larger->digits[larger->length - 1 - place] : 0;
@@ -3561,7 +3572,7 @@ static CanonicalNumber canonical_number(const char *text) {
   }
   size_t point = strcspn(text, ".eE"); if (point > mantissa) point = mantissa;
   number.owned = malloc(mantissa + 1);
-  if (number.owned == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (number.owned == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   size_t length = 0;
   for (size_t index = 0; index < mantissa; ++index)
     if (text[index] != '.') number.owned[length++] = text[index];
@@ -3597,7 +3608,7 @@ static int field_name_order(const void *left, const void *right) {
 /* Records have no declaration order; name order is a fixed order both sides share. */
 static const RuntimeField **fields_by_name(const RuntimeField *fields, uint32_t length) {
   const RuntimeField **sorted = malloc((length ? length : 1) * sizeof(*sorted));
-  if (sorted == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (sorted == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   for (uint32_t index = 0; index < length; ++index) sorted[index] = &fields[index];
   qsort(sorted, length, sizeof(*sorted), field_name_order);
   return sorted;
@@ -3609,7 +3620,7 @@ typedef struct { const MapNode **nodes; size_t length; } MapEntries;
 static MapEntries map_entries(const MapNode *root) {
   size_t capacity = 16, length = 0, pending_length = 0;
   const MapNode **nodes = malloc(capacity * sizeof(*nodes)); const MapNode *pending[64];
-  if (nodes == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+  if (nodes == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
   const MapNode *node = root;
   for (;;) {
     while (node) { pending[pending_length++] = node; node = node->left; }
@@ -3617,7 +3628,7 @@ static MapEntries map_entries(const MapNode *root) {
     node = pending[--pending_length];
     if (length == capacity) {
       capacity *= 2; const MapNode **grown = realloc(nodes, capacity * sizeof(*nodes));
-      if (grown == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
+      if (grown == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
       nodes = grown;
     }
     nodes[length++] = node; node = node->right;
@@ -7553,14 +7564,19 @@ static ChimiFiberResult child_task_result(ChimiControl *control) {
   };
 }
 
-static ChimiFiberResult chimi_task_entry(void *raw_context) {
-  ChimiTaskContext *context = raw_context;
-  /* With one carrier every thread may use carrier 0; with several, a thread
-     that never entered its carrier would share carrier 0's scratch. */
+/* Aborts unless this thread entered its own carrier. With one carrier every
+   thread may use carrier 0; with several, a thread that never entered its
+   carrier would share carrier 0's scratch. `what` names the fiber started. */
+static void require_bound_carrier(const char *what) {
   if (carrier_count > 1 && !(carrier->bound && pthread_equal(carrier->thread, pthread_self()))) {
-    fputs("Chimi runtime defect: a task started on a thread without its own carrier\n", stderr);
+    fprintf(stderr, "Chimi runtime defect: %s started on a thread without its own carrier\n", what);
     abort();
   }
+}
+
+static ChimiFiberResult chimi_task_entry(void *raw_context) {
+  ChimiTaskContext *context = raw_context;
+  require_bound_carrier("a task");
   carrier->fiber.target = NULL;
   if (context->entry) {
     carrier->fiber.heap = &main_heap;
@@ -8783,6 +8799,7 @@ static char *take_process_defect(uint64_t incarnation) {
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
   ProcessSpecContext *context = raw_context;
+  require_bound_carrier("a process");
   carrier->fiber.target = NULL;
   ChimiRuntime *runtime = context->runtime;
   RuntimeHeap *heap = heap_create();
@@ -12508,7 +12525,7 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
   }
   CapabilityViolationNote *note = malloc(sizeof(*note));
   char *message = strdup(text);
-  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
   *note = (CapabilityViolationNote){
     .task = violation->task, .message = message, .next = runtime->capability_violations};
   runtime->capability_violations = note;
@@ -12529,7 +12546,7 @@ static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, s
     "virtual-time deadlock: every task is parked and no timer is pending:";
   size_t capacity = sizeof(prefix) + count * 64;
   char *message = malloc(capacity);
-  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); exit(70); }
+  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
   size_t length = (size_t)snprintf(message, capacity, "%s", prefix);
   for (size_t index = 0; index < count; ++index)
     length += (size_t)snprintf(message + length, capacity - length, "%s task %" PRIu64 " waits on %s",
@@ -12656,7 +12673,7 @@ static void install_stop_signals(ChimiRuntime *runtime) {
     if (pipe(signal_pipe) != 0 || !prepare_signal_descriptor(&signal_pipe[0]) ||
         !prepare_signal_descriptor(&signal_pipe[1])) {
       fputs("Chimi runtime could not create its signal pipe\n", stderr);
-      exit(70);
+      runtime_exit(70);
     }
   } else {
     signal_runtime = runtime;

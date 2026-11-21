@@ -83,6 +83,8 @@ const SHARED: &[&str] = &[
     "user_signals",
     "user_signals_installed",
     "child_signal_installed",
+    // Set by the first fatal exit, so only one thread runs exit.
+    "runtime_exiting",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
