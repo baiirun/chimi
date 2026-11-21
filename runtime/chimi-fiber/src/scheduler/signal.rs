@@ -339,11 +339,10 @@ impl Scheduler {
         true
     }
 
-    /// Blocks until the runner's handler writes to the wake pipe.
-    pub(super) fn wait_for_signal(&self) {
-        if let Some(fd) = self.signals.wake_fd {
-            wait_readable(fd, None);
-        }
+    /// The runner's wake pipe; a stalled root's run blocks until its
+    /// handler writes to it.
+    pub(super) fn signal_wake_fd(&self) -> Option<i32> {
+        self.signals.wake_fd
     }
 }
 

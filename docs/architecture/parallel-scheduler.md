@@ -92,12 +92,15 @@ function-local static, so new state gets an owner when it is added.
   young chunks, the deferred footprint, `fs_read`'s buffer), and the counters
   behind the memory report (`heap_totals`, `copied_*`,
   `capture_transfer_probes`, `unscoped_allocated_bytes`,
-  `process_heap_peak_value_bytes`). Today `carrier` is a constant pointer to
-  one static, so every access compiles to the fixed address the old static
-  had.
+  `process_heap_peak_value_bytes`, `scope_totals`). The counters are signed
+  per-carrier deltas, since an allocation made on one carrier can be freed on
+  another; the report sums them and takes the largest peak (PR 5a).
+  Carrier 0 (`carrier_first`) is a static, and `carriers_create` allocates
+  the others before any carrier thread starts. `carrier` is each thread's
+  initial-exec thread-local pointer, set by `carrier_thread_enter`.
 - **Shared** (file-scope globals): state every carrier sees.
-  - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner`,
-    `shared_values`, `constant_values`, `host_stack_limit`.
+  - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner` (an
+    atomic counter), `shared_values`, `constant_values`.
   - `next_mark_epoch`. Mark epochs are stamped into allocation headers that
     move with a heap, so a per-carrier counter could repeat an epoch that a
     stale header still holds, and treat a dead allocation as marked. It is one
@@ -105,23 +108,32 @@ function-local static, so new state gets an owner when it is added.
     That is one relaxed fetch-add per collection pass.
   - The handle-count table (`handle_table`, "Handle counts" below). Its
     release queue is carrier state (`released_handles`).
-  - Tables whose ids travel inside values: binding handles, open files, test
-    mailboxes, process defects.
+  - Tables whose ids travel inside values, each behind its own lock: open
+    files (`fs_file_lock`), test logs (`test_log_lock`), process defects
+    (`process_defect_lock`), and binding handles (PR 5a-2). A read or write
+    takes a file's descriptor for the length of its system call, and a close
+    during one leaves the descriptor to the last user to close, so the
+    number is never reused under the system call. A read or write that
+    waits for readiness gives the descriptor back first, so, as with one
+    carrier, a close during the wait leaves the reactor watching a number
+    that may be reused; `fs_close` does not withdraw the wait.
   - The operation profile's rows (`profile_rows`), allocated once at startup
-    and updated after nodes that may park. Each carrier will need its own
-    rows, allocated before the carriers start and summed in the report.
-  - The `random` provider's one seeded stream, which is deterministic only on
-    one carrier.
+    and counted with relaxed atomic adds.
+  - The `random` provider's one seeded stream, behind `random_lock`. It is
+    deterministic only on one carrier.
+  - Telemetry: `trace_lock` is held for each whole event, so sequence numbers
+    follow file order; span ids come from one atomic counter.
   - Standard input and every signal field. Signal handlers write these, so
     they must never sit behind a carrier or thread-local pointer.
 
 Rules for the steps that run more than one carrier:
 
-- `carrier` becomes a call to an accessor that the compiler cannot inline or
-  treat as pure, so it is read again after every park. A thread-local variable
-  is not enough: a compiler may keep a thread-local's address in a register
-  across a call, and a fiber resumed on another thread would then use the old
-  thread's state.
+- `carrier` is a thread-local, which is enough only because a fiber never
+  leaves the thread of its first resume: a compiler may keep a
+  thread-local's address in a register across a call, so a fiber that
+  migrated would use the old thread's state. Stealing (step 4) must either
+  keep fibers pinned or make `carrier` an accessor that is read again after
+  every park.
 - No code keeps a pointer into the carrier across a scheduler request.
   `scheduler_request` reads the carrier again after it resumes and writes the
   saved fiber context into whichever carrier that is. `flush_channel_releases`
@@ -362,7 +374,13 @@ four keep one carrier.
      or their stack check is off. A thread that never binds aliases
      carrier 0, so PR 5 also adds a debug check that each carrier thread
      bound its own carrier.
-   - The memory counters become signed per-carrier deltas.
+   - The memory counters become signed per-carrier deltas. Moved to PR 5
+     (decided 2026-11-21): with one carrier, and in the simulation, which
+     carries one set of counters from carrier to carrier, no test can tell
+     deltas from today's counters. And a per-carrier peak of a delta means
+     nothing until PR 6 decides what the report's peaks mean. PR 5 has the
+     first allocation freed on another thread, so the change is tested
+     there.
    - New test: a count reaches zero inside a release hook, on a carrier
      where no fiber requests again.
 4. **One `Mutex` around the kernel (one carrier).** The lock is held except
@@ -371,7 +389,104 @@ four keep one carrier.
    order is the kernel lock first, then `handle_table`, never the reverse.
    The kernel state and the carrier loop become separate types here, since
    the lock is what separates them.
+   - Shape (advisor review, 2026-11-21): `Scheduler` stays the kernel type,
+     holding nearly all state: tasks, ready queues, channels, processes,
+     clock and timers, events and the trace sink, host hooks, reactor
+     registrations, children, signals and `host_operations`. The carrier
+     loop (`drive`, `run_until_idle`) is separate from it; its id is still
+     the kernel's `current` until PR 5 gives each carrier thread its own. The loop is written once against
+     kernel access that is either a plain `&mut Scheduler` (the existing
+     methods and unit tests) or a `Mutex<Scheduler>` (`chimi_scheduler_run`,
+     so the gates measure the lock).
+   - The lock drops in three places: around a fiber's resume in the
+     carrier's `run`, around the reactor's descriptor wait, and around a
+     real-clock wait. Each is split into a locked prepare, the unlocked
+     block, and a locked apply that looks the task up again by id. A
+     `Running` record's fiber is never dropped or removed while it runs,
+     so the resume uses the fiber's pointer without holding the record.
+   - The two inline resumes (`begin_terminal`, `await_incarnation`) run
+     deep inside kernel operations, so they keep the lock across the resume
+     until PR 5 turns them into jobs. Hooks called under the lock (trace
+     sink, release, copy, violation and defect reports) must never park or
+     call into the scheduler.
+   - Lock access cannot fail: a panic under the lock aborts inside the C
+     entry point, so a poisoned lock is only taken over. A stalled run
+     takes the scheduler back out of the mutex before forgetting it.
+   - As landed: `scheduler/carrier.rs` holds the loop (`drive`,
+     `run_until_idle`) over `KernelAccess`, and `chimi_scheduler_run` runs
+     it against `Mutex<Scheduler>` (std's, uncontended). The kernel is taken
+     once per resume, to finish one task's step and enter the next. A test
+     checks that fibers the carrier resumes run without the lock. The
+     stalled-root signal wait also runs without it. Measured on the
+     performance lab, medians of 7 interleaved runs against main: PG01
+     +0.8%, PG02 off -0.4%, PG03 +0.8%, PG04 start +0.6% and stop -0.9%.
+     The verifier's own runs (7 interleaved, then 11 of PG04 alone) agree
+     on PG01 to PG03 and PG04 start, but found PG04 stop 10 to 14% slower
+     (about 1 µs, against a 30 µs gate). A stop spans many resumes, each
+     taking the lock once, so this is read as the lock's real cost there.
+     PG06 fails its list gate on main on this host too, and its dag figure
+     is bimodal on both (2.8 or 3.4 µs).
+   - Left for PR 5: a real-clock sleep or descriptor wait is computed
+     under the lock, so a timer or ready task another carrier adds during
+     the wait is seen only when it ends (at most `MAX_REAL_WAIT`). PR 5's
+     per-carrier wake descriptor ends such a wait at once.
 5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
+   Split into five PRs (advisor review, 2026-11-21), each merging with one
+   carrier and behavior unchanged:
+   - 5a, the C runtime safe for N threads. Carrier states are sized at
+     startup. `binding_handles` and every other table fibers touch outside
+     the kernel lock get a lock: open files, test mailboxes, process
+     defects, profile rows, the `random` stream and the span counter. The
+     memory and copy counters become signed per-carrier deltas, summed in
+     the report. `carrier_thread_enter` binds a thread's carrier and
+     computes its stack limit. Tested with pthread C fixtures under gcc's
+     ThreadSanitizer and with the simulation suite.
+     - As landed (5a-1): everything above except binding handles, which
+       need per-slot use counts (5a-2). `fixtures/carrier-threads-stress.c`
+       runs four carrier threads that hand fragments across carriers and
+       share spans, telemetry, the profile, `random`, a test Recorder and a
+       file closed during reads, under ThreadSanitizer; it found
+       `next_heap_owner`, which was a plain counter. Telemetry takes a
+       mutex rather than `flockfile`, which ThreadSanitizer cannot see.
+       With several carriers a task started on a thread that never entered
+       its carrier aborts. Peaks are recorded per carrier against its own
+       delta (the simulation compares the sum over its two carriers), so
+       with one carrier every number is as before. `carrier_thread_enter`
+       also runs the host stack check, which only a program without the
+       scheduler arms, so a carrier thread's is off as the main thread's
+       is under the scheduler.
+     - Left for 5a-2, before 5c starts real threads: binding handles, and
+       the console queues, standard input and the signal installers
+       (`console_queues`, `console_streams`, `standard_input`,
+       `install_user_signals`, `chimi_binding_prepare_children`), which
+       are filed as carrier 0's but which a fiber on any carrier reaches,
+       since process incarnations are placed on every carrier. Each needs
+       a lock that is never held across a park, or its work sent to
+       carrier 0.
+   - 5b, kernel pieces on one thread: the carrier id passed through
+     `Locked`, jobs for the inline resumes, the wake descriptors and the
+     global idle check. Tested on a two-carrier kernel driven from one
+     thread, which also kills the ready-queue mutant PR 2 left.
+   - 5c, real threads behind a test-only API: a `Send` wrapper for the
+     kernel and unstarted fibers, spawning and joining, each carrier
+     destroying its own fibers before it exits, and placement.
+   - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
+     with `--clock=virtual`.
+   - 5e, the looped stress programs at 2 to 8 carriers.
+   Design points: one wake descriptor per carrier, written after unlock
+   when another carrier queues work for it or a new earliest timer is set.
+   Only carrier 0 polls descriptors, children and the signal pipe, since
+   the reactor is one table, and another carrier that registers a wait
+   wakes carrier 0. Global idle is every carrier idle with every ready
+   and job queue empty, no timer, no IO or child wait and no host
+   operation; only carrier 0 acts on it. An inline resume whose fiber
+   lives on another carrier becomes a job there. The job runs the resume
+   without the lock, then the rest of `begin_terminal` under it, and the
+   inline path stays when the home is the current carrier.
+   ThreadSanitizer is available for C through gcc only. Rust's needs a
+   nightly toolchain, which is not installed, and corosensei's stack
+   switches are invisible to it anyway, so Rust thread tests rely on
+   stress loops and assertions.
    - Each carrier has a wake descriptor. The carrier loop polls it, and
      carrier 0 also polls the signal pipe.
    - A fiber stays on the carrier of its first resume. Corosensei's

@@ -16,10 +16,12 @@ use super::{
     RESPONSE_UNAVAILABLE, SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome,
     SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
+use super::carrier::{KernelAccess, Locked};
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 pub const ADDRESS_NAMED: u32 = 1;
@@ -676,52 +678,59 @@ impl Scheduler {
     /// later call continues it. Once the root is terminal, every supervisor
     /// still running is stopped and its cleanup is driven to completion.
     pub fn run_root(&mut self, root: TaskId, deadlock_code: i64) -> RootRun {
-        let mut deadlock = Vec::new();
-        self.set_signal_root(root);
-        loop {
-            let root_live = |scheduler: &Self| {
-                scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
-            };
-            match self.run_until_idle() {
-                Idle::AwaitingHost => continue,
-                Idle::Deadlock(parked) => {
-                    if root_live(self) {
-                        deadlock = parked;
-                        self.force_terminal(
-                            root,
-                            TaskOutcome::Defected {
-                                origin: root,
-                                code: deadlock_code,
-                            },
-                            false,
-                        );
-                    }
+        run_root(self, root, deadlock_code)
+    }
+
+    /// What the root's run does after the carrier went idle with `idle`.
+    fn root_step(
+        &mut self,
+        root: TaskId,
+        idle: Idle,
+        deadlock_code: i64,
+        deadlock: &mut Vec<ParkedTask>,
+    ) -> RootStep {
+        let root_live = |scheduler: &Self| {
+            scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
+        };
+        match idle {
+            Idle::AwaitingHost => return RootStep::Continue,
+            Idle::Deadlock(parked) => {
+                if root_live(self) {
+                    *deadlock = parked;
+                    self.force_terminal(
+                        root,
+                        TaskOutcome::Defected {
+                            origin: root,
+                            code: deadlock_code,
+                        },
+                        false,
+                    );
                 }
-                Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
-                    self.wait_for_signal();
-                    continue;
-                }
-                Idle::Stalled(_) if root_live(self) => {
-                    return RootRun {
-                        outcome: parked_outcome(),
-                        deadlock,
-                    };
-                }
-                Idle::Stalled(_) | Idle::Quiescent => {}
             }
-            let root_done = matches!(
-                self.tasks.get(&root).map(|record| record.phase),
-                Some(TaskPhase::Terminal(_))
-            );
-            if !root_done {
-                continue;
+            Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
+                return RootStep::WaitForSignal(self.signal_wake_fd());
             }
-            self.shutdown_processes();
-            if !self.has_blocked_plans() && self.ready.is_empty() {
-                break;
-            }
+            Idle::Stalled(_) if root_live(self) => return RootStep::Parked,
+            Idle::Stalled(_) | Idle::Quiescent => {}
         }
-        let outcome = match self.result(None, root) {
+        let root_done = matches!(
+            self.tasks.get(&root).map(|record| record.phase),
+            Some(TaskPhase::Terminal(_))
+        );
+        if !root_done {
+            return RootStep::Continue;
+        }
+        self.shutdown_processes();
+        if !self.has_blocked_plans() && self.ready.is_empty() {
+            RootStep::Finished
+        } else {
+            RootStep::Continue
+        }
+    }
+
+    /// The finished root's outcome, its value handed to the caller.
+    fn root_outcome(&mut self, root: TaskId) -> SchedulerOutcome {
+        match self.result(None, root) {
             Ok(TaskResult::Ready(outcome)) => {
                 // The outcome's value passes to the caller; the scheduler
                 // releases every other value when it is dropped.
@@ -729,9 +738,50 @@ impl Scheduler {
                 outcome_of(outcome)
             }
             Ok(TaskResult::Pending) | Err(_) => defect_outcome(SCHEDULER_DEFECT_CODE),
-        };
-        RootRun { outcome, deadlock }
+        }
     }
+}
+
+/// What a root's run does next once its carrier is idle.
+enum RootStep {
+    Continue,
+    /// Wait, without the kernel, until the signal pipe is readable.
+    WaitForSignal(Option<i32>),
+    /// The root waits on the host; the run returns with it parked.
+    Parked,
+    Finished,
+}
+
+/// Runs a root task to its outcome on the scheduler's clock. Under virtual
+/// time a root that can never wake defects with `deadlock_code`, and the run
+/// reports each parked task. Under the real clock a host event may still
+/// wake it, so a root parked with nothing pending returns with state
+/// `Parked` and stays suspended; a later call continues it. Once the root is
+/// terminal, every supervisor still running is stopped and its cleanup is
+/// driven to completion.
+fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) -> RootRun {
+    let mut deadlock = Vec::new();
+    kernel.with(|kernel| kernel.set_signal_root(root));
+    loop {
+        let idle = super::carrier::run_until_idle(kernel);
+        match kernel.with(|kernel| kernel.root_step(root, idle, deadlock_code, &mut deadlock)) {
+            RootStep::Continue => {}
+            RootStep::WaitForSignal(fd) => {
+                if let Some(fd) = fd {
+                    super::signal::wait_readable(fd, None);
+                }
+            }
+            RootStep::Parked => {
+                return RootRun {
+                    outcome: parked_outcome(),
+                    deadlock,
+                };
+            }
+            RootStep::Finished => break,
+        }
+    }
+    let outcome = kernel.with(|kernel| kernel.root_outcome(root));
+    RootRun { outcome, deadlock }
 }
 
 fn parked_outcome() -> SchedulerOutcome {
@@ -843,7 +893,11 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };
-    let run = scheduler.run_root(root, DEADLOCK_DEFECT_CODE);
+    // The carrier loop runs against the kernel behind its lock, as each of
+    // several carriers will, so the performance gates measure the lock.
+    let kernel = Mutex::new(scheduler);
+    let run = run_root(&mut Locked(&kernel), root, DEADLOCK_DEFECT_CODE);
+    let scheduler = kernel.into_inner().unwrap_or_else(PoisonError::into_inner);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
     if let Some(report) = config.deadlock_report

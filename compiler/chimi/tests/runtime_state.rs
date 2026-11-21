@@ -22,9 +22,12 @@ use std::process::Command;
 
 /// Writable process-wide globals, each owned as the design note says.
 const SHARED: &[&str] = &[
-    // The carrier, which holds every per-thread field, and each thread's
-    // pointer to its own (a thread-local, one per thread by construction).
-    "carrier_states",
+    // The carriers, which hold every per-thread field: carrier 0, the others
+    // carriers_create allocates and their count, and each thread's pointer to
+    // its own (a thread-local, one per thread by construction).
+    "carrier_first",
+    "carrier_others",
+    "carrier_count",
     "carrier_this_thread",
     // Heaps and constants every fiber shares.
     "main_heap",
@@ -36,23 +39,30 @@ const SHARED: &[&str] = &[
     // Task and channel handle counts, one locked table for every carrier
     // (each carrier queues its own releases).
     "handle_table",
-    // Tables whose ids travel inside values.
+    // Tables whose ids travel inside values, each behind its lock.
     "binding_handles",
     "binding_handle_count",
     "binding_handle_capacity",
     "binding_free_slot",
     "fs_files",
     "fs_file_count",
+    "fs_file_lock",
     "test_logs",
     "test_log_count",
+    "test_log_lock",
     "process_defects",
     "process_defect_count",
-    // The `random` provider's one seeded stream.
+    "process_defect_lock",
+    // The `random` provider's one seeded stream, behind its lock.
+    "random_lock",
     "random_state",
     "random_seed",
     "random_seed_given",
     "random_read",
-    // The operation profile's rows, allocated once at startup.
+    // Held while one telemetry event is written.
+    "trace_lock",
+    // The operation profile's rows, allocated once at startup and counted
+    // with atomic adds.
     "profile_rows",
     // Standard input and signals, owned by the first carrier.
     "standard_input",
@@ -134,7 +144,7 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
     for process_kernel in [false, true] {
         let symbols = writable_symbols(process_kernel);
         // An nm format this test cannot read would otherwise pass vacuously.
-        for expected in ["carrier_states", "main_heap"] {
+        for expected in ["carrier_first", "main_heap"] {
             assert!(
                 symbols.iter().any(|symbol| symbol.trim_start_matches('_') == expected),
                 "{expected} missing from {symbols:?}"
@@ -152,17 +162,12 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
     }
 }
 
-/// The shared handle table under two threads (`fixtures/handle-table-stress.c`):
-/// a reference retained on one thread and dropped on another never reaches zero
-/// early. ThreadSanitizer, where the compiler has it, fails any access outside
-/// the table's lock.
-#[test]
-fn the_handle_table_counts_across_threads() {
+/// Builds `tests/fixtures/{fixture}.c` with ThreadSanitizer where the compiler
+/// has it (else plainly), runs it, and checks that it prints "ok". Under
+/// ThreadSanitizer any access to shared state outside its lock fails the run.
+fn run_thread_fixture(fixture: &str) {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let executable = std::env::temp_dir().join(format!(
-        "chimi-handle-table-stress-{}",
-        std::process::id()
-    ));
+    let executable = std::env::temp_dir().join(format!("chimi-{fixture}-{}", std::process::id()));
     let compile = |flags: &[&str]| {
         Command::new("cc")
             .args(["-std=c11", "-O1", "-g", "-w"])
@@ -171,7 +176,7 @@ fn the_handle_table_counts_across_threads() {
             .arg(manifest.join("runtime/native"))
             .arg("-I")
             .arg(manifest.join("../../runtime/chimi-fiber/include"))
-            .arg(manifest.join("tests/fixtures/handle-table-stress.c"))
+            .arg(manifest.join(format!("tests/fixtures/{fixture}.c")))
             .arg("-o")
             .arg(&executable)
             .args(["-lm", "-lpthread"])
@@ -179,16 +184,16 @@ fn the_handle_table_counts_across_threads() {
             .expect("run cc")
     };
     if compile(&["-fsanitize=thread"]).status.success() {
-        eprintln!("handle table stress: built with ThreadSanitizer");
+        eprintln!("{fixture}: built with ThreadSanitizer");
     } else {
-        eprintln!("handle table stress: ThreadSanitizer unavailable, plain build");
+        eprintln!("{fixture}: ThreadSanitizer unavailable, plain build");
         let plain = compile(&[]);
         assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
     }
     let run = Command::new(&executable)
         .env("TSAN_OPTIONS", "halt_on_error=1")
         .output()
-        .expect("run the handle table stress");
+        .expect("run the fixture");
     let _ = std::fs::remove_file(&executable);
     assert!(
         run.status.success() && run.stdout == b"ok\n",
@@ -196,4 +201,22 @@ fn the_handle_table_counts_across_threads() {
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+/// The shared handle table under two threads (`fixtures/handle-table-stress.c`):
+/// a reference retained on one thread and dropped on another never reaches zero
+/// early.
+#[test]
+fn the_handle_table_counts_across_threads() {
+    run_thread_fixture("handle-table-stress");
+}
+
+/// Four carrier threads at once (`fixtures/carrier-threads-stress.c`): memory
+/// counters freed on another carrier sum back to zero, span ids, telemetry
+/// sequence numbers, the profile, the `random` stream and a shared test
+/// Recorder stay whole, and a file closed during a read is closed only once
+/// the read gives it back.
+#[test]
+fn the_runtime_state_holds_across_carrier_threads() {
+    run_thread_fixture("carrier-threads-stress");
 }

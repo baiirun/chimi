@@ -282,15 +282,14 @@ struct ChimiRuntime {
   FILE *telemetry;
   FILE *outcome;
   uint32_t max_line_bytes;
+  /* The telemetry stream's next sequence number. It and
+     trace_events_constructed change only under trace_lock, which an emitter
+     holds for a whole event, so events from several carriers come out whole
+     and numbered in the order written. */
   uint64_t next_sequence;
-  uint64_t next_span;
-  size_t scoped_total_allocated_bytes;
-  size_t scoped_allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
-  size_t scoped_peak_live_bytes;
-  size_t scoped_retained_bytes;
-  uint64_t scoped_collections;
-  uint64_t scoped_full_collections;
-  uint64_t scoped_scanned_allocations;
+  /* Span ids are unique across the process, so every carrier takes them
+     from one counter. */
+  _Atomic uint64_t next_span;
   /* Telemetry events built for the telemetry file: the runtime's own and the
      scheduler's. 0 under --trace=off (lab scenario OB01). */
   uint64_t trace_events_constructed;
@@ -432,23 +431,28 @@ typedef enum { HEAP_OK = 0, HEAP_FOREIGN_POINTER = 1 } HeapStatus;
 
 /* Process-wide accounting, so tests can prove that memory stays flat and that
    destroying heaps and fragments returns every allocation. Footprint bytes count
-   headers and fragment records as well as payloads; static constants are excluded. */
+   headers and fragment records as well as payloads; static constants are excluded.
+   Each carrier keeps its own copy, a signed delta: an allocation made on one
+   carrier can be freed on another, so one carrier's count can fall below zero,
+   and only the sum over carriers (heap_totals_sum) is the process's. A peak is
+   recorded per carrier (footprint_record_peak); the report takes the largest. */
 typedef struct {
-  size_t live_allocations;
-  size_t footprint_bytes;
-  size_t peak_footprint_bytes;
-  size_t live_fragments;
-  size_t fragment_footprint_bytes;
-  size_t peak_fragment_footprint_bytes;
-  size_t live_heaps;
+  int64_t live_allocations;
+  int64_t footprint_bytes;
+  int64_t peak_footprint_bytes;
+  int64_t live_fragments;
+  int64_t fragment_footprint_bytes;
+  int64_t peak_fragment_footprint_bytes;
+  int64_t live_heaps;
   /* Freed small blocks kept for reuse (see small_block_take); not live. */
-  size_t cached_bytes;
+  int64_t cached_bytes;
 } HeapTotals;
 
 enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
-static uint64_t next_heap_owner = 2;
+/* Heap owners are unique across the process; any carrier creates heaps. */
+static _Atomic uint64_t next_heap_owner = 2;
 static AllocationArea static_area = {.role = AREA_STATIC};
 /* Epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
@@ -465,9 +469,11 @@ typedef struct {
   uint64_t allocations;
   uint64_t allocated_bytes;
 } ProfileRow;
-/* Allocated once at startup and indexed by node, so it is shared. Once fibers run
-   on several carriers, each carrier needs its own rows, summed in the report. */
+/* Allocated once at startup and indexed by node, and shared by every carrier,
+   so each count is a relaxed atomic add (profile_count). */
 static ProfileRow *profile_rows;
+
+static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }
 
 static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); exit(70); }
 
@@ -503,6 +509,18 @@ typedef struct {
   AllocationArea *target;
 } FiberContext;
 
+/* What reclaiming scopes allocated and kept, for the memory report's
+   `scoped_*` fields. */
+typedef struct {
+  size_t total_allocated_bytes;
+  size_t allocated_bytes_by_kind[ALLOCATION_KIND_COUNT];
+  size_t peak_live_bytes;
+  size_t retained_bytes;
+  uint64_t collections;
+  uint64_t full_collections;
+  uint64_t scanned_allocations;
+} ScopeTotals;
+
 /* Everything one carrier thread mutates while it runs fibers (R4 step 1,
    docs/architecture/parallel-scheduler.md "Runtime state by owner"). There is one
    carrier today, so `carrier` names one static instance and every access folds to a
@@ -520,11 +538,11 @@ typedef struct {
   /* Footprint of the young chunk allocations whose counters are still deferred to
      their scope's next flush. Bumping one only adds to this, so the true footprint
      (footprint_bytes plus this) peaks just before it falls: footprint_sub and
-     footprint_add record the peak there, and the report reads footprint_peak(). */
-  size_t pending_footprint_bytes;
+     footprint_add record the peak there. */
+  int64_t pending_footprint_bytes;
   /* Bytes allocated outside every region, static constants included. Nothing
      reclaims them before exit. */
-  size_t unscoped_allocated_bytes;
+  uint64_t unscoped_allocated_bytes;
   /* Visited-set slots examined by every capture transfer so far; the memory
      report's `capture_transfer_probes`, so a test can bound transfer work without
      timing it. */
@@ -563,49 +581,62 @@ typedef struct {
   uint64_t *released_handles;
   size_t released_handle_count;
   size_t released_handle_capacity;
+  /* What the outermost reclaiming scopes that ended on this carrier
+     allocated and kept (end_measured_allocation_scope), summed in the memory
+     report. */
+  ScopeTotals scope_totals;
   /* The address below which a call on this carrier's own thread stack
      defects (guard_host_stack); 0 disables the check. Each carrier thread has
      its own stack. */
   uintptr_t host_stack_limit;
+  /* The thread carrier_bind gave this carrier to; chimi_task_entry checks it
+     when several carriers run, since a thread that never bound aliases
+     carrier 0. */
+  pthread_t thread;
+  bool bound;
 } Carrier;
+
+/* Carrier 0 is the main thread's and runs every fiber until more carriers are
+   created; the others are allocated once, by carriers_create, before any
+   carrier thread starts, and live until exit. */
+static Carrier carrier_first = {.fiber = {.heap = &main_heap}};
 
 #ifdef CHIMI_CARRIER_SIMULATION
 /* A test build (parallel-scheduler.md, "Runtime state by owner"): every fiber
    resumes on the other of two carriers from the one it parked on, each with its
-   own scratch, caches and release queue, the way a fiber migrates once N
-   carriers run. It finds a pointer into a carrier kept across a park and a field
-   filed as carrier state that must follow the fiber. The memory report's
-   counters are handed over at each switch, since they are process totals that a
-   later step makes shared. */
-#define CARRIER_COUNT 2
-static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}},
-                                                {.fiber = {.heap = &main_heap}}};
-static Carrier *carrier = &carrier_states[0];
+   own scratch, caches, counters and release queue, the way a fiber migrates
+   once N carriers run. It finds a pointer into a carrier kept across a park and
+   a field filed as carrier state that must follow the fiber. Since an
+   allocation is often freed on the other carrier, it also exercises the
+   counters' signed deltas. */
+static Carrier carrier_second = {.fiber = {.heap = &main_heap}};
+static Carrier *carrier_others = &carrier_second;
+static size_t carrier_count = 2;
+static Carrier *carrier = &carrier_first;
 
-static void carrier_bind(Carrier *chosen) { carrier = chosen; }
+static Carrier *carrier_at(size_t index) { return index == 0 ? &carrier_first : &carrier_others[index - 1]; }
 
-/* Continues on the carrier other than `parked`, carrying the counters over from
-   the one that ran last. */
+static void carrier_bind(Carrier *chosen) {
+  chosen->thread = pthread_self();
+  chosen->bound = true;
+  carrier = chosen;
+}
+
+static void carriers_create(size_t count) { (void)count; }
+
+/* Continues on the carrier other than `parked`. */
 static void carrier_migrate(Carrier *parked) {
   Carrier *from = carrier;
-  Carrier *to = &carrier_states[parked == &carrier_states[0]];
+  Carrier *to = carrier_at(parked == &carrier_first);
   if (to != from) {
-    to->heap_totals = from->heap_totals;
-    to->pending_footprint_bytes = from->pending_footprint_bytes;
-    to->unscoped_allocated_bytes = from->unscoped_allocated_bytes;
-    to->capture_transfer_probes = from->capture_transfer_probes;
-    to->process_heap_peak_value_bytes = from->process_heap_peak_value_bytes;
-    to->copied_values = from->copied_values;
-    to->copied_bytes = from->copied_bytes;
     /* Both simulated carriers run on one thread, so they share its stack. */
     to->host_stack_limit = from->host_stack_limit;
+    to->thread = from->thread;
+    to->bound = from->bound;
   }
   carrier = to;
 }
 #else
-#define CARRIER_COUNT 1
-static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}}};
-
 /* The carrier the calling thread runs. A fiber never leaves the thread of its
    first resume (the scheduler's PinnedFiber), so a thread-local's address a
    compiler keeps across a scheduler request inside one function still names
@@ -617,16 +648,60 @@ static Carrier carrier_states[CARRIER_COUNT] = {{.fiber = {.heap = &main_heap}}}
 #endif
 /* Every thread starts on carrier 0, which is what the main thread and the C
    test fixtures that include this file use. */
-static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_states[0];
+static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_first;
 #define carrier carrier_this_thread
+static Carrier *carrier_others;
+static size_t carrier_count = 1;
 
-/* Makes `chosen` the calling thread's carrier. A carrier thread calls it once,
-   before it runs anything that allocates; the main thread binds carrier 0 at
-   startup. */
-static void carrier_bind(Carrier *chosen) { carrier_this_thread = chosen; }
+static Carrier *carrier_at(size_t index) { return index == 0 ? &carrier_first : &carrier_others[index - 1]; }
+
+/* Makes `chosen` the calling thread's carrier. A carrier thread binds once,
+   through carrier_thread_enter, before it runs anything that allocates; the
+   main thread binds carrier 0 at startup. */
+static void carrier_bind(Carrier *chosen) {
+  chosen->thread = pthread_self();
+  chosen->bound = true;
+  carrier_this_thread = chosen;
+}
+
+/* Sizes the carriers at `count`, at least 1. Called once, on the main thread,
+   before any carrier thread starts and before anything runs on carrier 1 or
+   later, so those carriers start zeroed. */
+static void carriers_create(size_t count) {
+  if (count <= 1 || carrier_others) return;
+  carrier_others = calloc(count - 1, sizeof(*carrier_others));
+  if (!carrier_others) {
+    fputs("Chimi runtime exhausted memory\n", stderr);
+    exit(70);
+  }
+  for (size_t index = 0; index + 1 < count; ++index) carrier_others[index].fiber.heap = &main_heap;
+  carrier_count = count;
+}
 
 static void carrier_migrate(Carrier *parked) { (void)parked; }
 #endif
+
+/* Sums every carrier's counters into the process's, with the largest peak of
+   each; footprint_bytes includes the young bytes still deferred. A carrier
+   thread may be changing its own while this reads, so it is exact only once no
+   fiber runs (the memory report) or in the simulation, whose carriers share one
+   thread. */
+static HeapTotals heap_totals_sum(void) {
+  HeapTotals sum = {0};
+  for (size_t index = 0; index < carrier_count; ++index) {
+    const HeapTotals *own = &carrier_at(index)->heap_totals;
+    sum.live_allocations += own->live_allocations;
+    sum.footprint_bytes += own->footprint_bytes + carrier_at(index)->pending_footprint_bytes;
+    if (own->peak_footprint_bytes > sum.peak_footprint_bytes) sum.peak_footprint_bytes = own->peak_footprint_bytes;
+    sum.live_fragments += own->live_fragments;
+    sum.fragment_footprint_bytes += own->fragment_footprint_bytes;
+    if (own->peak_fragment_footprint_bytes > sum.peak_fragment_footprint_bytes)
+      sum.peak_fragment_footprint_bytes = own->peak_fragment_footprint_bytes;
+    sum.live_heaps += own->live_heaps;
+    sum.cached_bytes += own->cached_bytes;
+  }
+  return sum;
+}
 
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
@@ -669,30 +744,52 @@ static AllocationArea *current_area(void) {
 }
 
 
+/* The footprints a peak check compares. With one carrier its own delta is the
+   process's. The simulation's two carriers share one thread, so it compares
+   their sum, as a single carrier would. With several carrier threads a peak is
+   each carrier's own and means little until PR 6 of parallel-scheduler.md
+   decides what the report's peaks mean. */
+#ifdef CHIMI_CARRIER_SIMULATION
+static int64_t footprint_now(void) {
+  int64_t sum = 0;
+  for (size_t index = 0; index < carrier_count; ++index)
+    sum += carrier_at(index)->heap_totals.footprint_bytes + carrier_at(index)->pending_footprint_bytes;
+  return sum;
+}
+
+static int64_t fragment_footprint_now(void) {
+  int64_t sum = 0;
+  for (size_t index = 0; index < carrier_count; ++index) sum += carrier_at(index)->heap_totals.fragment_footprint_bytes;
+  return sum;
+}
+#else
+static int64_t footprint_now(void) {
+  return carrier->heap_totals.footprint_bytes + carrier->pending_footprint_bytes;
+}
+
+static int64_t fragment_footprint_now(void) { return carrier->heap_totals.fragment_footprint_bytes; }
+#endif
+
 static void footprint_record_peak(void) {
-  size_t footprint = carrier->heap_totals.footprint_bytes + carrier->pending_footprint_bytes;
+  int64_t footprint = footprint_now();
   if (footprint > carrier->heap_totals.peak_footprint_bytes) carrier->heap_totals.peak_footprint_bytes = footprint;
 }
 
 static void footprint_add(size_t bytes) {
-  carrier->heap_totals.footprint_bytes += bytes;
+  carrier->heap_totals.footprint_bytes += (int64_t)bytes;
   footprint_record_peak();
 }
 
 static void footprint_sub(size_t bytes) {
   footprint_record_peak();
-  carrier->heap_totals.footprint_bytes -= bytes;
-}
-
-static size_t footprint_peak(void) {
-  footprint_record_peak();
-  return carrier->heap_totals.peak_footprint_bytes;
+  carrier->heap_totals.footprint_bytes -= (int64_t)bytes;
 }
 
 static void fragment_footprint_add(size_t bytes) {
-  carrier->heap_totals.fragment_footprint_bytes += bytes;
-  if (carrier->heap_totals.fragment_footprint_bytes > carrier->heap_totals.peak_fragment_footprint_bytes)
-    carrier->heap_totals.peak_fragment_footprint_bytes = carrier->heap_totals.fragment_footprint_bytes;
+  carrier->heap_totals.fragment_footprint_bytes += (int64_t)bytes;
+  int64_t footprint = fragment_footprint_now();
+  if (footprint > carrier->heap_totals.peak_fragment_footprint_bytes)
+    carrier->heap_totals.peak_fragment_footprint_bytes = footprint;
 }
 
 static void scope_add_live(AllocationScope *scope, size_t bytes) {
@@ -813,8 +910,8 @@ static void *allocate(size_t count, size_t size) {
     carrier->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
     if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
       ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
-      ++row->allocations;
-      row->allocated_bytes += bytes;
+      profile_count(&row->allocations, 1);
+      profile_count(&row->allocated_bytes, bytes);
     }
     return header + 1;
   }
@@ -833,8 +930,8 @@ static void *allocate(size_t count, size_t size) {
   }
   if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
     ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
-    ++row->allocations;
-    row->allocated_bytes += bytes;
+    profile_count(&row->allocations, 1);
+    profile_count(&row->allocated_bytes, bytes);
   }
   if (area->role != AREA_STATIC) {
     ++carrier->heap_totals.live_allocations;
@@ -1040,8 +1137,8 @@ static void channel_endpoints_reset(void) {
     memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
   handle_table_set_count(0);
   pthread_mutex_unlock(&handle_table.lock);
-  for (size_t index = 0; index < CARRIER_COUNT; ++index)
-    carrier_states[index].released_handle_count = 0;
+  for (size_t index = 0; index < carrier_count; ++index)
+    carrier_at(index)->released_handle_count = 0;
 }
 
 /* Frees one allocation that its area has already unlinked. */
@@ -1104,7 +1201,7 @@ static void area_free(AllocationArea *area) {
 static RuntimeHeap *heap_create(void) {
   RuntimeHeap *heap = calloc(1, sizeof(*heap));
   if (!heap) exhausted_memory();
-  heap->owner = next_heap_owner++;
+  heap->owner = atomic_fetch_add_explicit(&next_heap_owner, 1, memory_order_relaxed);
   heap->base.role = AREA_BASE;
   heap->base.heap = heap;
   ++carrier->heap_totals.live_heaps;
@@ -1185,6 +1282,14 @@ static void guard_host_stack(void) {
   if (bottom == 0 || here <= bottom || here - bottom <= 2 * (uintptr_t)STACK_HEADROOM_BYTES) return;
   carrier->host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES ? here - STACK_UNLIMITED_BYTES
                                                          : bottom + STACK_HEADROOM_BYTES;
+}
+
+/* Gives the calling thread carrier `index`, which carriers_create made, and
+   then the stack check the main thread has, so a carrier thread does both
+   before its first fiber. */
+static void carrier_thread_enter(size_t index) {
+  carrier_bind(carrier_at(index));
+  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
 }
 
 static bool host_stack_exhausted(void) {
@@ -2355,12 +2460,18 @@ static void json_string(FILE *output, const char *value) { json_bytes(output, va
 static void json_value(FILE *output, const ChimiValue *value);
 static void float_text(double value, char *output);
 
+/* Held while one telemetry event is written (emit_event, emit_dependency,
+   emit_scheduler_event). The scheduler's events come from its trace hook,
+   under the kernel lock, so this lock is taken after the kernel's. */
+static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_id,
                        uint64_t span, int64_t parent, const char *operation,
                        const ChimiControl *outcome) {
   const ChimiNode *node = &CHIMI_NODES[node_id];
   const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
   FILE *output = runtime->telemetry;
+  pthread_mutex_lock(&trace_lock);
   ++runtime->trace_events_constructed;
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output); json_string(output, event);
   fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
@@ -2374,12 +2485,14 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
   json_string(output, operation); fputs(",\"attributes\":{", output);
   if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); }
   fputs("}}\n", output);
+  pthread_mutex_unlock(&trace_lock);
 }
 
 static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t span,
                             uint64_t parent, const ChimiCallable *callable) {
   const ChimiNode *node = &CHIMI_NODES[node_id]; const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
   FILE *output = runtime->telemetry;
+  pthread_mutex_lock(&trace_lock);
   ++runtime->trace_events_constructed;
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":\"dependency_called\",\"sequence\":", output);
   fprintf(output, "%" PRIu64 ",\"computation\":", runtime->next_sequence++);
@@ -2394,14 +2507,15 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
   fprintf(output, ",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
           callable->requirement, callable->interface_symbol); json_string(output, callable->name);
   fprintf(output, ",\"method_semantic_id\":%u}}\n", callable->method);
+  pthread_mutex_unlock(&trace_lock);
 }
 
 /* Charges the current heap's allocations to `node` until profile_leave. */
 static uint32_t profile_enter(uint32_t node, const char *operation) {
   if (!profile_rows) return 0;
   ProfileRow *row = &profile_rows[node];
-  row->operation = operation;
-  ++row->evaluations;
+  __atomic_store_n(&row->operation, operation, __ATOMIC_RELAXED);
+  profile_count(&row->evaluations, 1);
   uint32_t outer = carrier->fiber.heap->profiled_node_plus_one;
   carrier->fiber.heap->profiled_node_plus_one = node + 1;
   return outer;
@@ -2412,7 +2526,7 @@ static void profile_leave(uint32_t outer) {
 
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
   if (runtime->silent) return parent;
-  uint64_t span = runtime->next_span++;
+  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
   if (runtime->full_trace) emit_event(runtime, "operation_started", node, span, (int64_t)parent, operation, NULL);
   return span;
 }
@@ -2935,8 +3049,8 @@ static bool release_queue_take(Carrier *queue, uint32_t *kind, uint64_t *id) {
 static bool carrier_release_take(uint32_t *kind, uint64_t *id) {
   if (release_queue_take(carrier, kind, id)) return true;
 #ifdef CHIMI_CARRIER_SIMULATION
-  for (size_t index = 0; index < CARRIER_COUNT; ++index)
-    if (release_queue_take(&carrier_states[index], kind, id)) return true;
+  for (size_t index = 0; index < carrier_count; ++index)
+    if (release_queue_take(carrier_at(index), kind, id)) return true;
 #endif
   return false;
 }
@@ -3230,7 +3344,7 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
-  if (!runtime->silent) runtime->next_span += node_count;
+  if (!runtime->silent) atomic_fetch_add_explicit(&runtime->next_span, node_count, memory_order_relaxed);
   return success(integer_value(raw));
 }
 
@@ -5988,6 +6102,10 @@ enum { CHIMI_ADDRESS_TEST = 3 };
 static TestLog *test_logs;
 static ChimiValue *process_address_value(uint32_t kind, uint64_t target);
 static uint64_t test_log_count;
+/* Held across every operation on the logs (invoke_test_log,
+   send_to_test_mailbox): a log's address travels to tasks on any carrier.
+   Nothing under it parks; it is taken before handle_table's lock. */
+static pthread_mutex_t test_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static ChimiValue *new_test_log(ValueKind kind) {
   if (test_log_count % 16 == 0) {
@@ -6032,8 +6150,8 @@ static bool test_log_push(TestLog *log, ChimiValue *value, const char *operation
   return true;
 }
 
-static ChimiControl *invoke_test_log(uint32_t intrinsic, ChimiValue **arguments,
-                                     uint32_t argument_count, uint32_t call_node) {
+static ChimiControl *invoke_test_log_locked(uint32_t intrinsic, ChimiValue **arguments,
+                                            uint32_t argument_count, uint32_t call_node) {
   ChimiControl *failure = NULL;
   switch (intrinsic) {
     case CHIMI_INTRINSIC_TEST_RECORDER:
@@ -6107,6 +6225,14 @@ static ChimiControl *invoke_test_log(uint32_t intrinsic, ChimiValue **arguments,
     }
   }
   return intrinsic_shape_defect(call_node);
+}
+
+static ChimiControl *invoke_test_log(uint32_t intrinsic, ChimiValue **arguments,
+                                     uint32_t argument_count, uint32_t call_node) {
+  pthread_mutex_lock(&test_log_lock);
+  ChimiControl *control = invoke_test_log_locked(intrinsic, arguments, argument_count, call_node);
+  pthread_mutex_unlock(&test_log_lock);
+  return control;
 }
 
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
@@ -6188,15 +6314,16 @@ static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, Alloca
   bool top_scope = scope->parent == NULL;
   HeapStatus status = allocation_scope_end(scope, NULL, &control);
   if (top_scope) {
-    runtime->scoped_total_allocated_bytes += scope->total_allocated_bytes;
+    (void)runtime;
+    ScopeTotals *totals = &carrier->scope_totals;
+    totals->total_allocated_bytes += scope->total_allocated_bytes;
     for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-      runtime->scoped_allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
-    if (scope->peak_live_bytes > runtime->scoped_peak_live_bytes)
-      runtime->scoped_peak_live_bytes = scope->peak_live_bytes;
-    runtime->scoped_retained_bytes += scope->live_bytes;
-    runtime->scoped_collections += scope->collections;
-    runtime->scoped_full_collections += scope->full_collections;
-    runtime->scoped_scanned_allocations += scope->scanned_allocations;
+      totals->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
+    if (scope->peak_live_bytes > totals->peak_live_bytes) totals->peak_live_bytes = scope->peak_live_bytes;
+    totals->retained_bytes += scope->live_bytes;
+    totals->collections += scope->collections;
+    totals->full_collections += scope->full_collections;
+    totals->scanned_allocations += scope->scanned_allocations;
   }
   return status == HEAP_OK ? control : defect(FOREIGN_POINTER_DEFECT, -1);
 }
@@ -6382,6 +6509,8 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
 static uint64_t random_state[4];
 static bool random_seed_given, random_read;
 static uint64_t random_seed;
+/* Guards the stream and random_read: every carrier draws from the one stream. */
+static pthread_mutex_t random_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint64_t splitmix64(uint64_t *state) {
   uint64_t mixed = (*state += UINT64_C(0x9e3779b97f4a7c15));
@@ -6405,6 +6534,7 @@ static uint64_t os_random_seed(void) {
 }
 
 static uint64_t random_next(void) {
+  pthread_mutex_lock(&random_lock);
   if (!random_read) {
     uint64_t mix = random_seed_given ? random_seed : os_random_seed();
     for (int index = 0; index < 4; ++index) random_state[index] = splitmix64(&mix);
@@ -6419,6 +6549,7 @@ static uint64_t random_next(void) {
   state[0] ^= state[3];
   state[2] ^= shifted;
   state[3] = rotate_left(state[3], 45);
+  pthread_mutex_unlock(&random_lock);
   return result;
 }
 
@@ -7040,7 +7171,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_CONSTRUCTOR) return construct_value(callable->symbol, arguments);
   if (callable->kind == CALL_DEPENDENCY) {
     if (!runtime->silent) {
-      uint64_t dependency_span = runtime->next_span++;
+      uint64_t dependency_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
       emit_dependency(runtime, call_node, dependency_span, span, callable);
     }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
@@ -7120,6 +7251,12 @@ static ChimiFiberResult child_task_result(ChimiControl *control) {
 
 static ChimiFiberResult chimi_task_entry(void *raw_context) {
   ChimiTaskContext *context = raw_context;
+  /* With one carrier every thread may use carrier 0; with several, a thread
+     that never entered its carrier would share carrier 0's scratch. */
+  if (carrier_count > 1 && !(carrier->bound && pthread_equal(carrier->thread, pthread_self()))) {
+    fputs("Chimi runtime defect: a task started on a thread without its own carrier\n", stderr);
+    abort();
+  }
   carrier->fiber.target = NULL;
   if (context->entry) {
     carrier->fiber.heap = &main_heap;
@@ -8105,7 +8242,8 @@ static ChimiControl *invoke_cause_operation(ChimiRuntime *runtime, uint32_t intr
    the sender keeps the message. A message carrying a Receiver or Completion would
    need the capability transfer a process receive makes, so a test mailbox with
    room refuses one as a defect. */
-static ChimiControl *send_to_test_mailbox(ChimiValue *address, ChimiValue *message, uint32_t call_node) {
+static ChimiControl *send_to_test_mailbox_locked(ChimiValue *address, ChimiValue *message,
+                                                 uint32_t call_node) {
   uint64_t id = address->as.address.target;
   if (id == 0 || id > test_log_count || test_logs[id - 1].kind != VALUE_TEST_MAILBOX) abort();
   TestLog *log = &test_logs[id - 1];
@@ -8134,6 +8272,13 @@ static ChimiControl *send_to_test_mailbox(ChimiValue *address, ChimiValue *messa
   }
   test_log_append(log, fragment);
   return success(void_value());
+}
+
+static ChimiControl *send_to_test_mailbox(ChimiValue *address, ChimiValue *message, uint32_t call_node) {
+  pthread_mutex_lock(&test_log_lock);
+  ChimiControl *control = send_to_test_mailbox_locked(address, message, call_node);
+  pthread_mutex_unlock(&test_log_lock);
+  return control;
 }
 
 static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
@@ -8295,6 +8440,9 @@ typedef struct {
 typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
 static ProcessDefect *process_defects;
 static size_t process_defect_count;
+/* A body's fiber adds its message on its carrier; the termination report,
+   under the kernel lock, takes it. */
+static pthread_mutex_t process_defect_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void remember_process_defect(const char *message) {
   /* A body resumed with a terminal cancel already has its end decided by the
@@ -8303,22 +8451,28 @@ static void remember_process_defect(const char *message) {
   if (chimi_fiber_cancel_is_terminal()) return;
   ChimiProcessRequest self = {.kind = CHIMI_REQUEST_PROCESS_SELF};
   if (scheduler_request(&self) == CHIMI_FIBER_CANCEL || self.status != CHIMI_RESPONSE_OK) return;
-  ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
   char *copy = strdup(message ? message : "defect");
-  if (!grown || !copy) exhausted_memory();
+  if (!copy) exhausted_memory();
+  pthread_mutex_lock(&process_defect_lock);
+  ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
+  if (!grown) exhausted_memory();
   process_defects = grown;
   process_defects[process_defect_count++] = (ProcessDefect){self.address, copy};
+  pthread_mutex_unlock(&process_defect_lock);
 }
 
 /* The remembered message of `incarnation`, handed to the caller to free, or NULL. */
 static char *take_process_defect(uint64_t incarnation) {
+  char *message = NULL;
+  pthread_mutex_lock(&process_defect_lock);
   for (size_t index = 0; index < process_defect_count; ++index)
     if (process_defects[index].incarnation == incarnation) {
-      char *message = process_defects[index].message;
+      message = process_defects[index].message;
       process_defects[index] = process_defects[--process_defect_count];
-      return message;
+      break;
     }
-  return NULL;
+  pthread_mutex_unlock(&process_defect_lock);
+  return message;
 }
 
 /* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
@@ -8351,7 +8505,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
       arguments[argument_count++] = argument_roots[0];
     }
   }
-  uint64_t span = runtime->next_span++;
+  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
   if (!control)
     control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
                      new_environment(0));
@@ -10057,35 +10211,92 @@ static char *fs_path(const ChimiValue *path) {
 
 /* The open files. A handle is `slot | generation << 32`, so a handle used after
    its file was closed names a slot whose generation moved on and fails with
-   FS_CLOSED instead of reaching another file. Only the thread that runs Chimi
-   code touches the table. */
+   FS_CLOSED instead of reaching another file. A handle is an integer that any
+   task, on any carrier, may hold, so the table is behind fs_file_lock, and a
+   read or write takes the descriptor for the length of its system call
+   (fs_take, fs_give). A close during one leaves the descriptor open until it
+   is given back, so the number is not reused under the call. The slot keeps
+   `fd` until then, and only a slot without one is reused. */
 typedef struct {
   int fd;
   uint32_t generation;
   bool open;
+  uint32_t users;
 } FsFile;
 static FsFile *fs_files;
 static size_t fs_file_count;
+static pthread_mutex_t fs_file_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int64_t fs_insert(int fd) {
+  pthread_mutex_lock(&fs_file_lock);
   size_t slot = 0;
-  while (slot < fs_file_count && fs_files[slot].open) ++slot;
+  while (slot < fs_file_count && (fs_files[slot].open || fs_files[slot].fd >= 0)) ++slot;
   if (slot == fs_file_count) {
     FsFile *grown = realloc(fs_files, (fs_file_count + 1) * sizeof(*fs_files));
     if (!grown) exhausted_memory();
     fs_files = grown;
-    fs_files[fs_file_count++] = (FsFile){-1, 0, false};
+    fs_files[fs_file_count++] = (FsFile){-1, 0, false, 0};
   }
   fs_files[slot].fd = fd;
   fs_files[slot].open = true;
-  return (int64_t)slot | ((int64_t)fs_files[slot].generation << 32);
+  int64_t handle = (int64_t)slot | ((int64_t)fs_files[slot].generation << 32);
+  pthread_mutex_unlock(&fs_file_lock);
+  return handle;
 }
 
+/* The open file `handle` names, or NULL. The caller holds fs_file_lock. */
 static FsFile *fs_get(int64_t handle) {
   uint64_t slot = (uint64_t)handle & 0xffffffffu;
   if (handle < 0 || slot >= fs_file_count) return NULL;
   FsFile *file = &fs_files[slot];
   return file->open && (int64_t)file->generation == handle >> 32 ? file : NULL;
+}
+
+/* The descriptor of open `handle`, to be given back with fs_give, or -1 when
+   the handle is closed. */
+static int fs_take(int64_t handle) {
+  pthread_mutex_lock(&fs_file_lock);
+  FsFile *file = fs_get(handle);
+  int fd = -1;
+  if (file) {
+    ++file->users;
+    fd = file->fd;
+  }
+  pthread_mutex_unlock(&fs_file_lock);
+  return fd;
+}
+
+/* Gives back what fs_take(handle) returned; the last user of a closed file
+   closes its descriptor. */
+static void fs_give(int64_t handle) {
+  pthread_mutex_lock(&fs_file_lock);
+  FsFile *file = &fs_files[(uint64_t)handle & 0xffffffffu];
+  int fd = -1;
+  if (--file->users == 0 && !file->open) {
+    fd = file->fd;
+    file->fd = -1;
+  }
+  pthread_mutex_unlock(&fs_file_lock);
+  if (fd >= 0) (void)close(fd);
+}
+
+/* Closes `handle`; false when it was already closed. As the interpreter,
+   which drops the file, a close error is not reported. */
+static bool fs_close(int64_t handle) {
+  pthread_mutex_lock(&fs_file_lock);
+  FsFile *file = fs_get(handle);
+  int fd = -1;
+  if (file) {
+    file->open = false;
+    ++file->generation;
+    if (file->users == 0) {
+      fd = file->fd;
+      file->fd = -1;
+    }
+  }
+  pthread_mutex_unlock(&fs_file_lock);
+  if (fd >= 0) (void)close(fd);
+  return file != NULL;
 }
 
 /* A descriptor that is not a regular file (a pipe, a terminal, a socket) is made
@@ -10193,52 +10404,56 @@ static char *fs_read_chunk(void) {
 }
 
 static ChimiControl *fs_read(ChimiRuntime *runtime, int64_t handle) {
-  FsFile *file = fs_get(handle);
-  if (!file) {
-    ChimiValue *values[] = {integer_value(FS_CLOSED), bytes_from("", 0), text_value("file is closed")};
-    return success(fs_tuple(values, 3));
-  }
   for (;;) {
-    /* Read again on every pass: the wait below parks, and a later step may resume
-       this fiber on another carrier. */
+    /* Take the descriptor and the buffer again on every pass: the wait below
+       parks, another task may close the handle meanwhile, and a later step
+       may resume this fiber on another carrier. */
+    int fd = fs_take(handle);
+    if (fd < 0) {
+      ChimiValue *values[] = {integer_value(FS_CLOSED), bytes_from("", 0), text_value("file is closed")};
+      return success(fs_tuple(values, 3));
+    }
     char *chunk = fs_read_chunk();
-    ssize_t count = read(file->fd, chunk, FS_READ_CHUNK_BYTES);
+    ssize_t count = read(fd, chunk, FS_READ_CHUNK_BYTES);
+    int error = errno;
+    fs_give(handle);
     if (count >= 0) {
       ChimiValue *values[] = {integer_value(count > 0 ? 1 : 0), bytes_from(chunk, (size_t)count), text_value("")};
       return success(fs_tuple(values, 3));
     }
-    if (errno == EINTR) continue;
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      if (!fs_wait(runtime, file->fd, CHIMI_IO_READABLE)) return cancelled();
-      /* The wait may have let another task close this handle. */
-      file = fs_get(handle);
-      if (!file) return fs_read(runtime, handle);
+    if (error == EINTR) continue;
+    if (error == EAGAIN || error == EWOULDBLOCK) {
+      if (!fs_wait(runtime, fd, CHIMI_IO_READABLE)) return cancelled();
       continue;
     }
-    int error = errno;
     ChimiValue *values[] = {integer_value(fs_failure_code(error)), bytes_from("", 0), text_value(strerror(error))};
     return success(fs_tuple(values, 3));
   }
 }
 
 static ChimiControl *fs_write(ChimiRuntime *runtime, int64_t handle, const ChimiValue *bytes) {
-  if (!fs_get(handle)) return success(fs_status(FS_CLOSED, "file is closed"));
   size_t written = 0;
-  while (written < bytes->as.text.length) {
-    FsFile *file = fs_get(handle);
-    if (!file) return success(fs_status(FS_CLOSED, "file is closed"));
-    ssize_t count = write(file->fd, bytes->as.text.bytes + written, bytes->as.text.length - written);
+  do {
+    int fd = fs_take(handle);
+    if (fd < 0) return success(fs_status(FS_CLOSED, "file is closed"));
+    if (written == bytes->as.text.length) {
+      fs_give(handle);
+      break;
+    }
+    ssize_t count = write(fd, bytes->as.text.bytes + written, bytes->as.text.length - written);
+    int error = errno;
+    fs_give(handle);
     if (count > 0) {
       written += (size_t)count;
       continue;
     }
-    if (count < 0 && errno == EINTR) continue;
-    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      if (!fs_wait(runtime, file->fd, CHIMI_IO_WRITABLE)) return cancelled();
+    if (count < 0 && error == EINTR) continue;
+    if (count < 0 && (error == EAGAIN || error == EWOULDBLOCK)) {
+      if (!fs_wait(runtime, fd, CHIMI_IO_WRITABLE)) return cancelled();
       continue;
     }
-    return success(fs_errno_status(count == 0 ? EIO : errno));
-  }
+    return success(fs_errno_status(count == 0 ? EIO : error));
+  } while (written < bytes->as.text.length);
   return success(fs_status(0, ""));
 }
 
@@ -10283,13 +10498,7 @@ static ChimiControl *invoke_fs_operation(ChimiRuntime *runtime, uint32_t intrins
       return fs_write(runtime, arguments[0]->as.integer, arguments[1]);
     case CHIMI_INTRINSIC_FS_HOST_CLOSE: {
       if (arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      FsFile *file = fs_get(arguments[0]->as.integer);
-      if (!file) return success(fs_status(FS_CLOSED, "file is closed"));
-      /* As the interpreter, which drops the file: a close error is not reported. */
-      (void)close(file->fd);
-      file->open = false;
-      file->fd = -1;
-      ++file->generation;
+      if (!fs_close(arguments[0]->as.integer)) return success(fs_status(FS_CLOSED, "file is closed"));
       return success(fs_status(0, ""));
     }
     case CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY: return fs_temporary_directory(call_node);
@@ -11653,6 +11862,29 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
     fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
     return true;
   }
+  footprint_record_peak();
+  HeapTotals totals = heap_totals_sum();
+  uint64_t unscoped_allocated_bytes = 0, capture_transfer_probes = 0, copied_values = 0, copied_bytes = 0;
+  size_t process_heap_peak_value_bytes = 0;
+  ScopeTotals scoped = {0};
+  for (size_t index = 0; index < carrier_count; ++index) {
+    const Carrier *own = carrier_at(index);
+    const ScopeTotals *scopes = &own->scope_totals;
+    scoped.total_allocated_bytes += scopes->total_allocated_bytes;
+    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
+      scoped.allocated_bytes_by_kind[kind] += scopes->allocated_bytes_by_kind[kind];
+    if (scopes->peak_live_bytes > scoped.peak_live_bytes) scoped.peak_live_bytes = scopes->peak_live_bytes;
+    scoped.retained_bytes += scopes->retained_bytes;
+    scoped.collections += scopes->collections;
+    scoped.full_collections += scopes->full_collections;
+    scoped.scanned_allocations += scopes->scanned_allocations;
+    unscoped_allocated_bytes += own->unscoped_allocated_bytes;
+    capture_transfer_probes += own->capture_transfer_probes;
+    copied_values += own->copied_values;
+    copied_bytes += own->copied_bytes;
+    if (own->process_heap_peak_value_bytes > process_heap_peak_value_bytes)
+      process_heap_peak_value_bytes = own->process_heap_peak_value_bytes;
+  }
   fprintf(output,
           "{\"schema\":\"chimi.runtime-memory.v1\",\"scoped_total_allocated_bytes\":%zu,"
           "\"scoped_allocated_bytes_by_kind\":{\"bytes\":%zu,\"values\":%zu,"
@@ -11660,44 +11892,44 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
           "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
           "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
           "\"scoped_collections\":%" PRIu64 ",\"scoped_full_collections\":%" PRIu64
-          ",\"scoped_scanned_allocations\":%" PRIu64 ",\"unscoped_allocated_bytes\":%zu,\"peak_footprint_bytes\":%zu,"
+          ",\"scoped_scanned_allocations\":%" PRIu64 ",\"unscoped_allocated_bytes\":%" PRIu64 ",\"peak_footprint_bytes\":%zu,"
           "\"peak_fragment_footprint_bytes\":%zu,\"capture_transfer_probes\":%" PRIu64
           ",\"heap_chunks_live\":%zu,\"heap_chunk_bytes_peak\":%zu,\"fragments_live\":%zu"
           ",\"fragment_bytes_peak\":%zu,\"process_heap_peak_value_bytes\":%zu"
           ",\"copied_values\":%" PRIu64 ",\"copied_bytes\":%" PRIu64
           ",\"trace_events_constructed\":%" PRIu64 ",\"memberships_live\":%zu,\"task_records_peak\":%zu}\n",
-          runtime->scoped_total_allocated_bytes,
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_BYTES],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CONTROL],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT] +
-            runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FRAME_ENVIRONMENT],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_VALUE_POINTERS],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_FIELDS],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_CALLABLE],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_MAP_NODE],
-          runtime->scoped_allocated_bytes_by_kind[ALLOCATION_LIST_NODE],
-          runtime->scoped_peak_live_bytes,
-          runtime->scoped_retained_bytes,
-          runtime->scoped_collections,
-          runtime->scoped_full_collections,
-          runtime->scoped_scanned_allocations,
-          carrier->unscoped_allocated_bytes,
-          footprint_peak(),
-          carrier->heap_totals.peak_fragment_footprint_bytes,
-          carrier->capture_transfer_probes,
+          scoped.total_allocated_bytes,
+          scoped.allocated_bytes_by_kind[ALLOCATION_BYTES],
+          scoped.allocated_bytes_by_kind[ALLOCATION_VALUE],
+          scoped.allocated_bytes_by_kind[ALLOCATION_CONTROL],
+          scoped.allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT] +
+            scoped.allocated_bytes_by_kind[ALLOCATION_FRAME_ENVIRONMENT],
+          scoped.allocated_bytes_by_kind[ALLOCATION_VALUE_POINTERS],
+          scoped.allocated_bytes_by_kind[ALLOCATION_FIELDS],
+          scoped.allocated_bytes_by_kind[ALLOCATION_CALLABLE],
+          scoped.allocated_bytes_by_kind[ALLOCATION_MAP_NODE],
+          scoped.allocated_bytes_by_kind[ALLOCATION_LIST_NODE],
+          scoped.peak_live_bytes,
+          scoped.retained_bytes,
+          scoped.collections,
+          scoped.full_collections,
+          scoped.scanned_allocations,
+          unscoped_allocated_bytes,
+          (size_t)totals.peak_footprint_bytes,
+          (size_t)totals.peak_fragment_footprint_bytes,
+          capture_transfer_probes,
           /* Reported per allocation: young chunks are not counted separately. */
-          carrier->heap_totals.live_allocations,
-          footprint_peak(),
-          carrier->heap_totals.live_fragments,
-          carrier->heap_totals.peak_fragment_footprint_bytes,
+          (size_t)totals.live_allocations,
+          (size_t)totals.peak_footprint_bytes,
+          (size_t)totals.live_fragments,
+          (size_t)totals.peak_fragment_footprint_bytes,
 #if CHIMI_PROCESS_KERNEL
-          carrier->process_heap_peak_value_bytes,
+          process_heap_peak_value_bytes,
 #else
           (size_t)0,
 #endif
-          carrier->copied_values,
-          carrier->copied_bytes,
+          copied_values,
+          copied_bytes,
           runtime->trace_events_constructed,
 #if CHIMI_PROCESS_KERNEL
           chimi_scheduler_live_memberships(),
@@ -11804,6 +12036,7 @@ static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
 static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
   ChimiRuntime *runtime = context;
   FILE *output = runtime->telemetry;
+  pthread_mutex_lock(&trace_lock);
   ++runtime->trace_events_constructed;
   fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
   json_string(output, scheduler_event_name(event));
@@ -11838,6 +12071,7 @@ static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *
             event->time, event->cause);
   if (process) emit_process_fields(runtime, output, event, true);
   fputs("}}\n", output);
+  pthread_mutex_unlock(&trace_lock);
 }
 
 /* The operation a parked task waits on, by its scheduler request kind. */
@@ -12380,7 +12614,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* A fatal runtime error exits from wherever it is; queued console lines still
      go out. A second stop signal (end_by_signal) skips this and drops them. */
-  carrier_bind(&carrier_states[0]);
+  carrier_bind(&carrier_first);
   atexit(console_drain_all);
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);

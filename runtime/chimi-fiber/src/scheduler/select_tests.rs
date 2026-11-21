@@ -357,11 +357,11 @@ fn a_receiver_that_is_not_the_callers_defects_it() {
     );
 }
 
-/// Sends on `a` after 5 ms.
+/// Sends on `a` at the shared instant five milliseconds in.
 unsafe extern "C" fn wake_at_five(context: *mut c_void) -> ChimiFiberResult {
-    let a = unsafe { *context.cast::<Channel>() };
+    let (a, at) = unsafe { *context.cast::<(Channel, i64)>() };
     let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
-    sleep.value = now() + 5_000_000;
+    sleep.value = at;
     if !call(&mut sleep) {
         return cancelled();
     }
@@ -369,12 +369,16 @@ unsafe extern "C" fn wake_at_five(context: *mut c_void) -> ChimiFiberResult {
     succeeded(0)
 }
 
-/// Wakes after 5 ms too, behind the sender, and then holds the processor
-/// for 40 ms, so the select woken by the send reissues only after its
-/// scope's 20 ms deadline.
-unsafe extern "C" fn hog_after_five(_context: *mut c_void) -> ChimiFiberResult {
+/// Wakes at the same instant as the sender, so its timer fires in the same
+/// pass and it runs behind the sender but ahead of the select the send
+/// wakes, and then holds the processor for 40 ms, so that select reissues
+/// only after its scope's 20 ms deadline. A deadline of its own, read a
+/// moment later, could fall after the sender's wake and let the select run
+/// first.
+unsafe extern "C" fn hog_after_five(context: *mut c_void) -> ChimiFiberResult {
+    let at = unsafe { *context.cast::<i64>() };
     let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
-    sleep.value = now() + 5_000_000;
+    sleep.value = at;
     if !call(&mut sleep) {
         return cancelled();
     }
@@ -405,8 +409,9 @@ unsafe extern "C" fn scope_refuses_a_woken_select(_context: *mut c_void) -> Chim
     let mut enter = blank(REQUEST_SCOPE_ENTER);
     enter.value = now() + 20_000_000;
     call(&mut enter);
-    start(wake_at_five, Box::into_raw(Box::new(a)).cast());
-    start(hog_after_five, ptr::null_mut());
+    let five = now() + 5_000_000;
+    start(wake_at_five, Box::into_raw(Box::new((a, five))).cast());
+    start(hog_after_five, Box::into_raw(Box::new(five)).cast());
     // Woken by `a`, but the scope fires before the select is asked again.
     note(select(&[on_channel(b), on_channel(a)]).unwrap_or(-1));
     let mut exit = blank(REQUEST_SCOPE_EXIT);
