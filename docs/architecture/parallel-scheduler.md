@@ -113,7 +113,10 @@ function-local static, so new state gets an owner when it is added.
     (`process_defect_lock`), and binding handles (PR 5a-2). A read or write
     takes a file's descriptor for the length of its system call, and a close
     during one leaves the descriptor to the last user to close, so the
-    number is never reused under a call.
+    number is never reused under the system call. A read or write that
+    waits for readiness gives the descriptor back first, so, as with one
+    carrier, a close during the wait leaves the reactor watching a number
+    that may be reused; `fs_close` does not withdraw the wait.
   - The operation profile's rows (`profile_rows`), allocated once at startup
     and counted with relaxed atomic adds.
   - The `random` provider's one seeded stream, behind `random_lock`. It is
@@ -125,11 +128,12 @@ function-local static, so new state gets an owner when it is added.
 
 Rules for the steps that run more than one carrier:
 
-- `carrier` becomes a call to an accessor that the compiler cannot inline or
-  treat as pure, so it is read again after every park. A thread-local variable
-  is not enough: a compiler may keep a thread-local's address in a register
-  across a call, and a fiber resumed on another thread would then use the old
-  thread's state.
+- `carrier` is a thread-local, which is enough only because a fiber never
+  leaves the thread of its first resume: a compiler may keep a
+  thread-local's address in a register across a call, so a fiber that
+  migrated would use the old thread's state. Stealing (step 4) must either
+  keep fibers pinned or make `carrier` an accessor that is read again after
+  every park.
 - No code keeps a pointer into the carrier across a scheduler request.
   `scheduler_request` reads the carrier again after it resumes and writes the
   saved fiber context into whichever carrier that is. `flush_channel_releases`
@@ -447,7 +451,18 @@ four keep one carrier.
        With several carriers a task started on a thread that never entered
        its carrier aborts. Peaks are recorded per carrier against its own
        delta (the simulation compares the sum over its two carriers), so
-       with one carrier every number is as before.
+       with one carrier every number is as before. `carrier_thread_enter`
+       also runs the host stack check, which only a program without the
+       scheduler arms, so a carrier thread's is off as the main thread's
+       is under the scheduler.
+     - Left for 5a-2, before 5c starts real threads: binding handles, and
+       the console queues, standard input and the signal installers
+       (`console_queues`, `console_streams`, `standard_input`,
+       `install_user_signals`, `chimi_binding_prepare_children`), which
+       are filed as carrier 0's but which a fiber on any carrier reaches,
+       since process incarnations are placed on every carrier. Each needs
+       a lock that is never held across a park, or its work sent to
+       carrier 0.
    - 5b, kernel pieces on one thread: the carrier id passed through
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one
