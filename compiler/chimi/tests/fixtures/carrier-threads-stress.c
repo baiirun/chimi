@@ -26,7 +26,8 @@
    Three single-threaded checks come first: a close during a read leaves the
    descriptor open until the read gives it back, a module constant compacts
    on one carrier as any list does, and a task started on a thread that
-   never entered its carrier aborts.
+   never entered its carrier aborts, and carriers that fail at once exit
+   once with the fatal code.
 
    usage: carrier-threads-stress     prints "ok" */
 #include "runtime.c"
@@ -580,8 +581,10 @@ static void *start_a_task_unbound(void *unused) {
 }
 
 /* With several carriers, a thread that never entered its own carrier aliases
-   carrier 0; starting a task there aborts before touching it. */
-static void a_task_on_an_unbound_thread_aborts(void) {
+   carrier 0; starting a task there aborts before touching it. Process bodies
+   make the same check (require_bound_carrier), but their entry is built only
+   into the process kernel, which this fixture does not link. */
+static void a_fiber_on_an_unbound_thread_aborts(void *(*start)(void *), const char *what) {
   fflush(NULL);
   pid_t child = fork();
   CHECK(child >= 0, "fork");
@@ -589,13 +592,13 @@ static void a_task_on_an_unbound_thread_aborts(void) {
     int quiet = open("/dev/null", O_WRONLY);
     if (quiet >= 0) dup2(quiet, STDERR_FILENO);
     pthread_t thread;
-    if (pthread_create(&thread, NULL, start_a_task_unbound, NULL) != 0) _exit(2);
+    if (pthread_create(&thread, NULL, start, NULL) != 0) _exit(2);
     pthread_join(thread, NULL);
     _exit(0);
   }
   int status = 0;
   CHECK(waitpid(child, &status, 0) == child, "wait for the child");
-  CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT, "the unbound task ran (status %d)", status);
+  CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT, "the unbound %s ran (status %d)", what, status);
 }
 
 int main(void) {
@@ -607,7 +610,7 @@ int main(void) {
   a_constant_compacts_on_one_carrier();
   carriers_create(THREADS + 1);
   CHECK(carrier_count == THREADS + 1, "%zu carriers", carrier_count);
-  a_task_on_an_unbound_thread_aborts();
+  a_fiber_on_an_unbound_thread_aborts(start_a_task_unbound, "task");
 
   runtime.telemetry = tmpfile();
   CHECK(runtime.telemetry, "tmpfile");

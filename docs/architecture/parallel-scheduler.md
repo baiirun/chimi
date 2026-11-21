@@ -900,6 +900,34 @@ four keep one carrier.
        test forces an unstarted body from carrier 0, and a program stops
        six busy processes with a 50 ms deadline on four carriers.
    - 5e, the looped stress programs at 2 to 8 carriers.
+     - 5e as landed: tests/carrier_stress.rs builds five programs whose
+       value does not depend on interleaving or timing, and runs each on 1,
+       2, 4 and 8 carriers (10 or 20 times each in the suite): six
+       processes in a ring passing four tokens 3000 hops each; six
+       receivers of one queue, half in `Select.first` and half in
+       `Channel.receive`, taking 1 to 4000 with none lost or doubled; four
+       registered workers that defect after every second answer, about a
+       hundred restarts with 10 ms shutdown deadlines, a lost round asked
+       again after 20 ms; twenty rounds of six processes stopped with a
+       5 ms deadline while their `Resource.scoped` release sleeps, so each
+       cancellation unwind parks at home and is forced; and four processes
+       opening, echoing over and closing loopback sockets 25 times each.
+       Before landing, each ran 150 times at 2, 4 and 8 carriers (2250
+       runs) on the debug fiber archive with no failure.
+       Hazards closed: a process body now makes the bound-carrier check a
+       task makes (`require_bound_carrier`); the fixture tests it through
+       the task entry, since the process entry is built only into the
+       process kernel. A fatal runtime error (exit 70) now goes through
+       `runtime_exit`, so only the first failing carrier calls `exit`
+       (which drains queued console lines) and any other leaves with
+       `_exit(70)`: concurrent `exit` calls are undefined by POSIX. glibc
+       serializes them itself, so no test here tells the two apart.
+       Left as known: a binding handle's release runs under the kernel
+       lock, so a slow release (a socket close that lingers, a database
+       close that writes) stalls every carrier for its length; PR 6's
+       measurements say whether it matters. `strerror` is thread-safe for
+       known codes on glibc 2.32 and later and on macOS; its message for an
+       unknown code can be overwritten by another thread.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.
    Only carrier 0 polls descriptors, children and the signal pipe, since
