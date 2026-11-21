@@ -39,7 +39,7 @@ MUTATIONS = [
     )]),
     dict(name="M7 forced body waiting on home re-arms its deadline", file=P, targets=T, edits=[(
         "if stopping.timer.is_none() && !(stopping.forced && waits_on_home) {",
-        "if stopping.timer.is_none() {",
+        "if stopping.timer.is_none() && !(stopping.forced && waits_on_home && false) {",
     )]),
     dict(name="M8 an end decided while running elsewhere is dropped", file=S, targets=T, edits=[(
         "        let end = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());",
