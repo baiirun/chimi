@@ -586,6 +586,29 @@ four keep one carrier.
        for another carrier; a reactor, child or signal wait registered off
        carrier 0; a new earliest timer; stop), and `Locked` writes the
        bytes after it unlocks.
+       - As landed: `scheduler/wake.rs` holds the pipes (opened with
+         `pipe2` on Linux, so a fork cannot inherit them) and the marks.
+         `wake_carrier` marks a carrier other than the current one; it is
+         called by `enqueue` (every ready push), by the job push, by a
+         descriptor, child or signal wait registered off carrier 0, and by
+         `insert_timer` (every timer) when the timer is the new earliest.
+         `Locked::with` takes the marks under the lock and writes them
+         after the guard drops; a test-only assertion checks that no wake
+         is written while the lock is held, and a debug assertion that no
+         mark is left from an access that bypassed `Locked`. The idle
+         sleep, the descriptor wait and the stalled root's signal wait
+         watch the carrier's own pipe and empty every pipe that woke them;
+         only carrier 0 also watches the signal pipe. A task may not wait
+         on a wake pipe. With one carrier no pipe exists, and the wait
+         descriptors are held in a fixed array, so nothing allocates.
+         Tests in `scheduler.rs` cover each mark, the write after unlock,
+         and each wait ending at its carrier's byte. Mutants in
+         `wake_pipe_mutations.py`, all 19 killed.
+       - Left for 5b-6 (review): `idle_step` still lets any carrier build a
+         descriptor wait or a timed sleep; 5b-6 restricts both to carrier
+         0, which the marks already assume. Left for 5c: the stop mark, and
+         turning a failed pipe (for example EMFILE) into a scheduler error
+         instead of a panic, since only tests open pipes today.
      - 5b-6: global idle. Every idle carrier fires due timers first. A
        carrier other than 0 with nothing to do parks on its descriptor;
        carrier 0 decides quiescence, deadlock or a virtual-time jump only
