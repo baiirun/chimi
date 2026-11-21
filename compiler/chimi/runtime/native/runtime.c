@@ -462,6 +462,12 @@ static AllocationArea static_area = {.role = AREA_STATIC};
    allocation that moves between heaps or carriers can never carry a stale epoch
    that a later pass reuses (parallel-scheduler.md, "Runtime state by owner"). */
 static _Atomic uint64_t next_mark_epoch = 1;
+/* Epochs a carrier takes from next_mark_epoch at once. A loop pass collects,
+   so one atomic add per pass made the counter's cache line bounce between
+   carriers on every pass: a counting loop ran 1.7 times faster on four
+   carriers instead of close to four (step 3 PR 6). One carrier alone takes
+   consecutive blocks, so it sees the same epochs as with a counter. */
+enum { MARK_EPOCH_BLOCK = 4096 };
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
    and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
@@ -583,6 +589,10 @@ typedef struct {
   bool collecting_full;
   bool collecting_foreign;
   uint64_t collecting_epoch;
+  /* This carrier's unused mark epochs, [next_epoch, end_epoch): taken from
+     next_mark_epoch a block at a time (take_mark_epoch). */
+  uint64_t next_epoch;
+  uint64_t end_epoch;
   PointerStack mark_stack;
   PointerStack copy_stack;
   /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
@@ -2033,12 +2043,22 @@ static void sweep_survivors(AllocationScope *scope) {
    promotes the marked ones. A full pass also marks and sweeps the survivors.
    Returns HEAP_FOREIGN_POINTER, after collecting as usual, when a root reaches a
    value in another heap or in a fragment. */
+/* A mark epoch no pass on any carrier has used. */
+static uint64_t take_mark_epoch(void) {
+  if (carrier->next_epoch == carrier->end_epoch) {
+    uint64_t start = atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);
+    if (start > UINT64_MAX - MARK_EPOCH_BLOCK) {
+      fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
+    }
+    carrier->next_epoch = start;
+    carrier->end_epoch = start + MARK_EPOCH_BLOCK;
+  }
+  return carrier->next_epoch++;
+}
+
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  carrier->collecting_epoch = atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);
-  if (carrier->collecting_epoch == UINT64_MAX) {
-    fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
-  }
+  carrier->collecting_epoch = take_mark_epoch();
   flush_young_counts(scope);
   carrier->collecting_scope = scope;
   carrier->collecting_full = full;

@@ -1,11 +1,11 @@
-//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]`
+//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>] [--carriers <n>]`
 
 use chimi::process_lab::catalogue::{self, Stage};
 use chimi::process_lab::{Backend, Kind, Options, baseline_warnings, run};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]";
+const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>] [--carriers <n>]";
 
 fn main() -> ExitCode {
     match lab() {
@@ -85,6 +85,16 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                         .map_err(|_| format!("`{factor}` is not a regression factor"))?,
                 );
             }
+            "--carriers" => {
+                let count = value("--carriers")?;
+                // Digits only, as the runner takes them: `parse` alone
+                // would accept a leading `+`.
+                options.carriers = Some(&count)
+                    .filter(|count| count.bytes().all(|byte| byte.is_ascii_digit()))
+                    .and_then(|count| count.parse::<u32>().ok())
+                    .filter(|count| (1..=256).contains(count))
+                    .ok_or_else(|| format!("`{count}` is not a carrier count from 1 through 256"))?;
+            }
             "--baseline" => baseline = Some(PathBuf::from(value("--baseline")?)),
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),
             kind if !kind.starts_with('-') => {
@@ -125,6 +135,9 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
             "--inject-pg05-regression applies to PG05; run `performance` or `--scenario PG05`"
                 .into(),
         );
+    }
+    if options.carriers > 1 && !measures_gates {
+        return Err("--carriers runs performance gates; add the `performance` kind".into());
     }
     Ok((kinds, options, baseline))
 }

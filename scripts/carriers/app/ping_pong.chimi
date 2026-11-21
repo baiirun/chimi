@@ -1,0 +1,64 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/int as Int
+import std/list as List
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// Serial messaging: main asks two echo processes in turn, N questions in
+// all, and waits for each answer before the next. The two have adjacent
+// membership ids, so with two or more carriers at least one of them is
+// on a carrier other than main's, and each round trip wakes a carrier.
+// The outcome is N.
+
+pub enum Message {
+  Ping(reply: Sender<Int>)
+}
+
+fn echo(inbox: Inbox<Message>) -> Void {
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Message.Ping(reply) -> {
+        Channel.send(reply, 1)
+        handled + 1
+      }
+    }
+  }
+  Void
+}
+
+fn received(next: Receive<Int>) -> Int {
+  case next {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let rounds = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let root = Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(echo, 1, Duration.seconds(1))
+  let first = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+  let second = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+  let replies = Channel.bounded(1)
+  let answered = loop state = (0, 0) {
+    let (asked, total) = state
+    case asked == rounds {
+      True -> break total
+      False -> {
+        let _ = case asked % 2 {
+          0 -> Process.send(first, Message.Ping(replies.sender))
+          _ -> Process.send(second, Message.Ping(replies.sender))
+        }
+        (asked + 1, total + received(Channel.receive(replies.receiver)))
+      }
+    }
+  }
+  Supervisor.stop(root)
+  answered
+}

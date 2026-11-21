@@ -102,6 +102,10 @@ pub struct Options {
     /// Run PG05 with a per-process regression of this factor injected into
     /// its workload, to show that the gate fails on one.
     pub injected_pg05_regression: Option<f64>,
+    /// Run the performance workloads on this many carriers (the runner's
+    /// `--carriers`). Above 1, only the gates whose workloads run under the
+    /// real clock are measured; the rest report `unsupported`.
+    pub carriers: u32,
 }
 
 impl Default for Options {
@@ -112,6 +116,7 @@ impl Default for Options {
             print_actual: false,
             backend: Backend::Native,
             injected_pg05_regression: None,
+            carriers: 1,
         }
     }
 }
@@ -349,8 +354,17 @@ fn status(scenario: &Scenario, options: &Options, measured: &mut Measurement) ->
     {
         return Status::Unsupported;
     }
+    if matches!(scenario.form, Form::Gate(_))
+        && options.carriers > 1
+        && !performance::runs_on_carriers(scenario.id)
+    {
+        return Status::Unsupported;
+    }
     let result = match (scenario.kind(), scenario.form) {
         (_, Form::Check(check)) => check().map(|()| None),
+        (_, Form::Gate(_)) if let Err(detail) = performance::use_carriers(options.carriers) => {
+            Err(detail)
+        }
         (_, Form::Gate(_))
             if scenario.id == "PG05"
                 && let Some(factor) = options.injected_pg05_regression =>

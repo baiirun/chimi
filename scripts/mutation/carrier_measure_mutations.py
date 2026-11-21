@@ -1,0 +1,66 @@
+"""Mutants of R4 step 3 PR 6a: the lab's `--carriers` and block mark epochs.
+
+Run: scripts/mutation/mutate.py --timeout 600 scripts/mutation/carrier_measure_mutations.py
+Results: scripts/mutation/carrier_measure_results.txt.
+"""
+
+CRATE = "compiler/chimi"
+
+C = "runtime/native/runtime.c"
+PERFORMANCE = "src/process_lab/performance.rs"
+MOD = "src/process_lab/mod.rs"
+BIN = "src/bin/process_lab.rs"
+
+
+def lab(name, file, old, new, filter=""):
+    return dict(name=name, file=file, edits=[(old, new)], targets=["process_lab"], filter=filter)
+
+
+def epoch(name, old, new):
+    return dict(name=name, file=C, edits=[(old, new)], targets=["carriers", "carrier_stress"], filter="")
+
+
+MUTATIONS = [
+    lab("every gate runs on several carriers", PERFORMANCE,
+        '    matches!(id, "PG04" | "PG05" | "PG08")',
+        "    !id.is_empty()",
+        filter="a_virtual_clock_gate"),
+    lab("no gate runs on several carriers", PERFORMANCE,
+        '    matches!(id, "PG04" | "PG05" | "PG08")',
+        "    id.is_empty()",
+        filter="parked_memory"),
+    lab("several carriers keep the virtual clock", PERFORMANCE,
+        "            .arg(if run.real_clock || carriers() > 1 {",
+        "            .arg(if run.real_clock {",
+        filter="parked_memory"),
+    lab("the count never reaches the runner", PERFORMANCE,
+        "        if carriers() > 1 {\n            command.arg",
+        "        if false {\n            command.arg",
+        filter="parked_memory"),
+    lab("the lab ignores the carrier count", MOD,
+        "        && options.carriers > 1\n",
+        "        && false\n",
+        filter="a_virtual_clock_gate"),
+    lab("a signed count is accepted", BIN,
+        "                    .filter(|count| count.bytes().all(|byte| byte.is_ascii_digit()))\n",
+        "",
+        filter="malformed_arguments"),
+    lab("0 carriers is accepted", BIN,
+        "                    .filter(|count| (1..=256).contains(count))",
+        "                    .filter(|count| *count <= 256)",
+        filter="malformed_arguments"),
+    lab("no upper bound", BIN,
+        "                    .filter(|count| (1..=256).contains(count))",
+        "                    .filter(|count| *count >= 1)",
+        filter="malformed_arguments"),
+    lab("--carriers without performance is accepted", BIN,
+        "    if options.carriers > 1 && !measures_gates {",
+        "    if false {",
+        filter="without_performance"),
+    epoch("a carrier never takes a block",
+          "  if (carrier->next_epoch == carrier->end_epoch) {",
+          "  if (false) {"),
+    epoch("blocks overlap between carriers",
+          "atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);",
+          "atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);"),
+]
