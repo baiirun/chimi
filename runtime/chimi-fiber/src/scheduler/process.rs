@@ -1433,6 +1433,31 @@ impl Scheduler {
 
     /// Creates the fiber and mailbox and registers the name before the body
     /// runs. The body's first run joins the tail of the ready queue.
+    /// Each live incarnation's membership and its task's home carrier, in
+    /// membership order.
+    #[cfg(test)]
+    pub(super) fn incarnation_homes(&self) -> Vec<(u64, u32)> {
+        let mut homes: Vec<(u64, u32)> = self
+            .kernel
+            .incarnations
+            .values()
+            .map(|incarnation| {
+                (incarnation.membership.get(), self.tasks[&incarnation.task].carrier.0)
+            })
+            .collect();
+        homes.sort_unstable();
+        homes
+    }
+
+    /// The carrier a membership's incarnations run on: its id modulo the
+    /// carrier count, so members spread over the carriers and a restart
+    /// stays where its predecessor ran. With one carrier, carrier 0.
+    fn membership_home(&self, membership: MembershipId) -> super::ready::Carrier {
+        let carriers = u64::from(self.ready.carriers());
+        let home = u32::try_from(membership.get() % carriers).expect("below the carrier count");
+        super::ready::Carrier(home)
+    }
+
     fn spawn(
         &mut self,
         membership: MembershipId,
@@ -1445,8 +1470,9 @@ impl Scheduler {
         }
         let supervisor = self.kernel.memberships[&membership].supervisor;
         let incarnation = IncarnationId(self.kernel.next_incarnation + 1);
+        let home = self.membership_home(membership);
         let task = self
-            .create_task(None, spec.entry, spec.context, Some(incarnation))
+            .create_task(None, home, spec.entry, spec.context, Some(incarnation))
             .map_err(|_| StartError::SpawnFailed)?;
         self.kernel.next_incarnation += 1;
         if let Some(name) = spec.name {
