@@ -1917,10 +1917,9 @@ impl Scheduler {
         self.create_task(parent, home, entry, context, None)
     }
 
-    /// Creates a runnable task at the tail of the ready queue. An
-    /// incarnation task has no parent and emits no task events.
-    /// Creates a runnable task homed on `home`: the carrier whose queue
-    /// holds it and whose thread its fiber will run on.
+    /// Creates a runnable task homed on `home`, at the tail of that
+    /// carrier's ready queue; its fiber will run on that carrier's thread.
+    /// An incarnation task has no parent and emits no task events.
     fn create_task(
         &mut self,
         parent: Option<TaskId>,

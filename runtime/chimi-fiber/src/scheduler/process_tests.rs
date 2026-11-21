@@ -4477,7 +4477,7 @@ fn a_kernel_with_processes_on_another_carrier_tears_down() {
 }
 
 /// A process incarnation runs on its membership id modulo the carrier
-/// count, wherever the start or the restart was decided, so a supervisor's
+/// count, whichever carrier started the supervisor, so a supervisor's
 /// members spread over the carriers and a restart stays on its
 /// predecessor's carrier. With one carrier every member is on carrier 0.
 #[test]
@@ -4499,8 +4499,10 @@ fn members_spread_over_the_carriers_and_a_restart_stays_put() {
     carriers.sort_unstable();
     assert_eq!(carriers, [0, 1, 2], "one member per carrier");
 
+    // PEER is membership 2 on carrier 2. Its replacement is incarnation 4,
+    // and 4 % 3 is carrier 1, so homing on the incarnation would move it.
     lab.scheduler.enter_carrier(ready::Carrier(0));
-    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.deliver(named(PEER), Msg::Crash);
     lab.settle_carriers();
     assert_eq!(lab.started().len(), 4, "the crashed member restarted");
     assert_eq!(lab.scheduler.incarnation_homes(), homes, "on the same carrier");

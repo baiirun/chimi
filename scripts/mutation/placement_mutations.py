@@ -29,4 +29,10 @@ MUTATIONS = [
     m("a child is homed where it is started", S,
       "        let home = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);",
       "        let home = self.current;", "a_child_is_homed_on_its_parents_carrier"),
+    # The verifier's survivor: a restart takes a new incarnation id.
+    m("an incarnation is homed on its incarnation id", P,
+      "        let home = self.membership_home(membership);",
+      "        let home = super::ready::Carrier(u32::try_from(incarnation.0 % u64::from(self.ready.carriers())).expect(\"small\"));", SPREAD),
 ]
+# Not a mutant here: "a restart runs on the current carrier" is equivalent
+# today, because a member ends, and its restart is decided, on its own home.

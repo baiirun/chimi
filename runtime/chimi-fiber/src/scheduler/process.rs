@@ -1431,8 +1431,6 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Creates the fiber and mailbox and registers the name before the body
-    /// runs. The body's first run joins the tail of the ready queue.
     /// Each live incarnation's membership and its task's home carrier, in
     /// membership order.
     #[cfg(test)]
@@ -1451,13 +1449,17 @@ impl Scheduler {
 
     /// The carrier a membership's incarnations run on: its id modulo the
     /// carrier count, so members spread over the carriers and a restart
-    /// stays where its predecessor ran. With one carrier, carrier 0.
+    /// stays where its predecessor ran. With one carrier, carrier 0. A
+    /// restarted nested supervisor rebuilds its members under new
+    /// memberships, so they may land on other carriers.
     fn membership_home(&self, membership: MembershipId) -> super::ready::Carrier {
         let carriers = u64::from(self.ready.carriers());
         let home = u32::try_from(membership.get() % carriers).expect("below the carrier count");
         super::ready::Carrier(home)
     }
 
+    /// Creates the fiber and mailbox and registers the name before the body
+    /// runs. The body's first run joins the tail of its home's ready queue.
     fn spawn(
         &mut self,
         membership: MembershipId,
