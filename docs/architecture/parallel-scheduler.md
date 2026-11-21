@@ -647,9 +647,56 @@ four keep one carrier.
          then wake carrier 0. The round-robin driver checks lost wakes only
          for `Park`; a carrier 0 sleep or descriptor wait it skips is not
          checked.
-   - 5c, real threads behind a test-only API: a `Send` wrapper for the
-     kernel and unstarted fibers, spawning and joining, each carrier
-     destroying its own fibers before it exits, and placement.
+   - 5c, real threads behind a test-only API: sharing the kernel between
+     carrier threads, spawning and joining, each carrier destroying its
+     own fibers before it exits, and placement.
+     Split into six PRs (advisor review, 2026-11-21), each merging with
+     one carrier and behavior unchanged. 5c-1 and 5c-2 may land in any
+     order, but before 5c-6; 5c-3 to 5c-6 land in order.
+     - 5c-1: one binding call per handle at a time. A per-slot lock in
+       the binding handle table, held while binding code runs and
+       released across `chimi_binding_wait`, skipped with one carrier.
+       Tested under gcc's ThreadSanitizer with two threads on one handle.
+     - 5c-2: placement. `create_task` takes an explicit home: the root is
+       on carrier 0, `Task.start` on its parent's carrier, and a process
+       incarnation on its membership id modulo the carrier count, kept
+       across restarts.
+     - 5c-3: fallible carrier setup. A crate-private constructor builds a
+       kernel with several carriers and reports a wake pipe that cannot be
+       opened as `SchedulerError::CarrierSetupFailed`, instead of a panic.
+     - 5c-4: the stop. `root_step` sets `stopping` in the same lock hold
+       that ends the run and marks every carrier; a parked carrier sees it
+       and exits its loop (`IdleStep::Exit`, `carrier::run_carrier`).
+       `Idle::AwaitingHost` waits for the other carriers too, and
+       `end_host_operation` wakes carrier 0.
+     - 5c-5: per-carrier teardown. Carrier 0 shuts the processes down and
+       keeps running until no incarnation or blocked plan is left; then
+       each carrier runs its own jobs and destroys its own fibers
+       (`retire_carrier`) before it exits. `Drop`'s `any_carrier` path
+       stays for one-thread kernels only.
+     - 5c-6: threads. A test-only `run_root_on_threads` shares the kernel
+       behind its mutex with scoped threads, built and dropped on the main
+       thread. `Mutex<Scheduler>` is `Sync` only if `Scheduler` is `Send`,
+       which its raw pointers (hook contexts, the signal words, request
+       pointers) and `Rc` process records prevent, so this needs an
+       `unsafe impl Send` with a written argument: every pointer is reached
+       only under the lock, and a started fiber is resumed only on its home
+       (`Rc` becomes `Arc`). It spawns carriers 1 to N and joins them; an
+       unstarted fiber needs no wrapper, since its first resume claims its
+       home. Stress loops under a watchdog, with fixtures that check a
+       fiber never changes thread.
+     Also found for later (advisor): a C-runtime fiber cannot run on a
+     carrier thread until the runtime exports a way to bind one (5d); the
+     host hooks run on whichever carrier holds the lock, which the header
+     should say (5d); `list_slice`'s in-place compaction needs a lock
+     before 5e; `park_step` may park with this carrier's host releases
+     undrained (to check in 5c-4).
+     - 5c-3 as landed: `Scheduler::with_options_carriers(options, n)` and
+       `install_carriers`, which opens the pipes before changing anything,
+       so a failure leaves the kernel as it was and closes every pipe
+       already opened. The test-only `with_carriers` and `set_carriers`
+       use it. Tests inject a failure at the nth pipe and check that every
+       pipe opened before it was closed and the kernel left as it was.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.
