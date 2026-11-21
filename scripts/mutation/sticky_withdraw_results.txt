@@ -1,5 +1,5 @@
-# mutation run at ac4bdb756ef8fce5376b6fc4491a480a121c2f4f
-# sticky_withdraw_mutations.py: 7 mutants against runtime/chimi-fiber
+# mutation run at 27fa45d28adefbd7297f4f7dd9b383a0710547dd
+# sticky_withdraw_mutations.py: 8 mutants against runtime/chimi-fiber
 BASELINE ok  [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (17s)
 BASELINE ok  [lib -- the_withdrawn_table_keeps_the_newest_generation_of_each_slot] (0s)
 BASELINE ok  [lib -- a_child_wait_on_a_withdrawn_key_answers_at_once] (0s)
@@ -7,7 +7,8 @@ KILLED       a withdraw is not recorded [lib -- a_wait_on_a_withdrawn_key_answer
 KILLED       only the exact generation is withdrawn [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (4s)
 KILLED       a newer generation counts as withdrawn [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (3s)
 KILLED       the slot is ignored [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (3s)
-KILLED       an older withdraw replaces a newer one [lib -- the_withdrawn_table_keeps_the_newest_generation_of_each_slot] (2s)
+KILLED       an older withdraw replaces a newer one [lib -- the_withdrawn_table_keeps_the_newest_generation_of_each_slot] (3s)
 KILLED       an IO wait ignores the withdrawn table [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (4s)
+KILLED       the withdrawn table is read only once the descriptor waits [lib -- a_wait_on_a_withdrawn_key_answers_at_once] (4s)
 KILLED       a child wait ignores the withdrawn table [lib -- a_child_wait_on_a_withdrawn_key_answers_at_once] (9s)
 # result: every mutant killed

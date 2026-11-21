@@ -521,7 +521,7 @@ four keep one carrier.
          consult it for a nonzero key. With one carrier it changes nothing
          a program can see: the native runtime checks a handle open with no
          park before its wait, so no close lands in between. Mutants in
-         `sticky_withdraw_mutations.py`, all seven killed.
+         `sticky_withdraw_mutations.py`, all eight killed.
      - 5b-3: jobs for `begin_terminal`'s inline resume. The inline path
        stays when the target's home is the current carrier or the target
        never ran (an unstarted fiber given Cancel returns without running,
