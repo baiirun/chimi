@@ -44,7 +44,7 @@ MUTATIONS = [
       "    let mut scheduler = Scheduler::with_options_carriers(options, carriers).expect(\"carriers\");"),
     m("the enter hook runs under the kernel lock",
       "                            enter.call(index);",
-      "                            let _held = kernel.lock();\n                            enter.call(index);"),
+      "                            Locked::new(kernel, Carrier(index)).with(|_| enter.call(index));"),
     m("the enter hook runs before the gate decides",
       "                if gate.wait() {\n                    abort_on_panic(|| {\n                        if let Some(enter) = enter {\n                            enter.call(index);\n                        }",
       "                if let Some(enter) = enter {\n                    enter.call(index);\n                }\n                if gate.wait() {\n                    abort_on_panic(|| {"),
