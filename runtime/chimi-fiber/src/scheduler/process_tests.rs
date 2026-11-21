@@ -4675,6 +4675,48 @@ fn a_process_no_plan_waits_on_is_forced_as_a_last_resort() {
     assert_eq!(lab.terminations().last().map(|(_, cause)| *cause), Some(TerminalCause::Forced));
 }
 
+/// Starts a supervisor of three counters from carrier 0, its members not
+/// yet run, and runs a root that finishes at once, on carrier threads when
+/// there are several; returns the transcript.
+fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(carriers);
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
+            0,
+        ))
+        .unwrap();
+    let mut homes: Vec<u32> = lab.scheduler.incarnation_homes().iter().map(|&(_, home)| home).collect();
+    homes.sort_unstable();
+    let mut expected: Vec<u32> = (1..=3).map(|membership| membership % carriers).collect();
+    expected.sort_unstable();
+    assert_eq!(homes, expected, "one member per carrier with three");
+    let main = lab.scheduler.start_root(finishes_at_once).unwrap();
+    let run = process_abi::run_root_on_threads(&mut lab.scheduler, main, DEADLOCK_DEFECT_CODE);
+    assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+    assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
+    lab.transcript()
+}
+
+/// Members homed on three carriers start and run on those carriers'
+/// threads (an unstarted fiber's first resume claims its thread, and
+/// `PinnedFiber` asserts every later one), and the end of the root's run
+/// stops each there, in the order one carrier gives; every carrier is
+/// joined when the run returns.
+#[test]
+fn a_run_on_carrier_threads_stops_its_members_at_home() {
+    let one = stop_members_at_the_end_of_a_run_on_threads(1);
+    super::thread_tests::under_watchdog(Duration::from_secs(60), || {
+        for _ in 0..20 {
+            assert_eq!(stop_members_at_the_end_of_a_run_on_threads(3), one);
+        }
+    });
+}
+
 /// A process incarnation runs on its membership id modulo the carrier
 /// count, whichever carrier started the supervisor, so a supervisor's
 /// members spread over the carriers and a restart stays on its

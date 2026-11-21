@@ -13,6 +13,8 @@ mod process;
 mod process_abi;
 #[cfg(test)]
 mod process_tests;
+#[cfg(test)]
+mod thread_tests;
 mod reactor;
 mod ready;
 #[cfg(test)]
@@ -849,6 +851,35 @@ pub struct Scheduler {
     next_terminal_sequence: u64,
 }
 
+// SAFETY: `Scheduler` is not `Send` only because of what it holds, not
+// because any of it is tied to the thread that made it. The carriers share
+// it through `Mutex<Scheduler>` (`carrier::Locked`), which needs `Send` to be
+// `Sync`, and every use below happens with the lock held, so no two threads
+// ever touch these at once and the lock orders one thread's writes before
+// the next thread's reads:
+// - The host's context pointers (release hooks, trace sink, task entry
+//   contexts) are only stored and passed back to the host, whose contract
+//   keeps them valid for the whole execution; a hook may run on whichever
+//   carrier holds the lock.
+// - A task's parked request points into its fiber's stack, on its home
+//   thread. Kernel code on any carrier reads and replies through it, but
+//   only while the fiber is not running: it is set when the fiber parks and
+//   cleared in `prepare_run`, both under the lock, before the fiber resumes
+//   on its home without the lock.
+// - The signal words are also written by a signal handler, outside the
+//   lock, with volatile access, as with one carrier (`signal.rs`).
+// - The `Rc` process records and the channel copier box are reached and
+//   cloned only by kernel code, so their counts are never raced.
+// - A started fiber is the one thing tied to a thread: its stack holds that
+//   thread's frames. `PinnedFiber` asserts every resume and destruction
+//   happens on its home thread, and a carrier resumes only the tasks homed
+//   on it (`prepare_run`, `prepare_job`); a fiber that never ran has no
+//   home and may start anywhere. Dropping the scheduler resumes or destroys
+//   the fibers it still holds on the dropping thread, so it is dropped
+//   where they are all homed: after a finished run, on carrier 0's thread,
+//   since the other carriers hold none (`retire_carrier`).
+unsafe impl Send for Scheduler {}
+
 /// Writes a terminal child's outcome into a `REQUEST_TASK_RESULT`,
 /// `REQUEST_TASK_ANY`, or `REQUEST_TASK_DRAIN` reply.
 fn reply_with_outcome(request: &mut SchedulerRequest, outcome: TaskOutcome) {
@@ -1173,7 +1204,9 @@ impl Scheduler {
     /// run left it nothing to resume or destroy: no job, and no task homed
     /// here still holding its fiber. A finished run ends only once every
     /// process is gone (`root_step`), and every other task on such a
-    /// carrier belongs to a process body, so its fibers all ended there;
+    /// carrier belongs to a process body (roots start on carrier 0; a test
+    /// that starts one elsewhere must let it end within the run), so its
+    /// fibers all ended there;
     /// `Drop`, on carrier 0's thread, then never touches one of them.
     /// Panics otherwise: such a fiber could only be destroyed off its home.
     fn retire_carrier(&self) {

@@ -797,6 +797,77 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
     RootRun { outcome, deadlock }
 }
 
+/// Runs `root` as `Scheduler::run_root` does, with each carrier on its own
+/// thread: carrier 0 on this one, which runs the root's loop, and carriers
+/// 1 and up on scoped threads spawned for the run and joined before it
+/// returns, so no carrier reaches the kernel between the run's end and its
+/// exit (parallel-scheduler.md, "5c-5 as landed"). The kernel is shared
+/// behind its lock for the run and handed back after it. Test-only until the
+/// runner flag (step 3 PR 5d).
+///
+/// Requires, with several carriers: every root other than `root` is
+/// started on carrier 0 or ends within the run, since a finished run's
+/// other carriers must hold no fiber (`Scheduler::retire_carrier`). Panics
+/// if the run parks: its fibers would stay homed on threads it joined,
+/// where nothing can resume or destroy them. A panic on any carrier aborts
+/// the process, as one in `chimi_scheduler_run` does, since the other
+/// carriers would wait for it forever.
+#[cfg(test)]
+pub(super) fn run_root_on_threads(
+    scheduler: &mut Scheduler,
+    root: TaskId,
+    deadlock_code: i64,
+) -> RootRun {
+    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
+    let kernel = Mutex::new(std::mem::replace(scheduler, placeholder));
+    let carriers = {
+        let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
+        // Before any carrier starts, so none sees the last run's end.
+        held.begin_run(root);
+        // Work the caller queued through the kernel directly marked the
+        // carriers it is for without waking them. Every carrier of the run
+        // drives before it first waits, so it finds that work anyway; the
+        // marks are only cleared, as `Locked` expects none left.
+        drop(held.take_wakes());
+        held.ready.carriers()
+    };
+    let run = std::thread::scope(|scope| {
+        for index in 1..carriers {
+            let kernel = &kernel;
+            let spawned = std::thread::Builder::new()
+                .name(format!("carrier {index}"))
+                .spawn_scoped(scope, move || {
+                    abort_on_panic(|| {
+                        super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
+                    });
+                });
+            if spawned.is_err() {
+                abort_on_panic(|| panic!("carrier {index} got no thread"));
+            }
+        }
+        abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
+    });
+    drop(std::mem::replace(
+        scheduler,
+        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
+    ));
+    assert!(
+        carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,
+        "a run on several carrier threads parked, leaving fibers on joined threads"
+    );
+    run
+}
+
+/// Runs `body`, aborting the process if it panics (the panic hook has
+/// printed the message by then).
+#[cfg(test)]
+fn abort_on_panic<R>(body: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        eprintln!("a carrier panicked; the others would wait for it forever");
+        std::process::abort()
+    })
+}
+
 fn parked_outcome() -> SchedulerOutcome {
     SchedulerOutcome {
         state: ChimiFiberState::Parked as u32,

@@ -764,6 +764,32 @@ four keep one carrier.
        in review and left as before: `force` clears a deadline without
        cancelling its timer, and `Drop` destroys a parked fiber without
        setting a terminal resume context.
+     - 5c-6 as landed: the test-only `process_abi::run_root_on_threads`
+       moves the kernel into its mutex for one run, clears the last run's
+       end before any carrier starts, runs carrier 0's `run_root` on the
+       caller's thread and carriers 1 and up on scoped threads, joins them,
+       and hands the kernel back. `Scheduler` is `Send` by the argument at
+       its `unsafe impl`: what it holds is reached under the lock, a parked
+       request (a pointer into a fiber's stack) is cleared in `prepare_run`
+       before the fiber resumes, and a started fiber runs and is destroyed
+       only on its home thread. The `Rc` process records stay `Rc`, since
+       only kernel code clones them. A panic on any carrier aborts, since
+       the others would wait for it forever, and a run that parks on
+       several threads panics, since its fibers would stay homed on joined
+       threads. Tests loop runs of hopping fibers on one, three and four
+       threads, virtual and real clock, two runs per kernel, under a
+       watchdog, checking one thread per carrier and that no fiber moves or
+       runs holding the kernel, and a supervisor whose members on three
+       carrier threads are stopped at home with the one-carrier transcript.
+       Stress (from the review): hundreds of loops in debug and release,
+       on all cores and pinned to one or two, with no failure. Left for 5d
+       (review): carrier threads must enter the C runtime
+       (`carrier_thread_enter`) before running a C fiber; host hooks run on
+       whichever thread holds the lock, so test hooks that record into
+       thread-locals miss events from carrier threads; carriers persist
+       across runs (or a parked run is refused) so a parked kernel stays
+       resumable; a new earliest timer's wake to carrier 0 is masked in
+       these tests by the last parker's wake.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.
