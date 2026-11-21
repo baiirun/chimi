@@ -557,6 +557,19 @@ four keep one carrier.
        at once forever). Process teardown, which must finish
        synchronously, enters the home carrier in 5b; 5c must run it on
        each carrier before the carriers exit.
+       - As landed: `Scheduler::may_resume_here(task, command)` says
+         whether a fiber may run on the current carrier (its home; never
+         ran and given Cancel; or teardown). `await_incarnation` runs the
+         body inline only then; otherwise the body waits on its home queue
+         and the caller takes its "not yet" path. A forced body arms no new
+         deadline. `Drop` sets `any_carrier`, runs every carrier's queued
+         jobs, then tears processes down as before, all on the dropping
+         thread; 5c replaces this with each carrier draining its own
+         before it exits. Tests stop a supervisor homed on carrier 1 from
+         carrier 0 (the transcript matches one carrier's), fire a shutdown
+         deadline on carrier 0, and drop a kernel whose processes live on
+         carrier 1. Mutants in `process_off_home_mutations.py`, all four
+         killed (one by a timeout: the teardown otherwise spins).
        - Left for 5b-5 and 5b-6 (review): a queued job must wake its home
          carrier, and the idle check must count every carrier's jobs, or a
          home carrier asleep in its idle wait leaves the task draining with
