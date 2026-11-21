@@ -1,4 +1,4 @@
-# carrier_runner_mutations.py: 7 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-2)
+# carrier_runner_mutations.py: 8 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-2)
 BASELINE ok  [lib]
 KILLED       a failed spawn lets the spawned carriers run [lib]
 KILLED       a spawned carrier runs without waiting at the gate [lib]
@@ -7,9 +7,21 @@ KILLED       a failed spawn is ignored [lib]
 KILLED       a failed spawn still runs the root [lib]
 KILLED       the gate opens before every carrier is spawned [lib]
 KILLED       a waiting carrier takes a wake without a decision as a run [lib]
+KILLED       carriers start into the last run's end [lib]
 # result: every mutant killed
 
 The first run left the last two alive: the injected failure came at once,
 so the spawned carrier usually read the gate only after it was closed. The
 injected failure now pauses first, so the carriers already spawned are
 waiting at the gate when it is decided.
+
+The verifier's own fifteen mutants left six alive. Deleting the begin_run
+before the carriers start was real: a carrier with no work could read the
+last run's end and leave before carrier 0 cleared it, which only a race
+window showed. The run now asserts the end is cleared (the last mutant
+above). The others are equivalent or unobservable: removing either
+abort_on_panic (no test panics), a stale run end set on a failed start (the
+next begin_run clears it), clobbering the current carrier (Locked resets it
+on every access), and the ABI path skipping the lock (one carrier behaves
+the same). The guard that sends carriers away if the spawning loop unwinds
+has no test, since nothing there panics in practice.
