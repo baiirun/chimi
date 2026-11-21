@@ -1,0 +1,9 @@
+# mutation run at 86d00e9d5892dfd433baa2f957d3f3a9ed7bc4f9
+# carrier_setup_mutations.py: 4 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_kernel_whose_wake_pipe_fails_is_an_error] (4s)
+BASELINE ok  [lib -- a_failed_pipe_closes_the_ones_opened_before_it] (0s)
+KILLED       a failed pipe panics [lib -- a_kernel_whose_wake_pipe_fails_is_an_error] (4s)
+KILLED       a failed pipe loses its error number [lib -- a_kernel_whose_wake_pipe_fails_is_an_error] (4s)
+KILLED       a failed set keeps the pipes opened before it [lib -- a_failed_pipe_closes_the_ones_opened_before_it] (6s)
+KILLED       carriers are installed with one queue [lib -- a_kernel_whose_wake_pipe_fails_is_an_error] (6s)
+# result: every mutant killed
