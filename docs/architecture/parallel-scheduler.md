@@ -407,9 +407,17 @@ four keep one carrier.
      checks that fibers the carrier resumes run without the lock. The
      stalled-root signal wait also runs without it. Measured on the
      performance lab, medians of 7 interleaved runs against main: PG01
-     +0.8%, PG02 off -0.4%, PG03 +0.8%, PG04 start +0.6% and stop -0.9%,
-     all within noise. PG06 fails its list gate on main on this host too,
-     and its dag figure is bimodal on both (2.8 or 3.4 µs).
+     +0.8%, PG02 off -0.4%, PG03 +0.8%, PG04 start +0.6% and stop -0.9%.
+     The verifier's own runs (7 interleaved, then 11 of PG04 alone) agree
+     on PG01 to PG03 and PG04 start, but found PG04 stop 10 to 14% slower
+     (about 1 µs, against a 30 µs gate). A stop spans many resumes, each
+     taking the lock once, so this is read as the lock's real cost there.
+     PG06 fails its list gate on main on this host too, and its dag figure
+     is bimodal on both (2.8 or 3.4 µs).
+   - Left for PR 5: a real-clock sleep or descriptor wait is computed
+     under the lock, so a timer or ready task another carrier adds during
+     the wait is seen only when it ends (at most `MAX_REAL_WAIT`). PR 5's
+     per-carrier wake descriptor ends such a wait at once.
 5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
    - Each carrier has a wake descriptor. The carrier loop polls it, and
      carrier 0 also polls the signal pipe.
