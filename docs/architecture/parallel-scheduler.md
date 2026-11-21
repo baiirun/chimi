@@ -92,12 +92,15 @@ function-local static, so new state gets an owner when it is added.
   young chunks, the deferred footprint, `fs_read`'s buffer), and the counters
   behind the memory report (`heap_totals`, `copied_*`,
   `capture_transfer_probes`, `unscoped_allocated_bytes`,
-  `process_heap_peak_value_bytes`). Today `carrier` is a constant pointer to
-  one static, so every access compiles to the fixed address the old static
-  had.
+  `process_heap_peak_value_bytes`, `scope_totals`). The counters are signed
+  per-carrier deltas, since an allocation made on one carrier can be freed on
+  another; the report sums them and takes the largest peak (PR 5a).
+  Carrier 0 (`carrier_first`) is a static, and `carriers_create` allocates
+  the others before any carrier thread starts. `carrier` is each thread's
+  initial-exec thread-local pointer, set by `carrier_thread_enter`.
 - **Shared** (file-scope globals): state every carrier sees.
-  - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner`,
-    `shared_values`, `constant_values`, `host_stack_limit`.
+  - Heaps and constants: `main_heap`, `static_area`, `next_heap_owner` (an
+    atomic counter), `shared_values`, `constant_values`.
   - `next_mark_epoch`. Mark epochs are stamped into allocation headers that
     move with a heap, so a per-carrier counter could repeat an epoch that a
     stale header still holds, and treat a dead allocation as marked. It is one
@@ -105,13 +108,18 @@ function-local static, so new state gets an owner when it is added.
     That is one relaxed fetch-add per collection pass.
   - The handle-count table (`handle_table`, "Handle counts" below). Its
     release queue is carrier state (`released_handles`).
-  - Tables whose ids travel inside values: binding handles, open files, test
-    mailboxes, process defects.
+  - Tables whose ids travel inside values, each behind its own lock: open
+    files (`fs_file_lock`), test logs (`test_log_lock`), process defects
+    (`process_defect_lock`), and binding handles (PR 5a-2). A read or write
+    takes a file's descriptor for the length of its system call, and a close
+    during one leaves the descriptor to the last user to close, so the
+    number is never reused under a call.
   - The operation profile's rows (`profile_rows`), allocated once at startup
-    and updated after nodes that may park. Each carrier will need its own
-    rows, allocated before the carriers start and summed in the report.
-  - The `random` provider's one seeded stream, which is deterministic only on
-    one carrier.
+    and counted with relaxed atomic adds.
+  - The `random` provider's one seeded stream, behind `random_lock`. It is
+    deterministic only on one carrier.
+  - Telemetry: `trace_lock` is held for each whole event, so sequence numbers
+    follow file order; span ids come from one atomic counter.
   - Standard input and every signal field. Signal handlers write these, so
     they must never sit behind a carrier or thread-local pointer.
 
@@ -429,6 +437,17 @@ four keep one carrier.
      the report. `carrier_thread_enter` binds a thread's carrier and
      computes its stack limit. Tested with pthread C fixtures under gcc's
      ThreadSanitizer and with the simulation suite.
+     - As landed (5a-1): everything above except binding handles, which
+       need per-slot use counts (5a-2). `fixtures/carrier-threads-stress.c`
+       runs four carrier threads that hand fragments across carriers and
+       share spans, telemetry, the profile, `random`, a test Recorder and a
+       file closed during reads, under ThreadSanitizer; it found
+       `next_heap_owner`, which was a plain counter. Telemetry takes a
+       mutex rather than `flockfile`, which ThreadSanitizer cannot see.
+       With several carriers a task started on a thread that never entered
+       its carrier aborts. Peaks are recorded per carrier against its own
+       delta (the simulation compares the sum over its two carriers), so
+       with one carrier every number is as before.
    - 5b, kernel pieces on one thread: the carrier id passed through
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one
