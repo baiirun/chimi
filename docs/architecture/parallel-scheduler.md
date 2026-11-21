@@ -492,6 +492,49 @@ four keep one carrier.
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one
      thread, which also kills the ready-queue mutant PR 2 left.
+     Split into six PRs (advisor review, 2026-11-21), each merging with
+     one carrier and behavior unchanged:
+     - 5b-1: `Locked` carries its carrier and enters it on every lock;
+       every ready push goes through one `enqueue`; a resume asserts it is
+       on the task's home carrier. A test-only two-carrier kernel, driven
+       from one thread, kills the ready-queue mutant.
+       - As landed: `Locked::new(kernel, carrier)`, `Scheduler::enter_carrier`,
+         `Scheduler::with_carriers` (tests only). Mutants in
+         `carrier_routing_mutations.py`, all four killed.
+     - 5b-2: the sticky withdraw. The reactor keeps, per binding slot, the
+       last generation withdrawn (`channel` is slot << 32 | generation, as
+       `binding_resource_key` builds it). An IO or child wait on that
+       generation or an older one is answered as a withdrawn parked wait
+       (pending, woken at once) without registering, so C's loop sees the
+       handle closed. 4 bytes per slot ever used; no ABI change.
+     - 5b-3: jobs for `begin_terminal`'s inline resume. The inline path
+       stays when the target's home is the current carrier or the target
+       never ran (an unstarted fiber given Cancel returns without running,
+       so nothing is pinned). A target running on another carrier records
+       a pending end, applied by its own `complete_run`. Otherwise the part
+       up to `CancellationRequested` runs where the cancel was decided, and
+       a job on the home carrier runs the cleanup resume without the lock,
+       then the rest of `begin_terminal` under it. While a job is pending,
+       `finish_draining` does not publish the task's terminal.
+     - 5b-4: `await_incarnation` off home. It runs the body inline only
+       on its home carrier; otherwise the body stays queued there and the
+       caller takes the "not yet" path it already has. A forced body arms
+       no new deadline (the old one is spent, and re-arming it would fire
+       at once forever). Process teardown, which must finish
+       synchronously, enters the home carrier in 5b; 5c must run it on
+       each carrier before the carriers exit.
+     - 5b-5: wake descriptors. One non-blocking pipe per carrier, none with
+       one carrier. The kernel marks carriers under the lock (work queued
+       for another carrier; a reactor, child or signal wait registered off
+       carrier 0; a new earliest timer; stop), and `Locked` writes the
+       bytes after it unlocks.
+     - 5b-6: global idle. Every idle carrier fires due timers first. A
+       carrier other than 0 with nothing to do parks on its descriptor;
+       carrier 0 decides quiescence, deadlock or a virtual-time jump only
+       when every other carrier is parked and every ready and job queue is
+       empty. The last carrier to park wakes carrier 0. Tested with a
+       round-robin driver on one thread that fails if every carrier parks
+       with no descriptor readable and no verdict.
    - 5c, real threads behind a test-only API: a `Send` wrapper for the
      kernel and unstarted fibers, spawning and joining, each carrier
      destroying its own fibers before it exits, and placement.
