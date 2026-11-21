@@ -1296,9 +1296,10 @@ impl ChannelRegistry {
     /// A release is not one of `task`'s operations: the host issues it for
     /// any task's freed endpoints ahead of `task`'s next request, which may
     /// be the one that collects a result already linearized for `task`.
+    /// `None` is a release the carrier drained with no task running.
     pub fn release_unreferenced(
         &mut self,
-        task: TaskId,
+        task: Option<TaskId>,
         id: ChannelId,
     ) -> Result<Transition, ChannelError> {
         let channel = self
@@ -1307,7 +1308,7 @@ impl ChannelRegistry {
             .ok_or(ChannelError::UnknownChannel(id))?;
         let mut transition = Transition::default();
         if channel.hub.is_some() {
-            transition.merge(self.abort_hub(id, Some(task), ChannelEventKind::Released));
+            transition.merge(self.abort_hub(id, task, ChannelEventKind::Released));
             let hub = self.channels.get_mut(&id).expect("hub");
             if let Some(state) = hub.hub.as_mut() {
                 transition.discarded.extend(state.current.take());
@@ -1319,7 +1320,7 @@ impl ChannelRegistry {
             }
             self.forget(id);
         } else if let Some(queue) = channel.tap_of {
-            transition.merge(self.end_receiver(id, Some(task), false));
+            transition.merge(self.end_receiver(id, task, false));
             self.forget(id);
             let queue_state = self.channels.get_mut(&queue).expect("tap's queue");
             queue_state.taps.retain(|tap| *tap != id);
@@ -1327,15 +1328,15 @@ impl ChannelRegistry {
                 self.forget(queue);
             }
         } else if channel.taps.is_empty() {
-            transition.merge(self.abort_queue(id, Some(task), ChannelEventKind::Released));
+            transition.merge(self.abort_queue(id, task, ChannelEventKind::Released));
             self.leave_hub(id, &mut transition);
             self.forget(id);
         } else {
             let unfed = channel.feed.is_none();
-            transition.merge(self.end_receiver(id, Some(task), false));
+            transition.merge(self.end_receiver(id, task, false));
             let open = self.channels[&id].lifecycle == Lifecycle::Open;
             if open && unfed {
-                transition.merge(self.abort_queue(id, Some(task), ChannelEventKind::Released));
+                transition.merge(self.abort_queue(id, task, ChannelEventKind::Released));
             }
             self.channels.get_mut(&id).expect("queue").released = true;
         }
@@ -2671,10 +2672,10 @@ mod variant_tests {
         let (tap, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
         send(&mut channels, OWNER, queue.sender, 4);
         channels.close(OWNER, queue.completion).unwrap();
-        channels.release_unreferenced(OWNER, queue.sender.channel()).unwrap();
+        channels.release_unreferenced(Some(OWNER), queue.sender.channel()).unwrap();
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Received(4));
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Drained);
-        channels.release_unreferenced(OWNER, tap.channel()).unwrap();
+        channels.release_unreferenced(Some(OWNER), tap.channel()).unwrap();
         assert_eq!(channels.len(), 0);
     }
 
@@ -2683,7 +2684,7 @@ mod variant_tests {
         let mut channels = registry();
         let (queue, _) = channels.create(OWNER, 2);
         let (tap, _) = channels.add_receiver(OWNER, queue.receiver).unwrap_err_none();
-        channels.release_unreferenced(OWNER, queue.sender.channel()).unwrap();
+        channels.release_unreferenced(Some(OWNER), queue.sender.channel()).unwrap();
         assert_eq!(receive(&mut channels, OWNER, tap), ReceiveResult::Aborted);
     }
 
@@ -2694,7 +2695,7 @@ mod variant_tests {
         let (other, _) = channels.create(OWNER, 1);
         assert_eq!(receive(&mut channels, OWNER, queue.receiver), ReceiveResult::Pending);
         assert_eq!(send(&mut channels, OTHER, queue.sender, 7), SendResult::Accepted);
-        channels.release_unreferenced(OWNER, other.sender.channel()).unwrap();
+        channels.release_unreferenced(Some(OWNER), other.sender.channel()).unwrap();
         assert_eq!(
             channels.take_receive_result(OWNER),
             Some(ReceiveResult::Received(7))
@@ -2921,7 +2922,7 @@ mod variant_tests {
     fn releasing_a_watch_releases_its_current_value() {
         let mut channels = registry();
         let (publisher, _) = watch(&mut channels, 7);
-        let transition = channels.release_unreferenced(OWNER, publisher.channel()).unwrap();
+        let transition = channels.release_unreferenced(Some(OWNER), publisher.channel()).unwrap();
         assert_eq!(transition.discarded, vec![7]);
         assert_eq!(channels.len(), 0);
     }

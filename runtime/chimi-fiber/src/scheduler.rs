@@ -289,6 +289,13 @@ pub type ValueCopy = unsafe extern "C" fn(*mut c_void, i64) -> i64;
 /// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
 pub type TaskContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+/// Takes one release the carrier running now queued while no task was
+/// running, such as a count that reached zero inside a release hook. Writes
+/// `REQUEST_CHANNEL_RELEASE` or `REQUEST_TASK_RELEASE` and its id and returns
+/// true, or returns false once the queue is empty. See `ChimiReleaseTake` in
+/// `include/chimi_fiber.h`.
+pub type ReleaseTake = unsafe extern "C" fn(*mut c_void, *mut u32, *mut u64) -> bool;
+
 /// Why a channel request broke the capability contract. See
 /// `ChimiCapabilityViolation` in `include/chimi_fiber.h`.
 pub const VIOLATION_WRONG_OWNER: u32 = 1;
@@ -717,6 +724,10 @@ pub struct SchedulerOptions {
     /// `violation_context`, when the scheduler defects the violating task.
     pub capability_violation_report: Option<CapabilityViolationReport>,
     pub violation_context: *mut c_void,
+    /// Called with `release_context` whenever this carrier's ready queue is
+    /// empty, until it returns false: the releases it hands over are applied
+    /// with no task attributed.
+    pub take_release: Option<ReleaseTake>,
 }
 
 impl SchedulerOptions {
@@ -734,6 +745,7 @@ impl SchedulerOptions {
             release_context: std::ptr::null_mut(),
             capability_violation_report: None,
             violation_context: std::ptr::null_mut(),
+            take_release: None,
         }
     }
 }
@@ -776,6 +788,7 @@ pub struct Scheduler {
     release_task_value: Option<(ValueRelease, *mut c_void)>,
     release_channel_value: Option<(ValueRelease, *mut c_void)>,
     release_task_context: Option<(TaskContextRelease, *mut c_void)>,
+    take_release: Option<(ReleaseTake, *mut c_void)>,
     capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
@@ -852,6 +865,7 @@ impl Scheduler {
             release_context,
             capability_violation_report,
             violation_context,
+            take_release,
         } = options;
         let mut channels =
             ChannelRegistry::new(trace_mode != TraceMode::Off, trace_mode == TraceMode::Full);
@@ -887,6 +901,7 @@ impl Scheduler {
             release_task_value: release_task_value.map(|release| (release, release_context)),
             release_channel_value: release_channel_value.map(|release| (release, release_context)),
             release_task_context: release_task_context.map(|release| (release, release_context)),
+            take_release: take_release.map(|take| (take, release_context)),
             capability_violation_report: capability_violation_report
                 .map(|report| (report, violation_context)),
             task_values: BTreeMap::new(),
@@ -1146,18 +1161,69 @@ impl Scheduler {
         self.collect_user_signals();
         self.deliver_signal();
         let mut resumes = 0_u32;
-        while let Some(task) = self.ready.pop_front(self.current) {
-            self.run(task);
-            self.remove_released_terminal();
-            self.collect_user_signals();
-            self.deliver_signal();
-            resumes = resumes.wrapping_add(1);
-            if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
-                if !self.reactor.is_empty() {
-                    self.poll_io_now();
+        loop {
+            while let Some(task) = self.ready.pop_front(self.current) {
+                self.run(task);
+                self.remove_released_terminal();
+                self.collect_user_signals();
+                self.deliver_signal();
+                resumes = resumes.wrapping_add(1);
+                if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
+                    if !self.reactor.is_empty() {
+                        self.poll_io_now();
+                    }
+                    self.recheck_children();
                 }
-                self.recheck_children();
             }
+            // Releases a fiber's request did not carry (one queued in a
+            // release hook, or by a fiber that ended without another
+            // request) are drained before the carrier idles. Their wakes
+            // refill the ready queue.
+            if !self.drain_host_releases() {
+                break;
+            }
+        }
+    }
+
+    /// Applies every release `take_release` hands over, with no task
+    /// attributed; true if there was one. Runs only between resumes, never
+    /// inside a channel transition, so the registry is never mid-update.
+    /// Keys the host queues after the last drive (during shutdown or the
+    /// scheduler's teardown) are not drained: teardown releases every value
+    /// the scheduler holds, so only their trace events are missing, and the
+    /// host clears its queues before the next run.
+    fn drain_host_releases(&mut self) -> bool {
+        let Some((take, context)) = self.take_release else {
+            return false;
+        };
+        let mut drained = false;
+        loop {
+            let (mut kind, mut id) = (0_u32, 0_u64);
+            // SAFETY: the configuring caller keeps the hook and its context
+            // valid until execution returns; both outputs are writable.
+            if !unsafe { take(context, &mut kind, &mut id) } {
+                return drained;
+            }
+            drained = true;
+            let applied = match kind {
+                REQUEST_CHANNEL_RELEASE => {
+                    match self
+                        .channels
+                        .release_unreferenced(None, ChannelId::from_raw(id))
+                    {
+                        Ok(transition) => {
+                            self.apply_channel_transition(transition);
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                REQUEST_TASK_RELEASE => self.release_task(TaskId(id)).is_ok(),
+                _ => false,
+            };
+            // The host's count table names only ids it was handed, each once.
+            debug_assert!(applied, "the host drained an unknown release {kind} {id}");
+            self.remove_released_terminal();
         }
     }
 
@@ -1405,7 +1471,7 @@ impl Scheduler {
         channel: ChannelId,
     ) -> Result<(), SchedulerError> {
         self.require_parked_task(task)?;
-        match self.channels.release_unreferenced(task, channel) {
+        match self.channels.release_unreferenced(Some(task), channel) {
             Ok(transition) => {
                 self.apply_channel_transition(transition);
                 Ok(())

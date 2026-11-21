@@ -2916,33 +2916,59 @@ static ChimiFiberCommand carrier_request(void *request) {
   return command;
 }
 
-/* A carrier whose release queue holds a key, the running one first. With more
-   than one carrier this stands in for each carrier's loop draining its own
-   queue, which step 3 adds: without it a key queued where no fiber requests
-   again would wait for ever. */
-static Carrier *carrier_with_releases(void) {
-  if (carrier->released_handle_count) return carrier;
+/* Pops the last key `queue` holds as the release request that ends it; false
+   when the queue is empty. Only the queue's own carrier calls this, except in
+   the single-threaded simulation (carrier_release_take). */
+static bool release_queue_take(Carrier *queue, uint32_t *kind, uint64_t *id) {
+  if (!queue->released_handle_count) return false;
+  uint64_t key = queue->released_handles[--queue->released_handle_count];
+  *kind = key & TASK_HANDLE_KEY ? CHIMI_REQUEST_TASK_RELEASE : CHIMI_REQUEST_CHANNEL_RELEASE;
+  *id = key & ~TASK_HANDLE_KEY;
+  return true;
+}
+
+/* The next release the running carrier should issue: its own queue's. The
+   simulation runs both carriers' loops as one, on one thread, and that loop
+   is never idle while any fiber runs, so the carrier a fiber just left
+   could not drain its queue as a real idle carrier does. A fiber there also
+   takes the other carrier's queue, standing for that carrier's idle loop. */
+static bool carrier_release_take(uint32_t *kind, uint64_t *id) {
+  if (release_queue_take(carrier, kind, id)) return true;
+#ifdef CHIMI_CARRIER_SIMULATION
   for (size_t index = 0; index < CARRIER_COUNT; ++index)
-    if (carrier_states[index].released_handle_count) return &carrier_states[index];
-  return NULL;
+    if (release_queue_take(&carrier_states[index], kind, id)) return true;
+#endif
+  return false;
 }
 
 /* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
    value was freed, and CHIMI_REQUEST_TASK_RELEASE for each task whose last handle
    was. The scheduler serves a request as soon as the task parks, so a release is
-   done even when the task resumes with CHIMI_FIBER_CANCEL. */
+   done even when the task resumes with CHIMI_FIBER_CANCEL. Only the running
+   carrier's queue is drained; a key left on another carrier is that carrier's
+   to drain, when one of its fibers requests or its loop idles
+   (take_carrier_release). */
 static ChimiFiberCommand flush_channel_releases(void) {
-  /* The queue is found again on every pass: the request below parks, and the
+  /* `carrier` is read again on every pass: the request below parks, and the
      fiber may resume on another carrier. */
-  for (Carrier *queue; (queue = carrier_with_releases());) {
-    uint64_t key = queue->released_handles[--queue->released_handle_count];
-    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHANNEL_RELEASE, .channel = key};
-    if (key & TASK_HANDLE_KEY)
-      request = (ChimiSchedulerRequest){.kind = CHIMI_REQUEST_TASK_RELEASE,
-                                        .task = key & ~TASK_HANDLE_KEY};
+  uint32_t kind;
+  uint64_t id;
+  while (carrier_release_take(&kind, &id)) {
+    ChimiSchedulerRequest request = {.kind = kind};
+    if (kind == CHIMI_REQUEST_TASK_RELEASE) request.task = id;
+    else request.channel = id;
     if (carrier_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
   }
   return CHIMI_FIBER_RESUME;
+}
+
+/* The scheduler's take_release hook: it calls this on the host stack whenever
+   the carrier has no ready task, for the releases no fiber's request carried
+   (a count that reached zero inside a release hook, or one queued by a fiber
+   that then ended). */
+static bool take_carrier_release(void *context, uint32_t *kind, uint64_t *id) {
+  (void)context;
+  return carrier_release_take(kind, id);
 }
 
 /* Every scheduler request goes through here. A fiber resumes only by returning from
@@ -12283,6 +12309,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_channel_value = release_channel_word,
     .copy_channel_value = copy_channel_word,
     .release_task_context = release_task_context,
+    .take_release = take_carrier_release,
 #if CHIMI_PROCESS_KERNEL
     .release_message = release_message_word,
     .release_spec_context = release_spec_context_word,

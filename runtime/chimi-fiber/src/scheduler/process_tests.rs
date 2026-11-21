@@ -2546,6 +2546,7 @@ fn run_c(entry: ChimiFiberEntry, trace_mode: u32) -> (SchedulerOutcome, Vec<Sche
         user_signals: std::ptr::null_mut(),
         injected_user_signals: std::ptr::null(),
         injected_user_signal_count: 0,
+        take_release: None,
     };
     let outcome = unsafe { chimi_scheduler_run(&config) };
     (outcome, events)
@@ -2716,6 +2717,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiSchedulerConfig, user_signals),
         offset_of!(ChimiSchedulerConfig, injected_user_signals),
         offset_of!(ChimiSchedulerConfig, injected_user_signal_count),
+        offset_of!(ChimiSchedulerConfig, take_release),
         size_of::<ChimiInjectedSignal>(),
         offset_of!(ChimiInjectedSignal, code),
         offset_of!(ChimiInjectedSignal, at),
@@ -2793,7 +2795,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         IO_ERROR as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 27);
+    assert_eq!(crate::chimi_fiber_abi_version(), 28);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

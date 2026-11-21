@@ -166,6 +166,7 @@ fn run_with_signal(
         user_signals: std::ptr::null_mut(),
         injected_user_signals: std::ptr::null(),
         injected_user_signal_count: 0,
+        take_release: None,
     };
     let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
     (outcome, SEEN.with(|seen| seen.borrow().clone()))

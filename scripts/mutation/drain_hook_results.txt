@@ -1,0 +1,8 @@
+# mutation run at 6f6217aa194d52f1c87353363f4648afd4c23f6c
+# drain_hook_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [cli -- native_releases_no_request_carries_are_done_before_the_carrier_idles] (83s)
+BASELINE ok  [task_release -- a_loop_of_finished_tasks_holds_a_bounded_number_of_records] (1s)
+KILLED       the runtime passes no hook [cli -- native_releases_no_request_carries_are_done_before_the_carrier_idles] (35s)
+KILLED       the hook hands over nothing [cli -- native_releases_no_request_carries_are_done_before_the_carrier_idles] (37s)
+KILLED       a task key is handed over as a channel [task_release -- a_loop_of_finished_tasks_holds_a_bounded_number_of_records] (33s)
+# result: every mutant killed
