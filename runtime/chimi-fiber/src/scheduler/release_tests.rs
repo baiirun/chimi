@@ -955,7 +955,7 @@ fn fibers_the_carrier_resumes_run_without_the_kernel_lock() {
 fn the_kernel_lock_is_held_while_the_carrier_applies_a_request() {
     HELD_AT.with(|log| log.borrow_mut().clear());
     let kernel = Mutex::new(Scheduler::new(STACK, TraceMode::Off));
-    super::carrier::Locked(&kernel).with(|_| record_held("kernel step"));
+    super::carrier::Locked::new(&kernel, super::ready::Carrier::default()).with(|_| record_held("kernel step"));
     assert!(!super::carrier::kernel_held());
     assert_eq!(
         HELD_AT.with(|log| log.borrow().clone()),
