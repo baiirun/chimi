@@ -9,6 +9,8 @@ use super::*;
 use crate::{ChimiFiberResult, chimi_fiber_request};
 use std::cell::{Cell, RefCell};
 use std::ptr;
+use std::sync::Mutex;
+use super::carrier::KernelAccess;
 
 const STACK: usize = 64 * 1024;
 
@@ -909,4 +911,54 @@ fn without_a_drain_hook_a_release_queued_in_a_release_hook_waits() {
     // The nested channel stays live until teardown releases 992.
     assert_eq!(log.checkpoints, vec![("after sleeping", 0, 1, 0)]);
     assert_eq!(log.channels, vec![991, 992]);
+}
+
+// ----- The kernel lock ------------------------------------------------------
+
+thread_local! {
+    /// Whether the kernel lock was held at each point a fiber recorded.
+    static HELD_AT: RefCell<Vec<(&'static str, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record_held(point: &'static str) {
+    let held = super::carrier::kernel_held();
+    HELD_AT.with(|log| log.borrow_mut().push((point, held)));
+}
+
+unsafe extern "C" fn records_held_in_a_child(_context: *mut c_void) -> ChimiFiberResult {
+    record_held("child");
+    succeeded(0)
+}
+
+unsafe extern "C" fn records_held_around_a_child(_context: *mut c_void) -> ChimiFiberResult {
+    record_held("root before");
+    let mut request = blank(REQUEST_TASK_START);
+    request.entry = Some(records_held_in_a_child);
+    call(&mut request);
+    result(request.task);
+    record_held("root after");
+    succeeded(0)
+}
+
+#[test]
+fn fibers_the_carrier_resumes_run_without_the_kernel_lock() {
+    HELD_AT.with(|log| log.borrow_mut().clear());
+    let (outcome, _) = execute_once(records_held_around_a_child, Entry::Run);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(
+        HELD_AT.with(|log| log.borrow().clone()),
+        vec![("root before", false), ("child", false), ("root after", false)]
+    );
+}
+
+#[test]
+fn the_kernel_lock_is_held_while_the_carrier_applies_a_request() {
+    HELD_AT.with(|log| log.borrow_mut().clear());
+    let kernel = Mutex::new(Scheduler::new(STACK, TraceMode::Off));
+    super::carrier::Locked(&kernel).with(|_| record_held("kernel step"));
+    assert!(!super::carrier::kernel_held());
+    assert_eq!(
+        HELD_AT.with(|log| log.borrow().clone()),
+        vec![("kernel step", true)]
+    );
 }

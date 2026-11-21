@@ -389,7 +389,9 @@ impl Scheduler {
     /// waiters' `recheck_interval`. Wakes the ready tasks and the child
     /// waiters whose child exited, then fires the timers due by now, which
     /// under the virtual clock are only those at the current instant.
-    pub(super) fn wait_for_io(&mut self) {
+    /// The descriptor wait an idle carrier is about to block in, taken
+    /// under the kernel lock so the wait itself can run without it.
+    pub(super) fn prepare_io_wait(&self) -> IoWaitPlan {
         let timeout = match self.clock.mode() {
             // A timer already due fires without moving time, so it must not
             // wait behind the descriptors.
@@ -407,7 +409,45 @@ impl Scheduler {
             (Some(timeout), Some(recheck)) => Some(timeout.min(recheck)),
             (timeout, recheck) => timeout.or(recheck),
         };
-        let woken = self.reactor.wait(timeout, self.signals.wake_fd());
+        let (ids, watched) = self
+            .reactor
+            .waits
+            .iter()
+            .map(|(id, wait)| (*id, (wait.fd, wait.interest)))
+            .unzip();
+        IoWaitPlan {
+            ids,
+            watched,
+            timeout,
+            wake_fd: self.signals.wake_fd(),
+        }
+    }
+
+    /// Applies what `plan`'s wait found. A registration withdrawn while the
+    /// carrier waited is skipped: its task is no longer waiting on it.
+    pub(super) fn finish_io_wait(&mut self, plan: IoWaitPlan, ready: Option<Vec<bool>>) {
+        let still = |reactor: &Reactor, id: &IoWaitId| reactor.waits.contains_key(id);
+        let woken = match ready {
+            None => Woken {
+                tasks: plan
+                    .ids
+                    .iter()
+                    .filter(|id| still(&self.reactor, id))
+                    .map(|id| self.reactor.waits[id].task)
+                    .collect(),
+                failed: true,
+            },
+            Some(ready) => Woken {
+                tasks: plan
+                    .ids
+                    .iter()
+                    .zip(ready)
+                    .filter(|(id, ready)| *ready && still(&self.reactor, id))
+                    .map(|(id, _)| self.reactor.waits[id].task)
+                    .collect(),
+                failed: false,
+            },
+        };
         self.wake_io(woken);
         self.recheck_children_after_idle();
         self.fire_due_timers();
@@ -419,6 +459,23 @@ impl Scheduler {
     pub(super) fn poll_io_now(&mut self) {
         let woken = self.reactor.ready_now();
         self.wake_io(woken);
+    }
+}
+
+/// A descriptor wait prepared under the kernel lock: the registrations it
+/// watches, in registration order, and how long it may block.
+pub(super) struct IoWaitPlan {
+    ids: Vec<IoWaitId>,
+    watched: Vec<(i32, u32)>,
+    timeout: Option<Duration>,
+    wake_fd: Option<i32>,
+}
+
+impl IoWaitPlan {
+    /// Blocks in poll(2) without the kernel. Returns which watched
+    /// descriptors are ready, or None when poll(2) failed.
+    pub(super) fn block(&self) -> Option<Vec<bool>> {
+        sys::wait(&self.watched, self.timeout, self.wake_fd)
     }
 }
 
