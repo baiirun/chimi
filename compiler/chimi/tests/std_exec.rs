@@ -568,6 +568,40 @@ fn standard_input_to_nothing_reads_nothing() {
     assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
+// Rejects a child that holds a descriptor of its parent's beyond the three
+// standard streams: the program is started with /dev/null open on
+// descriptor 9, not close-on-exec, which a shell's child would hold. Its
+// children hold their standard streams, inherited or captured, and not 9,
+// so a descriptor another carrier opened and has not yet marked
+// close-on-exec cannot reach them either.
+#[test]
+fn a_child_holds_only_its_standard_streams() {
+    let scratch = build_main(
+        "descriptors",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let inherited = Exec.run(Exec.command("/bin/sh", ["-c", "! test -e /dev/fd/9 && test -e /dev/fd/0 && test -e /dev/fd/1 && test -e /dev/fd/2"]))
+  let captured = Exec.capture(Exec.command("/bin/sh", ["-c", "test -e /dev/fd/9 || echo closed"]))
+  case (inherited, Bytes.length(captured.output)) {
+    (Status.Exited(0), 7) -> Void
+    other -> Debug.crash("the children ended with ${Debug.render(other)}")
+  }
+}
+"#,
+    );
+    let shell = |script: &str| {
+        Command::new("/bin/sh")
+            .current_dir(&scratch.0)
+            .arg("-c")
+            .arg(format!("exec 9</dev/null; {script}"))
+            .output()
+            .expect("run a shell")
+    };
+    let control = shell("/bin/sh -c 'test -e /dev/fd/9'");
+    assert_eq!(control.status.code(), Some(0), "a shell's child holds descriptor 9");
+    let output = shell("./runner");
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
 // Rejects a child that inherits the parent's blocked signals: the program is
 // started with SIGUSR1 blocked, and its child's mask is still empty. The
 // child is grep, not a shell, since dash clears its own mask at startup.

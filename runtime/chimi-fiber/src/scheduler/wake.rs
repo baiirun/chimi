@@ -180,8 +180,9 @@ mod sys {
     }
 
     /// A pipe whose ends are non-blocking and closed on exec. macOS has no
-    /// pipe2, so a fork on another thread between the calls could inherit
-    /// it; the scheduler forks no children of its own.
+    /// pipe2, so a child started on another thread between the calls could
+    /// inherit it, but the scheduler starts none of its own, and std/exec's
+    /// children close every descriptor beyond their standard streams.
     #[cfg(target_os = "macos")]
     pub(super) fn open_pipe() -> io::Result<(i32, i32)> {
         let mut ends = [0_i32; 2];
