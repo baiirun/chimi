@@ -84,6 +84,38 @@ counter, so they see the same epochs and span ids as before.
 `fixtures/carrier-threads-stress.c` checks that neither repeats on four
 threads and that one carrier's stay consecutive.
 
+## Spinning before a carrier blocks (step 3 PR 6c)
+
+An idle carrier now spins for up to 50 µs on a wake flag before it blocks in
+`poll`; the waker sets the flag after writing the pipe byte, and a spin that
+sees it empties the pipe and runs again. It spins only when every carrier
+can have a core (`available_parallelism`): with more carriers than cores a
+spinning carrier would take a core from one with work. Same host, same
+command, the spin in place:
+
+| Measurement | 1 carrier | 2 | 4 | 8 (no spin) |
+| --- | ---: | ---: | ---: | ---: |
+| Parallel counting, 8 processes (ms) | 2,324 | 1,244 | 619 | 636 |
+| Serial round trip (µs) | 3.3 | 8.1 | 9.8 | 40.8 |
+| PG04 µs per start | 23.5 | 42.5 | 46.8 | 50.1 |
+| PG04 µs per stop | 14.6 | 68.6 | 82.2 | 75.7 |
+
+- A round trip across carriers is 3 to 4 times cheaper: 8 to 10 µs instead
+  of 22 to 39. What is left is the pipe write and drain and the kernel lock
+  changing hands. A 200 µs spin gave the same round trip, so the 50 µs spin
+  catches these wakes. A 20 µs spin missed them at 4 carriers (24 µs).
+- PG04 does not improve, and its stop got slower. Three runs each at the
+  same commit, start and stop in µs:
+  - 2 carriers: with spin 40/50, 47/83, 46/71; without 37/44, 35/40, 39/60.
+  - 4 carriers: with spin 46/77, 48/77, 43/78; without 43/75, 36/55, 39/49.
+
+  Start and stop are kernel work under one lock: each start and end takes
+  the kernel lock several times and writes boundary telemetry. A carrier
+  that sleeps comes back to more queued work per lock hand-off than one that
+  spins and comes back at once. Sharding the kernel ("Order of work" step 4)
+  is what addresses this, not the wake.
+- Parallel work is unchanged.
+
 ## One carrier
 
 `chimi-process-lab performance` on the same host and commit: every gate

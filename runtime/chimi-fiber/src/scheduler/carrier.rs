@@ -212,7 +212,13 @@ pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
             kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
         }
         IdleStep::Sleep(wait, wake_fds) => {
-            clock::block_real(wait, wake_fds.as_slice());
+            // A spin that a wake ends skips the block; a due timer is fired
+            // either way, so a spin as long as the wait loses no time.
+            let spin = wake_fds.spin_within(wait);
+            if !wake_fds.spin(spin) {
+                clock::block_real(wait.saturating_sub(spin), wake_fds.as_slice());
+                wake_fds.settle();
+            }
             kernel.with(Scheduler::fire_due_timers);
         }
         IdleStep::Park(wake_fds) => {
@@ -220,7 +226,10 @@ pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
                 !wake_fds.as_slice().is_empty(),
                 "only a carrier with a wake pipe parks"
             );
-            super::signal::wait_readable(wake_fds.as_slice(), None);
+            if !wake_fds.spin(wake_fds.spin_within(Duration::MAX)) {
+                super::signal::wait_readable(wake_fds.as_slice(), None);
+                wake_fds.settle();
+            }
         }
         IdleStep::Continue => {}
     }

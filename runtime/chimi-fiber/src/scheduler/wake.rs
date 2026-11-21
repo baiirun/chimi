@@ -10,14 +10,43 @@
 //! is busy ends the carrier's next wait at once, which then finds the work.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use super::ready::Carrier;
+
+/// How long an idle carrier spins, watching its wake flag, before it blocks
+/// in poll(2). Waking a thread blocked in poll took 10 to 20 µs on the
+/// cloud host (multi-carrier-baseline.md), so a hand-off that arrives within
+/// this spin costs a flag store instead. With more carriers than cores a
+/// spinning carrier takes a core from one with work, so none spins then
+/// (`spin_budget`).
+const SPIN_BEFORE_BLOCK: Duration = Duration::from_micros(50);
+
+/// The spin for `carriers` carriers on this host: `SPIN_BEFORE_BLOCK` when
+/// each can have a core, else none.
+fn spin_budget(carriers: u32) -> Duration {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if carriers as usize <= cores {
+        SPIN_BEFORE_BLOCK
+    } else {
+        Duration::ZERO
+    }
+}
 
 /// One wake pipe per carrier, and which carriers to wake once the kernel
 /// lock is released.
 pub(super) struct Wakes {
     pipes: Vec<Pipe>,
     marked: Vec<bool>,
+    /// Per carrier, set after its byte is written: an idle carrier spinning
+    /// before it blocks sees the wake here without a system call. The pipe
+    /// byte stays the authority; the flag only ends a spin early. Boxed so
+    /// its address holds while the kernel lives, which outlives every wait
+    /// that reads it.
+    pending: Box<[AtomicBool]>,
+    /// How long an idle carrier spins before it blocks (`spin_budget`).
+    spin: Duration,
 }
 
 impl Wakes {
@@ -29,7 +58,13 @@ impl Wakes {
             Vec::new()
         };
         let marked = vec![false; pipes.len()];
-        Ok(Self { pipes, marked })
+        let pending = (0..pipes.len()).map(|_| AtomicBool::new(false)).collect();
+        Ok(Self {
+            pipes,
+            marked,
+            pending,
+            spin: spin_budget(carriers),
+        })
     }
 
     /// Asks for `carrier` to be woken when the kernel lock is next released.
@@ -43,9 +78,9 @@ impl Wakes {
     /// more than once since the last take is written once.
     pub(super) fn take(&mut self) -> Marked {
         let mut ends = Vec::new();
-        for (pipe, marked) in self.pipes.iter().zip(&mut self.marked) {
+        for ((pipe, marked), pending) in self.pipes.iter().zip(&mut self.marked).zip(&self.pending) {
             if std::mem::take(marked) {
-                ends.push(pipe.write);
+                ends.push((pipe.write, std::ptr::from_ref(pending)));
             }
         }
         Marked(ends)
@@ -54,6 +89,13 @@ impl Wakes {
     /// The descriptor `carrier`'s idle waits watch, if it has one.
     pub(super) fn read_fd(&self, carrier: Carrier) -> Option<i32> {
         self.pipes.get(carrier.0 as usize).map(|pipe| pipe.read)
+    }
+
+    /// `carrier`'s wake flag, if it has a pipe, and how long to spin on it.
+    pub(super) fn pending(&self, carrier: Carrier) -> Option<(*const AtomicBool, Duration)> {
+        self.pending
+            .get(carrier.0 as usize)
+            .map(|pending| (std::ptr::from_ref(pending), self.spin))
     }
 
     /// True when some carrier is marked and not yet written.
@@ -70,11 +112,28 @@ impl Wakes {
 }
 
 /// What an idle wait watches besides its own work: at most the signal pipe
-/// and the waiting carrier's wake pipe, held without allocating.
-#[derive(Clone, Copy, Debug, Default)]
+/// and the waiting carrier's wake pipe, held without allocating, and the
+/// wake flag of that pipe.
+#[derive(Clone, Copy, Debug)]
 pub(super) struct WakeFds {
     fds: [i32; 2],
     len: usize,
+    /// Null when the carrier has no wake pipe. Points into the kernel's
+    /// `Wakes`, which outlives every wait (as the pipe descriptors do).
+    pending: *const AtomicBool,
+    /// How long `spin` watches the flag.
+    spin: Duration,
+}
+
+impl Default for WakeFds {
+    fn default() -> Self {
+        Self {
+            fds: [0; 2],
+            len: 0,
+            pending: std::ptr::null(),
+            spin: Duration::ZERO,
+        }
+    }
 }
 
 impl WakeFds {
@@ -87,13 +146,75 @@ impl WakeFds {
     pub(super) fn as_slice(&self) -> &[i32] {
         &self.fds[..self.len]
     }
+
+    /// Sets the wake flag the wait spins on, and for how long (`spin`).
+    pub(super) fn watch(&mut self, pending: *const AtomicBool, spin: Duration) {
+        self.pending = pending;
+        self.spin = spin;
+    }
+
+    fn flag(&self) -> Option<&AtomicBool> {
+        // SAFETY: the flag lives in the kernel's `Wakes`, boxed, for as long
+        // as the kernel, which outlives the wait holding these fds.
+        unsafe { self.pending.as_ref() }
+    }
+
+    /// The longest a wait of at most `wait` spins: the carrier's spin, cut
+    /// to the wait.
+    pub(super) fn spin_within(&self, wait: Duration) -> Duration {
+        self.spin.min(wait)
+    }
+
+    /// Spins for at most `budget` watching the wake flag. True when a wake
+    /// arrived, which clears the flag; the pipe byte is left for the next
+    /// blocking wait to drain. False at once with no flag, or no budget.
+    pub(super) fn spin(&self, budget: Duration) -> bool {
+        let Some(flag) = self.flag() else {
+            return false;
+        };
+        if budget.is_zero() {
+            return false;
+        }
+        let started = Instant::now();
+        loop {
+            if flag.load(Ordering::Relaxed) && flag.swap(false, Ordering::Acquire) {
+                // As a blocking wait that a byte ends, empty every pipe it
+                // watches: a signal byte drained here was already seen by
+                // the signal word, which the scheduler reads after a wait.
+                for &fd in self.as_slice() {
+                    super::signal::drain(fd);
+                }
+                return true;
+            }
+            if started.elapsed() >= budget {
+                return false;
+            }
+            for _ in 0..64 {
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Clears the wake flag after a blocking wait ended: the wait drained
+    /// the pipe, so a flag set before it is spent. A wake that lands after
+    /// the drain keeps its byte, so clearing loses nothing.
+    pub(super) fn settle(&self) {
+        if let Some(flag) = self.flag() {
+            flag.store(false, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The write ends of the carriers to wake, taken under the kernel lock and
 /// written after it is released. A write end stays open while the kernel
 /// lives, which outlives every `Locked` access to it.
 #[must_use = "a marked carrier sleeps on until its byte is written"]
-pub(super) struct Marked(Vec<i32>);
+pub(super) struct Marked(Vec<(i32, *const AtomicBool)>);
+
+// SAFETY: the pointers name atomics, which any thread may store to, in the
+// kernel's boxed `Wakes`, alive for as long as the kernel, as the
+// descriptors beside them are.
+unsafe impl Send for Marked {}
 
 impl Marked {
     pub(super) fn write(self) {
@@ -102,8 +223,14 @@ impl Marked {
             self.0.is_empty() || !super::carrier::kernel_held(),
             "a wake is written only once the kernel lock is released"
         );
-        for fd in self.0 {
+        for (fd, pending) in self.0 {
+            // The byte first, so a spin that sees the flag finds the byte
+            // to drain. A flag or byte left over only ends one later wait
+            // early, which then finds nothing to run and waits again.
             sys::write_byte(fd);
+            // SAFETY: as for the descriptor, the flag lives as long as the
+            // kernel, which outlives this write.
+            unsafe { &*pending }.store(true, Ordering::Release);
         }
     }
 }
@@ -305,6 +432,61 @@ mod tests {
         assert_eq!(opened.len(), 4, "two pipes opened before the failure");
         let closed = test_hooks::CLOSED.with(|closed| closed.borrow().clone());
         assert!(opened.iter().all(|fd| closed.contains(fd)), "each was closed");
+    }
+
+    /// A wake written by another thread ends an idle carrier's spin before
+    /// its budget, clears the flag, and empties the pipe it was written to.
+    #[test]
+    fn a_wake_ends_a_spin_and_keeps_its_byte() {
+        let mut wakes = Wakes::new(2).expect("pipes");
+        let mut fds = WakeFds::default();
+        let fd = wakes.read_fd(Carrier(1)).expect("a pipe");
+        fds.push(fd);
+        let (pending, _) = wakes.pending(Carrier(1)).expect("a flag");
+        fds.watch(pending, SPIN_BEFORE_BLOCK);
+        wakes.mark(Carrier(1));
+        let marked = wakes.take();
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(5));
+                marked.write();
+            });
+            assert!(fds.spin(Duration::from_secs(30)), "the wake ended the spin");
+        });
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!fds.spin(Duration::from_millis(1)), "the spin cleared the flag");
+        assert!(!readable(fd), "the spin emptied the pipe");
+    }
+
+    /// With no wake a spin ends at its budget; with no flag or no budget it
+    /// does not spin at all.
+    #[test]
+    fn a_spin_without_a_wake_ends_at_its_budget() {
+        let wakes = Wakes::new(2).expect("pipes");
+        let mut fds = WakeFds::default();
+        assert!(!fds.spin(Duration::from_secs(30)), "no flag, no spin");
+        let (pending, _) = wakes.pending(Carrier(0)).expect("a flag");
+        fds.watch(pending, SPIN_BEFORE_BLOCK);
+        let started = Instant::now();
+        assert!(!fds.spin(Duration::from_millis(2)));
+        assert!(started.elapsed() >= Duration::from_millis(2));
+        // SAFETY: the flag lives in `wakes`, alive for this test.
+        unsafe { &*pending }.store(true, Ordering::Release);
+        assert!(!fds.spin(Duration::ZERO), "no budget, no spin");
+        fds.settle();
+        // SAFETY: as above.
+        assert!(!unsafe { &*pending }.load(Ordering::Acquire), "settle clears the flag");
+    }
+
+    /// A carrier spins only when every carrier can have a core.
+    #[test]
+    fn carriers_beyond_the_cores_do_not_spin() {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get) as u32;
+        assert_eq!(spin_budget(cores), SPIN_BEFORE_BLOCK);
+        assert_eq!(spin_budget(cores + 1), Duration::ZERO);
+        let wakes = Wakes::new(cores + 1).expect("pipes");
+        assert_eq!(wakes.pending(Carrier(0)).expect("a flag").1, Duration::ZERO);
     }
 
     /// A full pipe still reads as woken, and a write to it does not block.
