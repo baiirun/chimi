@@ -259,6 +259,38 @@ ChimiFiberResult chimi_fixture_two_crashes_main(void *context) {
   return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
 }
 
+/* One member, which waits for a message that never comes, and a root that
+   waits on the supervisor: under the real clock nothing can wake either, so
+   the run returns parked with the member's fiber parked on its carrier. */
+ChimiFiberResult chimi_fixture_waits_on_a_member_main(void *context) {
+  (void)context;
+  ChimiSupervisorMember member = {
+      .kind = CHIMI_MEMBER_PROCESS,
+      .restart = CHIMI_RESTART_ON_DEFECT,
+      .process = fixture_spec(fixture_counter, 1, 5 * FIXTURE_S),
+  };
+  ChimiSupervisorPolicy policy = {
+      .members = &member,
+      .member_count = 1,
+      .capacity = 1,
+      .restart_limit = 0,
+      .restart_within = FIXTURE_S,
+  };
+  ChimiProcessRequest start = {.kind = CHIMI_REQUEST_SUPERVISOR_START, .policy = &policy};
+  if (chimi_fiber_request(&start, 0) == CHIMI_FIBER_CANCEL ||
+      start.status != CHIMI_RESPONSE_OK) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
+  }
+  ChimiProcessRequest wait = {
+      .kind = CHIMI_REQUEST_SUPERVISOR_WAIT,
+      .supervisor = start.supervisor,
+  };
+  if (chimi_fiber_request(&wait, 0) == CHIMI_FIBER_CANCEL) {
+    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
+  }
+  return (ChimiFiberResult){.state = CHIMI_FIBER_SUCCEEDED, .value = 1};
+}
+
 static int sd04_ran_after_forced = 0;
 static int sd04_forced_replies = 0;
 

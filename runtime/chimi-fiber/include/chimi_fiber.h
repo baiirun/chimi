@@ -702,20 +702,25 @@ typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
 typedef bool (*ChimiReleaseTake)(void *context, uint32_t *kind, uint64_t *id);
 
 /* Called on a carrier thread other than the caller's, with `carrier_context`
-   and the carrier's index (1 and up), before that carrier runs any fiber;
-   see ChimiSchedulerConfig.carriers. */
+   and the carrier's index (1 and up), before that carrier runs any fiber or
+   any other hook; see ChimiSchedulerConfig.carriers. It runs outside the
+   scheduler's lock, so it may run at the same time as another carrier's
+   enter hook or any other hook, and never when a carrier could not get a
+   thread. */
 typedef void (*ChimiCarrierEnter)(void *context, uint32_t carrier);
 
 /* The arguments of chimi_scheduler_run.
 
    Threads: the entry and every task run on their carrier's thread, without
-   the scheduler's lock. Every other hook (the trace sink, the release, copy
-   and take hooks, and the violation and defect reports) runs on whichever
-   carrier thread holds the lock, one call at a time, so with several
-   carriers it may run on a thread the host did not start; take_release runs
-   on the carrier whose queue it drains. The deadlock report runs on the
-   calling thread before chimi_scheduler_run returns. With one carrier,
-   everything runs on the calling thread. */
+   the scheduler's lock, and carrier_enter as it says. Every other hook (the
+   trace sink, the release, copy and take hooks, and the violation and
+   defect reports) runs one call at a time: during the run on whichever
+   carrier thread holds the lock, so with several carriers it may run on a
+   thread the host did not start, and before and after the run (starting
+   the entry, tearing the scheduler down) on the calling thread;
+   take_release runs on the carrier whose queue it drains. The deadlock
+   report runs on the calling thread before chimi_scheduler_run returns.
+   With one carrier, everything runs on the calling thread. */
 typedef struct {
   ChimiFiberEntry entry;
   void *context;
@@ -789,7 +794,8 @@ typedef struct {
      CHIMI_FIBER_PARKED on several carriers can never be continued. */
   uint32_t carriers;
   /* Called on each carrier thread the scheduler starts, before the carrier
-     runs a fiber, so the host can bind its per-thread state. May be null. */
+     runs a fiber, so the host can bind its per-thread state (see
+     ChimiCarrierEnter). May be null. */
   ChimiCarrierEnter carrier_enter;
   void *carrier_context;
 } ChimiSchedulerConfig;

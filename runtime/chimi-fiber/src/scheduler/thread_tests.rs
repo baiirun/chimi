@@ -20,6 +20,7 @@ use std::time::Duration;
 unsafe extern "C" {
     fn chimi_fixture_generated_many_parks(context: *mut std::ffi::c_void) -> ChimiFiberResult;
     fn chimi_fixture_two_crashes_main(context: *mut std::ffi::c_void) -> ChimiFiberResult;
+    fn chimi_fixture_waits_on_a_member_main(context: *mut std::ffi::c_void) -> ChimiFiberResult;
 }
 
 /// A fiber that finds itself on another thread, or holding the kernel.
@@ -302,6 +303,7 @@ static ENTERED: Mutex<Vec<(u32, u64)>> = Mutex::new(Vec::new());
 
 unsafe extern "C" fn record_enter(context: *mut std::ffi::c_void, carrier: u32) {
     assert_eq!(context as usize, 0xC0, "the hook gets carrier_context");
+    assert!(!carrier::kernel_held(), "the enter hook runs outside the lock");
     ENTERED.lock().expect("entered").push((carrier, this_thread()));
 }
 
@@ -411,15 +413,17 @@ fn the_abi_refuses_several_carriers_under_virtual_time() {
     assert!(ENTERED.lock().expect("entered").is_empty());
 }
 
-/// A run on two carriers whose root waits on the host returns parked
-/// through the ABI, as one carrier's does: the kernel is left in place
-/// (its fibers may be homed on the thread just joined), not refused.
+/// A run on two carriers that nothing can wake returns parked through the
+/// ABI, as one carrier's does: the kernel is left in place, with the
+/// member's fiber parked on carrier 1's thread, which has been joined.
+/// Destroying that fiber from the caller's thread would trip its home
+/// check.
 #[test]
 fn a_parked_run_on_two_carriers_returns_parked_through_the_abi() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     under_watchdog(Duration::from_secs(30), || {
         let events = Mutex::new(Vec::new());
-        let outcome = abi_run(chimi_fixture_generated_many_parks, CLOCK_REAL, 2, &events);
+        let outcome = abi_run(chimi_fixture_waits_on_a_member_main, CLOCK_REAL, 2, &events);
         assert_eq!(outcome.state, ChimiFiberState::Parked as u32);
         assert_eq!(ENTERED.lock().expect("entered").iter().map(|&(carrier, _)| carrier).collect::<Vec<_>>(), [1]);
     });
@@ -488,5 +492,55 @@ fn a_carrier_thread_is_entered_before_its_first_fiber() {
             );
         }
         assert_eq!(THREADS.lock().expect("threads").len(), 3);
+    });
+}
+
+/// A carrier whose wake pipe cannot be opened fails the run through the ABI
+/// as a scheduler defect, before any task or hook runs.
+#[test]
+fn the_abi_defects_when_a_carrier_gets_no_wake_pipe() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let events = Mutex::new(Vec::new());
+    super::wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(1)));
+    let outcome = abi_run(chimi_fixture_two_crashes_main, CLOCK_REAL, 3, &events);
+    super::wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
+    assert_eq!(
+        (outcome.state, outcome.defect_code),
+        (ChimiFiberState::Defected as u32, SCHEDULER_DEFECT_CODE)
+    );
+    assert!(events.into_inner().expect("events").is_empty(), "no task ran");
+    assert!(ENTERED.lock().expect("entered").is_empty(), "no carrier was entered");
+}
+
+static ENTERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+unsafe extern "C" fn count_enter(_context: *mut std::ffi::c_void, _carrier: u32) {
+    ENTERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A run whose carrier cannot get a thread enters no carrier: the carriers
+/// already spawned leave at the gate before their hook.
+#[test]
+fn a_failed_start_enters_no_carrier() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    under_watchdog(Duration::from_secs(30), || {
+        let mut scheduler =
+            Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        scheduler.set_carriers(3);
+        scheduler.enter_carrier(Carrier(0));
+        let root = scheduler
+            .start_root_with_context(hops, ptr::without_provenance_mut(1))
+            .expect("root");
+        ENTERS.store(0, std::sync::atomic::Ordering::Relaxed);
+        let enter = EnterHook {
+            hook: count_enter,
+            context: ptr::null_mut(),
+        };
+        test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.set(Some(2)));
+        let (run, scheduler) = run_on_carriers(scheduler, root, 1, Some(enter));
+        test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.set(None));
+        assert_eq!(run.outcome.defect_code, SCHEDULER_DEFECT_CODE);
+        assert_eq!(ENTERS.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(scheduler);
     });
 }

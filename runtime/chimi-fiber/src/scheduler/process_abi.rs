@@ -187,10 +187,9 @@ pub(super) struct EnterHook {
 
 // SAFETY: the host that passes the hook promises, by
 // `ChimiSchedulerConfig::carrier_enter`'s contract, that it may be called
-// with its context on any carrier thread for the length of the run.
+// with its context on any carrier thread, at the same time as on another,
+// for the length of the run.
 unsafe impl Send for EnterHook {}
-// SAFETY: as for `Send`; the hook only reads the context pointer.
-unsafe impl Sync for EnterHook {}
 
 impl EnterHook {
     fn call(self, carrier: u32) {
