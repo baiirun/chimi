@@ -6,6 +6,7 @@
 //! then the native runtime's handle table.
 
 use super::reactor::IoWaitPlan;
+use super::ready::Carrier;
 use super::{ChimiFiberCommand, Idle, Scheduler, TaskId, clock, resume_fiber};
 use crate::ChimiFiber;
 use std::ptr::NonNull;
@@ -24,16 +25,30 @@ impl KernelAccess for Scheduler {
     }
 }
 
-/// The kernel behind its lock. Access cannot fail: a panic while the lock
-/// is held aborts in `chimi_scheduler_run` (an `extern "C"` function), so a
-/// poisoned lock is only taken over, never reported.
-pub(crate) struct Locked<'kernel>(pub(crate) &'kernel Mutex<Scheduler>);
+/// The kernel behind its lock, as one carrier reaches it. Each access tells
+/// the kernel which carrier holds it, so ready work and wakes are routed by
+/// carrier rather than by whoever ran last. Access cannot fail: a panic
+/// while the lock is held aborts in `chimi_scheduler_run` (an `extern "C"`
+/// function), so a poisoned lock is only taken over, never reported.
+pub(crate) struct Locked<'kernel> {
+    kernel: &'kernel Mutex<Scheduler>,
+    carrier: Carrier,
+}
+
+impl<'kernel> Locked<'kernel> {
+    /// Requires: `carrier` is one of the kernel's carriers, and no other
+    /// thread reaches the kernel as `carrier`.
+    pub(crate) fn new(kernel: &'kernel Mutex<Scheduler>, carrier: Carrier) -> Self {
+        Self { kernel, carrier }
+    }
+}
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        let mut kernel = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
         #[cfg(test)]
         let _held = HeldMark::set();
+        kernel.enter_carrier(self.carrier);
         operation(&mut kernel)
     }
 }

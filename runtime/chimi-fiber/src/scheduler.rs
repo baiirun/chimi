@@ -1183,6 +1183,22 @@ impl Scheduler {
         carrier::drive(self);
     }
 
+    /// Makes `carrier` the one running the loop until the next entry: the
+    /// queue it pops and the home of the tasks it starts without a parent.
+    fn enter_carrier(&mut self, carrier: ready::Carrier) {
+        debug_assert!(carrier.0 < self.ready.carriers(), "unknown carrier {carrier:?}");
+        self.current = carrier;
+    }
+
+    /// A kernel with `carriers` ready queues, driven from one thread by
+    /// `enter_carrier`, for tests of routing between carriers.
+    #[cfg(test)]
+    fn with_carriers(stack_bytes: usize, trace_mode: TraceMode, carriers: u32) -> Self {
+        let mut scheduler = Self::new(stack_bytes, trace_mode);
+        scheduler.ready = ready::ReadyQueues::new(carriers);
+        scheduler
+    }
+
     /// Housekeeping `drive` does before its first resume and after each one.
     fn between_resumes(&mut self) {
         self.remove_released_terminal();
@@ -3129,6 +3145,32 @@ mod tests {
             scheduler.take_receive_result(selector),
             Some(ReceiveResult::Drained)
         );
+    }
+
+    /// A task is woken onto its home carrier's queue, not onto the queue of
+    /// the carrier that woke it, and a task started without a parent is
+    /// homed on the carrier that started it.
+    #[test]
+    fn a_woken_task_waits_on_its_home_carrier() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (zero, one) = (ready::Carrier(0), ready::Carrier(1));
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(one);
+        let task = start_parked(&mut scheduler);
+        assert_eq!(scheduler.tasks[&task].carrier, one);
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked);
+
+        scheduler.enter_carrier(zero);
+        scheduler.wake(task).expect("wake");
+        scheduler.drive();
+        assert_eq!(
+            scheduler.tasks[&task].phase,
+            TaskPhase::Runnable,
+            "carrier 0 does not run carrier 1's task"
+        );
+        scheduler.enter_carrier(one);
+        scheduler.drive();
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked, "its home ran it");
     }
 
     #[test]

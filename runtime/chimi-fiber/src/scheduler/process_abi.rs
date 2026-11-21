@@ -17,6 +17,7 @@ use super::{
     SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
 use super::carrier::{KernelAccess, Locked};
+use super::ready::Carrier;
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
@@ -896,7 +897,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     // The carrier loop runs against the kernel behind its lock, as each of
     // several carriers will, so the performance gates measure the lock.
     let kernel = Mutex::new(scheduler);
-    let run = run_root(&mut Locked(&kernel), root, DEADLOCK_DEFECT_CODE);
+    let run = run_root(&mut Locked::new(&kernel, Carrier::default()), root, DEADLOCK_DEFECT_CODE);
     let scheduler = kernel.into_inner().unwrap_or_else(PoisonError::into_inner);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
