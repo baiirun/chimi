@@ -21,7 +21,7 @@
 //!   process sharing the descriptor can still take the data first; the host
 //!   then waits again (or blocks, for a descriptor it does not own).
 //! - A wait may name the resource its descriptor belongs to (`channel`, a
-//!   host-chosen nonzero key). `CHIMI_REQUEST_IO_WITHDRAW` wakes every wait
+//!   nonzero key in the form below). `CHIMI_REQUEST_IO_WITHDRAW` wakes every wait
 //!   on a key, so a host closing a resource wakes its waiters before the
 //!   descriptor closes and its number can be reused. Closing a descriptor
 //!   a task waits on without withdrawing first is a host bug: poll(2) only
@@ -33,8 +33,11 @@
 //!   withdrawn parked wait would be, PENDING and woken at once, without
 //!   registering. With several carriers a close on another carrier can land
 //!   between a host's "is the handle open" check and its wait; the host
-//!   then looks again and sees the handle closed. The table keeps one
-//!   generation per slot ever withdrawn.
+//!   then looks again and sees the handle closed. The answer comes before
+//!   the descriptor is checked, so it holds even when the descriptor is
+//!   ready (its number may already belong to another resource). The table
+//!   keeps one entry per slot ever withdrawn, which the native runtime's
+//!   handle limit bounds.
 //! - A failed poll(2) (not an interruption) wakes every waiter with its
 //!   parked wait answered ERROR, so a reactor that cannot wait never spins.
 //!

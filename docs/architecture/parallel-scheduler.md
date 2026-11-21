@@ -512,7 +512,10 @@ four keep one carrier.
        `binding_resource_key` builds it). An IO or child wait on that
        generation or an older one is answered as a withdrawn parked wait
        (pending, woken at once) without registering, so C's loop sees the
-       handle closed. 4 bytes per slot ever used; no ABI change.
+       handle closed. One table entry per slot ever withdrawn. The request
+       layout is unchanged, and the key's form becomes part of the
+       contract, which the native runtime, the only host, already follows,
+       so the fiber ABI stays 28.
        - As landed: `Reactor.withdrawn` maps a slot to its newest
          withdrawn generation; `handle_io_wait` and `handle_child_wait`
          consult it for a nonzero key. With one carrier it changes nothing

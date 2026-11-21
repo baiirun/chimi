@@ -198,9 +198,13 @@ enum {
      operation in flight: virtual time does not advance while one exists, so
      under the virtual clock no timeout or shutdown deadline fires during it
      (a real signal still ends it).
-     `channel` is 0 or a nonzero key naming the host resource the
-     descriptor belongs to, for CHIMI_REQUEST_IO_WITHDRAW. Closing a
-     descriptor a task waits on without withdrawing first is a host bug.
+     `channel` is 0 or the nonzero key of the host resource the
+     descriptor belongs to, `slot << 32 | generation` with a slot's
+     generation only growing, for CHIMI_REQUEST_IO_WITHDRAW. A wait on a
+     withdrawn key (that generation or an older one of its slot) answers
+     PENDING at once without registering, even when the descriptor is
+     ready. Closing a descriptor a task waits on without withdrawing first
+     is a host bug.
      After a failed poll(2) every waiter wakes with its wait answered
      ERROR. Kinds 36 to 39 are the channel-variant requests, 41 cancels a
      scope, 42 and 43 are the task combinators', and 44 withdraws IO
@@ -234,8 +238,9 @@ enum {
      to every second. Like an IO wait it is a host operation in flight, so
      it holds virtual time. A cancellation point, withdrawn by a
      cancellation. `channel` is 0 or the key of the host resource the child
-     belongs to, which CHIMI_REQUEST_IO_WITHDRAW names to wake the waiter
-     when that resource closes. */
+     belongs to, in CHIMI_REQUEST_IO_WAIT's form, which
+     CHIMI_REQUEST_IO_WITHDRAW names to wake the waiter when that resource
+     closes; a wait on a withdrawn key answers PENDING at once. */
   CHIMI_REQUEST_CHILD_WAIT = 47,
   /* ChimiSchedulerRequest: no value names task `task` any more, so nothing
      can read its outcome again. Once the task is terminal, now or later, the

@@ -36,6 +36,18 @@ MUTATIONS = [
     m("an IO wait ignores the withdrawn table", R,
       "        if request.channel != 0 && self.reactor.is_withdrawn(request.channel) {",
       "        if false {", IO),
+    dict(name="the withdrawn table is read only once the descriptor waits", file=R, edits=[(
+        "        if request.channel != 0 && self.reactor.is_withdrawn(request.channel) {\n"
+        "            request.status = RESPONSE_PENDING;\n"
+        "            let _ = self.wake_front(owner);\n"
+        "            return;\n"
+        "        }\n", ""), (
+        "            Check::Waiting => {\n",
+        "            Check::Waiting if request.channel != 0 && self.reactor.is_withdrawn(request.channel) => {\n"
+        "                request.status = RESPONSE_PENDING;\n"
+        "                let _ = self.wake_front(owner);\n"
+        "            }\n"
+        "            Check::Waiting => {\n")], targets=["lib"], filter=IO),
     m("a child wait ignores the withdrawn table", C,
       "        if pid > 0 && request.channel != 0 && self.reactor.is_withdrawn(request.channel) {",
       "        if false {", CHILD),
