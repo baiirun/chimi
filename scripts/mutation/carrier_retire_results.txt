@@ -1,0 +1,30 @@
+# mutation run at e1147d6eb1b2569f092ae7febb7a0c90e1696d98
+# carrier_retire_mutations.py: 20 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (10s)
+KILLED       a leaving carrier checks no job [lib] (8s)
+KILLED       a leaving carrier checks no fiber [lib] (8s)
+KILLED       a leaving carrier checks every carrier's fibers [lib] (7s)
+KILLED       a parked run's carriers check for fibers [lib] (8s)
+KILLED       a finished run's carriers check nothing [lib] (7s)
+KILLED       a parked root ends the run as finished [lib] (8s)
+KILLED       a finished run forces before a pending deadline [lib] (6s)
+KILLED       a finished run never forces what is left [lib] (6s)
+KILLED       the run ends with work queued [lib] (6s)
+KILLED       forcing reports no progress [lib] (6s)
+KILLED       forcing always reports progress [lib] (6s)
+KILLED       forcing ignores work it queued [lib] (6s)
+SURVIVED     forcing ignores incarnations ended [lib] (6s)
+KILLED       forcing skips the blocked plans [lib] (10s)
+KILLED       forcing goes on to the leftovers after clearing a blocker [lib] (9s)
+KILLED       forcing skips the incarnations left [lib] (6s)
+KILLED       a leftover incarnation is never forced [lib] (6s)
+KILLED       the force's stale deadline stays queued [lib] (6s)
+TIMEOUT      a lingering draining body is forced [lib] (120s)
+KILLED       a body is forced off its home [lib] (6s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# "forcing ignores incarnations ended" is equivalent in effect: the pass
+# ends an incarnation without any other change only in its last resort,
+# which has already acted on every incarnation left, so a further pass
+# would move nothing either and the run ends the same way, one pass sooner.
+# "a lingering draining body is forced" is killed by a timeout: the
+# teardown spins on a body it cannot force.

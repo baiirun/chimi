@@ -735,6 +735,32 @@ four keep one carrier.
        ended would hold carrier 0 from the host. Both idle waits now fire
        due timers and drain the carrier's host releases first
        (`refill_before_waiting`).
+     - 5c-5 as landed: the run, not `Drop`, ends the processes. Once the
+       root is terminal and no carrier has work, `root_step` gives a
+       process still left its pending shutdown deadline, if a timer is
+       queued; with none, nothing but forcing can move it, so
+       `force_survivors` makes one pass and the run continues, ending
+       (`RunEnd::Finished`) once nothing is left or a pass moved nothing.
+       The pass forces the bodies stop plans wait on and resumes plans
+       whose blocker is gone; only if that moved nothing does it shut
+       down and force every incarnation left, cancelling the deadline
+       `force` leaves queued. It never loops, since a body on another
+       carrier ends only when its home runs it. No program reaches the
+       pass today (a full suite run found no process left at the old end
+       of a run): every incarnation left after `shutdown_processes` has a
+       deadline. `stopping` became `run_end: Option<RunEnd>`. A carrier
+       other than 0 leaving a finished run asserts it owes no job and
+       that no task homed on it still holds its fiber (`retire_carrier`),
+       which holds because everything on such a carrier belongs to a
+       process body, so `Drop` on carrier 0's thread never touches one of
+       its fibers. Destroying such fibers on their carrier was tried and
+       dropped in review: taking a live task's fiber leaves a task that can
+       never end. A parked run keeps its fibers on their carriers, so a
+       parked kernel may be dropped or cancelled into only on one thread;
+       5c-6 must keep that rule or retire a parked kernel's carriers. Found
+       in review and left as before: `force` clears a deadline without
+       cancelling its timer, and `Drop` destroys a parked fiber without
+       setting a terminal resume context.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.
