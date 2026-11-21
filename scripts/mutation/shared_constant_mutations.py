@@ -32,4 +32,7 @@ MUTATIONS = [
     m("a shared constant's window is shared, not copied",
       "    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))\n      return list_value(list_copy_window(list, from, length, NULL), 0, length);",
       "    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))\n      return list_value(list->as.list.vector, list->as.list.start + from, length);"),
+    m("every constant's window is copied on threads, however long",
+      "  if (list_retains_too_much(length, list->as.list.vector.length)) {\n    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))",
+      "  if (list_retains_too_much(length, list->as.list.vector.length) || list_shared_across_threads(list)) {\n    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))"),
 ]

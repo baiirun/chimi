@@ -467,15 +467,26 @@ static void a_waiting_call_lets_its_handle_go(bool child) {
    window of it would compact it in place on one carrier. */
 enum { CONSTANT_LENGTH = 8, CONSTANT_VECTOR = 64, SLICE_ROUNDS = 2000 };
 static ChimiValue *shared_constant;
+/* A whole constant of CONSTANT_VECTOR elements. */
+static ChimiValue *shared_whole;
 
-/* A module constant of CONSTANT_LENGTH elements sharing a CONSTANT_VECTOR
-   vector, built in the static area. */
-static ChimiValue *constant_window(void) {
+/* A module constant of CONSTANT_VECTOR elements, built whole as
+   decode_constant builds one, and a constant of CONSTANT_LENGTH elements
+   sharing its vector, which no decoded constant is but which list_slice
+   would compact. Both in the static area. */
+static ChimiValue *shared_constant_whole(void) {
   AllocationArea *previous = carrier->fiber.target;
   carrier->fiber.target = &static_area;
   ChimiValue *elements[CONSTANT_VECTOR];
   for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
   ChimiValue *whole = list_from_values(elements, CONSTANT_VECTOR);
+  carrier->fiber.target = previous;
+  return whole;
+}
+static ChimiValue *constant_window(void) {
+  ChimiValue *whole = shared_constant_whole();
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = &static_area;
   ChimiValue *constant = list_value(whole->as.list.vector, 0, CONSTANT_LENGTH);
   carrier->fiber.target = previous;
   return constant;
@@ -501,6 +512,10 @@ static void *slice_thread(void *raw_index) {
     for (uint32_t at = 0; at < 4; ++at)
       CHECK(list_get(window, at)->as.integer == (int64_t)at + 1, "element %u of a window", at);
   }
+  /* A long window of a whole constant, the shape decode_constant builds,
+     shares its vector, as on one carrier. */
+  ChimiValue *half = list_slice(shared_whole, 0, CONSTANT_VECTOR / 2);
+  CHECK(half && half->as.list.vector.root == shared_whole->as.list.vector.root, "a long window of a constant was copied");
   /* A list in this carrier's own heap still compacts. */
   ChimiValue *elements[CONSTANT_VECTOR];
   for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
@@ -518,6 +533,7 @@ static void *slice_thread(void *raw_index) {
    under the other threads, which ThreadSanitizer reports. */
 static void slicing_a_shared_constant_from_every_thread(void) {
   shared_constant = constant_window();
+  shared_whole = shared_constant_whole();
   ListNode *root = shared_constant->as.list.vector.root;
   pthread_t threads[THREADS];
   for (size_t index = 0; index < THREADS; ++index)

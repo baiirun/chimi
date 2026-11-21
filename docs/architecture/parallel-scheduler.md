@@ -817,8 +817,15 @@ four keep one carrier.
        run. One carrier compacts a constant as before, so the memory
        report of a one-carrier run is unchanged. The stress fixture slices
        one constant from four threads and checks that the windows are
-       copies, the constant keeps its vector, and each carrier's own list
-       still compacts; without the fix ThreadSanitizer reports the race.
+       copies, the constant keeps its vector, a long window of a whole
+       constant shares its vector, and each carrier's own list still
+       compacts; without the fix ThreadSanitizer reports the race. The
+       review found the case latent: `decode_constant` builds every list
+       constant whole, and a whole list is never compacted, so only a
+       constant built as a window (the fixture's) reaches it. The guard
+       stays so a later constant form cannot bring the race back. The
+       fixture runs five carriers, so exactly two is untested here; 5d-4's
+       flag tests and 5e cover it.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

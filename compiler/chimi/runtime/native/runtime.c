@@ -1620,7 +1620,9 @@ static bool list_retains_too_much(uint32_t window, uint32_t vector) {
 /* True when `list` is a module constant and carriers run on threads. Compacting it
    would rewrite a value other threads read, and allocate in the static area while
    they run. The simulation's carriers share one thread, so it compacts as one
-   carrier does. */
+   carrier does. decode_constant builds every list constant whole, and a whole
+   list is never compacted, so today this guards only a constant built as a
+   window of a longer vector. */
 static bool list_shared_across_threads(const ChimiValue *list) {
 #ifdef CHIMI_CARRIER_SIMULATION
   (void)list;
