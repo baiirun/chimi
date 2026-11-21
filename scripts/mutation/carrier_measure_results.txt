@@ -1,0 +1,25 @@
+# mutation run at df6312d7a373ae31eea113037daf8ac96b459487
+# carrier_measure_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [process_lab -- a_virtual_clock_gate] (88s)
+BASELINE ok  [process_lab -- parked_memory] (2s)
+BASELINE ok  [process_lab -- malformed_arguments] (0s)
+BASELINE ok  [process_lab -- without_performance] (0s)
+BASELINE ok  [runtime_state -- across_carrier_threads] (4s)
+KILLED       every gate runs on several carriers [process_lab -- a_virtual_clock_gate] (10s)
+KILLED       no gate runs on several carriers [process_lab -- parked_memory] (4s)
+KILLED       several carriers keep the virtual clock [process_lab -- parked_memory] (5s)
+SURVIVED     the count never reaches the runner [process_lab -- parked_memory] (5s)
+KILLED       the lab ignores the carrier count [process_lab -- a_virtual_clock_gate] (11s)
+KILLED       a signed count is accepted [process_lab -- malformed_arguments] (11s)
+KILLED       0 carriers is accepted [process_lab -- malformed_arguments] (34s)
+KILLED       no upper bound [process_lab -- malformed_arguments] (1s)
+KILLED       --carriers without performance is accepted [process_lab -- without_performance] (1s)
+KILLED       a carrier never takes a block [runtime_state -- across_carrier_threads] (42s)
+KILLED       blocks overlap between carriers [runtime_state -- across_carrier_threads] (41s)
+KILLED       a carrier never takes a span block [runtime_state -- across_carrier_threads] (39s)
+KILLED       span blocks overlap between carriers [runtime_state -- across_carrier_threads] (42s)
+KILLED       one carrier's epochs restart at every block [runtime_state -- across_carrier_threads] (42s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+exit 1
+# 13 of 14 killed. Survivor, kept: "the count never reaches the runner". A run on one carrier produces a report of the same shape, so no fast test can tell; the measurements themselves show it (PG04's stop grows from 15 to 49-65 µs only when the count arrives).
+# An earlier run of this list filled the disk and reported every mutant KILLED-BUILD; it was discarded.

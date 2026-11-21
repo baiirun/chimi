@@ -998,11 +998,15 @@ four keep one carrier.
      carriers; taking epochs in blocks brought it to 3.7, what the host gives four unrelated processes. What the
      measurements left: a hand-off to another carrier costs a wake-pipe
      write and a sleeping thread's wake-up, about 10 to 20 µs on the cloud
-     host, so a message round trip across carriers takes 23 to 39 µs
+     host, so a message round trip across carriers takes 22 to 39 µs
      against 3 µs on one, and PG04's stop, which ends processes on every
      carrier, misses its one-carrier limit. A carrier that spins briefly
-     before it parks is the next change to measure (6c). `begin_node`'s
-     span counter is the same pattern as the epochs under traced modes.
+     before it parks is the next change to measure (6c). The review found
+     the same shared-counter pattern in span ids under traced modes (a
+     traced counting loop ran 2.5 times slower on four carriers than on
+     one); a carrier on a thread now takes span ids 4,096 at a time
+     (`take_spans`), so they are unique but not dense across carriers.
+     Kept at one carrier by default (decisions.md, 2026-11-21).
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.
