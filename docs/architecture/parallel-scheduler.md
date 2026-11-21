@@ -211,9 +211,8 @@ step 3 must keep true.
 Native handles are counted in the same table (2026-11-20), and a handle
 whose count reaches zero is closed at once, on the carrier that dropped it,
 without a scheduler request. The binding handle table (`binding_handles`)
-has no lock yet. Step 3 must add one before a second real carrier runs,
-because a close on one carrier can race a binding call or a new handle on
-another.
+is behind `binding_handle_lock`, and one binding call at a time runs on a
+handle (step 3 PR 5c-1), so a binding's own state needs no lock.
 
 Two tests check this step:
 - `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
@@ -697,6 +696,21 @@ four keep one carrier.
        already opened. The test-only `with_carriers` and `set_carriers`
        use it. Tests inject a failure at the nth pipe and check that every
        pipe opened before it was closed and the kernel left as it was.
+     - 5c-1 as landed: each handle slot names the call running on it
+       (`runner`). A call takes all of its handles at once when it starts,
+       waiting on the condition variable `binding_handle_free` while any of
+       them is taken, so calls sharing handles in either order cannot
+       deadlock. It lets them go around every scheduler request it makes,
+       waits and immediate requests alike (`binding_request`), since a
+       forced process body is abandoned at any park and on one carrier
+       another task may run first; a call ends only with its handles taken
+       back. It is not skipped with one carrier: the table lock is taken
+       there already, and the wait never happens. Tested under gcc's
+       ThreadSanitizer with four threads on two handles, alone, in pairs
+       in both orders and named twice, and with a descriptor wait and a
+       child wait that must let their handle go; and end to end with a
+       forced process body whose binding asks the scheduler once more on
+       its way out.
      - 5c-2 as landed: `create_task` takes the home from its caller.
        `start` homes a child on its parent's carrier and a root on the
        current carrier, which is carrier 0 wherever the runner starts one.

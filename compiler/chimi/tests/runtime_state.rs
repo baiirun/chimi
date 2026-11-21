@@ -45,6 +45,7 @@ const SHARED: &[&str] = &[
     "binding_handle_capacity",
     "binding_free_slot",
     "binding_handle_lock",
+    "binding_handle_free",
     "fs_files",
     "fs_file_count",
     "fs_file_lock",
