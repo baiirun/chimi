@@ -93,13 +93,7 @@ impl Clock {
     pub(super) fn wait_until(&mut self, deadline: Instant, wake_fd: Option<i32>) -> bool {
         match self {
             Self::Real { .. } => {
-                let wait = real_wait(self.now(), deadline);
-                if !wait.is_zero() {
-                    match wake_fd {
-                        Some(fd) => super::signal::wait_readable(fd, Some(wait)),
-                        None => std::thread::sleep(wait),
-                    }
-                }
+                block_real(real_wait(self.now(), deadline), wake_fd);
                 false
             }
             Self::Virtual { now } => {
@@ -110,6 +104,17 @@ impl Clock {
                     false
                 }
             }
+        }
+    }
+}
+
+/// Blocks for `wait` of real time, or until `wake_fd` is readable. Needs no
+/// scheduler state, so an idle carrier calls it without the kernel lock.
+pub(super) fn block_real(wait: Duration, wake_fd: Option<i32>) {
+    if !wait.is_zero() {
+        match wake_fd {
+            Some(fd) => super::signal::wait_readable(fd, Some(wait)),
+            None => std::thread::sleep(wait),
         }
     }
 }

@@ -4,6 +4,7 @@
 mod child;
 #[cfg(test)]
 mod child_tests;
+mod carrier;
 mod clock;
 mod process;
 mod process_abi;
@@ -573,15 +574,23 @@ impl PinnedFiber {
         })
     }
 
-    fn resume(
-        &mut self,
-        command: ChimiFiberCommand,
-        context: scope::ResumeContext,
-    ) -> ChimiFiberEvent {
+    /// Checks that this thread is the fiber's home and sets the context its
+    /// resume reads; the returned fiber is then resumed with `resume_fiber`.
+    /// The task record keeps the fiber, which is never dropped or removed
+    /// while its task is `Running`, so the pointer stays valid without the
+    /// record (or the kernel lock) being held across the resume.
+    fn enter(&mut self, context: scope::ResumeContext) -> NonNull<ChimiFiber> {
         assert!(self.home.enter(), "a fiber resumed off its home carrier");
         scope::set_resume_context(context);
-        unsafe { chimi_fiber_resume(self.fiber.as_ptr(), command as u32) }
+        self.fiber
     }
+}
+
+/// Resumes a fiber `PinnedFiber::enter` returned on this thread.
+fn resume_fiber(fiber: NonNull<ChimiFiber>, command: ChimiFiberCommand) -> ChimiFiberEvent {
+    // SAFETY: `enter` checked that this is the fiber's home thread, and the
+    // running task's record keeps the fiber alive until the resume returns.
+    unsafe { chimi_fiber_resume(fiber.as_ptr(), command as u32) }
 }
 
 impl Drop for PinnedFiber {
@@ -988,34 +997,48 @@ impl Scheduler {
     /// jumps to it, real time sleeps until it. Returns when nothing more can
     /// happen without the host.
     pub fn run_until_idle(&mut self) -> Idle {
-        loop {
-            self.drive();
-            // The host must be able to end the operations it began, so they
-            // return before the scheduler blocks in a descriptor wait.
-            if self.host_operations > 0 {
-                return Idle::AwaitingHost;
-            }
-            // A descriptor or child wait is a host operation in flight: it
-            // holds virtual time, and no parked task is stuck while one
-            // exists.
-            if !self.reactor.is_empty() || !self.children.is_empty() {
-                self.wait_for_io();
-                continue;
-            }
-            let Some(deadline) = self.timers.earliest() else {
-                break;
-            };
-            if self.clock.wait_until(deadline, self.signals.wake_fd()) {
-                self.emit_clock(ClockEvent {
-                    sequence: 0,
-                    kind: ClockEventKind::Advanced,
-                    task: None,
-                    time: deadline,
-                    request_kind: 0,
-                });
-            }
-            self.fire_due_timers();
+        carrier::run_until_idle(self)
+    }
+
+    /// What an idle carrier does next, decided under the kernel lock once
+    /// `drive` found nothing runnable.
+    fn idle_step(&mut self) -> carrier::IdleStep {
+        // The host must be able to end the operations it began, so they
+        // return before the scheduler blocks in a descriptor wait.
+        if self.host_operations > 0 {
+            return carrier::IdleStep::Done(Idle::AwaitingHost);
         }
+        // A descriptor or child wait is a host operation in flight: it
+        // holds virtual time, and no parked task is stuck while one
+        // exists.
+        if !self.reactor.is_empty() || !self.children.is_empty() {
+            return carrier::IdleStep::Io(self.prepare_io_wait());
+        }
+        let Some(deadline) = self.timers.earliest() else {
+            return carrier::IdleStep::Done(self.idle_outcome());
+        };
+        if self.clock.mode() == ClockMode::Real {
+            return carrier::IdleStep::Sleep(
+                clock::real_wait(self.clock.now(), deadline),
+                self.signals.wake_fd(),
+            );
+        }
+        if self.clock.wait_until(deadline, self.signals.wake_fd()) {
+            self.emit_clock(ClockEvent {
+                sequence: 0,
+                kind: ClockEventKind::Advanced,
+                task: None,
+                time: deadline,
+                request_kind: 0,
+            });
+        }
+        self.fire_due_timers();
+        carrier::IdleStep::Continue
+    }
+
+    /// Why a carrier with nothing runnable, no host operation, no IO wait
+    /// and no timer is idle: quiescent, or stuck with parked tasks.
+    fn idle_outcome(&mut self) -> Idle {
         let parked: Vec<_> = self
             .tasks
             .iter()
@@ -1157,30 +1180,44 @@ impl Scheduler {
     }
 
     pub fn drive(&mut self) {
+        carrier::drive(self);
+    }
+
+    /// Housekeeping `drive` does before its first resume and after each one.
+    fn between_resumes(&mut self) {
         self.remove_released_terminal();
         self.collect_user_signals();
         self.deliver_signal();
-        let mut resumes = 0_u32;
+    }
+
+    /// After one resume (`resumes` counts them): polls IO and rechecks
+    /// children every `IO_POLL_INTERVAL` resumes.
+    fn after_resume(&mut self, resumes: &mut u32) {
+        self.between_resumes();
+        *resumes = resumes.wrapping_add(1);
+        if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
+            if !self.reactor.is_empty() {
+                self.poll_io_now();
+            }
+            self.recheck_children();
+        }
+    }
+
+    /// The next task this carrier resumes, entered and marked running; None
+    /// once its ready queue is empty and no drained release refilled it.
+    /// Releases a fiber's request did not carry (one queued in a release
+    /// hook, or by a fiber that ended without another request) are drained
+    /// before the carrier idles; their wakes refill the ready queue.
+    fn next_runnable(&mut self, resumes: &mut u32) -> Option<carrier::Runnable> {
         loop {
             while let Some(task) = self.ready.pop_front(self.current) {
-                self.run(task);
-                self.remove_released_terminal();
-                self.collect_user_signals();
-                self.deliver_signal();
-                resumes = resumes.wrapping_add(1);
-                if resumes.is_multiple_of(reactor::IO_POLL_INTERVAL) {
-                    if !self.reactor.is_empty() {
-                        self.poll_io_now();
-                    }
-                    self.recheck_children();
+                if let Some(runnable) = self.prepare_run(task) {
+                    return Some(runnable);
                 }
+                self.after_resume(resumes);
             }
-            // Releases a fiber's request did not carry (one queued in a
-            // release hook, or by a fiber that ended without another
-            // request) are drained before the carrier idles. Their wakes
-            // refill the ready queue.
             if !self.drain_host_releases() {
-                break;
+                return None;
             }
         }
     }
@@ -1781,14 +1818,23 @@ impl Scheduler {
         self.peak_tasks
     }
 
+    /// Resumes `task` inline, holding the kernel across the resume. Only the
+    /// two inline resumes use it (`begin_terminal`, `await_incarnation`),
+    /// until they become jobs; the carrier loop resumes without the kernel.
     fn run(&mut self, task: TaskId) {
-        let Some(record) = self
+        if let Some(runnable) = self.prepare_run(task) {
+            let event = resume_fiber(runnable.fiber, runnable.command);
+            self.complete_run(task, event);
+        }
+    }
+
+    /// Marks a runnable `task` running and enters its fiber; None if it is no
+    /// longer runnable.
+    fn prepare_run(&mut self, task: TaskId) -> Option<carrier::Runnable> {
+        let record = self
             .tasks
             .get_mut(&task)
-            .filter(|record| record.phase == TaskPhase::Runnable)
-        else {
-            return;
-        };
+            .filter(|record| record.phase == TaskPhase::Runnable)?;
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
@@ -1803,14 +1849,23 @@ impl Scheduler {
             scope_pending: self.scope_cancel_pending(task),
             polls: self.polls_scope_deadlines(task),
         };
-        let event = self
+        let fiber = self
             .tasks
             .get_mut(&task)
             .expect("running task")
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .resume(command, context);
+            .enter(context);
+        Some(carrier::Runnable {
+            task,
+            fiber,
+            command,
+        })
+    }
+
+    /// Applies what `task`'s resume returned: its park and request, or its end.
+    fn complete_run(&mut self, task: TaskId, event: ChimiFiberEvent) {
         if event.state == ChimiFiberState::Parked as u32 {
             let record = self.tasks.get_mut(&task).expect("running task");
             record.phase = TaskPhase::Parked;
@@ -2312,7 +2367,8 @@ impl Scheduler {
                 .get_mut(&task)
                 .and_then(|record| record.fiber.as_mut())
                 .expect("non-terminal task owns a fiber")
-                .resume(ChimiFiberCommand::Cancel, scope::ResumeContext::TERMINAL);
+                .enter(scope::ResumeContext::TERMINAL);
+            let cleanup = resume_fiber(cleanup, ChimiFiberCommand::Cancel);
             self.keep_task_value(task, &cleanup);
             cleanup_parked = cleanup.state == ChimiFiberState::Parked as u32;
             if !outcome.is_defect() {
