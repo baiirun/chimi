@@ -58,4 +58,14 @@ MUTATIONS = [
     m("a leaving carrier skips its last drive", C,
       "    loop {\n        drive(kernel);\n        match wait_idle(kernel) {\n            Waited::Again => {}\n            Waited::Exit => return,",
       "    loop {\n        match wait_idle(kernel) {\n            Waited::Again => {}\n            Waited::Exit => return,"),
+    # The verifier's survivors.
+    m("the run ends whenever the root is terminal", P,
+      "        self.shutdown_processes();\n        if !self.has_blocked_plans()",
+      "        self.stop_carriers();\n        self.shutdown_processes();\n        if !self.has_blocked_plans()"),
+    m("the host is served once the others are parked, work queued or not", S,
+      "        if self.host_operations > 0 {\n            if !self.others_quiet() {",
+      "        if self.host_operations > 0 {\n            if !self.parked[1..].iter().all(|parked| *parked) {"),
+    m("carrier 0 waiting on the host parks with its own due timer", S,
+      "            if !self.others_quiet() {\n                return self.wait_for_others();\n            }\n            return carrier::IdleStep::Done(Idle::AwaitingHost);",
+      "            if !self.others_quiet() {\n                return carrier::IdleStep::Park(self.idle_wake_fds());\n            }\n            return carrier::IdleStep::Done(Idle::AwaitingHost);"),
 ]

@@ -362,6 +362,29 @@ fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
     assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    // Parked, but handed a task it has not run yet: still not idle.
+    scheduler.enter_carrier(Carrier(1));
+    let parker = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.wake(parker).expect("wake");
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)), "carrier 1 has a task");
+    // Waiting for the others, carrier 0 still runs its own due timer.
+    let own = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    let now = scheduler.now();
+    scheduler.start_wake_timer(own, now).expect("timer");
+    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "its own timer fired");
+    scheduler.drive();
+    // Once carrier 1 has run its task and parked, the host is served.
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.drive();
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
     assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Done(Idle::AwaitingHost)));
     let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
@@ -441,7 +464,8 @@ fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
     scheduler.cancel(None, parked).expect("cancel");
 }
 
-/// A root step that leaves the run going does not end it.
+/// A root step that leaves the run going does not end it: a root still
+/// running, or one that has finished while another carrier still has work.
 #[test]
 fn a_root_still_running_leaves_the_carriers_running() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
@@ -454,7 +478,18 @@ fn a_root_still_running_leaves_the_carriers_running() {
         process_abi::RootStep::Continue
     ));
     assert!(!scheduler.stopping);
+    let done = start_sleeper(&mut scheduler, 0, 0);
+    scheduler.drive();
+    assert!(succeeded(&scheduler, done));
+    let _queued = start_sleeper(&mut scheduler, 1, 0);
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(
+        scheduler.root_step(done, Idle::Quiescent, 1, &mut deadlock),
+        process_abi::RootStep::Continue
+    ));
+    assert!(!scheduler.stopping, "carrier 1 still has a task");
     scheduler.enter_carrier(Carrier(1));
+    scheduler.drive();
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
 }
