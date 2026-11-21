@@ -549,7 +549,7 @@ four keep one carrier.
          after the end is ignored with one carrier. With one carrier no job or pending end is ever
          made, so the inline path is the old code. A process shutdown off
          its home carrier (`await_incarnation`, `force`) is 5b-4's. Mutants in `unwind_jobs_mutations.py`,
-         all nine killed.
+         all seventeen killed.
      - 5b-4: `await_incarnation` off home. It runs the body inline only
        on its home carrier; otherwise the body stays queued there and the
        caller takes the "not yet" path it already has. A forced body arms
