@@ -400,6 +400,16 @@ four keep one carrier.
    - A poisoned lock is taken over (`into_inner`), so one panicking test
      does not fail the rest. A stalled run that forgets the scheduler
      forgets the whole mutex.
+   - As landed: `scheduler/carrier.rs` holds the loop (`drive`,
+     `run_until_idle`) over `KernelAccess`, and `chimi_scheduler_run` runs
+     it against `Mutex<Scheduler>` (std's, uncontended). The kernel is taken
+     once per resume, to finish one task's step and enter the next. A test
+     checks that fibers the carrier resumes run without the lock. The
+     stalled-root signal wait also runs without it. Measured on the
+     performance lab, medians of 7 interleaved runs against main: PG01
+     +0.8%, PG02 off -0.4%, PG03 +0.8%, PG04 start +0.6% and stop -0.9%,
+     all within noise. PG06 fails its list gate on main on this host too,
+     and its dag figure is bimodal on both (2.8 or 3.4 µs).
 5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
    - Each carrier has a wake descriptor. The carrier loop polls it, and
      carrier 0 also polls the signal pipe.

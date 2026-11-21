@@ -1,0 +1,7 @@
+# mutation run at 5fbede92bf3eb9cf5ea99e6ea61c93fd0b6333e5
+# kernel_lock_mutations.py: 2 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- fibers_the_carrier_resumes_run_without_the_kernel_lock] (12s)
+BASELINE ok  [lib -- the_kernel_lock_is_held_while_the_carrier_applies_a_request] (0s)
+KILLED       a fiber resumes under the kernel lock [lib -- fibers_the_carrier_resumes_run_without_the_kernel_lock] (2s)
+KILLED       the lock is not marked held [lib -- the_kernel_lock_is_held_while_the_carrier_applies_a_request] (4s)
+# result: every mutant killed
