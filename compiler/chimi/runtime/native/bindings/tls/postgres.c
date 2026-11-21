@@ -7,12 +7,16 @@
      (RFC 5802 section 3, RFC 7677).
    - native_random(count) gives `count` bytes from the PSA generator, for the
      client nonce.
-   - A gate is one connection's turn-taking state: whether a call holds the
-     connection, and whether a call was cut off part way, which leaves the
-     protocol state unknown (std/postgres.chimi's `exclusive`). */
+   - A gate is one connection's shared state, kept here because it must
+     outlive the task that opened the connection: which call holds the
+     connection (a token, so a late release cannot touch a later holder),
+     whether a call was cut off part way, which leaves the protocol state
+     unknown, the transaction status and depth, and the bytes read past the
+     last reply (std/postgres.chimi's `exclusive`). */
 #define _POSIX_C_SOURCE 200809L
 #include "chimi_binding.h"
 
+#include <mbedtls/platform_util.h>
 #include <psa/crypto.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -95,18 +99,18 @@ ChimiBindingResult *chimi_tls_postgres_scram(ChimiBindingCall *call) {
     for (int i = 0; i < SHA256_BYTES; i++) proof[i] = client_key[i] ^ client_signature[i];
   }
   /* Any of these with the proof sent gives the client key, which logs in. */
-  memset(salted, 0, sizeof salted);
-  memset(client_key, 0, sizeof client_key);
-  memset(stored_key, 0, sizeof stored_key);
-  memset(client_signature, 0, sizeof client_signature);
-  memset(server_key, 0, sizeof server_key);
+  mbedtls_platform_zeroize(salted, sizeof salted);
+  mbedtls_platform_zeroize(client_key, sizeof client_key);
+  mbedtls_platform_zeroize(stored_key, sizeof stored_key);
+  mbedtls_platform_zeroize(client_signature, sizeof client_signature);
+  mbedtls_platform_zeroize(server_key, sizeof server_key);
   if (!ok) {
-    memset(proof, 0, sizeof proof);
+    mbedtls_platform_zeroize(proof, sizeof proof);
     return chimi_binding_failure(call, 1, "the SCRAM computation failed");
   }
   ChimiBindingValue *items[2] = {chimi_binding_make_bytes(call, proof, SHA256_BYTES),
                                  chimi_binding_make_bytes(call, server_signature, SHA256_BYTES)};
-  memset(proof, 0, sizeof proof);
+  mbedtls_platform_zeroize(proof, sizeof proof);
   return chimi_binding_ok(call, chimi_binding_make_tuple(call, items, 2));
 }
 
@@ -123,15 +127,17 @@ ChimiBindingResult *chimi_tls_postgres_random(ChimiBindingCall *call) {
   return chimi_binding_success(call, chimi_binding_make_bytes(call, bytes, (size_t)count));
 }
 
-/* A connection's gate. `status` is the last ReadyForQuery's transaction
-   status ('I', 'T' or 'E'), `leftover` the bytes read past it, and `turns`
-   counts the releases, each of which publishes its own number. */
+/* A connection's gate. `holder` is the token of the call holding it (0 when
+   free), `status` the last ReadyForQuery's transaction status ('I', 'T' or
+   'E'), `depth` the transaction levels open, and `leftover` the bytes read
+   past the last reply. */
 typedef struct {
   pthread_mutex_t lock;
-  int held;
+  int64_t holder;
+  int64_t tokens;
   int broken;
   int status;
-  int64_t turns;
+  int64_t depth;
   unsigned char *leftover;
   size_t leftover_length;
 } Gate;
@@ -174,35 +180,39 @@ ChimiBindingResult *chimi_tls_postgres_gate(ChimiBindingCall *call) {
   return chimi_binding_success(call, handle);
 }
 
-/* native_claim(gate) -> Option<Bytes>: Some(leftover) when the caller now
-   holds the connection and must call native_settle or native_abandon
-   after; None while another call holds it. A broken connection answers
-   None with native_status -1, so the caller checks that first. */
+/* native_claim(gate) -> Option<(Int, Bytes)>: Some((token, leftover)) when
+   the caller now holds the connection and must pass the token to
+   native_settle or native_abandon after; None while another call holds it
+   or once it is broken (native_status says which). */
 ChimiBindingResult *chimi_tls_postgres_claim(ChimiBindingCall *call) {
   Gate *gate = chimi_binding_handle(call, 0, &GATE);
   if (!gate) return chimi_binding_success(call, chimi_binding_none(call));
   pthread_mutex_lock(&gate->lock);
   ChimiBindingValue *answer;
-  if (gate->broken || gate->held) {
+  if (gate->broken || gate->holder != 0) {
     answer = chimi_binding_none(call);
   } else {
-    gate->held = 1;
-    answer = chimi_binding_some(
-        call, chimi_binding_make_bytes(call, gate->leftover, gate->leftover_length));
+    gate->holder = ++gate->tokens;
+    ChimiBindingValue *items[2] = {
+        chimi_binding_make_integer(call, gate->holder),
+        chimi_binding_make_bytes(call, gate->leftover, gate->leftover_length)};
+    answer = chimi_binding_some(call, chimi_binding_make_tuple(call, items, 2));
   }
   pthread_mutex_unlock(&gate->lock);
   return chimi_binding_success(call, answer);
 }
 
-/* native_settle(gate, status: Int, leftover: Bytes) -> Void: the call read
-   through ReadyForQuery, so the connection is in step again. */
+/* native_settle(gate, token, status: Int, leftover: Bytes) -> Void: the call
+   holding `token` read through ReadyForQuery, so the connection is in step
+   again and free. Any other token is ignored. */
 ChimiBindingResult *chimi_tls_postgres_settle(ChimiBindingCall *call) {
   Gate *gate = chimi_binding_handle(call, 0, &GATE);
-  int64_t status = 0;
+  int64_t token = 0, status = 0;
   const unsigned char *bytes;
   size_t length;
-  if (!chimi_binding_integer(call, 1, &status) || !chimi_binding_bytes(call, 2, &bytes, &length)) {
-    return chimi_binding_defect(call, "postgres: settle takes a gate, a status and bytes");
+  if (!chimi_binding_integer(call, 1, &token) || !chimi_binding_integer(call, 2, &status) ||
+      !chimi_binding_bytes(call, 3, &bytes, &length)) {
+    return chimi_binding_defect(call, "postgres: settle takes a gate, a token, a status and bytes");
   }
   if (!gate) return chimi_binding_success(call, chimi_binding_void(call));
   unsigned char *copy = NULL;
@@ -212,42 +222,38 @@ ChimiBindingResult *chimi_tls_postgres_settle(ChimiBindingCall *call) {
     memcpy(copy, bytes, length);
   }
   pthread_mutex_lock(&gate->lock);
-  free(gate->leftover);
-  gate->leftover = copy;
-  gate->leftover_length = length;
-  gate->status = (int)status;
-  gate->held = 0;
+  if (gate->holder == token && token != 0) {
+    free(gate->leftover);
+    gate->leftover = copy;
+    gate->leftover_length = length;
+    gate->status = (int)status;
+    gate->holder = 0;
+    copy = NULL;
+  }
   pthread_mutex_unlock(&gate->lock);
+  free(copy);
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 
-/* native_abandon(gate) -> Void: a call that still holds the connection
-   did not read through ReadyForQuery, so the protocol state is unknown and
-   the connection is broken for good. A settled call is left alone. */
+/* native_abandon(gate, token) -> Void: if the call holding `token` still
+   holds the connection, it did not read through ReadyForQuery, so the
+   protocol state is unknown and the connection is broken for good. A
+   settled call, and any other token, is left alone. */
 ChimiBindingResult *chimi_tls_postgres_abandon(ChimiBindingCall *call) {
   Gate *gate = chimi_binding_handle(call, 0, &GATE);
+  int64_t token = 0;
+  if (!chimi_binding_integer(call, 1, &token)) {
+    return chimi_binding_defect(call, "postgres: abandon takes a gate and a token");
+  }
   if (gate) {
     pthread_mutex_lock(&gate->lock);
-    if (gate->held) {
-      gate->held = 0;
+    if (gate->holder == token && token != 0) {
+      gate->holder = 0;
       gate->broken = 1;
     }
     pthread_mutex_unlock(&gate->lock);
   }
   return chimi_binding_success(call, chimi_binding_void(call));
-}
-
-/* native_turn(gate) -> Int: a number no other call returns for this gate,
-   for a release to publish, so waiters never see two releases as one. */
-ChimiBindingResult *chimi_tls_postgres_turn(ChimiBindingCall *call) {
-  Gate *gate = chimi_binding_handle(call, 0, &GATE);
-  int64_t turn = 0;
-  if (gate) {
-    pthread_mutex_lock(&gate->lock);
-    turn = ++gate->turns;
-    pthread_mutex_unlock(&gate->lock);
-  }
-  return chimi_binding_success(call, chimi_binding_make_integer(call, turn));
 }
 
 /* native_status(gate) -> Int: the transaction status, or -1 when broken. */
@@ -260,4 +266,31 @@ ChimiBindingResult *chimi_tls_postgres_status(ChimiBindingCall *call) {
     pthread_mutex_unlock(&gate->lock);
   }
   return chimi_binding_success(call, chimi_binding_make_integer(call, status));
+}
+
+/* native_depth(gate) -> Int: the transaction levels open, as last set. */
+ChimiBindingResult *chimi_tls_postgres_depth(ChimiBindingCall *call) {
+  Gate *gate = chimi_binding_handle(call, 0, &GATE);
+  int64_t depth = 0;
+  if (gate) {
+    pthread_mutex_lock(&gate->lock);
+    depth = gate->depth;
+    pthread_mutex_unlock(&gate->lock);
+  }
+  return chimi_binding_success(call, chimi_binding_make_integer(call, depth));
+}
+
+/* native_set_depth(gate, depth: Int) -> Void */
+ChimiBindingResult *chimi_tls_postgres_set_depth(ChimiBindingCall *call) {
+  Gate *gate = chimi_binding_handle(call, 0, &GATE);
+  int64_t depth = 0;
+  if (!chimi_binding_integer(call, 1, &depth)) {
+    return chimi_binding_defect(call, "postgres: set_depth takes a gate and a depth");
+  }
+  if (gate) {
+    pthread_mutex_lock(&gate->lock);
+    gate->depth = depth;
+    pthread_mutex_unlock(&gate->lock);
+  }
+  return chimi_binding_success(call, chimi_binding_void(call));
 }

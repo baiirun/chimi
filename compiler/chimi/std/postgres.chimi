@@ -51,6 +51,7 @@
 import std/bytes as Bytes
 import std/bytes.{Bytes, IntLayout}
 import std/channel.{Receive}
+import std/clock as Clock
 import std/clock.{Clock}
 import std/debug as Debug
 import std/decimal as Decimal
@@ -124,6 +125,10 @@ struct Target {
 }
 
 fn parse_target(text: Text) -> Target {
+  case Text.contains(text, "\u{0}") {
+    True -> bad_target("a NUL byte, which would end a startup field early")
+    False -> Void
+  }
   let rest = case (Text.strip_prefix(text, "postgres://"), Text.strip_prefix(text, "postgresql://")) {
     (Some(after), _) -> after
     (_, Some(after)) -> after
@@ -233,7 +238,7 @@ fn decoded(text: Text) -> Text {
     let (left, done) = state
     case left {
       [] -> break done
-      [37, 48, 48, ..] -> bad_target("%00, which would end the text early")
+      [37, 48, 48, ..] -> bad_target("%00, which would end a startup field early")
       [37, high, low, ..rest] -> case is_hex(high) and is_hex(low) {
         True -> (rest, List.push(done, hex_value(high) * 16 + hex_value(low)))
         False -> bad_target("a bad percent escape")
@@ -319,17 +324,15 @@ fn connect_failed(reason: Text) -> Never {
 }
 
 // An open, authenticated connection. Tasks that share it take turns through
-// `gate`, which also holds the bytes read past the last reply and the
-// transaction status. `turns` counts the calls that gave the gate back, so a
-// task that found it held waits for the next one. `depth` counts the
-// transaction levels open, as std/sqlite's binding does.
+// `gate`, which also holds the bytes read past the last reply, the
+// transaction status, and the transaction levels open (as std/sqlite's
+// binding counts them). A task that finds it held waits on `clock`.
 struct Session {
   connection: Net.Connection,
   reader: Reader<NetError>,
   writer: Writer<NetError>,
   gate: PostgresGate,
-  turns: Watch.Publisher<Int>,
-  depth: Watch.Publisher<Int>,
+  clock: Clock,
 }
 
 // The connection is kept only when the startup finishes: `kept` is set as
@@ -345,10 +348,10 @@ fn open(given: Given, target: Target) -> Session needs {
         Resource.scoped(fn() {
           Tls.client(raw, target.host, { roots: given.roots })
         }, fn(secured) { close_unless(kept, secured) }, fn(secured) {
-          started(secured, target, kept)
+          started(secured, target, kept, given.clock)
         })
       }
-      False -> started(raw, target, kept)
+      False -> started(raw, target, kept, given.clock)
     }
   })
 }
@@ -397,7 +400,7 @@ fn answered(read: Option<Bytes>) -> List<Int> {
 
 // Sends the StartupMessage, authenticates and reads up to the first
 // ReadyForQuery.
-fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Bool>) -> Session {
+fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Bool>, clock: Clock) -> Session {
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
   write(writer, startup_message(target))
@@ -415,7 +418,7 @@ fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Boo
   }
   let (status, leftover) = ready
   store(kept, True)
-  Session(connection, reader, writer, native_gate(status, leftover), Watch.starting_with(0).publisher, Watch.starting_with(0).publisher)
+  Session(connection, reader, writer, native_gate(status, leftover), clock)
 }
 
 fn startup_message(target: Target) -> Bytes {
@@ -575,26 +578,25 @@ struct Settled<T> {
 // `body`, so it does not break the connection.
 //
 // The claim is the scope's acquire, so a cancel cannot fall between taking
-// the connection and the release that gives it back. A task that finds the
-// connection held subscribes to `turns` before it tries, so a release after
-// its try wakes it; every release publishes a number of its own, so no two
-// releases look alike to a waiter.
+// the connection and the release that gives it back, and its token keeps a
+// release from touching a later holder. All of this state is in the gate
+// rather than in watches, because a watch ends with the task that made it,
+// and the task that opened a connection hands it on to others.
 fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError) -> T {
-  let outcome = loop _waiting = True {
-    let follower = following(session.turns)
+  let outcome = loop pause = 1 {
     let attempt = Resource.scoped(fn() { native_claim(session.gate) }, fn(claimed) {
       case claimed {
-        Some(_) -> give_back(session)
+        Some((token, _)) -> native_abandon(session.gate, token)
         None -> Void
       }
     }, fn(claimed) {
       case claimed {
-        Some(leftover) -> {
+        Some((token, leftover)) -> {
           let settled = body(leftover)
           case settled.outcome {
             // A FATAL error ends the session even when ReadyForQuery follows.
             Err(SqlError.ConnectionLost) -> Failure(SqlError.ConnectionLost)
-            _ -> native_settle(session.gate, settled.status, settled.rest)
+            _ -> native_settle(session.gate, token, settled.status, settled.rest)
           }
           Some(settled.outcome)
         }
@@ -606,8 +608,8 @@ fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError)
       None -> case native_status(session.gate) == -1 {
         True -> Failure(SqlError.ConnectionLost)
         False -> {
-          wait_for_turn(follower)
-          True
+          wait(session.clock, pause)
+          smaller(pause * 2, longest_pause)
         }
       }
     }
@@ -618,32 +620,19 @@ fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError)
   }
 }
 
-// Gives the connection back: a call that did not settle leaves it broken.
-fn give_back(session: Session) -> Void {
-  native_abandon(session.gate)
-  store(session.turns, native_turn(session.gate))
+// The longest wait, in milliseconds, between a waiting task's tries for a
+// connection another task holds. Tasks share a connection only inside one
+// transaction, where each call is one statement's round trip.
+const longest_pause: Int = 20
+
+fn wait(clock: Clock, milliseconds: Int) -> Void {
+  Clock.sleep(Duration.milliseconds(milliseconds)) using { clock: clock }
 }
 
-// A subscription to `turns` whose first value is already taken, so its next
-// receive waits for the next release; `None` once the watch has gone.
-fn following(turns: Watch.Publisher<Int>) -> Option<Watch.Subscription<Int>> {
-  case Result.capture(fn() {
-    let follower = Watch.subscribe(turns)
-    let _ = Watch.receive(follower)
-    follower
-  }) {
-    Ok(follower) -> Some(follower)
-    Err(_) -> None
-  }
-}
-
-fn wait_for_turn(follower: Option<Watch.Subscription<Int>>) -> Void {
-  case follower {
-    Some(subscription) -> {
-      let _ = Result.capture(fn() { Watch.receive(subscription) })
-      Void
-    }
-    None -> Void
+fn smaller(a: Int, b: Int) -> Int {
+  case a < b {
+    True -> a
+    False -> b
   }
 }
 
@@ -670,7 +659,7 @@ const status_idle: Int = 73
 // statements after it would otherwise commit on their own.
 fn run(session: Session, sql: Text, params: List<Value>) -> Answer {
   exclusive(session, fn(leftover) {
-    let open = current(session.depth, 0)
+    let open = native_depth(session.gate)
     let status = native_status(session.gate)
     case open > 0 and status == status_idle {
       True -> Settled(Err(SqlError.TransactionEnded), leftover, status)
@@ -1063,14 +1052,14 @@ fn larger(a: Int, b: Int) -> Int {
 // depth, and a rollback would undo the other task's.
 fn begin(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
-    let open = current(session.depth, 0)
+    let open = native_depth(session.gate)
     let status = native_status(session.gate)
     case (open == depth, depth > 0 and status == status_idle) {
       (_, True) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
       (True, False) -> {
         let settled = exchange(session, leftover, begin_statement(depth), [])
         case settled.outcome {
-          Ok(_) -> store(session.depth, depth + 1)
+          Ok(_) -> native_set_depth(session.gate, depth + 1)
           Err(_) -> Void
         }
         done(settled)
@@ -1101,7 +1090,7 @@ fn commit(session: Session, depth: Int) -> Void {
     }
     case settled.outcome {
       Ok(answer) -> {
-        store(session.depth, depth)
+        native_set_depth(session.gate, depth)
         case answer.tag == "ROLLBACK" {
           True -> Settled(Err(SqlError.Failed("Postgres: the transaction had failed and was rolled back")), settled.rest, settled.status)
           False -> done(settled)
@@ -1118,7 +1107,7 @@ fn commit(session: Session, depth: Int) -> Void {
 // nothing left to do.
 fn rollback(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
-    store(session.depth, depth)
+    native_set_depth(session.gate, depth)
     let status = native_status(session.gate)
     case (status == status_idle, depth == 0) {
       // Nothing is open: a statement already ended the transaction.
@@ -1143,7 +1132,7 @@ fn rollback(session: Session, depth: Int) -> Void {
 // again. A broken connection fails with `ConnectionLost`.
 fn reset(session: Session) -> Void {
   exclusive(session, fn(leftover) {
-    store(session.depth, 0)
+    native_set_depth(session.gate, 0)
     let status = native_status(session.gate)
     case status == status_idle {
       True -> Settled(Ok(Void), leftover, status)
@@ -1163,11 +1152,11 @@ fn done<T>(settled: Settled<T>) -> Settled<Void> {
 fn close(session: Session) -> Void {
   let free = native_claim(session.gate)
   case free {
-    Some(_) -> {
+    Some((token, _)) -> {
       let _ = Result.capture(fn() {
         Stream.write(session.writer, message(88, Bytes.empty()))
       })
-      give_back(session)
+      native_abandon(session.gate, token)
     }
     None -> Void
   }
@@ -1404,8 +1393,9 @@ native fn native_scram(password: Bytes, salt: Bytes, iterations: Int, auth_messa
 native fn native_scram_check(password: Bytes, salt: Bytes, iterations: Int, auth_message: Bytes) -> Result<(Bytes, Bytes), (Int, Text)>
 native fn native_random(count: Int) -> Bytes
 native fn native_gate(status: Int, leftover: Bytes) -> PostgresGate
-native fn native_claim(gate: PostgresGate) -> Option<Bytes>
-native fn native_settle(gate: PostgresGate, status: Int, leftover: Bytes) -> Void
-native fn native_abandon(gate: PostgresGate) -> Void
+native fn native_claim(gate: PostgresGate) -> Option<(Int, Bytes)>
+native fn native_settle(gate: PostgresGate, token: Int, status: Int, leftover: Bytes) -> Void
+native fn native_abandon(gate: PostgresGate, token: Int) -> Void
 native fn native_status(gate: PostgresGate) -> Int
-native fn native_turn(gate: PostgresGate) -> Int
+native fn native_depth(gate: PostgresGate) -> Int
+native fn native_set_depth(gate: PostgresGate, depth: Int) -> Void

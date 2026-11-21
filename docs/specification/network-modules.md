@@ -682,8 +682,8 @@ files.
   IPv6 host is in brackets; the port defaults to 5432 and the database to the
   user. A target without a user or host, with a port outside 1 to 65535, or
   with a bad percent escape fails with `SqlError.ConnectFailed`, and so does
-  `%00`, which would end a startup field early and let a target set any
-  startup parameter.
+  a NUL byte, raw or as `%00`, which would end a startup field early and
+  let a target set any startup parameter.
 - `sslmode` is the only parameter read. Any other one, and a parameter
   without a value, MUST fail to connect, so a misspelt parameter is never
   ignored. `require` (the default) and `verify-full` are TLS, with the
@@ -769,7 +769,9 @@ connection stays usable.
 - After a statement ends the transaction (a `COMMIT` or `ROLLBACK` run as a
   statement), every later statement, savepoint and commit on it MUST fail
   with `SqlError.TransactionEnded`, so work a statement rolled back never
-  passes for committed. Its rollback then does nothing.
+  passes for committed. Its rollback then does nothing. A hand-run
+  `COMMIT AND CHAIN` or `ROLLBACK AND CHAIN` starts a new transaction that
+  the driver cannot tell from the first, so it is not caught.
 - `reset` sends `ROLLBACK` when the last ReadyForQuery said a transaction was
   open or failed, and nothing when it said idle.
 
@@ -778,8 +780,12 @@ connection stays usable.
 - Tasks that share a transaction take turns on its connection: each call
   holds the connection from its request to the end of the reply, so two
   calls' messages never interleave. A task that finds it held waits for the
-  holder to give it back, and MUST wake once it does: it subscribes before
-  it tries, and every release publishes a number of its own.
+  holder to give it back, trying again after 1 ms, then waits that double
+  up to 20 ms. The connection's shared state (who holds it, whether it is
+  broken, the transaction status and depth, the bytes read past the last
+  reply) lives in its native gate, not in watches, because a watch ends with
+  the task that made it and the task that opened a connection hands it on.
+  A release acts only for the call holding the connection, by its token.
 - A call cut off part way (a timeout or a cancel inside the statement), a
   broken stream, a reply the driver cannot read, and an ErrorResponse of
   severity FATAL or PANIC leave the protocol state unknown. That call fails,
@@ -990,6 +996,6 @@ refuses the peer's versions.
 | `host_for_tests` is test-only (`T4401`); a test without `using` is `T4400` | `tests/net.rs` `only_a_test_that_asks_gets_the_real_network` |
 | Postgres: the startup message, trust, SCRAM (RFC 7677's example, a wrong or missing signature, a nonce not extended, a server error), cleartext refused without TLS and sent over it, MD5 and errors at startup, TLS refused, untrusted or for another host, bytes after the TLS answer, the connect timeout | `tests/postgres.rs` `startup_and_authentication` |
 | Postgres: parameters as text, every column type with NaN and both bytea forms, affected rows by tag, each SQLSTATE class, COPY both ways, an empty statement, NUL bytes | `tests/postgres.rs` `values_tags_and_failures` |
-| Postgres: savepoints, a failed release, a commit answered with `ROLLBACK`, reset, a statement after the transaction ended, a commit and a savepoint after a statement ended it, a FATAL error, bytes read past a reply kept, a cut-off call and a broken reply breaking the connection, four tasks on one transaction, two nested transactions at once | `tests/postgres.rs` `transactions_and_sharing` |
-| Postgres: target URLs, percent-decoding and `%00`, IPv6, ports and parameters | `tests/postgres.rs` `targets` |
+| Postgres: savepoints, a failed release, a commit answered with `ROLLBACK`, reset, a statement after the transaction ended, a commit and a savepoint after a statement ended it, a FATAL error, bytes read past a reply kept, a connection opened by a task that has ended, a cut-off call and a broken reply breaking the connection, four tasks on one transaction, two nested transactions at once | `tests/postgres.rs` `transactions_and_sharing` |
+| Postgres: target URLs, percent-decoding and NUL bytes, IPv6, ports and parameters | `tests/postgres.rs` `targets` |
 | Postgres against PostgreSQL's own server: every type round-trips, failures by SQLSTATE, COPY both ways, transactions and savepoints, a failed commit, a rollback run by hand, a deadlock, a pool of 20 tasks, TLS, SCRAM and cleartext over TLS | `tests/postgres.rs` `a_real_postgresql_server` |

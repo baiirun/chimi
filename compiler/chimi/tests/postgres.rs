@@ -905,8 +905,23 @@ test "a transaction a statement rolled back does not commit" {
     "BEGIN [] | COMMIT [] | terminate => SqlError.TransactionEnded",
   ])
 }
+
+test "a connection opened by a task that has ended" {
+  served(url, trust, transactional([]), fn(db) {
+    let first = Task.start(fn() { Debug.render(Result.capture(fn() { Sql.execute(db, "idle first", []) })) })
+    let _ = Task.result(first)
+    Sql.transaction(db, fn(tx) {
+      let tasks = List.map(["one", "two"], fn(name) { Task.start(fn() { Debug.render(Result.capture(fn() { only(Sql.query(tx, name, [])) })) }) })
+      let shared = List.map(tasks, fn(task) { Debug.render(Result.capture(fn() { Task.result(task) })) })
+      let nested = Sql.transaction(tx, fn(inner) { Sql.execute(inner, "b", []) })
+      Debug.render((shared, nested))
+    })
+  })
+    |> log_of
+    |> Test.assert_equal("idle first [] | BEGIN [] | one [] | two [] | SAVEPOINT chimi_1 [] | b [] | RELEASE SAVEPOINT chimi_1 [] | COMMIT [] | terminate => \"([\\\"Result.Ok(\\\\\\\"Result.Ok(\\\\\\\\\\\\\\\"one\\\\\\\\\\\\\\\")\\\\\\\")\\\", \\\"Result.Ok(\\\\\\\"Result.Ok(\\\\\\\\\\\\\\\"two\\\\\\\\\\\\\\\")\\\\\\\")\\\"], 0)\"")
+}
 "#,
-        13,
+        14,
     );
 }
 
@@ -941,6 +956,7 @@ fn targets() {
     "postgres://u%2@h/d",
     "postgres://u%ff@h/d",
     "postgres://app%00options%00-c%20x:secret@db/app",
+    "postgres://app\u{0}options\u{0}-c x:secret@db/app?sslmode=disable",
     "postgres://u:p@ss@h/d?sslmode=disable",
   ], fn(target) {
     let shown = served(target, trust, nothing, fn(db) { Sql.execute(db, "x", []) })
@@ -969,7 +985,8 @@ fn targets() {
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a bad percent escape\")",
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a bad percent escape\")",
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a percent escape that is not UTF-8\")",
-    " => SqlError.ConnectFailed(\"Postgres: the target is not usable: %00, which would end the text early\")",
+    " => SqlError.ConnectFailed(\"Postgres: the target is not usable: %00, which would end a startup field early\")",
+    " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a NUL byte, which would end a startup field early\")",
     "connect h 5432 | startup 196608 user u database d => 0",
   ])
 }
