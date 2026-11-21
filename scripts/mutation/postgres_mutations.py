@@ -5,6 +5,12 @@ TIMEOUT, which counts as caught.
 
 Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/postgres_mutations.py
 Results: scripts/mutation/postgres_results.txt.
+
+Equivalent, so not listed: dropping the rollback's tolerance of a savepoint
+that is already gone (SQLSTATE 3B001). std/sql discards a rollback's failure
+(the body's failure stays the failure), so no program can tell whether the
+driver reports it; the tolerance keeps the driver to Sql.connection's
+contract, as std/sqlite's does.
 """
 
 CRATE = "compiler/chimi"
@@ -194,10 +200,6 @@ MUTATIONS = [
            '        case answer.tag == "ROLLBACK" {',
            "        case False {",
            SHARING),
-    mutant("a gone savepoint fails its rollback",
-           '          Err(SqlError.Failed(message)) -> case Text.starts_with(message, "Postgres: 3B001: ") {',
-           "          Err(SqlError.Failed(message)) -> case False {",
-           SHARING),
     mutant("a savepoint's rollback does not release it",
            '          Ok(_) -> done(exchange(session, undone.rest, "RELEASE SAVEPOINT chimi_${depth}", []))',
            "          Ok(_) -> done(undone)",
@@ -217,7 +219,7 @@ MUTATIONS = [
     mutant("a commit keeps the depth",
            "        native_set_depth(session.gate, depth)\n        case answer.tag",
            "        case answer.tag",
-           REAL),
+           SHARING),
     # The gate.
     mutant("a cut-off call leaves the connection usable",
            "        Some((token, _)) -> native_abandon(session.gate, token)\n        None -> Void\n      }\n    }, fn(claimed) {",

@@ -728,6 +728,17 @@ fn transactions_and_sharing() {
     |> Test.assert_equal("BEGIN [] | a [] | SAVEPOINT chimi_1 [] | b [] | RELEASE SAVEPOINT chimi_1 [] | COMMIT [] | terminate => 0")
 }
 
+test "two savepoints one after another" {
+  served(url, trust, transactional([]), fn(db) {
+    Sql.transaction(db, fn(tx) {
+      Sql.transaction(tx, fn(nested) { Sql.execute(nested, "a", []) })
+      Sql.transaction(tx, fn(nested) { Sql.execute(nested, "b", []) })
+    })
+  })
+    |> log_of
+    |> Test.assert_equal("BEGIN [] | SAVEPOINT chimi_1 [] | a [] | RELEASE SAVEPOINT chimi_1 [] | SAVEPOINT chimi_1 [] | b [] | RELEASE SAVEPOINT chimi_1 [] | COMMIT [] | terminate => 0")
+}
+
 test "a savepoint rolled back" {
   served(url, trust, transactional([("bad", error("ERROR", "23505", "dup", "uq"))]), fn(db) {
     Sql.transaction(db, fn(tx) {
@@ -921,7 +932,7 @@ test "a connection opened by a task that has ended" {
     |> Test.assert_equal("idle first [] | BEGIN [] | one [] | two [] | SAVEPOINT chimi_1 [] | b [] | RELEASE SAVEPOINT chimi_1 [] | COMMIT [] | terminate => \"([\\\"Result.Ok(\\\\\\\"Result.Ok(\\\\\\\\\\\\\\\"one\\\\\\\\\\\\\\\")\\\\\\\")\\\", \\\"Result.Ok(\\\\\\\"Result.Ok(\\\\\\\\\\\\\\\"two\\\\\\\\\\\\\\\")\\\\\\\")\\\"], 0)\"")
 }
 "#,
-        14,
+        15,
     );
 }
 
