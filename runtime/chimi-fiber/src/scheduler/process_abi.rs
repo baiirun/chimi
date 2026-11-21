@@ -797,6 +797,49 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
     RootRun { outcome, deadlock }
 }
 
+/// Runs `root` as `Scheduler::run_root` does, with each carrier on its own
+/// thread: carrier 0 on this one, which runs the root's loop, and carriers
+/// 1 and up on scoped threads spawned for the run and joined before it
+/// returns, so no carrier reaches the kernel between the run's end and its
+/// exit (parallel-scheduler.md, "5c-5 as landed"). The kernel is shared
+/// behind its lock for the run and handed back after it. Test-only until the
+/// runner flag (step 3 PR 5d).
+#[cfg(test)]
+pub(super) fn run_root_on_threads(
+    scheduler: &mut Scheduler,
+    root: TaskId,
+    deadlock_code: i64,
+) -> RootRun {
+    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
+    let kernel = Mutex::new(std::mem::replace(scheduler, placeholder));
+    let (carriers, wakes) = {
+        let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
+        // Before any carrier starts, so none sees the last run's end.
+        held.begin_run(root);
+        // Work the caller queued for other carriers before the run, through
+        // the kernel directly, marked carriers it never woke.
+        (held.ready.carriers(), held.take_wakes())
+    };
+    wakes.write();
+    let run = std::thread::scope(|scope| {
+        for index in 1..carriers {
+            let kernel = &kernel;
+            std::thread::Builder::new()
+                .name(format!("carrier {index}"))
+                .spawn_scoped(scope, move || {
+                    super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
+                })
+                .expect("a carrier thread");
+        }
+        run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code)
+    });
+    drop(std::mem::replace(
+        scheduler,
+        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
+    ));
+    run
+}
+
 fn parked_outcome() -> SchedulerOutcome {
     SchedulerOutcome {
         state: ChimiFiberState::Parked as u32,

@@ -13,6 +13,8 @@ mod process;
 mod process_abi;
 #[cfg(test)]
 mod process_tests;
+#[cfg(test)]
+mod thread_tests;
 mod reactor;
 mod ready;
 #[cfg(test)]
@@ -848,6 +850,28 @@ pub struct Scheduler {
     forcing: u32,
     next_terminal_sequence: u64,
 }
+
+// SAFETY: `Scheduler` is not `Send` only because of what it holds, not
+// because any of it is tied to the thread that made it. The carriers share
+// it through `Mutex<Scheduler>` (`carrier::Locked`), which needs `Send` to be
+// `Sync`, and every use below happens with the lock held, so no two threads
+// ever touch these at once and the lock orders one thread's writes before
+// the next thread's reads:
+// - The raw context pointers (release hooks, trace sink, signal words,
+//   parked requests, task entry contexts) are only stored and passed back
+//   to the host, whose contract keeps them valid for the whole execution;
+//   a hook may run on whichever carrier holds the lock.
+// - The `Rc` process records and the channel copier box are reached and
+//   cloned only by kernel code, so their counts are never raced.
+// - A started fiber is the one thing tied to a thread: its stack holds that
+//   thread's frames. `PinnedFiber` asserts every resume and destruction
+//   happens on its home thread, and a carrier resumes only the tasks homed
+//   on it (`prepare_run`, `prepare_job`); a fiber that never ran has no
+//   home and may start anywhere. Dropping the scheduler resumes or destroys
+//   the fibers it still holds on the dropping thread, so it is dropped
+//   where they are all homed: after a finished run, on carrier 0's thread,
+//   since the other carriers hold none (`retire_carrier`).
+unsafe impl Send for Scheduler {}
 
 /// Writes a terminal child's outcome into a `REQUEST_TASK_RESULT`,
 /// `REQUEST_TASK_ANY`, or `REQUEST_TASK_DRAIN` reply.
