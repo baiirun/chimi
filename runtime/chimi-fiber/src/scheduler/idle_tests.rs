@@ -545,6 +545,26 @@ fn a_carrier_leaving_a_parked_run_keeps_its_fibers() {
     scheduler.cancel(None, kept).expect("cancel");
 }
 
+/// A parked task's request points into its fiber's stack, which kernel code
+/// on any carrier writes through; entering the fiber clears it under the
+/// lock, so no carrier writes into a stack while its fiber runs.
+#[test]
+fn entering_a_fiber_clears_its_parked_request() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let task = start_sleeper(&mut scheduler, 1, 5 * SECOND);
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.drive();
+    assert!(!scheduler.tasks[&task].request.is_null(), "parked on its sleep");
+    scheduler.wake(task).expect("wake");
+    let runnable = scheduler.prepare_run(task).expect("runnable");
+    assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Running);
+    assert!(scheduler.tasks[&task].request.is_null(), "no request while it runs");
+    let event = resume_fiber(runnable.fiber, runnable.command);
+    scheduler.complete(runnable, event);
+    scheduler.cancel(None, task).expect("cancel");
+}
+
 /// A root step that leaves the run going does not end it: a root still
 /// running, or one that has finished while another carrier still has work.
 #[test]

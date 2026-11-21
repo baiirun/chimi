@@ -10,10 +10,11 @@ watchdog aborts (killed by a crash or a timeout).
 CRATE = "runtime/chimi-fiber"
 
 P = "src/scheduler/process_abi.rs"
+S = "src/scheduler.rs"
 
 
-def m(name, old, new):
-    return dict(name=name, file=P, edits=[(old, new)], targets=["lib"], filter="")
+def m(name, old, new, file=P):
+    return dict(name=name, file=file, edits=[(old, new)], targets=["lib"], filter="")
 
 
 MUTATIONS = [
@@ -35,6 +36,12 @@ MUTATIONS = [
     m("two threads reach the kernel as carrier 1",
       "                    super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));",
       "                    super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(1)));"),
+    m("entering a fiber keeps its parked request",
+      "        record.phase = TaskPhase::Running;\n        record.request = std::ptr::null_mut();",
+      "        record.phase = TaskPhase::Running;", S),
+    m("a parked run on several threads is accepted",
+      "        carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,",
+      "        true || run.outcome.state != ChimiFiberState::Parked as u32,"),
     m("the kernel is not handed back",
       "    drop(std::mem::replace(\n        scheduler,\n        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),\n    ));",
       "    drop(kernel);"),

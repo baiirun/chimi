@@ -804,6 +804,14 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
 /// exit (parallel-scheduler.md, "5c-5 as landed"). The kernel is shared
 /// behind its lock for the run and handed back after it. Test-only until the
 /// runner flag (step 3 PR 5d).
+///
+/// Requires, with several carriers: every root other than `root` is
+/// started on carrier 0 or ends within the run, since a finished run's
+/// other carriers must hold no fiber (`Scheduler::retire_carrier`). Panics
+/// if the run parks: its fibers would stay homed on threads it joined,
+/// where nothing can resume or destroy them. A panic on any carrier aborts
+/// the process, as one in `chimi_scheduler_run` does, since the other
+/// carriers would wait for it forever.
 #[cfg(test)]
 pub(super) fn run_root_on_threads(
     scheduler: &mut Scheduler,
@@ -826,20 +834,38 @@ pub(super) fn run_root_on_threads(
     let run = std::thread::scope(|scope| {
         for index in 1..carriers {
             let kernel = &kernel;
-            std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name(format!("carrier {index}"))
                 .spawn_scoped(scope, move || {
-                    super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
-                })
-                .expect("a carrier thread");
+                    abort_on_panic(|| {
+                        super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
+                    });
+                });
+            if spawned.is_err() {
+                abort_on_panic(|| panic!("carrier {index} got no thread"));
+            }
         }
-        run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code)
+        abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
     });
     drop(std::mem::replace(
         scheduler,
         kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
     ));
+    assert!(
+        carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,
+        "a run on several carrier threads parked, leaving fibers on joined threads"
+    );
     run
+}
+
+/// Runs `body`, aborting the process if it panics (the panic hook has
+/// printed the message by then).
+#[cfg(test)]
+fn abort_on_panic<R>(body: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        eprintln!("a carrier panicked; the others would wait for it forever");
+        std::process::abort()
+    })
 }
 
 fn parked_outcome() -> SchedulerOutcome {

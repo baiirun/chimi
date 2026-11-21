@@ -4689,6 +4689,11 @@ fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
             0,
         ))
         .unwrap();
+    let mut homes: Vec<u32> = lab.scheduler.incarnation_homes().iter().map(|&(_, home)| home).collect();
+    homes.sort_unstable();
+    let mut expected: Vec<u32> = (1..=3).map(|membership| membership % carriers).collect();
+    expected.sort_unstable();
+    assert_eq!(homes, expected, "one member per carrier with three");
     let main = lab.scheduler.start_root(finishes_at_once).unwrap();
     let run = process_abi::run_root_on_threads(&mut lab.scheduler, main, DEADLOCK_DEFECT_CODE);
     assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
@@ -4697,9 +4702,11 @@ fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
     lab.transcript()
 }
 
-/// Members homed on three carrier threads start and run there, and the end
-/// of the root's run stops each on its own thread, in the order one carrier
-/// gives; every carrier is joined when the run returns.
+/// Members homed on three carriers start and run on those carriers'
+/// threads (an unstarted fiber's first resume claims its thread, and
+/// `PinnedFiber` asserts every later one), and the end of the root's run
+/// stops each there, in the order one carrier gives; every carrier is
+/// joined when the run returns.
 #[test]
 fn a_run_on_carrier_threads_stops_its_members_at_home() {
     let one = stop_members_at_the_end_of_a_run_on_threads(1);

@@ -110,8 +110,9 @@ fn under_watchdog(limit: Duration, test: impl FnOnce() + Send) {
 }
 
 /// Starts `per_carrier` hopping roots on every carrier and runs the first
-/// as the root on threads; every task must succeed. Runs twice on the same
-/// kernel, so the second run's carriers start after the first run ended.
+/// as the root on threads; every task must succeed, and the fibers must
+/// have run on one thread per carrier. Runs twice on the same kernel, so
+/// the second run's carriers start after the first run ended.
 fn run_hoppers(clock: ClockMode, carriers: u32, per_carrier: u32, hops_each: usize) {
     let mut scheduler = Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, clock));
     scheduler.set_carriers(carriers);
@@ -128,7 +129,11 @@ fn run_hoppers(clock: ClockMode, carriers: u32, per_carrier: u32, hops_each: usi
             }
         }
         scheduler.enter_carrier(Carrier(0));
+        THREADS.lock().expect("threads").clear();
         let run = run_root_on_threads(&mut scheduler, tasks[0], 1);
+        // Threads alive at once have distinct ids, and every carrier has
+        // fibers homed on it.
+        assert_eq!(THREADS.lock().expect("threads").len(), carriers as usize, "one thread per carrier");
         assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32, "{:?}", run.outcome.defect_code);
         for task in tasks {
             assert!(
@@ -147,18 +152,15 @@ fn run_hoppers(clock: ClockMode, carriers: u32, per_carrier: u32, hops_each: usi
 #[test]
 fn fibers_on_four_carrier_threads_stay_on_their_thread() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
-    THREADS.lock().expect("threads").clear();
     under_watchdog(Duration::from_secs(60), || {
         for _ in 0..40 {
             run_hoppers(ClockMode::Virtual, 4, 3, 20);
         }
     });
-    let threads = THREADS.lock().expect("threads").len();
-    assert!(threads >= 4, "fibers ran on {threads} threads");
 }
 
 /// The same under the real clock, where an idle carrier sleeps until the
-/// earliest timer and is woken through its pipe.
+/// earliest timer or a wake on its pipe.
 #[test]
 fn fibers_on_carrier_threads_under_the_real_clock() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
@@ -174,7 +176,5 @@ fn fibers_on_carrier_threads_under_the_real_clock() {
 #[test]
 fn one_carrier_on_threads_runs_on_one_thread() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
-    THREADS.lock().expect("threads").clear();
     under_watchdog(Duration::from_secs(30), || run_hoppers(ClockMode::Virtual, 1, 4, 5));
-    assert_eq!(THREADS.lock().expect("threads").len(), 1);
 }
