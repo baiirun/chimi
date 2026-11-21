@@ -1,0 +1,36 @@
+# mutation run at 32f053581564edfbfe87ed8e8b1c08e9b75a5c80
+# carrier_stress_mutations.py: 13 mutants against compiler/chimi
+BASELINE ok  [carrier_stress] (145s)
+KILLED       M1 enqueue on another carrier writes no wake [carrier_stress] (256s)
+SURVIVED     M2 unwind job queued at home without waking home [carrier_stress] (36s)
+KILLED       M3 unwind job routed to the deciding carrier, not home [carrier_stress] (35s)
+KILLED       M4 last carrier to park does not wake carrier 0 [carrier_stress] (251s)
+KILLED       M5 global idle ignores queued jobs [carrier_stress] (36s)
+SURVIVED     M6 every membership placed on carrier 0 [carrier_stress] (36s)
+SURVIVED     M7 forced body waiting on home re-arms its deadline [carrier_stress] (46s)
+SURVIVED     M8 an end decided while running elsewhere is dropped [carrier_stress] (39s)
+SURVIVED     M9 first resume elsewhere keeps the old home [carrier_stress] (40s)
+SURVIVED     M10 a new earliest timer does not wake carrier 0 [carrier_stress] (39s)
+KILLED       C1 carrier threads never bind their carrier [carrier_stress] (50s)
+SURVIVED     C2 process entry skips the bound-carrier check [carrier_stress] (73s)
+KILLED       F1 a zero deadline rewrites a woken body's answered request [carrier_stress] (70s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# Reruns after the busy-bodies program was added (M9's targets now include
+# tests/carriers.rs, whose busy-stop test reaches it):
+KILLED       M9 first resume elsewhere keeps the old home [carrier_stress carriers] (71s)
+SURVIVED     M7 forced body waiting on home re-arms its deadline [carrier_stress] (applied by hand: 7 passed; mutate.py reported KILLED-BUILD, but the mutant builds)
+#
+# Totals: 7 of 13 killed (M1, M3, M4, M5, M9, C1, F1).
+# Survivors, and why:
+# - M2 (an unwind job queued without waking its home) and M10 (a new earliest
+#   timer that does not wake carrier 0): other wakes (carrier 0's poll, the
+#   home's own timed waits) reach the carrier soon after, so values are the
+#   same; the cost is latency, which these value checks do not see.
+# - M6 (every membership on carrier 0): the values do not depend on
+#   placement; tests/carriers.rs counts the threads, not where work runs.
+# - M7 and M8: a force from another carrier is still ended by the home's own
+#   next resume (the Cancel command), so a re-armed deadline or a dropped
+#   pending end changes timing, not the outcome, in these programs.
+# - C2 (process entry skips the bound-carrier check): equivalent while every
+#   carrier thread binds; C1 shows the binding is tested.
