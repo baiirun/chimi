@@ -1,7 +1,8 @@
 """Mutants of R4 step 3 PR 5b-1: ready work is routed by carrier.
 
 Run: scripts/mutation/mutate.py scripts/mutation/carrier_routing_mutations.py
-Each mutant must turn a_woken_task_waits_on_its_home_carrier red. The first is
+Each mutant must turn a_woken_task_waits_on_its_home_carrier (or, for the
+lock, the_kernel_lock_enters_its_carrier) red. The first is
 the ready-queue mutant PR 2 left alive, which no one-carrier test can kill.
 Results: scripts/mutation/carrier_routing_results.txt.
 """
@@ -26,7 +27,7 @@ MUTATIONS = [
     m("a root task is homed on carrier 0", S, [(
         "        let carrier = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);",
         "        let carrier = parent.map_or(ready::Carrier(0), |parent| self.tasks[&parent].carrier);")]),
-    m("the lock does not enter its carrier", "src/scheduler/carrier.rs", [(
+    dict(name="the lock does not enter its carrier", file="src/scheduler/carrier.rs", edits=[(
         "        kernel.enter_carrier(self.carrier);\n",
-        "")]),
+        "")], targets=["lib"], filter="the_kernel_lock_enters_its_carrier"),
 ]

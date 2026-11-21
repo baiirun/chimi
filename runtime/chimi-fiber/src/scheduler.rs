@@ -3181,6 +3181,29 @@ mod tests {
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked, "its home ran it");
     }
 
+    /// Each kernel lock tells the kernel which carrier holds it: a task
+    /// started through carrier 1's lock is homed there and only carrier 1's
+    /// loop runs it.
+    #[test]
+    fn the_kernel_lock_enters_its_carrier() {
+        use carrier::{KernelAccess, Locked};
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let kernel = std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2));
+        let (mut zero, mut one) = (
+            Locked::new(&kernel, ready::Carrier(0)),
+            Locked::new(&kernel, ready::Carrier(1)),
+        );
+        let task = one
+            .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
+            .expect("task");
+        carrier::drive(&mut zero);
+        let phase = |kernel: &std::sync::Mutex<Scheduler>| kernel.lock().expect("kernel").tasks[&task].phase;
+        assert_eq!(phase(&kernel), TaskPhase::Runnable, "carrier 0 does not run it");
+        carrier::drive(&mut one);
+        assert_eq!(phase(&kernel), TaskPhase::Parked);
+        assert_eq!(kernel.lock().expect("kernel").tasks[&task].carrier, ready::Carrier(1));
+    }
+
     #[test]
     fn a_released_task_is_removed_with_its_result_once_it_ends() {
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
