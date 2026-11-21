@@ -757,7 +757,10 @@ four keep one carrier.
        dropped in review: taking a live task's fiber leaves a task that can
        never end. A parked run keeps its fibers on their carriers, so a
        parked kernel may be dropped or cancelled into only on one thread;
-       5c-6 must keep that rule or retire a parked kernel's carriers. Found
+       5c-6 must keep that rule or retire a parked kernel's carriers, and
+       must join carriers 1 and up before `run_root` returns, since the
+       check assumes nothing reaches the kernel between the run's end and
+       their exit. Found
        in review and left as before: `force` clears a deadline without
        cancelling its timer, and `Drop` destroys a parked fiber without
        setting a terminal resume context.

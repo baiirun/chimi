@@ -4593,8 +4593,8 @@ fn forcing_the_processes_left_ends_them_at_home_as_one_carrier_does() {
 }
 
 /// Stops a supervisor of a plain member and one whose cleanup parks for
-/// good (stopped first, its deadline disarmed), with the plain member homed
-/// on the last carrier, then ends a finished root's run. Returns the
+/// good (stopped first, its deadline disarmed), each homed off carrier 0
+/// when there are three carriers, then ends a finished root's run. Returns the
 /// transcript and the virtual time the run took.
 fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
     let mut lab = Lab::new();
@@ -4611,7 +4611,10 @@ fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
         ))
         .unwrap();
     lab.settle_carriers();
-    assert_eq!(lab.scheduler.incarnation_homes()[0].1, carriers - 1, "the plain member's home");
+    assert!(
+        carriers == 1 || lab.scheduler.incarnation_homes().iter().all(|&(_, home)| home != 0),
+        "both members off carrier 0, so the stuck one is forced through its home"
+    );
     lab.scheduler.enter_carrier(ready::Carrier(0));
     let _ = lab.scheduler.stop_supervisor(root);
     for carrier in 0..carriers {
@@ -4642,11 +4645,11 @@ fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
 /// carrier's, with no stale deadline holding the run.
 #[test]
 fn forcing_a_stuck_member_leaves_its_sibling_a_graceful_stop() {
-    let (two, took) = end_run_after_a_stuck_sibling(2);
-    assert!(two.iter().any(|event| event.ends_with("cause=forced")), "{two:?}");
-    assert!(two.iter().any(|event| event.ends_with("cause=cancelled")), "{two:?}");
+    let (three, took) = end_run_after_a_stuck_sibling(3);
+    assert!(three.iter().any(|event| event.ends_with("cause=forced")), "{three:?}");
+    assert!(three.iter().any(|event| event.ends_with("cause=cancelled")), "{three:?}");
     assert_eq!(took, 0);
-    assert_eq!((two, took), end_run_after_a_stuck_sibling(1));
+    assert_eq!((three, took), end_run_after_a_stuck_sibling(1));
 }
 
 /// The last resort of the pass: an incarnation no plan waits on is shut
@@ -4665,6 +4668,7 @@ fn a_process_no_plan_waits_on_is_forced_as_a_last_resort() {
     lab.settle_carriers();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     assert!(lab.scheduler.force_survivors());
+    assert!(lab.terminations().is_empty(), "the force waits for the body's home");
     assert_eq!(lab.scheduler.timers.earliest(), None, "no deadline is left queued");
     lab.settle_carriers();
     assert_eq!(lab.scheduler.process_metrics().incarnations, 0);

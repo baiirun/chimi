@@ -28,3 +28,10 @@ KILLED       a body is forced off its home [lib] (6s)
 # would move nothing either and the run ends the same way, one pass sooner.
 # "a lingering draining body is forced" is killed by a timeout: the
 # teardown spins on a body it cannot force.
+# Verifier's second pass (its own mutants, whole lib suite): the gaps it found are
+# closed by the 3-carrier sibling test and the last-resort home assertion
+# ("any_carrier in the last resort only" now killed). Still surviving, near
+# unreachable: progress that is only a new timer (a resumed plan's next
+# graceful stop of a body parked on a sleep), only a queued job (a draining
+# body's live child on another carrier), and `left` ignoring incarnations
+# (no plan-free incarnation survives `shutdown_processes` in `root_step`).
