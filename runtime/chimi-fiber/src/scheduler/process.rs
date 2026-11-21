@@ -1870,10 +1870,13 @@ impl Scheduler {
             if self.tasks[&task].phase != TaskPhase::Runnable {
                 break;
             }
+            // Only the fiber's home carrier may run it inline. Elsewhere the
+            // body stays queued at home, which runs it in turn; the caller
+            // takes the path it has for a body that has not ended yet.
+            if !self.may_resume_here(task, self.tasks[&task].command) {
+                break;
+            }
             let carrier = self.tasks[&task].carrier;
-            // Runs the incarnation's fiber inline, which only its home
-            // carrier may do; see `begin_terminal`.
-            debug_assert_eq!(carrier, self.current, "inline resume off home");
             self.ready.remove(carrier, task);
             self.run(task);
         }
@@ -1887,13 +1890,21 @@ impl Scheduler {
             return false;
         }
         let now = self.clock.now();
+        // A forced body left waiting on its home carrier arms no new
+        // deadline: it would fire at once, force again and arm again,
+        // forever. Its home ends it at its next resume (`abandon_forced` or
+        // `force_terminal`). Anything else arms one as before, a draining
+        // body included, even with a zero deadline: its firing is what
+        // forces the descendants still running their releases.
+        let waits_on_home = !matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
+            && !self.may_resume_here(task, self.tasks[&task].command);
         let record = self
             .kernel
             .incarnations
             .get_mut(&incarnation)
             .expect("lingering incarnation");
         let stopping = record.stopping.as_mut().expect("stopping incarnation");
-        if stopping.timer.is_none() {
+        if stopping.timer.is_none() && !(stopping.forced && waits_on_home) {
             let deadline = stopping.deadline.max(now);
             let timer = self
                 .timers
@@ -2097,8 +2108,10 @@ impl Scheduler {
         }
         let terminated = self.await_incarnation(incarnation);
         debug_assert!(
-            terminated || matches!(self.tasks[&task].phase, TaskPhase::Draining(_)),
-            "a forced body always ends"
+            terminated
+                || matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
+                || self.tasks[&task].carrier != self.current,
+            "a forced body ends at once on its home carrier"
         );
     }
 
