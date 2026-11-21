@@ -186,6 +186,63 @@ test "closing a handle ends another task's wait even when its descriptors are re
     assert!(run.stdout.contains("5 passed, 0 failed"), "{}", run.stdout);
 }
 
+/// A forced process body parked in a binding call lets the call's handles
+/// go even when the binding issues one more request on its way out, which
+/// abandons the body's fiber: the handle stays usable by other calls. Were
+/// the call still running on the handle, the next call on it would wait
+/// forever, so the run has a deadline.
+#[test]
+fn a_forced_body_parked_in_a_binding_call_leaves_its_handle_to_other_calls() {
+    let source = format!(
+        "{IMPORTS}import std/process as Process
+import std/process.{{Inbox}}
+import std/supervisor as Supervisor
+{}",
+        r#"
+enum Message {
+  Ping
+}
+
+test "a forced reader leaves the pipe usable" {
+  let pipe = BindingProbe.open()
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))
+  let spec = Process.handoff_spec(fn(inbox: Inbox<Message>, held: BindingProbe.Pipe) {
+    let _ = Result.capture(fn() { BindingProbe.read(held) })
+    Void
+  }, 1, Duration.milliseconds(20))
+  let _ = Supervisor.start_handoff(root, spec, pipe)
+  Clock.sleep(Duration.milliseconds(20))
+  Supervisor.stop(root)
+  BindingProbe.write(pipe, Bytes.from_text("after"))
+  BindingProbe.read(pipe) |> Test.assert_equal(Some(Bytes.from_text("after")))
+}
+"#
+    );
+    let scratch = Scratch::new("forced-binding", &source);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch.path())
+        .args(["test", "cases.chimi", "--clock=real"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run chimi");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while child.try_wait().expect("poll chimi").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the run hung: a call still runs on the forced body's handle");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().expect("chimi output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed, 0 failed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The build report of the test build in `scratch`.
 fn build_report(scratch: &Scratch) -> String {
     std::fs::read_to_string(scratch.path().join("target/chimi/cases/test/build.json"))

@@ -11,6 +11,10 @@
    - open, use and close C binding handles in one shared table, take lines
      from standard input, and write console lines.
 
+   Then the threads share two binding handles, alone and in pairs given in
+   either order: one call at a time runs on a handle, and a call waiting on
+   a descriptor lets its handle go to the others.
+
    The checks: every counter sums back to where it started, span ids and
    telemetry sequence numbers are unique and each event is written whole,
    the profile and the recorder saw every call, the random draws are the
@@ -55,10 +59,14 @@ const uint32_t CHIMI_CONSTANT_VALUE_COUNT = 0;
 static ChimiBindingResult *binding_open(ChimiBindingCall *call);
 static ChimiBindingResult *binding_use(ChimiBindingCall *call);
 static ChimiBindingResult *binding_close(ChimiBindingCall *call);
+static ChimiBindingResult *binding_pair(ChimiBindingCall *call);
+static ChimiBindingResult *binding_wait_on(ChimiBindingCall *call);
+static ChimiBindingResult *binding_wait_child_on(ChimiBindingCall *call);
 const ChimiBinding CHIMI_BINDINGS[] = {
-  {"open", binding_open}, {"use", binding_use}, {"close", binding_close}};
-const uint32_t CHIMI_BINDING_COUNT = 3;
-enum { BINDING_OPEN, BINDING_USE, BINDING_CLOSE };
+  {"open", binding_open}, {"use", binding_use}, {"close", binding_close},
+  {"pair", binding_pair}, {"wait_on", binding_wait_on}, {"wait_child_on", binding_wait_child_on}};
+const uint32_t CHIMI_BINDING_COUNT = 6;
+enum { BINDING_OPEN, BINDING_USE, BINDING_CLOSE, BINDING_PAIR, BINDING_WAIT_ON, BINDING_WAIT_CHILD_ON };
 
 #define CHECK(condition, ...)                                                       \
   do {                                                                              \
@@ -99,10 +107,14 @@ static uint64_t spans[THREADS * ROUNDS];
 static uint64_t draws[THREADS * ROUNDS];
 
 /* A binding handle's state. A use counts itself in `users` for its length, so
-   the release can check that no call is using the state it frees. */
+   the release can check that no call is using the state it frees. `inside`
+   counts the calls running on it, which must never be two, and `calls` is
+   written without a lock, so ThreadSanitizer sees two calls that overlap. */
 typedef struct {
   _Atomic int alive;
   _Atomic int users;
+  _Atomic int inside;
+  uint64_t calls;
 } Resource;
 static _Atomic int64_t resources_opened;
 static _Atomic int64_t resources_released;
@@ -124,16 +136,68 @@ static ChimiBindingResult *binding_open(ChimiBindingCall *call) {
   return chimi_binding_success(call, chimi_binding_make_handle(call, &resource_type, resource));
 }
 
+/* Enters (`enter`) or leaves a call's run on `resource`. */
+static void resource_run(Resource *resource, bool enter) {
+  if (enter) {
+    CHECK(atomic_fetch_add(&resource->inside, 1) == 0, "two calls ran on one handle at once");
+    ++resource->calls;
+  } else {
+    atomic_fetch_sub(&resource->inside, 1);
+  }
+}
+
 static ChimiBindingResult *binding_use(ChimiBindingCall *call) {
   Resource *resource = chimi_binding_handle(call, 0, &resource_type);
   if (resource) {
+    resource_run(resource, true);
     atomic_fetch_add(&resource->users, 1);
     for (int spin = 0; spin < 200; ++spin)
       CHECK(atomic_load(&resource->alive) == 1, "a call's resource was released under it");
     atomic_fetch_sub(&resource->users, 1);
+    resource_run(resource, false);
   }
   return chimi_binding_success(call, chimi_binding_void(call));
 }
+
+/* Runs on two handles at once. */
+static ChimiBindingResult *binding_pair(ChimiBindingCall *call) {
+  Resource *first = chimi_binding_handle(call, 0, &resource_type);
+  Resource *second = chimi_binding_handle(call, 1, &resource_type);
+  CHECK(first && second && first != second, "a pair needs two open handles");
+  resource_run(first, true);
+  resource_run(second, true);
+  for (volatile int spin = 0; spin < 200; ++spin) {}
+  resource_run(second, false);
+  resource_run(first, false);
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* The pipe `wait_on` waits on, the child `wait_child_on` waits for, and
+   whether a call is in its wait. */
+static int wait_pipe[2];
+static pid_t wait_child;
+static _Atomic bool waiting;
+
+/* Runs on its handle, waits until the pipe is readable (`child` false) or
+   the child has exited, and runs on the handle again. */
+static ChimiBindingResult *wait_between_runs(ChimiBindingCall *call, bool child) {
+  Resource *resource = chimi_binding_handle(call, 0, &resource_type);
+  CHECK(resource, "a wait needs an open handle");
+  resource_run(resource, true);
+  resource_run(resource, false);
+  atomic_store(&waiting, true);
+  int waited = child ? chimi_binding_wait_child(call, 0, wait_child)
+                     : chimi_binding_wait(call, 0, wait_pipe[0], CHIMI_BINDING_READABLE);
+  CHECK(waited == CHIMI_BINDING_READY, "the wait failed: %d", waited);
+  CHECK(binding_handles[call->arguments[0]->as.handle.slot].runner == call,
+        "the call did not take its handle back after the wait");
+  resource_run(resource, true);
+  resource_run(resource, false);
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+static ChimiBindingResult *binding_wait_on(ChimiBindingCall *call) { return wait_between_runs(call, false); }
+static ChimiBindingResult *binding_wait_child_on(ChimiBindingCall *call) { return wait_between_runs(call, true); }
 
 static ChimiBindingResult *binding_close(ChimiBindingCall *call) {
   Resource *resource = chimi_binding_handle(call, 0, &resource_type);
@@ -296,6 +360,102 @@ static void *carrier_thread(void *raw_index) {
   heap_destroy(heap);
   carrier->fiber.heap = &main_heap;
   return NULL;
+}
+
+/* The two handles the threads share below, as `slot << 32 | generation`. */
+static uint64_t pair_handles[2];
+enum { PAIR_ROUNDS = 3000 };
+
+/* Round `round`'s second argument: the other handle, except that every
+   fifth round names its first handle twice, which a call holds once. */
+static size_t pair_second(uint32_t round, size_t first) { return round % 5 == 1 ? first : 1 - first; }
+
+/* A pair every third round, when its two handles differ, and a use else. */
+static uint32_t pair_binding(uint32_t round) {
+  return round % 3 == 0 && round % 5 != 1 ? BINDING_PAIR : BINDING_USE;
+}
+
+/* Each thread runs uses of either handle and pairs of both, in both
+   orders, so two calls that share a handle overlap often. */
+static void *pair_thread(void *raw_index) {
+  size_t index = (size_t)(uintptr_t)raw_index;
+  carrier_thread_enter(index + 1);
+  RuntimeHeap *heap = heap_create();
+  carrier->fiber.heap = heap;
+  for (uint32_t round = 0; round < PAIR_ROUNDS; ++round) {
+    size_t first = (round + index) % 2;
+    ChimiValue *arguments[] = {handle_copy(pair_handles[first]),
+                               handle_copy(pair_handles[pair_second(round, first)])};
+    uint32_t binding = pair_binding(round);
+    uint32_t count = binding == BINDING_PAIR || round % 5 == 1 ? 2 : 1;
+    CHECK(invoke_binding(&runtime, binding, arguments, count, 0)->kind == CONTROL_SUCCESS,
+          "binding %u failed", binding);
+  }
+  heap_destroy(heap);
+  carrier->fiber.heap = &main_heap;
+  return NULL;
+}
+
+static Resource *pair_resource(size_t index) {
+  return binding_handles[(uint32_t)(pair_handles[index] >> 32)].state;
+}
+
+static void one_call_runs_on_a_handle_at_a_time(void) {
+  for (size_t index = 0; index < 2; ++index) {
+    ChimiControl *opened = invoke_binding(&runtime, BINDING_OPEN, NULL, 0, 0);
+    CHECK(opened->kind == CONTROL_SUCCESS, "open failed");
+    pair_handles[index] = (uint64_t)opened->value->as.handle.slot << 32 | opened->value->as.handle.generation;
+  }
+  pthread_t threads[THREADS];
+  for (size_t index = 0; index < THREADS; ++index)
+    CHECK(pthread_create(&threads[index], NULL, pair_thread, (void *)(uintptr_t)index) == 0, "start");
+  for (size_t index = 0; index < THREADS; ++index) pthread_join(threads[index], NULL);
+  uint64_t calls = pair_resource(0)->calls + pair_resource(1)->calls;
+  uint64_t pairs = 0;
+  for (uint32_t round = 0; round < PAIR_ROUNDS; ++round) pairs += pair_binding(round) == BINDING_PAIR;
+  CHECK(calls == THREADS * (PAIR_ROUNDS + pairs), "%" PRIu64 " calls ran", calls);
+}
+
+static void *wait_thread(void *raw_binding) {
+  uint32_t binding = (uint32_t)(uintptr_t)raw_binding;
+  carrier_thread_enter(1);
+  RuntimeHeap *heap = heap_create();
+  carrier->fiber.heap = heap;
+  ChimiValue *arguments[] = {handle_copy(pair_handles[0])};
+  CHECK(invoke_binding(&runtime, binding, arguments, 1, 0)->kind == CONTROL_SUCCESS, "binding %u failed", binding);
+  heap_destroy(heap);
+  carrier->fiber.heap = &main_heap;
+  return NULL;
+}
+
+/* A use of the handle a call is waiting on, for a descriptor (`child`
+   false) or a child, runs before the wait ends; were the handle still
+   taken, the use would wait for good and the alarm fail the run. */
+static void a_waiting_call_lets_its_handle_go(bool child) {
+  CHECK(pipe(wait_pipe) == 0, "pipe");
+  if (child) {
+    fflush(NULL);
+    wait_child = fork();
+    CHECK(wait_child >= 0, "fork");
+    if (wait_child == 0) {
+      char byte;
+      _exit(read(wait_pipe[0], &byte, 1) == 1 ? 0 : 1);
+    }
+  }
+  atomic_store(&waiting, false);
+  pthread_t thread;
+  uint32_t binding = child ? BINDING_WAIT_CHILD_ON : BINDING_WAIT_ON;
+  CHECK(pthread_create(&thread, NULL, wait_thread, (void *)(uintptr_t)binding) == 0, "start");
+  while (!atomic_load(&waiting)) {}
+  uint64_t before = pair_resource(0)->calls;
+  ChimiValue *arguments[] = {handle_copy(pair_handles[0])};
+  CHECK(invoke_binding(&runtime, BINDING_USE, arguments, 1, 0)->kind == CONTROL_SUCCESS, "use failed");
+  CHECK(write(wait_pipe[1], "x", 1) == 1, "write the pipe");
+  pthread_join(thread, NULL);
+  CHECK(pair_resource(0)->calls == before + 2, "the use and the wait's second run ran");
+  if (child) CHECK(waitpid(wait_child, NULL, 0) == wait_child, "reap the child");
+  close(wait_pipe[0]);
+  close(wait_pipe[1]);
 }
 
 static int compare_words(const void *left, const void *right) {
@@ -464,6 +624,9 @@ int main(void) {
     ++console_lines;
   }
   CHECK(console_lines == THREADS * ROUNDS, "%" PRIu64 " console lines", console_lines);
+  one_call_runs_on_a_handle_at_a_time();
+  a_waiting_call_lets_its_handle_go(false);
+  a_waiting_call_lets_its_handle_go(true);
   puts("ok");
   return 0;
 }

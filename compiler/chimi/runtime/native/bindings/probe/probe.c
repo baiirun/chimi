@@ -135,6 +135,10 @@ ChimiBindingResult *chimi_probe_read_pipe(ChimiBindingCall *call) {
     if (errno != EAGAIN && errno != EWOULDBLOCK)
       return chimi_binding_failure(call, PROBE_CLOSED, strerror(errno));
     int waited = chimi_binding_wait(call, 0, state->read_end, CHIMI_BINDING_READABLE);
+    /* Asks the scheduler once more on the way out, as a binding may, so a
+       test can check that a forced body's last request lets its handle go. */
+    if (waited == CHIMI_BINDING_WAIT_CANCELLED && chimi_binding_is_cancelled(call))
+      return chimi_binding_cancelled(call);
     if (waited == CHIMI_BINDING_WAIT_CANCELLED) return chimi_binding_cancelled(call);
     if (waited != CHIMI_BINDING_READY)
       return chimi_binding_failure(call, PROBE_CLOSED, "pipe is closed");
