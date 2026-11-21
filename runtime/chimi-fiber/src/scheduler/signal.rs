@@ -401,7 +401,13 @@ pub(super) fn wait_readable(fds: &[i32], timeout: Option<std::time::Duration>) {
         })
         .collect();
     // SAFETY: `polls` is a valid, exclusively borrowed array for the call.
-    let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, milliseconds) };
+    let ready = unsafe {
+        libc::poll(
+            polls.as_mut_ptr(),
+            polls.len() as libc::nfds_t,
+            milliseconds,
+        )
+    };
     if ready > 0 {
         for poll in polls.iter().filter(|poll| poll.revents != 0) {
             drain(poll.fd);

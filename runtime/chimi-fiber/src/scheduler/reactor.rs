@@ -148,8 +148,9 @@ impl Reactor {
         self.wait(Some(Duration::ZERO), &[])
     }
 
-    /// Blocks until a registered descriptor is ready, one of `wake_fds` is readable,
-    /// a signal interrupts the wait, or `timeout` passes (never when none).
+    /// Blocks until a registered descriptor is ready, one of `wake_fds` is
+    /// readable, a signal interrupts the wait, or `timeout` passes (never
+    /// when none).
     /// Returns the tasks whose descriptors are ready, in registration order,
     /// or every registered task when poll(2) failed.
     fn wait(&self, timeout: Option<Duration>, wake_fds: &[i32]) -> Woken {
