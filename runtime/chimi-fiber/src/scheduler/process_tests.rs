@@ -463,6 +463,12 @@ impl Lab {
         assert_eq!(self.scheduler.run_until_idle(), Idle::Quiescent);
     }
 
+    /// `settle` for a kernel with several carriers, each taking turns on
+    /// this thread until carrier 0 finds them all idle.
+    fn settle_carriers(&mut self) {
+        assert_eq!(carrier::round_robin(&mut self.scheduler), Idle::Quiescent);
+    }
+
     /// Advances virtual time by `duration` the way a sleeping main would.
     fn sleep(&mut self, duration: Duration) {
         let deadline = self.scheduler.now().saturating_add(duration);
@@ -4396,12 +4402,11 @@ fn stop_from_carrier_zero(carriers: u32) -> (Vec<String>, bool) {
             0,
         ))
         .unwrap();
-    lab.settle();
+    lab.settle_carriers();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     let _ = lab.scheduler.stop_supervisor(root);
     let waited = lab.terminations().is_empty();
-    lab.scheduler.enter_carrier(home);
-    lab.settle();
+    lab.settle_carriers();
     assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
     (lab.transcript(), waited)
 }
@@ -4433,19 +4438,22 @@ fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
         .scheduler
         .start_supervisor(policy(vec![Member::Process(stubborn, Restart::Never)], 0))
         .unwrap();
-    lab.settle();
+    lab.settle_carriers();
     let stopped_at = lab.scheduler.now().as_nanos();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     let _ = lab.scheduler.stop_supervisor(root);
-    // The body's home runs its cleanup, which lingers; time stays put.
+    // The body's home runs its cleanup, which lingers, and parks.
     lab.scheduler.enter_carrier(ready::Carrier(1));
     lab.scheduler.drive();
     assert!(lab.terminations().is_empty(), "the stubborn cleanup lingers");
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Park(_)));
+    // Carrier 0 alone is left: time jumps to the deadline, which fires.
     lab.scheduler.enter_carrier(ready::Carrier(0));
-    let _ = lab.scheduler.run_until_idle();
+    lab.scheduler.drive();
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Continue));
+    lab.scheduler.drive();
     assert!(lab.terminations().is_empty(), "the force waits for the body's home");
-    lab.scheduler.enter_carrier(ready::Carrier(1));
-    lab.settle();
+    lab.settle_carriers();
     assert_eq!(
         timed_terminations(&lab).last(),
         Some(&(stopped_at + second.as_nanos() as i64, TerminalCause::Forced))
@@ -4463,7 +4471,7 @@ fn a_kernel_with_processes_on_another_carrier_tears_down() {
     lab.scheduler
         .start_supervisor(policy(vec![counter_member(COUNTER)], 0))
         .unwrap();
-    lab.settle();
+    lab.settle_carriers();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     drop(lab);
 }

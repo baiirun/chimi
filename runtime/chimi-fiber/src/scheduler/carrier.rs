@@ -122,7 +122,11 @@ pub(super) enum IdleStep {
     /// Sleep on the real clock without the kernel (or until the signal pipe
     /// or the carrier's wake pipe is readable), then fire due timers.
     Sleep(Duration, super::wake::WakeFds),
-    /// The virtual clock moved under the kernel; look again.
+    /// Block on the carrier's wake pipe (and, on carrier 0, the signal
+    /// pipe) until another carrier wakes it; then look again.
+    Park(super::wake::WakeFds),
+    /// The virtual clock moved under the kernel, or a due timer gave this
+    /// carrier work; look again.
     Continue,
 }
 
@@ -172,7 +176,73 @@ pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Option<Idle> {
             clock::block_real(wait, wake_fds.as_slice());
             kernel.with(Scheduler::fire_due_timers);
         }
+        IdleStep::Park(wake_fds) => {
+            assert!(
+                !wake_fds.as_slice().is_empty(),
+                "only a carrier with a wake pipe parks"
+            );
+            super::signal::wait_readable(wake_fds.as_slice(), None);
+        }
         IdleStep::Continue => {}
     }
     None
+}
+
+/// Runs every carrier of a kernel in turn on this thread, as a test stands
+/// in for their threads, until carrier 0 gives a verdict. A carrier that
+/// parked runs again only once one of its pipes is readable (the driver
+/// empties it). A wait carrier 0 would block in while another carrier still
+/// has turns to take is skipped, since those turns would have run alongside
+/// it. Panics if every carrier is parked with no pipe readable and no
+/// verdict: a wake was lost.
+#[cfg(test)]
+pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
+    let carriers = kernel.ready.carriers();
+    let mut parked: Vec<Option<super::wake::WakeFds>> = vec![None; carriers as usize];
+    loop {
+        let mut ran = false;
+        for index in 0..carriers {
+            if let Some(fds) = parked[index as usize] {
+                if !fds.as_slice().iter().any(|&fd| test_readable(fd)) {
+                    continue;
+                }
+                for &fd in fds.as_slice() {
+                    super::signal::drain(fd);
+                }
+                parked[index as usize] = None;
+            }
+            ran = true;
+            kernel.enter_carrier(Carrier(index));
+            drive(kernel);
+            let others_parked = parked
+                .iter()
+                .enumerate()
+                .all(|(other, fds)| other == index as usize || fds.is_some());
+            match kernel.with(Scheduler::idle_step) {
+                IdleStep::Done(idle) => return idle,
+                IdleStep::Park(fds) => parked[index as usize] = Some(fds),
+                IdleStep::Io(plan) if others_parked => {
+                    let ready = plan.block();
+                    kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
+                }
+                IdleStep::Sleep(wait, fds) if others_parked => {
+                    clock::block_real(wait, fds.as_slice());
+                    kernel.with(Scheduler::fire_due_timers);
+                }
+                IdleStep::Io(_) | IdleStep::Sleep(..) | IdleStep::Continue => {}
+            }
+        }
+        assert!(ran, "every carrier parked with no wake pending and no verdict");
+    }
+}
+
+#[cfg(test)]
+fn test_readable(fd: i32) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the duration of the call.
+    unsafe { libc::poll(&mut poll, 1, 0) > 0 }
 }

@@ -51,8 +51,11 @@ impl Jobs {
         self.queues[carrier.0 as usize].pop_front()
     }
 
+    pub(super) fn is_empty_for(&self, carrier: Carrier) -> bool {
+        self.queues[carrier.0 as usize].is_empty()
+    }
+
     /// True when no carrier has a job waiting.
-    #[cfg_attr(not(test), allow(dead_code, reason = "global idle (PR 5b-6) counts jobs"))]
     pub(super) fn is_empty(&self) -> bool {
         self.queues.iter().all(VecDeque::is_empty)
     }
