@@ -377,6 +377,29 @@ four keep one carrier.
    order is the kernel lock first, then `handle_table`, never the reverse.
    The kernel state and the carrier loop become separate types here, since
    the lock is what separates them.
+   - Shape (advisor review, 2026-11-21): `Scheduler` stays the kernel type,
+     holding nearly all state: tasks, ready queues, channels, processes,
+     clock and timers, events and the trace sink, host hooks, reactor
+     registrations, children, signals and `host_operations`. A `Carrier`
+     owns the loop (`drive`, `run_until_idle`, `wait_for_io`, `run`) and
+     its id, which today is `current`. The loop is written once against
+     kernel access that is either a plain `&mut Scheduler` (the existing
+     methods and unit tests) or a `Mutex<Scheduler>` (`chimi_scheduler_run`,
+     so the gates measure the lock).
+   - The lock drops in three places: around a fiber's resume in the
+     carrier's `run`, around the reactor's descriptor wait, and around a
+     real-clock wait. Each is split into a locked prepare, the unlocked
+     block, and a locked apply that looks the task up again by id. A
+     `Running` record's fiber is never dropped or removed while it runs,
+     so the resume uses the fiber's pointer without holding the record.
+   - The two inline resumes (`begin_terminal`, `await_incarnation`) run
+     deep inside kernel operations, so they keep the lock across the resume
+     until PR 5 turns them into jobs. Hooks called under the lock (trace
+     sink, release, copy, violation and defect reports) must never park or
+     call into the scheduler.
+   - A poisoned lock is taken over (`into_inner`), so one panicking test
+     does not fail the rest. A stalled run that forgets the scheduler
+     forgets the whole mutex.
 5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
    - Each carrier has a wake descriptor. The carrier loop polls it, and
      carrier 0 also polls the signal pipe.
