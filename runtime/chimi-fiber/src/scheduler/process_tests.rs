@@ -3136,6 +3136,73 @@ fn an_incarnation_running_when_shutdown_begins_is_not_cancelled_at_its_next_park
 }
 
 thread_local! {
+    static HANDOFF: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+/// Creates a one-slot channel, records it, sleeps 1 ms, takes one value,
+/// and at once stops the supervisor named by its context.
+unsafe extern "C" fn takes_then_stops(context: *mut c_void) -> ChimiFiberResult {
+    let mut bounded = blank_request(REQUEST_CHANNEL_BOUNDED);
+    bounded.value = 1;
+    scheduler_call(&mut bounded);
+    assert_eq!(bounded.status, RESPONSE_OK);
+    HANDOFF.with(|cell| cell.set((bounded.channel, bounded.owner, bounded.token)));
+    sleep_until(1_000_000);
+    let mut receive = blank_request(REQUEST_CHANNEL_RECEIVE);
+    receive.channel = bounded.channel;
+    receive.owner = bounded.owner;
+    receive.token = bounded.token;
+    while scheduler_call(&mut receive) == ChimiFiberCommand::Resume && receive.status == RESPONSE_PENDING {}
+    assert_eq!(receive.value, 1, "the first value");
+    let mut stop = ChimiProcessRequest::new(REQUEST_SUPERVISOR_STOP);
+    stop.supervisor = context as u64;
+    process_call(&mut stop);
+    ended(PROCESS_END_RETURNED)
+}
+
+/// Fills the recorded channel, then parks sending a second value and
+/// records the status that send ends with.
+unsafe extern "C" fn sends_twice(_context: *mut c_void) -> ChimiFiberResult {
+    let (channel, _, _) = HANDOFF.with(std::cell::Cell::get);
+    for value in [1, 2] {
+        let mut request = blank_request(REQUEST_CHANNEL_SEND);
+        request.channel = channel;
+        request.value = value;
+        while scheduler_call(&mut request) == ChimiFiberCommand::Resume && request.status == RESPONSE_PENDING {}
+        if value == 2 {
+            log(|log| log.outcomes.push(request.status));
+        }
+    }
+    ended(PROCESS_END_RETURNED)
+}
+
+/// A stop with a zero shutdown deadline forces a body that was just woken
+/// because its parked send was accepted. That send was already answered,
+/// and the force must leave the answer alone: rewritten to forced, the C
+/// runtime took the value as never handed over and freed a message its
+/// receiver owned (seen at two or more carriers).
+#[test]
+fn a_force_leaves_the_answer_of_a_woken_bodys_send_alone() {
+    let mut lab = Lab::new();
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    lab.scheduler
+        .start_root_with_context(takes_then_stops, root.get() as usize as *mut c_void)
+        .expect("receiver");
+    lab.scheduler.drive();
+    let mut spec = process_spec(sends_twice, ptr::null_mut());
+    spec.shutdown_within = Duration::ZERO;
+    lab.scheduler
+        .start_process(root, spec, Restart::Never)
+        .expect("admitted");
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK]);
+    assert_eq!(timed_terminations(&lab), [(1_000_000, TerminalCause::Forced)]);
+}
+
+thread_local! {
     static REMOVE_TARGET: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 

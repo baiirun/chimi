@@ -2010,8 +2010,12 @@ impl Scheduler {
             TaskPhase::Runnable | TaskPhase::Running
                 if forced || (!task_record.ran && nothing_accepted) =>
             {
+                // A body that is not parked has no open request: a woken
+                // one's was already answered, and rewriting that answer
+                // would undo it (a send the receiver took would free the
+                // message it now owns). The resume's terminal context says
+                // it was forced.
                 task_record.command = ChimiFiberCommand::Cancel;
-                set_status(task_record.request, RESPONSE_FORCED, forced);
             }
             TaskPhase::Parked if forced => {
                 task_record.command = ChimiFiberCommand::Cancel;
@@ -2140,8 +2144,9 @@ impl Scheduler {
         stopping.forced = true;
         let task_record = self.tasks.get_mut(&task).expect("incarnation task");
         task_record.command = ChimiFiberCommand::Cancel;
-        set_status(task_record.request, RESPONSE_FORCED, true);
         if task_record.phase == TaskPhase::Parked {
+            // Only a parked body's request is still open (see begin_shutdown).
+            set_status(task_record.request, RESPONSE_FORCED, true);
             self.disarm_wake_sources(task);
             let task_record = self.tasks.get_mut(&task).expect("incarnation task");
             task_record.phase = TaskPhase::Runnable;
@@ -2497,8 +2502,10 @@ fn terminal_cause(outcome: TaskOutcome, stopping: Option<Stopping>) -> TerminalC
 /// Writes a status into a parked request's shared header.
 fn set_status(request: *mut c_void, status: u32, when: bool) {
     if when && !request.is_null() {
-        // SAFETY: a non-null request pointer is recorded only while its
-        // fiber is parked, and every request starts with `RequestHeader`.
+        // SAFETY: callers pass the request of a parked fiber, whose request
+        // is still open and live, and every request starts with
+        // `RequestHeader`. A woken fiber keeps its answered request's
+        // pointer until it resumes, so it must not be passed here.
         unsafe { (*request.cast::<RequestHeader>()).status = status };
     }
 }

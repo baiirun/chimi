@@ -4,10 +4,13 @@
 //! carriers must give the value one carrier gives: a process ring passing
 //! tokens, selects racing plain receives on one queue, a restart storm with
 //! shutdown deadlines, stops that force processes parked in their cleanup,
-//! and socket handles opened and closed on every carrier.
+//! stops that force processes with live tasks (some with a zero deadline),
+//! and socket handles opened and closed on every carrier. A run that has
+//! not ended after two minutes fails as a hang.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 const IMPORTS: &str = r#"import std/bytes as Bytes
 import std/channel as Channel
@@ -95,27 +98,44 @@ pub fn main() -> Int {
 }
 "#;
 
-/// Six processes share one queue through receivers of their own, half
-/// taking values with `Select.first` and half with `Channel.receive`, while
-/// main sends 1 to 4000 and then closes it. Each value must reach exactly
-/// one of them: the counts add up to 4000 and the values to their sum.
+/// Eight processes share one queue through receivers of their own while
+/// three producer processes send 1 to 6000 into it, and main then closes
+/// it. Half the receivers take values with a two-arm `Select.first` (an idle
+/// queue first, so the select really polls both), and half with
+/// `Channel.receive` followed by a little work, so selects and plain
+/// receives both take a large share. Each value must reach exactly one of
+/// them: the counts add up to 6000 and the values to their sum.
 const SELECT_RACE: &str = r#"
 pub enum Message {
-  Drain(jobs: Receiver<Int>, selects: Bool, reply: Sender<Int>)
+  Drain(jobs: Receiver<Int>, idle: Receiver<Int>, selects: Bool, reply: Sender<Int>)
+  Produce(jobs: Sender<Int>, from: Int, to: Int, reply: Sender<Int>)
 }
 
 fn same(next: Receive<Int>) -> Receive<Int> {
   next
 }
 
-fn drain(inbox: Inbox<Message>) -> Void {
+fn spin(n: Int) -> Int {
+  loop i = 0 {
+    case i == n {
+      True -> break i
+      False -> i + 1
+    }
+  }
+}
+
+fn worker(inbox: Inbox<Message>) -> Void {
   case Process.receive(inbox) {
-    Message.Drain(jobs, selects, reply) -> {
+    Message.Drain(jobs, idle, selects, reply) -> {
       let (count, sum) = loop state = (0, 0) {
         let (count, sum) = state
         let next = case selects {
-          True -> Select.first([Select.receive(jobs, same)])
-          False -> Channel.receive(jobs)
+          True -> Select.first([Select.receive(idle, same), Select.receive(jobs, same)])
+          False -> {
+            let got = Channel.receive(jobs)
+            let _ = spin(300)
+            got
+          }
         }
         case next {
           Receive.Received(value) -> (count + 1, sum + value)
@@ -123,6 +143,18 @@ fn drain(inbox: Inbox<Message>) -> Void {
         }
       }
       Channel.send(reply, count * 1000000000 + sum)
+    }
+    Message.Produce(jobs, from, to, reply) -> {
+      let sent = loop value = from {
+        case value > to {
+          True -> break value - from
+          False -> {
+            Channel.send(jobs, value)
+            value + 1
+          }
+        }
+      }
+      Channel.send(reply, sent)
     }
   }
   loop idle = 0 {
@@ -133,26 +165,38 @@ fn drain(inbox: Inbox<Message>) -> Void {
 }
 
 pub fn main() -> Int {
-  let root = Supervisor.start(Supervisor.policy([], 6, Supervisor.restarts(0, Duration.seconds(30))))
-  let spec = Process.spec(drain, 4, Duration.seconds(1))
-  let jobs = Channel.bounded(16)
-  let replies = Channel.bounded(6)
-  let started = loop worker = 0 {
-    case worker == 6 {
-      True -> break worker
+  let root = Supervisor.start(Supervisor.policy([], 16, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(worker, 4, Duration.seconds(1))
+  let jobs = Channel.bounded(8)
+  let idle = Channel.bounded(1)
+  let replies = Channel.bounded(16)
+  let produced = Channel.bounded(4)
+  let started = loop w = 0 {
+    case w == 8 {
+      True -> break w
       False -> {
         let to = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
-        let _ = Process.send(to, Message.Drain(Channel.add_receiver(jobs.receiver), worker % 2 == 0, replies.sender))
-        worker + 1
+        let _ = Process.send(to, Message.Drain(Channel.add_receiver(jobs.receiver), Channel.add_receiver(idle.receiver), w % 2 == 0, replies.sender))
+        w + 1
       }
     }
   }
-  let sent = loop value = 1 {
-    case value > 4000 {
-      True -> break value - 1
+  let p1 = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+  let p2 = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+  let p3 = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+  let _ = Process.send(p1, Message.Produce(jobs.sender, 1, 2000, produced.sender))
+  let _ = Process.send(p2, Message.Produce(jobs.sender, 2001, 4000, produced.sender))
+  let _ = Process.send(p3, Message.Produce(jobs.sender, 4001, 6000, produced.sender))
+  let sent = loop state = (0, 0) {
+    let (n, total) = state
+    case n == 3 {
+      True -> break total
       False -> {
-        Channel.send(jobs.sender, value)
-        value + 1
+        let next = Channel.receive(produced.receiver)
+        case next {
+          Receive.Received(k) -> (n + 1, total + k)
+          Receive.Drained -> break -1
+        }
       }
     }
   }
@@ -180,10 +224,10 @@ pub fn main() -> Int {
 
 /// Four restartable workers, each under a registered name, answer 50 rounds
 /// and defect after every second answer, so their supervisor restarts them
-/// about a hundred times. A round whose request reached a dying incarnation,
-/// or found none, is asked again after 20 ms. Every body lingers after its
-/// answer, past its 10 ms shutdown deadline, so the stop at the end forces
-/// whichever are still busy.
+/// about a hundred times across carriers while main keeps asking. A round
+/// whose request reached a dying incarnation, or found none, is asked again
+/// after 20 ms. The value only says every round was answered; the test is
+/// that the storm ends without a stall or a runtime defect.
 const RESTART_STORM: &str = r#"
 pub enum Message {
   Work(round: Int, reply: Sender<Int>)
@@ -348,6 +392,81 @@ pub fn main() -> Int needs { clock: Clock } {
 }
 "#;
 
+/// Twenty-five times, eight processes each start three tasks that sleep
+/// (one inside `Resource.scoped` whose release sleeps too), answer once and
+/// are stopped, alternately with a 2 ms and a zero shutdown deadline. A zero
+/// deadline forces a body at once, often just after its reply was taken and
+/// before it resumed; the forced bodies' live tasks are ended by unwind jobs
+/// on their home carriers.
+const FORCED_WITH_TASKS: &str = r#"
+pub enum Message {
+  Go(reply: Sender<Int>)
+}
+
+fn nap() -> Int needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(20))
+  1
+}
+
+fn parent(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+  let a = Task.start(fn() { nap() })
+  let b = Task.start(fn() { nap() })
+  let c = Task.start(fn() { Resource.scoped(fn() { 1 }, fn(token: Int) { Clock.sleep(Duration.seconds(20)) }, fn(token: Int) { nap() + token }) })
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Message.Go(reply) -> {
+        Channel.send(reply, 1)
+        handled + 1
+      }
+    }
+  }
+  let _ = Task.result(a) + Task.result(b) + Task.result(c)
+  Void
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  let replies = Channel.bounded(8)
+  loop state = (0, 0) {
+    let (round, answered) = state
+    case round == 25 {
+      True -> break answered
+      False -> {
+        let within = case round % 2 == 0 {
+          True -> Duration.milliseconds(2)
+          False -> Duration.milliseconds(0)
+        }
+        let spec = Process.spec(parent, 4, within)
+        let root = Supervisor.start(Supervisor.policy([], 8, Supervisor.restarts(0, Duration.seconds(30))))
+        let started = loop w = 0 {
+          case w == 8 {
+            True -> break w
+            False -> {
+              let to = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+              let _ = Process.send(to, Message.Go(replies.sender))
+              w + 1
+            }
+          }
+        }
+        let heard = loop count = 0 {
+          case count == started {
+            True -> break count
+            False -> {
+              let next = Channel.receive(replies.receiver)
+              case next {
+                Receive.Received(one) -> count + one
+                Receive.Drained -> break -100
+              }
+            }
+          }
+        }
+        Supervisor.stop(root)
+        (round + 1, answered + heard)
+      }
+    }
+  }
+}
+"#;
+
 /// Four processes on carriers of their own each open a loopback listener,
 /// connect to it, echo a line and close both ends, 25 times.
 const HANDLE_CHURN: &str = r#"
@@ -462,18 +581,31 @@ fn build(scratch: &Path, name: &str, program: &str) -> PathBuf {
 }
 
 /// Runs `executable` on `carriers` under the real clock, returning the
-/// process and its outcome file.
+/// process and its outcome file. A run still going after two minutes is
+/// killed and fails the test as a hang.
 fn run(executable: &Path, scratch: &Path, carriers: u32) -> (Output, String) {
     let outcome = scratch.join("outcome.jsonl");
     let _ = std::fs::remove_file(&outcome);
-    let process = Command::new(executable)
+    let mut child = Command::new(executable)
         .arg("--chimi-runner")
         .arg("--clock=real")
         .arg(format!("--carriers={carriers}"))
         .arg(format!("--outcome-file={}", outcome.display()))
         .arg("--")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("run native program");
+    let started = Instant::now();
+    while child.try_wait().expect("poll the program").is_none() {
+        if started.elapsed() > Duration::from_secs(120) {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("reap the program");
+            panic!("{} carriers: the program hung: {output:?}", carriers);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let process = child.wait_with_output().expect("collect the program");
     (process, std::fs::read_to_string(&outcome).unwrap_or_default())
 }
 
@@ -513,7 +645,7 @@ fn tokens_pass_around_a_ring_of_processes_on_every_carrier() {
 
 #[test]
 fn a_select_racing_plain_receives_on_one_queue_loses_and_doubles_nothing() {
-    stress("select", SELECT_RACE, 4000, 20);
+    stress("select", SELECT_RACE, 6000, 20);
 }
 
 #[test]
@@ -524,6 +656,11 @@ fn a_restart_storm_with_shutdown_deadlines_answers_every_round() {
 #[test]
 fn stops_that_force_processes_parked_in_their_cleanup_end_every_round() {
     stress("cleanup", FORCED_CLEANUP, 120, 10);
+}
+
+#[test]
+fn stops_with_zero_and_short_deadlines_force_bodies_with_live_tasks() {
+    stress("tasks", FORCED_WITH_TASKS, 200, 10);
 }
 
 #[test]
