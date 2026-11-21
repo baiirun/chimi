@@ -6914,10 +6914,11 @@ static ChimiBindingResult *binding_result(ChimiControl *control) {
    state needs no lock of its own when tasks on several carriers share the
    handle. A call takes every handle it holds when it starts, waiting on
    binding_handle_free while another call runs on any of them, and gives
-   them back while it waits on a descriptor or a child (binding_run), so
-   calls on one handle interleave only at those waits, as they do on one
-   carrier. A call that would wait blocks its carrier's thread, not just its
-   task: binding code between waits is meant to be short. */
+   them back while it waits on a descriptor or a child or makes any other
+   scheduler request (binding_run, binding_request), so calls on one handle
+   interleave only where a task can park, as they do on one carrier. A
+   call that would wait for a handle blocks its carrier's thread, not just
+   its task: binding code between parks is meant to be short. */
 typedef struct {
   const ChimiBindingType *type;
   void *state;
@@ -7055,13 +7056,14 @@ static void release_binding_handles(void) {
   }
 }
 
-/* True when a call other than `call` runs on a handle `call` holds. The
+/* True when some call runs on a handle `call` holds. `call` itself never
+   does here: it takes its handles only when it runs on none of them. The
    caller holds binding_handle_lock. */
 static bool binding_run_blocked(const ChimiBindingCall *call) {
   for (uint32_t index = 0; index < call->argument_count; ++index) {
     if (!call->held[index]) continue;
     const BindingHandleSlot *entry = &binding_handles[call->arguments[index]->as.handle.slot];
-    if (entry->runner != NULL && entry->runner != call) return true;
+    if (entry->runner != NULL) return true;
   }
   return false;
 }
@@ -7073,18 +7075,13 @@ static bool binding_run_blocked(const ChimiBindingCall *call) {
 static void binding_run_locked(const ChimiBindingCall *call, bool run) {
   if (run)
     while (binding_run_blocked(call)) pthread_cond_wait(&binding_handle_free, &binding_handle_lock);
-  bool stopped = false;
+  bool any = false;
   for (uint32_t index = 0; index < call->argument_count; ++index) {
     if (!call->held[index]) continue;
-    BindingHandleSlot *entry = &binding_handles[call->arguments[index]->as.handle.slot];
-    if (run) {
-      entry->runner = call;
-    } else if (entry->runner == call) {
-      entry->runner = NULL;
-      stopped = true;
-    }
+    binding_handles[call->arguments[index]->as.handle.slot].runner = run ? call : NULL;
+    any = true;
   }
-  if (stopped) pthread_cond_broadcast(&binding_handle_free);
+  if (any && !run) pthread_cond_broadcast(&binding_handle_free);
 }
 
 /* Lets the call's handles go while it waits (`run` false), or takes them
@@ -7095,15 +7092,15 @@ static void binding_run(const ChimiBindingCall *call, bool run) {
   pthread_mutex_unlock(&binding_handle_lock);
 }
 
-/* A scheduler request from inside `call` that answers at once. Under a
-   terminal cancel it parks the fiber for good instead (a forced process
-   body is abandoned at its next park), so the call lets its handles go
-   first, or no other call could run on them again. */
+/* A scheduler request from inside `call`, made with its handles let go.
+   Even a request that answers at once parks the fiber, and the scheduler
+   abandons a forced process body at any park, which would leave a handle
+   taken for good; and on one carrier another task may run first, whose
+   call on the handle would then wait on the thread this one needs. */
 static ChimiFiberCommand binding_request(const ChimiBindingCall *call, void *request) {
-  bool terminal = chimi_fiber_cancel_is_terminal();
-  if (terminal) binding_run(call, false);
+  binding_run(call, false);
   ChimiFiberCommand command = scheduler_request(request);
-  if (terminal) binding_run(call, true);
+  binding_run(call, true);
   return command;
 }
 
@@ -7128,6 +7125,9 @@ static void binding_hold(ChimiBindingCall *call, bool hold) {
     pthread_mutex_unlock(&binding_handle_lock);
     return;
   }
+  /* Every let-go is taken back before the binding code goes on. */
+  for (uint32_t index = 0; index < count; ++index)
+    if (held[index] && binding_handles[arguments[index]->as.handle.slot].runner != call) abort();
   binding_run_locked(call, false);
   for (uint32_t index = 0; index < count; ++index) {
     if (!held[index]) continue;

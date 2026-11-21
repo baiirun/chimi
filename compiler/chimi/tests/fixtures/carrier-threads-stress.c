@@ -367,7 +367,8 @@ static uint64_t pair_handles[2];
 enum { PAIR_ROUNDS = 3000 };
 
 /* Round `round`'s second argument: the other handle, except that every
-   fifth round names its first handle twice, which a call holds once. */
+   fifth round names its first handle twice, which must not make the call
+   wait for itself. */
 static size_t pair_second(uint32_t round, size_t first) { return round % 5 == 1 ? first : 1 - first; }
 
 /* A pair every third round, when its two handles differ, and a use else. */
