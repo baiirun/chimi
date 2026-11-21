@@ -7,7 +7,9 @@
      process's;
    - take span ids, emit runtime and scheduler telemetry events, count the operation profile, draw
      from the `random` stream and record into one shared test Recorder;
-   - read one shared file handle, which one of them closes half way.
+   - read one shared file handle, which one of them closes half way;
+   - open, use and close C binding handles in one shared table, take lines
+     from standard input, and write console lines.
 
    The checks: every counter sums back to where it started, span ids and
    telemetry sequence numbers are unique and each event is written whole,
@@ -49,8 +51,14 @@ const ChimiPattern CHIMI_PATTERNS[] = {{0}};
 ChimiNodeFn CHIMI_NODE_FUNCTIONS[] = {NULL};
 const ChimiConstantValue CHIMI_CONSTANT_VALUES[] = {{0}};
 const uint32_t CHIMI_CONSTANT_VALUE_COUNT = 0;
-const ChimiBinding CHIMI_BINDINGS[] = {{0}};
-const uint32_t CHIMI_BINDING_COUNT = 0;
+/* The fixture's own C bindings, defined below: open, use and close a handle. */
+static ChimiBindingResult *binding_open(ChimiBindingCall *call);
+static ChimiBindingResult *binding_use(ChimiBindingCall *call);
+static ChimiBindingResult *binding_close(ChimiBindingCall *call);
+const ChimiBinding CHIMI_BINDINGS[] = {
+  {"open", binding_open}, {"use", binding_use}, {"close", binding_close}};
+const uint32_t CHIMI_BINDING_COUNT = 3;
+enum { BINDING_OPEN, BINDING_USE, BINDING_CLOSE };
 
 #define CHECK(condition, ...)                                                       \
   do {                                                                              \
@@ -65,6 +73,9 @@ const uint32_t CHIMI_BINDING_COUNT = 0;
 /* Threads 0 and 2 copy fragments that threads 1 and 3 take. */
 /* Thread 0 closes the shared file at round CLOSE_AT, a read round. */
 enum { THREADS = 4, ROUNDS = 2000, READ_EVERY = 32, CLOSE_AT = 1024, RING = 256 };
+/* Handles in the shared table, and lines on standard input (each 17 bytes, so
+   all of them fit in a pipe's buffer). */
+enum { HANDLES = 64, INPUT_LINES = 3000 };
 
 typedef struct {
   RuntimeFragment *slots[RING];
@@ -86,6 +97,116 @@ static _Atomic int64_t closed_reads;
 /* Per thread, then per round. */
 static uint64_t spans[THREADS * ROUNDS];
 static uint64_t draws[THREADS * ROUNDS];
+
+/* A binding handle's state. A use counts itself in `users` for its length, so
+   the release can check that no call is using the state it frees. */
+typedef struct {
+  _Atomic int alive;
+  _Atomic int users;
+} Resource;
+static _Atomic int64_t resources_opened;
+static _Atomic int64_t resources_released;
+
+static void resource_release(void *raw) {
+  Resource *resource = raw;
+  CHECK(atomic_load(&resource->alive) == 1, "a resource was released twice");
+  CHECK(atomic_load(&resource->users) == 0, "a resource was released while a call used it");
+  atomic_store(&resource->alive, 0);
+  atomic_fetch_add(&resources_released, 1);
+}
+static const ChimiBindingType resource_type = {"resource", resource_release};
+
+static ChimiBindingResult *binding_open(ChimiBindingCall *call) {
+  Resource *resource = calloc(1, sizeof(*resource));
+  CHECK(resource, "calloc");
+  atomic_store(&resource->alive, 1);
+  atomic_fetch_add(&resources_opened, 1);
+  return chimi_binding_success(call, chimi_binding_make_handle(call, &resource_type, resource));
+}
+
+static ChimiBindingResult *binding_use(ChimiBindingCall *call) {
+  Resource *resource = chimi_binding_handle(call, 0, &resource_type);
+  if (resource) {
+    atomic_fetch_add(&resource->users, 1);
+    for (int spin = 0; spin < 200; ++spin)
+      CHECK(atomic_load(&resource->alive) == 1, "a call's resource was released under it");
+    atomic_fetch_sub(&resource->users, 1);
+  }
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+static ChimiBindingResult *binding_close(ChimiBindingCall *call) {
+  chimi_binding_close_handle(call, 0, &resource_type);
+  /* The state stays valid for the rest of the call that closed it. */
+  Resource *resource = chimi_binding_handle(call, 0, &resource_type);
+  CHECK(resource == NULL, "a closed handle still gave its state");
+  return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* Handles any thread may use or close, as `slot << 32 | generation`; 0 for none. */
+static _Atomic uint64_t shared_handles[HANDLES];
+
+/* A copy of shared handle `packed` in the calling carrier's heap, counted as
+   a copy of a message would be. */
+static ChimiValue *handle_copy(uint64_t packed) {
+  ChimiValue *value = new_value(VALUE_NATIVE_HANDLE);
+  value->as.handle.slot = (uint32_t)(packed >> 32);
+  value->as.handle.generation = (uint32_t)packed;
+  value->as.handle.name = resource_type.name;
+  channel_endpoint_retain(native_handle_key(value->as.handle.slot, value->as.handle.generation));
+  return value;
+}
+
+static void handle_round(size_t index, uint32_t round) {
+  size_t at = (round * 7 + index * 13) % HANDLES;
+  if (round % 8 == index) {
+    ChimiControl *opened = invoke_binding(&runtime, BINDING_OPEN, NULL, 0, 0);
+    CHECK(opened->kind == CONTROL_SUCCESS && opened->value->kind == VALUE_NATIVE_HANDLE, "open failed");
+    atomic_store(&shared_handles[at],
+                 (uint64_t)opened->value->as.handle.slot << 32 | opened->value->as.handle.generation);
+    return;
+  }
+  uint64_t packed = atomic_load(&shared_handles[at]);
+  if (packed == 0) return;
+  ChimiValue *arguments[] = {handle_copy(packed)};
+  uint32_t binding = round % 16 == 5 ? BINDING_CLOSE : BINDING_USE;
+  CHECK(invoke_binding(&runtime, binding, arguments, 1, 0)->kind == CONTROL_SUCCESS, "binding %u failed", binding);
+}
+
+/* Lines read from standard input, by number, and console lines written. */
+static _Atomic uint32_t input_seen[INPUT_LINES];
+static _Atomic bool input_done;
+
+/* Takes one line from standard input as process_utf8_lines does: the input's
+   lock is held from its first byte to its newline. */
+static void input_round(void) {
+  if (atomic_load(&input_done)) return;
+  char line[32];
+  size_t length = 0;
+  input_lock(&standard_input);
+  int byte;
+  while ((byte = input_next(&runtime, &standard_input)) >= 0 && byte != '\n')
+    if (length < sizeof(line) - 1) line[length++] = (char)byte;
+  input_unlock(&standard_input);
+  if (byte < 0) {
+    CHECK(byte == INPUT_END && length == 0, "standard input failed or ended mid-line: %d after %zu bytes (%s)", byte, length, strerror(errno));
+    atomic_store(&input_done, true);
+    return;
+  }
+  line[length] = '\0';
+  unsigned number = 0;
+  CHECK(sscanf(line, "input-line-%05u", &number) == 1 && number < INPUT_LINES && length == 16,
+        "a torn input line: %s", line);
+  atomic_fetch_add(&input_seen[number], 1);
+}
+
+static FILE *console_file;
+
+static void console_round(size_t index, uint32_t round) {
+  char text[160];
+  int length = snprintf(text, sizeof(text), "console-%zu-%04u-%0120d", index, round, 0);
+  CHECK(console_write_line(&runtime, &console_streams[1], text, (size_t)length) == 0, "console write failed");
+}
 
 static int64_t first_field(const ChimiControl *control) {
   CHECK(control->kind == CONTROL_SUCCESS && control->value->kind == VALUE_TUPLE, "expected a tuple");
@@ -150,6 +271,9 @@ static void *carrier_thread(void *raw_index) {
     ChimiValue *arguments[] = {recorder, list};
     CHECK(invoke_test_log(CHIMI_INTRINSIC_TEST_RECORD, arguments, 2, 0)->kind == CONTROL_SUCCESS,
           "Test.record failed");
+    handle_round(index, round);
+    input_round();
+    console_round(index, round);
     if (round % READ_EVERY == 0) {
       if (index == 0 && round == CLOSE_AT) CHECK(fs_close(shared_file), "the shared file was closed early");
       int64_t code = first_field(fs_read(&runtime, shared_file));
@@ -247,6 +371,20 @@ int main(void) {
   int zero = open("/dev/zero", O_RDONLY);
   CHECK(zero >= 0, "open /dev/zero");
   shared_file = fs_insert(zero);
+  int input[2];
+  CHECK(pipe(input) == 0, "pipe");
+  for (unsigned number = 0; number < INPUT_LINES; ++number) {
+    char line[18];
+    snprintf(line, sizeof(line), "input-line-%05u\n", number);
+    CHECK(write(input[1], line, 17) == 17, "fill standard input");
+  }
+  close(input[1]);
+  CHECK(dup2(input[0], STDIN_FILENO) == STDIN_FILENO, "dup2");
+  close(input[0]);
+  console_file = tmpfile();
+  CHECK(console_file, "tmpfile");
+  console_streams[1].mode = CONSOLE_DIRECT;
+  console_streams[1].file = console_file;
   HeapTotals before = heap_totals_sum();
 
   pthread_t threads[THREADS];
@@ -308,6 +446,23 @@ int main(void) {
   CHECK(fs_take(shared_file) == -1, "the shared file is still open");
   errno = 0;
   CHECK(fcntl(zero, F_GETFD) == -1 && errno == EBADF, "the shared file's descriptor is still open");
+  CHECK(atomic_load(&resources_opened) > HANDLES && atomic_load(&resources_released) == atomic_load(&resources_opened),
+        "%" PRId64 " resources opened, %" PRId64 " released", atomic_load(&resources_opened),
+        atomic_load(&resources_released));
+  for (unsigned number = 0; number < INPUT_LINES; ++number)
+    CHECK(atomic_load(&input_seen[number]) == 1, "input line %u was read %u times", number,
+          atomic_load(&input_seen[number]));
+
+  rewind(console_file);
+  uint64_t console_lines = 0;
+  while (fgets(line, sizeof(line), console_file)) {
+    size_t index = 0;
+    unsigned round = 0;
+    CHECK(sscanf(line, "console-%zu-%04u-", &index, &round) == 2 && strlen(line) == 136,
+          "a torn console line: %s", line);
+    ++console_lines;
+  }
+  CHECK(console_lines == THREADS * ROUNDS, "%" PRIu64 " console lines", console_lines);
   puts("ok");
   return 0;
 }
