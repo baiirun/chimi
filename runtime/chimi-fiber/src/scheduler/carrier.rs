@@ -90,6 +90,16 @@ pub(super) struct Runnable {
     pub(super) task: TaskId,
     pub(super) fiber: NonNull<ChimiFiber>,
     pub(super) command: ChimiFiberCommand,
+    pub(super) kind: RunKind,
+}
+
+/// Why the carrier resumes a fiber, which decides how its return applies.
+#[derive(Clone, Copy)]
+pub(super) enum RunKind {
+    /// A ready task's next step (`Scheduler::complete_run`).
+    Step,
+    /// A job: the cancellation unwind of a task another carrier ended.
+    Unwind { forced: bool },
 }
 
 /// What an idle carrier does once `drive` found nothing runnable.
@@ -116,7 +126,7 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
     while let Some(runnable) = next {
         let event = resume_fiber(runnable.fiber, runnable.command);
         next = kernel.with(|kernel| {
-            kernel.complete_run(runnable.task, event);
+            kernel.complete(runnable, event);
             kernel.after_resume(&mut resumes);
             kernel.next_runnable(&mut resumes)
         });
