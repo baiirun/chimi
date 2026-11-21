@@ -513,9 +513,9 @@ static void *slice_thread(void *raw_index) {
 
 /* Every carrier slices one module constant at once, and a list of its own.
    Each window of the constant is a copy in the slicing carrier's heap, and
-   the constant keeps its vector, while the carrier's own list compacts: a
-   compaction would rewrite it, and allocate in the static area, under the
-   other threads, which ThreadSanitizer reports. */
+   the constant keeps its vector, while the carrier's own list compacts.
+   Compacting the constant would rewrite it, and allocate in the static area,
+   under the other threads, which ThreadSanitizer reports. */
 static void slicing_a_shared_constant_from_every_thread(void) {
   shared_constant = constant_window();
   ListNode *root = shared_constant->as.list.vector.root;
