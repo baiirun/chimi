@@ -1,12 +1,10 @@
-# Archived Linear issues: decisions and key logs
+# Deleted Linear issues: decisions and key logs
 
-The Linear workspace hit the free plan's issue limit on 2026-11-16, so the
-oldest closed CHI issues were archived on 2026-11-17 to make room. Archived
-issues are not deleted: they stay searchable in Linear (turn on "show
-archived") and can be restored. They carry the label `to-archive`, so
-`label:to-archive` finds all 59 of them (CHI-1 to CHI-65, closed issues only). This file keeps the decisions and the
-important log entries from each archived issue in the repo, so nothing depends
-on Linear.
+The Linear workspace hit the free plan's issue limit on 2026-11-16. To make
+room, the 59 oldest closed CHI issues (CHI-1 to CHI-65, closed ones only) were
+deleted from Linear on 2026-11-21; Linear offered no manual archive. This file
+is now the only record of their decisions and important log entries, so
+nothing depends on Linear.
 
 Almost all of these issues were migrated from the old prog tracker, so the
 dates in the logs are from August 2026, when the early prototypes were built.

@@ -194,7 +194,7 @@ from the philosophy and earlier decisions; any of these can be overruled.
 ## Foundations (August 2026)
 
 Decisions from the prototype phase, before this ledger started. They were
-recorded only in tracker logs until those issues were archived; the logs are
+recorded only in tracker logs until those issues were deleted; the logs are
 summarized in [linear-archive.md](process/linear-archive.md). Only decisions
 that still hold are listed here.
 
