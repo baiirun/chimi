@@ -809,6 +809,19 @@ four keep one carrier.
      Also for later: non-atomic close-on-exec off Linux gets its own small
      PR before 5e; `exit()` from a carrier, blocking binding releases under
      the lock, and `strerror` go to 5e.
+     - Close-on-exec as landed (before 5e): off Linux a socket, pipe or
+       kqueue is marked close-on-exec by a second call, so a child started
+       on another carrier between the two could inherit it. Rather than
+       guard every such site with a lock, a child std/exec starts holds
+       only its three standard streams: macOS spawns with
+       `POSIX_SPAWN_CLOEXEC_DEFAULT` and names an inherited stream with
+       `posix_spawn_file_actions_addinherit_np`; glibc (2.34 and later)
+       adds `posix_spawn_file_actions_addclosefrom_np(3)` as the last
+       action. std/exec is the only code that starts children. The rule
+       also stops a child from holding a descriptor the program itself
+       inherited. Test: std_exec.rs `a_child_holds_only_its_standard_streams`
+       starts the program with descriptor 9 open and checks its children,
+       inherited and captured, do not hold it.
      - 5d-1 as landed: `list_shared_across_threads` is true for a list in
        the static area when there is more than one carrier, outside the
        simulation build (whose carriers share one thread). `list_slice`

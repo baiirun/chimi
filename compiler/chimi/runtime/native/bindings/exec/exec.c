@@ -362,8 +362,34 @@ static int open_pipe(int target, int ends[2]) {
   return 0;
 }
 
+/* A child holds its three standard streams and no other descriptor of the
+   program's, even one another carrier thread has just opened and not yet
+   marked close-on-exec, where that takes a second call (sockets and pipes
+   off Linux). macOS closes every descriptor the file actions do not name
+   (POSIX_SPAWN_CLOEXEC_DEFAULT), so an inherited stream is named; glibc
+   closes those above standard error as the last action. */
+#if defined(__APPLE__)
+#define SPAWN_FLAGS (POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT)
+#else
+#define SPAWN_FLAGS POSIX_SPAWN_SETSIGMASK
+#endif
+
+static int close_other_descriptors(posix_spawn_file_actions_t *actions) {
+#if defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 34)
+  return posix_spawn_file_actions_addclosefrom_np(actions, STDERR_FILENO + 1);
+#endif
+#endif
+  (void)actions;
+  return 0;
+}
+
 static bool connect_stdio(posix_spawn_file_actions_t *actions, int fd, int64_t mode, int child_end) {
+#if defined(__APPLE__)
+  if (mode == STDIO_INHERIT) return posix_spawn_file_actions_addinherit_np(actions, fd) == 0;
+#else
   if (mode == STDIO_INHERIT) return true;
+#endif
   if (mode == STDIO_NULL)
     return posix_spawn_file_actions_addopen(actions, fd, "/dev/null",
                                             fd == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0) == 0;
@@ -465,11 +491,12 @@ ChimiBindingResult *chimi_exec_spawn(ChimiBindingCall *call) {
     sigset_t empty;
     sigemptyset(&empty);
     error = posix_spawnattr_setsigmask(&attributes, &empty);
-    if (error == 0) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
+    if (error == 0) error = posix_spawnattr_setflags(&attributes, SPAWN_FLAGS);
     for (int fd = 0; fd < 3 && error == 0; ++fd)
       if (!connect_stdio(&actions, fd, modes[fd], ends[fd][1])) error = EINVAL;
     if (error == 0 && builder->directory != NULL)
       error = posix_spawn_file_actions_addchdir_np(&actions, builder->directory);
+    if (error == 0) error = close_other_descriptors(&actions);
     if (error == 0) {
       chimi_binding_prepare_children();
       error = posix_spawn(&child->pid, path, &actions, &attributes, argv, envp);
