@@ -1,0 +1,15 @@
+# carrier_runner_mutations.py: 7 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-2)
+BASELINE ok  [lib]
+KILLED       a failed spawn lets the spawned carriers run [lib]
+KILLED       a spawned carrier runs without waiting at the gate [lib]
+KILLED       a spawned carrier never runs [lib]
+KILLED       a failed spawn is ignored [lib]
+KILLED       a failed spawn still runs the root [lib]
+KILLED       the gate opens before every carrier is spawned [lib]
+KILLED       a waiting carrier takes a wake without a decision as a run [lib]
+# result: every mutant killed
+
+The first run left the last two alive: the injected failure came at once,
+so the spawned carrier usually read the gate only after it was closed. The
+injected failure now pauses first, so the carriers already spawned are
+waiting at the gate when it is decided.
