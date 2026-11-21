@@ -513,6 +513,12 @@ four keep one carrier.
        generation or an older one is answered as a withdrawn parked wait
        (pending, woken at once) without registering, so C's loop sees the
        handle closed. 4 bytes per slot ever used; no ABI change.
+       - As landed: `Reactor.withdrawn` maps a slot to its newest
+         withdrawn generation; `handle_io_wait` and `handle_child_wait`
+         consult it for a nonzero key. With one carrier it changes nothing
+         a program can see: the native runtime checks a handle open with no
+         park before its wait, so no close lands in between. Mutants in
+         `sticky_withdraw_mutations.py`, all seven killed.
      - 5b-3: jobs for `begin_terminal`'s inline resume. The inline path
        stays when the target's home is the current carrier or the target
        never ran (an unstarted fiber given Cancel returns without running,
