@@ -252,6 +252,9 @@ struct ChimiRuntime {
   bool full_trace;
   /* `--clock=virtual`: the scheduler's deterministic time source. */
   bool virtual_clock;
+  /* `--carriers=<n>`: how many carriers run the program's fibers, 1 by
+     default; carriers 1 and up run on threads the scheduler starts. */
+  uint32_t carriers;
   /* `--clock-start`: the virtual source's Timestamp at Instant zero, in Unix ns. */
   int64_t clock_start;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
@@ -1285,12 +1288,22 @@ static void guard_host_stack(void) {
                                                          : bottom + STACK_HEADROOM_BYTES;
 }
 
+/* The most carriers `--carriers` accepts: each has a wake pipe, so this
+   bounds the descriptors they take. */
+enum { CARRIERS_MAX = 256 };
+
 /* Gives the calling thread carrier `index`, which carriers_create made, and
    then the stack check the main thread has, so a carrier thread does both
    before its first fiber. */
 static void carrier_thread_enter(size_t index) {
   carrier_bind(carrier_at(index));
   if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
+}
+
+/* The scheduler's carrier-enter hook: binds each carrier thread it starts. */
+static void enter_carrier_thread(void *context, uint32_t index) {
+  (void)context;
+  carrier_thread_enter(index);
 }
 
 static bool host_stack_exhausted(void) {
@@ -12865,6 +12878,8 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .user_signals = &user_signals,
     .injected_user_signals = runtime->injected_user_signals,
     .injected_user_signal_count = runtime->injected_user_signal_count,
+    .carriers = runtime->carriers,
+    .carrier_enter = enter_carrier_thread,
   };
   channel_endpoints_reset();
   AllocationScope *entry_scope = main_heap.innermost;
@@ -12938,6 +12953,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .silent = true,
     .max_line_bytes = 1024 * 1024,
     .next_span = 2,
+    .carriers = 1,
   };
   uint32_t benchmark_repeats = 0;
   int64_t test_index = -1;
@@ -13007,6 +13023,19 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       random_seed = (uint64_t)value;
       random_seed_given = true;
     }
+    else if (strncmp(argv[index], "--carriers=", 11) == 0) {
+      /* strtoul skips spaces and takes a sign, so the count must start with
+         a digit; one that overflows reads as ULONG_MAX, which the range
+         refuses. */
+      const char *count = argv[index] + 11;
+      char *end = NULL;
+      unsigned long value = *count >= '0' && *count <= '9' ? strtoul(count, &end, 10) : 0;
+      if (value == 0 || *end != '\0' || value > CARRIERS_MAX) {
+        fprintf(stderr, "--carriers requires an integer from 1 through %d\n", CARRIERS_MAX);
+        return 64;
+      }
+      runtime.carriers = (uint32_t)value;
+    }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
     else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
@@ -13044,7 +13073,20 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       fputs("--clock-start requires --clock=virtual; the real clock reads the host's wall time\n", stderr);
       return 64;
     }
+    if (runtime.carriers > 1 && runtime.virtual_clock) {
+      fputs("--carriers above 1 requires --clock=real; virtual time moves only when every carrier is idle\n",
+            stderr);
+      return 64;
+    }
+#ifdef CHIMI_CARRIER_SIMULATION
+    if (runtime.carriers > 1) {
+      fputs("--carriers above 1 is not available in the carrier simulation build\n", stderr);
+      return 64;
+    }
+#endif
   }
+  /* Before the program runs anything, so carriers 1 and up start zeroed. */
+  carriers_create(runtime.carriers);
   if (!runtime.silent && telemetry_path == NULL) {
     fputs("boundary or full tracing requires --telemetry-file\n", stderr);
     return 64;

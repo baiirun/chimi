@@ -4477,6 +4477,42 @@ fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
     assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
 }
 
+/// A body that never ran, forced from another carrier, is cancelled there
+/// without waiting for its home, and that carrier becomes its home: its
+/// fiber's first resume happened there.
+#[test]
+fn a_body_that_never_ran_forced_from_another_carrier_moves_its_home_there() {
+    let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
+    stubborn.shutdown_within = Duration::ZERO;
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(2);
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![Member::Process(stubborn, Restart::Never)], 0))
+        .unwrap();
+    let task = *lab
+        .scheduler
+        .tasks
+        .iter()
+        .find(|(_, record)| record.process.is_some())
+        .expect("the member's body")
+        .0;
+    assert!(!lab.scheduler.tasks[&task].ran, "carrier 1 has not run the body yet");
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.stop_supervisor(root);
+    assert_eq!(
+        timed_terminations(&lab).last().map(|(_, cause)| *cause),
+        Some(TerminalCause::Forced),
+        "carrier 0 ends the body at once"
+    );
+    if let Some(record) = lab.scheduler.tasks.get(&task) {
+        assert_eq!(record.carrier, ready::Carrier(0));
+    }
+    lab.settle_carriers();
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+}
+
 /// Dropping a kernel whose processes live on several carriers tears them
 /// down on the dropping thread, as one carrier does.
 #[test]

@@ -2143,6 +2143,11 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .filter(|record| record.phase == TaskPhase::Runnable)?;
+        // A fiber that never ran may start here (`may_resume_here`): its
+        // first resume makes this carrier its home, as `Home` records.
+        if !record.ran {
+            record.carrier = self.current;
+        }
         debug_assert!(
             self.any_carrier || record.carrier == self.current,
             "a task resumed off its home carrier"
