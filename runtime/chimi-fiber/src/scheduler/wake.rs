@@ -252,7 +252,7 @@ mod tests {
         marked.write();
         assert!(readable(fd(2)));
         assert!(!readable(fd(0)) && !readable(fd(1)));
-        assert!(wakes.owns(fd(1)) && !wakes.owns(-1));
+        assert!(wakes.owns(fd(1)) && wakes.owns(wakes.pipes[1].write) && !wakes.owns(-1));
     }
 
     /// A full pipe still reads as woken, and a write to it does not block.

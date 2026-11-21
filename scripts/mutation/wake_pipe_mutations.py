@@ -2,7 +2,11 @@
 kernel lock and written once it is released.
 
 Run: scripts/mutation/mutate.py --timeout 120 scripts/mutation/wake_pipe_mutations.py
-Each mutant must turn its filtered test red.
+Each mutant must turn its filtered test red. The verifier's own mutants,
+run against the whole lib suite, found five gaps the first list missed (the
+carrier loop's sleep, the stalled root's wait, a second readable pipe in a
+sleep and in a descriptor wait, and the write end of a pipe); they are the
+last five here.
 Results: scripts/mutation/wake_pipe_results.txt.
 """
 
@@ -18,6 +22,8 @@ QUEUED = "a_task_queued_for_another_carrier_wakes_it_once_the_lock_is_released"
 JOB = "a_job_for_another_carrier_wakes_it"
 WAITS = "a_wait_registered_off_carrier_zero_wakes_carrier_zero"
 IDLE = "an_idle_wait_ends_at_its_carriers_wake"
+ROOT = "a_stalled_root_waits_on_its_carriers_wake_too"
+A = "src/scheduler/process_abi.rs"
 
 
 def m(name, file, old, new, test):
@@ -82,4 +88,19 @@ MUTATIONS = [
     m("one carrier gets pipes", W,
       "        let pipes = if carriers > 1 {",
       "        let pipes = if carriers > 0 {", "one_carrier_has_no_wake_pipe"),
+    m("the carrier loop's sleep ignores its wake pipes", "src/scheduler/carrier.rs",
+      "            clock::block_real(wait, wake_fds.as_slice());",
+      "            clock::block_real(wait, &wake_fds.as_slice()[..0]);", IDLE),
+    m("a stalled root watches only the signal pipe", A,
+      "                return RootStep::WaitForSignal(self.idle_wake_fds());",
+      "                return RootStep::WaitForSignal({\n                    let mut fds = super::wake::WakeFds::default();\n                    if let Some(fd) = self.signals.wake_fd() {\n                        fds.push(fd);\n                    }\n                    fds\n                });", ROOT),
+    m("a sleep empties only one readable pipe", G,
+      "        for poll in polls.iter().filter(|poll| poll.revents != 0) {",
+      "        for poll in polls.iter().filter(|poll| poll.revents != 0).take(1) {", IDLE),
+    m("a descriptor wait empties only its last wake pipe", R,
+      "        for poll in polls[watched.len()..].iter().filter(|poll| poll.revents != 0) {",
+      "        for poll in polls[watched.len()..].iter().rev().take(1).filter(|poll| poll.revents != 0) {", IDLE),
+    m("a wake pipe's write end is a task's to wait on", W,
+      "            .any(|pipe| pipe.read == fd || pipe.write == fd)",
+      "            .any(|pipe| pipe.read == fd)", "a_mark_wakes_only_its_carrier_once"),
 ]

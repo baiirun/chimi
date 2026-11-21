@@ -3953,40 +3953,61 @@ mod tests {
         }
     }
 
-    /// An idle carrier's sleep and descriptor wait both end at a byte on its
-    /// wake pipe, and empty it; only carrier 0 also watches the signal pipe;
-    /// a task may not wait on a wake pipe itself.
+    /// A non-blocking pipe, as the runner opens the signal pipe.
+    fn test_pipe() -> (i32, i32) {
+        let mut ends = [0; 2];
+        // SAFETY: room for the two descriptors pipe(2) writes, then fcntl on
+        // descriptors this function just opened.
+        unsafe {
+            assert_eq!(libc::pipe(ends.as_mut_ptr()), 0);
+            for fd in ends {
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+            }
+        }
+        (ends[0], ends[1])
+    }
+
+    fn write_byte(fd: i32) {
+        let byte = 1_u8;
+        // SAFETY: a one-byte buffer that outlives the call.
+        assert_eq!(unsafe { libc::write(fd, (&raw const byte).cast(), 1) }, 1);
+    }
+
+    /// A carrier's idle sleep and descriptor wait both end at a byte on its
+    /// wake pipe, and empty every pipe that woke them; only carrier 0 also
+    /// watches the signal pipe; a task may not wait on a wake pipe itself.
     #[test]
     fn an_idle_wait_ends_at_its_carriers_wake() {
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let quick = std::time::Duration::from_millis(500);
         let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
-        scheduler.enter_carrier(ready::Carrier(1));
-        let task = start_parked(&mut scheduler);
-        let fd1 = scheduler.wakes.read_fd(ready::Carrier(1)).expect("a wake pipe");
-        let (signal_read, signal_write) = {
-            let mut ends = [0; 2];
-            // SAFETY: room for the two descriptors pipe(2) writes.
-            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
-            (ends[0], ends[1])
-        };
+        let (signal_read, signal_write) = test_pipe();
         let mut signal_word = 0_i32;
         scheduler.set_signal_source(&raw mut signal_word, signal_read);
-        let later = scheduler.clock.now().saturating_add(std::time::Duration::from_secs(60));
-        scheduler.start_wake_timer(task, later).expect("timer");
-        let wake_one = |scheduler: &mut Scheduler| {
-            scheduler.wakes.mark(ready::Carrier(1));
+        let fd0 = scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe");
+        let fd1 = scheduler.wakes.read_fd(ready::Carrier(1)).expect("a wake pipe");
+        let wake = |scheduler: &mut Scheduler, carrier: u32| {
+            scheduler.wakes.mark(ready::Carrier(carrier));
             scheduler.take_wakes().write();
         };
 
-        let carrier::IdleStep::Sleep(wait, fds) = scheduler.idle_step() else {
-            panic!("a timer is pending, so the carrier sleeps");
-        };
-        wake_one(&mut scheduler);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let task = start_parked(&mut scheduler);
+        let later = scheduler.clock.now().saturating_add(std::time::Duration::from_secs(60));
+        scheduler.start_wake_timer(task, later).expect("timer");
+        assert_eq!(scheduler.idle_wake_fds().as_slice(), [fd1], "the signal pipe is carrier 0's");
+        wake(&mut scheduler, 1);
         let started = std::time::Instant::now();
-        assert_eq!(fds.as_slice(), [fd1], "the signal pipe is carrier 0's alone");
-        clock::block_real(wait, fds.as_slice());
-        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the wake ended the sleep");
+        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the sleep");
+        assert!(started.elapsed() < quick, "the sleep ended at the wake, not the timer");
         assert!(!readable(fd1), "the sleep emptied the pipe");
+
+        scheduler.enter_carrier(ready::Carrier(0));
+        assert_eq!(scheduler.idle_wake_fds().as_slice(), [signal_read, fd0]);
+        write_byte(signal_write);
+        wake(&mut scheduler, 0);
+        assert_eq!(carrier::wait_idle(&mut scheduler), None);
+        assert!(!readable(fd0) && !readable(signal_read), "a sleep empties every pipe that woke it");
 
         let mut io = SchedulerRequest {
             kind: REQUEST_IO_WAIT,
@@ -4002,42 +4023,67 @@ mod tests {
         scheduler.handle_io_wait(task, &mut io);
         assert_eq!(io.status, RESPONSE_ERROR, "a wake pipe is the scheduler's");
 
-        let (read, write) = {
-            let mut ends = [0; 2];
-            // SAFETY: room for the two descriptors pipe(2) writes.
-            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
-            (ends[0], ends[1])
-        };
-        // Carrier 0 also watches the signal pipe, ahead of its own.
-        wake_one(&mut scheduler);
-        clock::block_real(wait, &[read, fd1]);
-        assert!(!readable(fd1), "a sleep empties every pipe that woke it");
-
+        let (read, write) = test_pipe();
         io.value = i64::from(read);
-        scheduler.drive();
         scheduler.handle_io_wait(task, &mut io);
         assert_eq!(io.status, RESPONSE_PENDING);
-        let carrier::IdleStep::Io(plan) = scheduler.idle_step() else {
-            panic!("a descriptor wait is pending");
-        };
-        wake_one(&mut scheduler);
+        write_byte(signal_write);
+        wake(&mut scheduler, 0);
         let started = std::time::Instant::now();
-        assert_eq!(plan.block(), Some(vec![false]));
-        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the wake ended the wait");
-        assert!(!readable(fd1), "the wait emptied the pipe");
-        scheduler.finish_io_wait(plan, Some(vec![false]));
-        scheduler.clear_io_wait(task);
-        scheduler.enter_carrier(ready::Carrier(0));
-        assert_eq!(
-            scheduler.idle_wake_fds().as_slice(),
-            [signal_read, scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe")]
+        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the wait");
+        assert!(started.elapsed() < quick);
+        assert!(
+            !readable(fd0) && !readable(signal_read),
+            "a descriptor wait empties every pipe that woke it"
         );
+        scheduler.clear_io_wait(task);
         drop(scheduler);
         // SAFETY: the test opened these ends and closes each once.
         unsafe {
             for fd in [read, write, signal_read, signal_write] {
                 libc::close(fd);
             }
+        }
+    }
+
+    /// A root stalled until a signal also wakes for work another carrier
+    /// hands its carrier.
+    #[test]
+    fn a_stalled_root_waits_on_its_carriers_wake_too() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        let (signal_read, signal_write) = test_pipe();
+        let mut signal_word = 0_i32;
+        let mut user_word = 0_u32;
+        scheduler.set_signal_source(&raw mut signal_word, signal_read);
+        scheduler.set_user_signal_source(&raw mut user_word);
+        let root = start_parked(&mut scheduler);
+        scheduler.set_signal_root(root);
+        let mut wait = SchedulerRequest {
+            kind: REQUEST_SIGNAL_WAIT,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value: 1,
+            entry: None,
+            context: std::ptr::null_mut(),
+        };
+        scheduler.handle_signal_wait(root, &mut wait);
+        assert_eq!(wait.status, RESPONSE_PENDING);
+        let step = scheduler.root_step(root, Idle::Stalled(Vec::new()), 0, &mut Vec::new());
+        let process_abi::RootStep::WaitForSignal(fds) = step else {
+            panic!("a root waiting for a signal stalls until one");
+        };
+        let fd0 = scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe");
+        assert_eq!(fds.as_slice(), [signal_read, fd0]);
+        scheduler.withdraw_signal_wait(root);
+        drop(scheduler);
+        // SAFETY: the test opened both ends and closes each once.
+        unsafe {
+            libc::close(signal_read);
+            libc::close(signal_write);
         }
     }
 

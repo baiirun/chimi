@@ -152,17 +152,27 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
 pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
     loop {
         drive(kernel);
-        match kernel.with(Scheduler::idle_step) {
-            IdleStep::Done(idle) => return idle,
-            IdleStep::Io(plan) => {
-                let ready = plan.block();
-                kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
-            }
-            IdleStep::Sleep(wait, wake_fds) => {
-                clock::block_real(wait, wake_fds.as_slice());
-                kernel.with(Scheduler::fire_due_timers);
-            }
-            IdleStep::Continue => {}
+        if let Some(idle) = wait_idle(kernel) {
+            return idle;
         }
     }
+}
+
+/// What a carrier `drive` left with nothing runnable does: returns why it
+/// is idle, or None once it has waited (for descriptors, a timer, its wake
+/// pipe, or a virtual-time jump) and should drive again.
+pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Option<Idle> {
+    match kernel.with(Scheduler::idle_step) {
+        IdleStep::Done(idle) => return Some(idle),
+        IdleStep::Io(plan) => {
+            let ready = plan.block();
+            kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
+        }
+        IdleStep::Sleep(wait, wake_fds) => {
+            clock::block_real(wait, wake_fds.as_slice());
+            kernel.with(Scheduler::fire_due_timers);
+        }
+        IdleStep::Continue => {}
+    }
+    None
 }

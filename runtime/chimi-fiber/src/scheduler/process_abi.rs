@@ -683,7 +683,7 @@ impl Scheduler {
     }
 
     /// What the root's run does after the carrier went idle with `idle`.
-    fn root_step(
+    pub(super) fn root_step(
         &mut self,
         root: TaskId,
         idle: Idle,
@@ -744,7 +744,7 @@ impl Scheduler {
 }
 
 /// What a root's run does next once its carrier is idle.
-enum RootStep {
+pub(super) enum RootStep {
     Continue,
     /// Wait, without the kernel, until the signal pipe or the carrier's wake
     /// pipe is readable.
