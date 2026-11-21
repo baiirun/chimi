@@ -14,6 +14,10 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 
+unsafe extern "C" {
+    fn chimi_fixture_generated_many_parks(context: *mut std::ffi::c_void) -> ChimiFiberResult;
+}
+
 /// A fiber that finds itself on another thread, or holding the kernel.
 const MOVED: i64 = 77;
 const HELD: i64 = 78;
@@ -177,4 +181,30 @@ fn fibers_on_carrier_threads_under_the_real_clock() {
 fn one_carrier_on_threads_runs_on_one_thread() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     under_watchdog(Duration::from_secs(30), || run_hoppers(ClockMode::Virtual, 1, 4, 5));
+}
+
+/// A run on several threads that parks is refused once its carriers are
+/// joined: the root waits on the host, and fibers homed on a joined thread
+/// could never be resumed or destroyed.
+#[test]
+fn a_run_on_several_threads_that_parks_is_refused() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler =
+        Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real));
+    scheduler.set_carriers(2);
+    scheduler.enter_carrier(Carrier(0));
+    let root = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("root");
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_root_on_threads(&mut scheduler, root, 1)
+    }));
+    let message = refused.err().and_then(|panic| panic.downcast::<&str>().ok());
+    assert!(
+        message.is_some_and(|message| message.contains("parked")),
+        "the parked run is refused"
+    );
+    assert_eq!(scheduler.run_end, Some(carrier::RunEnd::Parked));
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.cancel(None, root).expect("cancel");
 }
