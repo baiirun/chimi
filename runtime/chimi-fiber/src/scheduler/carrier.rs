@@ -21,13 +21,16 @@ pub(crate) trait KernelAccess {
 
 impl KernelAccess for Scheduler {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        operation(self)
+        let result = operation(self);
+        self.take_wakes().write();
+        result
     }
 }
 
 /// The kernel behind its lock, as one carrier reaches it. Each access tells
 /// the kernel which carrier holds it, so ready work and wakes are routed by
-/// carrier rather than by whoever ran last. Access cannot fail: a panic
+/// carrier rather than by whoever ran last, and wakes the carriers it handed
+/// work to once the lock is released. Access cannot fail: a panic
 /// while the lock is held aborts in `chimi_scheduler_run` (an `extern "C"`
 /// function), so a poisoned lock is only taken over, never reported.
 pub(crate) struct Locked<'kernel> {
@@ -45,11 +48,16 @@ impl<'kernel> Locked<'kernel> {
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
-        #[cfg(test)]
-        let _held = HeldMark::set();
-        kernel.enter_carrier(self.carrier);
-        operation(&mut kernel)
+        let (result, wakes) = {
+            let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            let _held = HeldMark::set();
+            kernel.enter_carrier(self.carrier);
+            let result = operation(&mut kernel);
+            (result, kernel.take_wakes())
+        };
+        wakes.write();
+        result
     }
 }
 
@@ -108,8 +116,8 @@ pub(super) enum IdleStep {
     /// Wait on descriptors without the kernel, then apply what was found.
     Io(IoWaitPlan),
     /// Sleep on the real clock without the kernel (or until the signal pipe
-    /// is readable), then fire due timers.
-    Sleep(Duration, Option<i32>),
+    /// or the carrier's wake pipe is readable), then fire due timers.
+    Sleep(Duration, Vec<i32>),
     /// The virtual clock moved under the kernel; look again.
     Continue,
 }
@@ -146,8 +154,8 @@ pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
                 let ready = plan.block();
                 kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
             }
-            IdleStep::Sleep(wait, wake_fd) => {
-                clock::block_real(wait, wake_fd);
+            IdleStep::Sleep(wait, wake_fds) => {
+                clock::block_real(wait, &wake_fds);
                 kernel.with(Scheduler::fire_due_timers);
             }
             IdleStep::Continue => {}

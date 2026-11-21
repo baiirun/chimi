@@ -106,7 +106,7 @@ impl Scheduler {
         if let Some(timer) = self.signals.timer.take() {
             self.timers.cancel(timer);
         }
-        self.signals.timer = Some(self.timers.insert(at, TimerTarget::Signal(signal)));
+        self.signals.timer = Some(self.insert_timer(at, TimerTarget::Signal(signal)));
     }
 
     /// Connects the runner's `std/signal` handler: it sets bit `code - 1` of
@@ -120,7 +120,7 @@ impl Scheduler {
     /// ignored.
     pub fn inject_user_signal_at(&mut self, at: Instant, code: u32) {
         if (1..=USER_SIGNAL_CODES).contains(&code) {
-            let timer = self.timers.insert(at, TimerTarget::UserSignal(code));
+            let timer = self.insert_timer(at, TimerTarget::UserSignal(code));
             self.signals.user_timers.push(timer);
         }
     }
@@ -233,6 +233,8 @@ impl Scheduler {
             waiter.mask = mask;
             waiter.woken_for = None;
         } else {
+            // Only carrier 0 watches the signal pipe.
+            self.wake_carrier(super::ready::Carrier(0));
             self.signals.waiters.push(SignalWaiter {
                 task: owner,
                 mask,
@@ -378,31 +380,36 @@ fn signal_number(code: u32) -> u32 {
     code
 }
 
-/// Waits until `fd` is readable or `timeout` passes (forever when none),
-/// then empties it. Returns early on any signal.
+/// Waits until one of `fds` is readable or `timeout` passes (forever when
+/// none), then empties the readable ones. Returns early on any signal.
 #[cfg(all(
     unix,
     any(target_os = "macos", target_os = "linux"),
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-pub(super) fn wait_readable(fd: i32, timeout: Option<std::time::Duration>) {
+pub(super) fn wait_readable(fds: &[i32], timeout: Option<std::time::Duration>) {
     let milliseconds = timeout.map_or(-1, |timeout| {
         // Round up so a wait never ends before its deadline.
         i32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
     });
-    let mut poll = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: one valid pollfd for the duration of the call.
-    let ready = unsafe { libc::poll(&mut poll, 1, milliseconds) };
+    let mut polls: Vec<libc::pollfd> = fds
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    // SAFETY: `polls` is a valid, exclusively borrowed array for the call.
+    let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, milliseconds) };
     if ready > 0 {
-        drain(fd);
+        for poll in polls.iter().filter(|poll| poll.revents != 0) {
+            drain(poll.fd);
+        }
     }
 }
 
-/// Empties the wake pipe, so the next wait blocks until a new signal.
+/// Empties a wake pipe, so the next wait blocks until a new byte.
 #[cfg(all(
     unix,
     any(target_os = "macos", target_os = "linux"),
@@ -419,7 +426,7 @@ pub(super) fn drain(fd: i32) {
     any(target_os = "macos", target_os = "linux"),
     any(target_arch = "aarch64", target_arch = "x86_64")
 )))]
-pub(super) fn wait_readable(_fd: i32, timeout: Option<std::time::Duration>) {
+pub(super) fn wait_readable(_fds: &[i32], timeout: Option<std::time::Duration>) {
     if let Some(timeout) = timeout {
         std::thread::sleep(timeout);
     }

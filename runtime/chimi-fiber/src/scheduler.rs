@@ -22,6 +22,7 @@ mod select;
 #[cfg(test)]
 mod select_tests;
 mod signal;
+mod wake;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
@@ -791,6 +792,9 @@ pub struct Scheduler {
     /// Set while the scheduler is torn down on one thread: every fiber is
     /// then resumed where the teardown runs, whatever its home carrier.
     any_carrier: bool,
+    /// The carriers' wake pipes, and which to wake once the lock is
+    /// released.
+    wakes: wake::Wakes,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -910,6 +914,7 @@ impl Scheduler {
             jobs: jobs::Jobs::new(1),
             current: ready::Carrier::default(),
             any_carrier: false,
+            wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -978,7 +983,7 @@ impl Scheduler {
         deadline: Instant,
     ) -> Result<TimerId, SchedulerError> {
         self.require_live_task(task)?;
-        let id = self.timers.insert(deadline, TimerTarget::Wake(task));
+        let id = self.insert_timer(deadline, TimerTarget::Wake(task));
         if let Some(previous) = self
             .tasks
             .get_mut(&task)
@@ -1034,13 +1039,14 @@ impl Scheduler {
         let Some(deadline) = self.timers.earliest() else {
             return carrier::IdleStep::Done(self.idle_outcome());
         };
+        // Past this, the clock is virtual: `wait_until` jumps, never blocks.
         if self.clock.mode() == ClockMode::Real {
             return carrier::IdleStep::Sleep(
                 clock::real_wait(self.clock.now(), deadline),
-                self.signals.wake_fd(),
+                self.idle_wake_fds(),
             );
         }
-        if self.clock.wait_until(deadline, self.signals.wake_fd()) {
+        if self.clock.wait_until(deadline, &[]) {
             self.emit_clock(ClockEvent {
                 sequence: 0,
                 kind: ClockEventKind::Advanced,
@@ -1222,6 +1228,44 @@ impl Scheduler {
         assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
         self.ready = ready::ReadyQueues::new(carriers);
         self.jobs = jobs::Jobs::new(carriers);
+        self.wakes = wake::Wakes::new(carriers).expect("a wake pipe per carrier");
+    }
+
+    /// Wakes `carrier` once the kernel lock is released, so an idle wait
+    /// there ends and finds what this carrier handed it. The current
+    /// carrier is awake already.
+    fn wake_carrier(&mut self, carrier: ready::Carrier) {
+        if carrier != self.current {
+            self.wakes.mark(carrier);
+        }
+    }
+
+    /// The marked carriers to wake once the kernel lock is released.
+    fn take_wakes(&mut self) -> wake::Marked {
+        self.wakes.take()
+    }
+
+    /// What the current carrier's idle wait watches besides its own work:
+    /// the signal pipe and its wake pipe.
+    fn idle_wake_fds(&self) -> Vec<i32> {
+        self.signals
+            .wake_fd()
+            .into_iter()
+            .chain(self.wakes.read_fd(self.current))
+            .collect()
+    }
+
+    /// Registers a timer. One earlier than every other wakes carrier 0,
+    /// whose idle wait sleeps until the earliest timer.
+    fn insert_timer(&mut self, deadline: Instant, target: TimerTarget) -> TimerId {
+        if self
+            .timers
+            .earliest()
+            .is_none_or(|earliest| deadline < earliest)
+        {
+            self.wake_carrier(ready::Carrier(0));
+        }
+        self.timers.insert(deadline, target)
     }
 
     /// Housekeeping `drive` does before its first resume and after each one.
@@ -1319,6 +1363,7 @@ impl Scheduler {
         } else {
             self.ready.push_back(carrier, task);
         }
+        self.wake_carrier(carrier);
     }
 
     pub fn wake(&mut self, task: TaskId) -> Result<(), SchedulerError> {
@@ -2509,6 +2554,7 @@ impl Scheduler {
             let forced = self.forcing > 0;
             let carrier = self.tasks[&task].carrier;
             self.jobs.push_back(carrier, jobs::Job::Unwind { task, forced });
+            self.wake_carrier(carrier);
             return;
         }
         let cleanup = self
@@ -3749,6 +3795,225 @@ mod tests {
         carrier::drive(&mut one);
         assert_eq!(phase(&kernel), TaskPhase::Parked);
         assert_eq!(kernel.lock().expect("kernel").tasks[&task].carrier, ready::Carrier(1));
+    }
+
+    /// True when `fd` has a byte to read, without consuming it.
+    fn readable(fd: i32) -> bool {
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for the duration of the call.
+        unsafe { libc::poll(&mut poll, 1, 0) > 0 }
+    }
+
+    fn wake_fd(kernel: &std::sync::Mutex<Scheduler>, carrier: u32) -> i32 {
+        let kernel = kernel.lock().expect("kernel");
+        kernel.wakes.read_fd(ready::Carrier(carrier)).expect("a wake pipe")
+    }
+
+    fn two_carriers() -> std::sync::Mutex<Scheduler> {
+        std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
+    }
+
+    /// A task woken from carrier 0 for its home on carrier 1 wakes carrier
+    /// 1 once carrier 0 releases the lock, not before; work a carrier
+    /// queues for itself wakes no one.
+    #[test]
+    fn a_task_queued_for_another_carrier_wakes_it_once_the_lock_is_released() {
+        use carrier::{KernelAccess, Locked};
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let kernel = two_carriers();
+        let (mut zero, mut one) = (
+            Locked::new(&kernel, ready::Carrier(0)),
+            Locked::new(&kernel, ready::Carrier(1)),
+        );
+        let (fd0, fd1) = (wake_fd(&kernel, 0), wake_fd(&kernel, 1));
+        let task = one
+            .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
+            .expect("task");
+        carrier::drive(&mut one);
+        assert!(!readable(fd0) && !readable(fd1), "carrier 1 queued for itself");
+
+        zero.with(|kernel| {
+            kernel.wake(task).expect("wake");
+            assert!(!readable(fd1), "the byte waits for the unlock");
+        });
+        assert!(readable(fd1), "carrier 1 was woken");
+        assert!(!readable(fd0), "the waker is awake already");
+    }
+
+    /// An unwind decided on carrier 0 for a fiber homed on carrier 1 is a
+    /// job there, and wakes carrier 1.
+    #[test]
+    fn a_job_for_another_carrier_wakes_it() {
+        use carrier::{KernelAccess, Locked};
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let kernel = two_carriers();
+        let (mut zero, mut one) = (
+            Locked::new(&kernel, ready::Carrier(0)),
+            Locked::new(&kernel, ready::Carrier(1)),
+        );
+        let task = one
+            .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
+            .expect("task");
+        carrier::drive(&mut one);
+        zero.with(|kernel| kernel.cancel(None, task)).expect("cancel");
+        assert!(!kernel.lock().expect("kernel").jobs.is_empty(), "the unwind is a job");
+        assert!(readable(wake_fd(&kernel, 1)));
+    }
+
+    /// Carrier 0 alone waits on descriptors, children, signals and the
+    /// earliest timer, so each registered from another carrier wakes it; a
+    /// timer later than the earliest, or one carrier 0 sets itself, does
+    /// not.
+    #[test]
+    fn a_wait_registered_off_carrier_zero_wakes_carrier_zero() {
+        use carrier::{KernelAccess, Locked};
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let kernel = two_carriers();
+        let (mut zero, mut one) = (
+            Locked::new(&kernel, ready::Carrier(0)),
+            Locked::new(&kernel, ready::Carrier(1)),
+        );
+        let fd0 = wake_fd(&kernel, 0);
+        let woke_zero = || {
+            let woken = readable(fd0);
+            signal::drain(fd0);
+            woken
+        };
+        let task = one
+            .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
+            .expect("task");
+        carrier::drive(&mut one);
+        let at = |seconds: i64| Instant::from_nanos(seconds * 1_000_000_000);
+
+        let _ = zero.with(|kernel| kernel.start_wake_timer(task, at(60)));
+        assert!(!woke_zero(), "carrier 0 set its own timer");
+        let _ = one.with(|kernel| kernel.start_wake_timer(task, at(90)));
+        assert!(!woke_zero(), "not the earliest");
+        let _ = one.with(|kernel| kernel.start_wake_timer(task, at(30)));
+        assert!(woke_zero(), "a new earliest timer");
+
+        let (read, write) = {
+            let mut ends = [0; 2];
+            // SAFETY: room for the two descriptors pipe(2) writes.
+            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+            (ends[0], ends[1])
+        };
+        let mut io = SchedulerRequest {
+            kind: REQUEST_IO_WAIT,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: u64::from(IO_READABLE),
+            value: i64::from(read),
+            entry: None,
+            context: std::ptr::null_mut(),
+        };
+        one.with(|kernel| kernel.handle_io_wait(task, &mut io));
+        assert_eq!(io.status, RESPONSE_PENDING);
+        assert!(woke_zero(), "a descriptor wait");
+        one.with(|kernel| kernel.clear_io_wait(task));
+
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("spawn sh");
+        let mut wait = SchedulerRequest {
+            kind: REQUEST_CHILD_WAIT,
+            value: i64::from(child.id()),
+            token: 0,
+            ..io
+        };
+        one.with(|kernel| kernel.handle_child_wait(task, &mut wait));
+        assert_eq!(wait.status, RESPONSE_PENDING);
+        assert!(woke_zero(), "a child wait");
+        child.kill().expect("kill");
+        child.wait().expect("reap");
+        one.with(|kernel| kernel.clear_child_wait(task));
+
+        let mut signal = SchedulerRequest {
+            kind: REQUEST_SIGNAL_WAIT,
+            value: 1,
+            ..io
+        };
+        one.with(|kernel| kernel.handle_signal_wait(task, &mut signal));
+        assert_eq!(signal.status, RESPONSE_PENDING);
+        assert!(woke_zero(), "a signal wait");
+        // SAFETY: the test opened both ends and closes each once.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
+    }
+
+    /// An idle carrier's sleep and descriptor wait both end at a byte on its
+    /// wake pipe, and empty it; a task may not wait on a wake pipe itself.
+    #[test]
+    fn an_idle_wait_ends_at_its_carriers_wake() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let task = start_parked(&mut scheduler);
+        let fd1 = scheduler.wakes.read_fd(ready::Carrier(1)).expect("a wake pipe");
+        let later = scheduler.clock.now().saturating_add(std::time::Duration::from_secs(60));
+        scheduler.start_wake_timer(task, later).expect("timer");
+        let wake_one = |scheduler: &mut Scheduler| {
+            scheduler.wakes.mark(ready::Carrier(1));
+            scheduler.take_wakes().write();
+        };
+
+        let carrier::IdleStep::Sleep(wait, fds) = scheduler.idle_step() else {
+            panic!("a timer is pending, so the carrier sleeps");
+        };
+        wake_one(&mut scheduler);
+        let started = std::time::Instant::now();
+        clock::block_real(wait, &fds);
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the wake ended the sleep");
+        assert!(!readable(fd1), "the sleep emptied the pipe");
+
+        let mut io = SchedulerRequest {
+            kind: REQUEST_IO_WAIT,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: u64::from(IO_READABLE),
+            value: i64::from(fd1),
+            entry: None,
+            context: std::ptr::null_mut(),
+        };
+        scheduler.handle_io_wait(task, &mut io);
+        assert_eq!(io.status, RESPONSE_ERROR, "a wake pipe is the scheduler's");
+
+        let (read, write) = {
+            let mut ends = [0; 2];
+            // SAFETY: room for the two descriptors pipe(2) writes.
+            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+            (ends[0], ends[1])
+        };
+        io.value = i64::from(read);
+        scheduler.drive();
+        scheduler.handle_io_wait(task, &mut io);
+        assert_eq!(io.status, RESPONSE_PENDING);
+        let carrier::IdleStep::Io(plan) = scheduler.idle_step() else {
+            panic!("a descriptor wait is pending");
+        };
+        wake_one(&mut scheduler);
+        let started = std::time::Instant::now();
+        assert_eq!(plan.block(), Some(vec![false]));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the wake ended the wait");
+        assert!(!readable(fd1), "the wait emptied the pipe");
+        scheduler.finish_io_wait(plan, Some(vec![false]));
+        scheduler.clear_io_wait(task);
+        // SAFETY: the test opened both ends and closes each once.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
     }
 
     #[test]

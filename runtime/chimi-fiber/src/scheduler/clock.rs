@@ -88,12 +88,12 @@ impl Clock {
     /// Waits until `deadline`: virtual time jumps there (never backwards) and
     /// real time sleeps the thread for at most `MAX_REAL_WAIT`, so callers
     /// loop until the deadline is due. Returns true when virtual time moved.
-    /// Under the real clock a signal written to `wake_fd` ends the wait
-    /// early.
-    pub(super) fn wait_until(&mut self, deadline: Instant, wake_fd: Option<i32>) -> bool {
+    /// Under the real clock a byte written to one of `wake_fds` ends the
+    /// wait early.
+    pub(super) fn wait_until(&mut self, deadline: Instant, wake_fds: &[i32]) -> bool {
         match self {
             Self::Real { .. } => {
-                block_real(real_wait(self.now(), deadline), wake_fd);
+                block_real(real_wait(self.now(), deadline), wake_fds);
                 false
             }
             Self::Virtual { now } => {
@@ -108,13 +108,15 @@ impl Clock {
     }
 }
 
-/// Blocks for `wait` of real time, or until `wake_fd` is readable. Needs no
-/// scheduler state, so an idle carrier calls it without the kernel lock.
-pub(super) fn block_real(wait: Duration, wake_fd: Option<i32>) {
+/// Blocks for `wait` of real time, or until one of `wake_fds` is readable.
+/// Needs no scheduler state, so an idle carrier calls it without the kernel
+/// lock.
+pub(super) fn block_real(wait: Duration, wake_fds: &[i32]) {
     if !wait.is_zero() {
-        match wake_fd {
-            Some(fd) => super::signal::wait_readable(fd, Some(wait)),
-            None => std::thread::sleep(wait),
+        if wake_fds.is_empty() {
+            std::thread::sleep(wait);
+        } else {
+            super::signal::wait_readable(wake_fds, Some(wait));
         }
     }
 }

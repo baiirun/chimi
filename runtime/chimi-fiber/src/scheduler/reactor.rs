@@ -145,20 +145,20 @@ impl Reactor {
 
     /// The tasks whose descriptors are ready now, without blocking.
     fn ready_now(&self) -> Woken {
-        self.wait(Some(Duration::ZERO), None)
+        self.wait(Some(Duration::ZERO), &[])
     }
 
-    /// Blocks until a registered descriptor is ready, `wake_fd` is readable,
+    /// Blocks until a registered descriptor is ready, one of `wake_fds` is readable,
     /// a signal interrupts the wait, or `timeout` passes (never when none).
     /// Returns the tasks whose descriptors are ready, in registration order,
     /// or every registered task when poll(2) failed.
-    fn wait(&self, timeout: Option<Duration>, wake_fd: Option<i32>) -> Woken {
+    fn wait(&self, timeout: Option<Duration>, wake_fds: &[i32]) -> Woken {
         let watched: Vec<(i32, u32)> = self
             .waits
             .values()
             .map(|wait| (wait.fd, wait.interest))
             .collect();
-        let Some(ready) = sys::wait(&watched, timeout, wake_fd) else {
+        let Some(ready) = sys::wait(&watched, timeout, wake_fds) else {
             return Woken {
                 tasks: self.waits.values().map(|wait| wait.task).collect(),
                 failed: true,
@@ -235,19 +235,17 @@ mod sys {
     pub(super) fn wait(
         watched: &[(i32, u32)],
         timeout: Option<Duration>,
-        wake_fd: Option<i32>,
+        wake_fds: &[i32],
     ) -> Option<Vec<bool>> {
         let mut polls: Vec<libc::pollfd> = watched
             .iter()
             .map(|&(fd, interest)| pollfd(fd, interest))
-            .collect();
-        if let Some(fd) = wake_fd {
-            polls.push(libc::pollfd {
+            .chain(wake_fds.iter().map(|&fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
                 revents: 0,
-            });
-        }
+            }))
+            .collect();
         #[cfg(test)]
         if super::FAIL_NEXT_POLL.with(|fail| fail.replace(false)) {
             return None;
@@ -263,10 +261,8 @@ mod sys {
         {
             return None;
         }
-        if let Some(fd) = wake_fd
-            && polls.last().is_some_and(|poll| poll.revents != 0)
-        {
-            crate::scheduler::signal::drain(fd);
+        for poll in polls[watched.len()..].iter().filter(|poll| poll.revents != 0) {
+            crate::scheduler::signal::drain(poll.fd);
         }
         Some(
             polls[..watched.len()]
@@ -326,7 +322,7 @@ mod sys {
     pub(super) fn wait(
         watched: &[(i32, u32)],
         _timeout: Option<Duration>,
-        _wake_fd: Option<i32>,
+        _wake_fds: &[i32],
     ) -> Option<Vec<bool>> {
         Some(vec![true; watched.len()])
     }
@@ -345,6 +341,7 @@ impl Scheduler {
         let interest = u32::try_from(request.token).unwrap_or(0);
         if fd < 0
             || Some(fd) == self.signals.wake_fd()
+            || self.wakes.owns(fd)
             || interest == 0
             || interest & !INTEREST != 0
         {
@@ -369,6 +366,8 @@ impl Scheduler {
             }
             Check::Waiting => {
                 let id = self.reactor.register(owner, fd, interest, request.channel);
+                // Only carrier 0 polls descriptors.
+                self.wake_carrier(super::ready::Carrier(0));
                 self.tasks.get_mut(&owner).expect("waiting task").io_wait = Some(id);
                 request.status = RESPONSE_PENDING;
             }
@@ -464,7 +463,7 @@ impl Scheduler {
             ids,
             watched,
             timeout,
-            wake_fd: self.signals.wake_fd(),
+            wake_fds: self.idle_wake_fds(),
         }
     }
 
@@ -513,14 +512,15 @@ pub(super) struct IoWaitPlan {
     ids: Vec<IoWaitId>,
     watched: Vec<(i32, u32)>,
     timeout: Option<Duration>,
-    wake_fd: Option<i32>,
+    /// The signal pipe and the waiting carrier's wake pipe.
+    wake_fds: Vec<i32>,
 }
 
 impl IoWaitPlan {
     /// Blocks in poll(2) without the kernel. Returns which watched
     /// descriptors are ready, or None when poll(2) failed.
     pub(super) fn block(&self) -> Option<Vec<bool>> {
-        sys::wait(&self.watched, self.timeout, self.wake_fd)
+        sys::wait(&self.watched, self.timeout, &self.wake_fds)
     }
 }
 

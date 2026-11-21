@@ -769,7 +769,7 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
             RootStep::Continue => {}
             RootStep::WaitForSignal(fd) => {
                 if let Some(fd) = fd {
-                    super::signal::wait_readable(fd, None);
+                    super::signal::wait_readable(&[fd], None);
                 }
             }
             RootStep::Parked => {

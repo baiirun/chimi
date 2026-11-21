@@ -285,9 +285,7 @@ impl Scheduler {
         if deadline == Instant::NEVER {
             return id;
         }
-        let timer = self
-            .timers
-            .insert(deadline, TimerTarget::ScopeDeadline(task, id));
+        let timer = self.insert_timer(deadline, TimerTarget::ScopeDeadline(task, id));
         self.emit_timer(ClockEventKind::TimerStarted, Some(task), deadline);
         let record = self.tasks.get_mut(&task).expect("task inside the scope");
         record.scopes.last_mut().expect("pushed entry").timer = Some(timer);
