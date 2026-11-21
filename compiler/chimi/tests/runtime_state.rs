@@ -221,7 +221,8 @@ fn the_handle_table_counts_across_threads() {
 }
 
 /// Four carrier threads at once (`fixtures/carrier-threads-stress.c`): memory
-/// counters freed on another carrier sum back to zero, span ids, telemetry
+/// counters freed on another carrier sum back to zero, span ids and mark
+/// epochs never repeat (and on one carrier stay consecutive), telemetry
 /// sequence numbers, the profile, the `random` stream and a shared test
 /// Recorder stay whole, and a file closed during a read is closed only once
 /// the read gives it back.

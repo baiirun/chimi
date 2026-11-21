@@ -88,6 +88,37 @@ fn performance_gates_pass_on_an_idle_machine() {
     assert!(!report.contains("\"gates\":[]"), "{report}");
 }
 
+// Above one carrier the runner needs the real clock, and the message,
+// restart, payload and cold-start workloads pace themselves with virtual
+// sleeps, so their gates report `unsupported` without running anything.
+#[test]
+fn a_virtual_clock_gate_on_several_carriers_is_unsupported() {
+    for scenario in ["PG01", "PG03", "PG06", "PG09"] {
+        let output = lab(&["performance", "--scenario", scenario, "--carriers", "2"]);
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{report}");
+        assert_eq!(
+            statuses(&report),
+            [(scenario.to_owned(), "unsupported".to_owned())],
+            "{report}"
+        );
+        assert!(report.contains("\"gates\":[]"), "{report}");
+    }
+}
+
+// PG08 measures on several carriers. Its limit was set on one carrier, so
+// this checks that it measured rather than that it passed; it takes two
+// runs, so it is not left to the explicit performance run.
+#[test]
+fn the_parked_memory_gate_measures_on_several_carriers() {
+    let output = lab(&["performance", "--scenario", "PG08", "--carriers", "2"]);
+    let report = String::from_utf8(output.stdout).unwrap();
+    let status = statuses(&report);
+    assert_eq!(status.len(), 1, "{report}");
+    assert!(["pass", "fail"].contains(&status[0].1.as_str()), "{report}");
+    assert!(report.contains("pg08_parked_resident_bytes"), "{report}");
+}
+
 // PG05 must catch a per-process regression that its fixed costs would hide: with
 // a start that makes a process at 1,000 cost three times one at 100, the gate
 // fails (ts-cc1f03). Measures wall time, so it runs only on request:
@@ -119,6 +150,9 @@ fn a_baseline_or_injection_without_performance_is_an_error() {
     for arguments in [
         &["static", "--baseline", baseline][..],
         &["static", "--inject-pg05-regression", "3"],
+        &["static", "--carriers", "2"],
+        &["static", "--carriers", "1"],
+        &["performance", "--baseline", baseline, "--carriers", "2"],
         &[
             "performance",
             "--scenario",
@@ -161,6 +195,10 @@ fn malformed_arguments_are_usage_errors() {
         &["--scenario", "XX99"],
         &["heap", "--backend", "bytecode"],
         &["static", "core", "static"],
+        &["performance", "--carriers", "0"],
+        &["performance", "--carriers", "257"],
+        &["performance", "--carriers", "+2"],
+        &["performance", "--carriers"],
     ] {
         let output = lab(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");

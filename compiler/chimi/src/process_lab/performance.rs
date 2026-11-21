@@ -14,6 +14,10 @@
 //!   phase times from `--trace=boundaries` telemetry, whose `time_ns` is real
 //!   only under `--clock=real`. That workload never sleeps, so the clock mode
 //!   changes no behaviour.
+//! - `--carriers <n>` runs the workloads on n carriers (the runner's
+//!   `--carriers=<n>`, which needs the real clock). Only PG04, PG05, and
+//!   PG08 are measured then: the other workloads pace themselves with
+//!   virtual-clock sleeps, which would be real milliseconds.
 //! - Every measured run must exit 0 with its workload's expected outcome, so
 //!   a broken run cannot pass a gate by being fast.
 //!
@@ -35,6 +39,32 @@ use std::time::{Duration, Instant};
 const SAMPLES: usize = 7;
 /// The longest one measured run may take before it is killed.
 const RUN_LIMIT: Duration = Duration::from_secs(120);
+
+/// The carrier count every workload of this lab process runs on, set once
+/// before the first gate is measured, since evidence is computed once per
+/// process.
+static CARRIERS: OnceLock<u32> = OnceLock::new();
+
+/// Fixes the carrier count for this lab process; a second, different count
+/// is refused, because the cached evidence was measured at the first.
+pub(super) fn use_carriers(count: u32) -> Result<(), String> {
+    match *CARRIERS.get_or_init(|| count) {
+        set if set == count => Ok(()),
+        set => Err(format!(
+            "this lab process measures on {set} carriers, not {count}"
+        )),
+    }
+}
+
+fn carriers() -> u32 {
+    CARRIERS.get().copied().unwrap_or(1)
+}
+
+/// The gates measured above one carrier: their workload, `members`, never
+/// sleeps, so the real clock that several carriers need changes nothing.
+pub(super) fn runs_on_carriers(id: &str) -> bool {
+    matches!(id, "PG04" | "PG05" | "PG08")
+}
 
 /// A release time limit scaled for the profile this lab was built in.
 fn time_limit(release: f64) -> f64 {
@@ -638,11 +668,17 @@ impl Workload {
         let mut command = Command::new(&self.executable);
         command
             .arg("--chimi-runner")
-            .arg(if run.real_clock {
+            // Several carriers need the real clock; the workloads measured
+            // there never sleep, so it changes no behaviour.
+            .arg(if run.real_clock || carriers() > 1 {
                 "--clock=real"
             } else {
                 "--clock=virtual"
-            })
+            });
+        if carriers() > 1 {
+            command.arg(format!("--carriers={}", carriers()));
+        }
+        command
             .arg(match run.trace {
                 Trace::Off => "--trace=off",
                 Trace::Boundaries => "--trace=boundaries",

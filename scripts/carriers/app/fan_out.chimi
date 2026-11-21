@@ -1,0 +1,95 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/int as Int
+import std/list as List
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+
+// Parallel work: eight processes each get one job of `size` steps and
+// reply with its result. With `--carriers=4` the eight land two to a
+// carrier (membership id modulo the count), so the jobs can run at once.
+// The second argument picks the job: 0 counts in a loop (no allocation),
+// 1 builds and measures lists (allocation on every carrier). The outcome
+// is the sum of the eight results, which does not depend on the order
+// they arrive in.
+
+pub enum Message {
+  Job(size: Int, allocating: Bool, reply: Sender<Int>)
+}
+
+fn count(steps: Int) -> Int {
+  loop done = 0 {
+    case done >= steps {
+      True -> break done
+      False -> done + 1
+    }
+  }
+}
+
+fn lists(steps: Int) -> Int {
+  loop state = (0, 0) {
+    let (done, total) = state
+    case done >= steps {
+      True -> break total
+      False -> (done + 100, total + List.length(List.append([done, done, done, done], [done])) * 20)
+    }
+  }
+}
+
+fn worker(inbox: Inbox<Message>) -> Void {
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Message.Job(size, allocating, reply) -> {
+        let result = case allocating {
+          True -> lists(size)
+          False -> count(size)
+        }
+        Channel.send(reply, result)
+        handled + 1
+      }
+    }
+  }
+  Void
+}
+
+fn received(next: Receive<Int>) -> Int {
+  case next {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let size = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let allocating = case List.get(arguments, 1) {
+    Some(text) -> Int.parse(text) == 1
+    None -> False
+  }
+  let root = Supervisor.start(Supervisor.policy([], 8, Supervisor.restarts(0, Duration.seconds(30))))
+  let spec = Process.spec(worker, 1, Duration.seconds(1))
+  let replies = Channel.bounded(8)
+  let started = loop left = 8 {
+    case left {
+      0 -> break 8
+      _ -> {
+        let address = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+        let _ = Process.send(address, Message.Job(size, allocating, replies.sender))
+        left - 1
+      }
+    }
+  }
+  let total = loop state = (0, 0) {
+    let (seen, sum) = state
+    case seen == started {
+      True -> break sum
+      False -> (seen + 1, sum + received(Channel.receive(replies.receiver)))
+    }
+  }
+  Supervisor.stop(root)
+  total
+}

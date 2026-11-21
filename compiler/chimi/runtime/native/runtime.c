@@ -462,6 +462,12 @@ static AllocationArea static_area = {.role = AREA_STATIC};
    allocation that moves between heaps or carriers can never carry a stale epoch
    that a later pass reuses (parallel-scheduler.md, "Runtime state by owner"). */
 static _Atomic uint64_t next_mark_epoch = 1;
+/* Epochs a carrier takes from next_mark_epoch at once. A loop pass collects,
+   so one atomic add per pass made the counter's cache line bounce between
+   carriers on every pass: a counting loop ran 1.7 times faster on four
+   carriers instead of close to four (step 3 PR 6). One carrier alone takes
+   consecutive blocks, so it sees the same epochs as with a counter. */
+enum { MARK_EPOCH_BLOCK = 4096 };
 
 /* The operation profile (--profile-file): per Core node, how often it was evaluated
    and what it allocated itself, not counting the nodes it ran. NULL unless profiling,
@@ -583,6 +589,15 @@ typedef struct {
   bool collecting_full;
   bool collecting_foreign;
   uint64_t collecting_epoch;
+  /* This carrier's unused mark epochs, [next_epoch, end_epoch): taken from
+     next_mark_epoch a block at a time (take_mark_epoch). */
+  uint64_t next_epoch;
+  uint64_t end_epoch;
+  /* This carrier's unused span ids, [next_span, end_span), taken from the
+     runtime's counter a block at a time when several carriers run
+     (take_spans). */
+  uint64_t next_span;
+  uint64_t end_span;
   PointerStack mark_stack;
   PointerStack copy_stack;
   /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
@@ -2033,12 +2048,22 @@ static void sweep_survivors(AllocationScope *scope) {
    promotes the marked ones. A full pass also marks and sweeps the survivors.
    Returns HEAP_FOREIGN_POINTER, after collecting as usual, when a root reaches a
    value in another heap or in a fragment. */
+/* A mark epoch no pass on any carrier has used. */
+static uint64_t take_mark_epoch(void) {
+  if (carrier->next_epoch == carrier->end_epoch) {
+    uint64_t start = atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);
+    if (start > UINT64_MAX - MARK_EPOCH_BLOCK) {
+      fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
+    }
+    carrier->next_epoch = start;
+    carrier->end_epoch = start + MARK_EPOCH_BLOCK;
+  }
+  return carrier->next_epoch++;
+}
+
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  carrier->collecting_epoch = atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);
-  if (carrier->collecting_epoch == UINT64_MAX) {
-    fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
-  }
+  carrier->collecting_epoch = take_mark_epoch();
   flush_young_counts(scope);
   carrier->collecting_scope = scope;
   carrier->collecting_full = full;
@@ -2563,9 +2588,36 @@ static void profile_leave(uint32_t outer) {
   if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
 }
 
+/* Span ids a carrier takes from the runtime's counter at once when several
+   carriers run. Traced modes take a span per node, and one shared fetch-add
+   per node made a traced counting loop slower on four carriers than on one
+   (step 3 PR 6a review). */
+enum { SPAN_BLOCK = 4096 };
+
+/* `count` consecutive span ids that no other node has; returns the first.
+   One carrier takes them straight from the counter, so its ids stay dense
+   and in order, as a transcript expects; with several, ids are unique but
+   neither dense nor ordered across carriers. */
+static uint64_t take_spans(ChimiRuntime *runtime, uint64_t count) {
+#ifdef CHIMI_CARRIER_SIMULATION
+  /* The simulated carriers share one thread, so nothing contends. */
+  return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
+#else
+  if (carrier_count == 1) return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
+  if (carrier->end_span - carrier->next_span < count) {
+    uint64_t size = count > SPAN_BLOCK ? count : SPAN_BLOCK;
+    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);
+    carrier->end_span = carrier->next_span + size;
+  }
+  uint64_t first = carrier->next_span;
+  carrier->next_span += count;
+  return first;
+#endif
+}
+
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
   if (runtime->silent) return parent;
-  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+  uint64_t span = take_spans(runtime, 1);
   if (runtime->full_trace) emit_event(runtime, "operation_started", node, span, (int64_t)parent, operation, NULL);
   return span;
 }
@@ -3384,7 +3436,7 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
-  if (!runtime->silent) atomic_fetch_add_explicit(&runtime->next_span, node_count, memory_order_relaxed);
+  if (!runtime->silent) take_spans(runtime, node_count);
   return success(integer_value(raw));
 }
 
@@ -7486,7 +7538,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_CONSTRUCTOR) return construct_value(callable->symbol, arguments);
   if (callable->kind == CALL_DEPENDENCY) {
     if (!runtime->silent) {
-      uint64_t dependency_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+      uint64_t dependency_span = take_spans(runtime, 1);
       emit_dependency(runtime, call_node, dependency_span, span, callable);
     }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
@@ -8826,7 +8878,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
       arguments[argument_count++] = argument_roots[0];
     }
   }
-  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+  uint64_t span = take_spans(runtime, 1);
   if (!control)
     control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
                      new_environment(0));
@@ -13171,6 +13223,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     for (uint32_t repeat = 0; repeat < benchmark_repeats; ++repeat) {
       runtime.next_sequence = 0;
       runtime.next_span = 2;
+      for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
+        carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {

@@ -1,11 +1,11 @@
-//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]`
+//! `chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>] [--carriers <n>]`
 
 use chimi::process_lab::catalogue::{self, Stage};
 use chimi::process_lab::{Backend, Kind, Options, baseline_warnings, run};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>]";
+const USAGE: &str = "usage: chimi-process-lab <static|core|runtime|heap|observability|forcing|performance|all>... [--through <stage>] [--scenario <ID>] [--backend <native|interpreter>] [--print-actual] [--baseline <report.json>] [--inject-pg05-regression <factor>] [--carriers <n>]";
 
 fn main() -> ExitCode {
     match lab() {
@@ -53,6 +53,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut kinds: Option<Vec<Kind>> = None;
     let mut baseline = None;
     let mut options = Options::default();
+    let mut carriers_given = false;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         let mut value = |flag: &str| {
@@ -84,6 +85,17 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                         .parse::<f64>()
                         .map_err(|_| format!("`{factor}` is not a regression factor"))?,
                 );
+            }
+            "--carriers" => {
+                carriers_given = true;
+                let count = value("--carriers")?;
+                // Digits only, as the runner takes them: `parse` alone
+                // would accept a leading `+`.
+                options.carriers = Some(&count)
+                    .filter(|count| count.bytes().all(|byte| byte.is_ascii_digit()))
+                    .and_then(|count| count.parse::<u32>().ok())
+                    .filter(|count| (1..=256).contains(count))
+                    .ok_or_else(|| format!("`{count}` is not a carrier count from 1 through 256"))?;
             }
             "--baseline" => baseline = Some(PathBuf::from(value("--baseline")?)),
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),
@@ -125,6 +137,13 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
             "--inject-pg05-regression applies to PG05; run `performance` or `--scenario PG05`"
                 .into(),
         );
+    }
+    if carriers_given && !measures_gates {
+        return Err("--carriers runs performance gates; add the `performance` kind".into());
+    }
+    // The saved baselines were measured on one carrier.
+    if baseline.is_some() && options.carriers > 1 {
+        return Err("--baseline compares one-carrier gates; leave out --carriers".into());
     }
     Ok((kinds, options, baseline))
 }

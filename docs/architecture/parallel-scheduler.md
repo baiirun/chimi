@@ -105,7 +105,9 @@ function-local static, so new state gets an owner when it is added.
     move with a heap, so a per-carrier counter could repeat an epoch that a
     stale header still holds, and treat a dead allocation as marked. It is one
     process-wide atomic counter, so every pass anywhere gets a fresh epoch.
-    That is one relaxed fetch-add per collection pass.
+    A carrier takes 4,096 epochs from it at once (`take_mark_epoch`, step 3
+    PR 6a): a loop pass collects, and one fetch-add per pass bounced the
+    counter's cache line between carriers on every pass.
   - The handle-count table (`handle_table`, "Handle counts" below). Its
     release queue is carrier state (`released_handles`).
   - Tables whose ids travel inside values, each behind its own lock: open
@@ -985,6 +987,26 @@ four keep one carrier.
    `random` stream, so that change is the project owner's decision, made with
    the measurements in hand. The meaning of the memory report's peak fields
    is decided in the same pull request.
+   - 6a as landed: `chimi-process-lab performance --carriers <n>` measures
+     PG04, PG05 and PG08 on n carriers (the other gates' workloads pace
+     themselves with virtual sleeps, so they report `unsupported`), and
+     `scripts/measure_carriers.py` adds parallel work
+     (`scripts/carriers/app/fan_out.chimi`) and serial round trips
+     (`ping_pong.chimi`). Numbers and method:
+     `docs/performance/multi-carrier-baseline.md`. The first run found the
+     shared mark-epoch counter capping a counting loop at 1.7 times on four
+     carriers; taking epochs in blocks brought it to 3.7, what the host gives four unrelated processes. What the
+     measurements left: a hand-off to another carrier costs a wake-pipe
+     write and a sleeping thread's wake-up, about 10 to 20 µs on the cloud
+     host, so a message round trip across carriers takes 22 to 39 µs
+     against 3 µs on one, and PG04's stop, which ends processes on every
+     carrier, misses its one-carrier limit. A carrier that spins briefly
+     before it parks is the next change to measure (6c). The review found
+     the same shared-counter pattern in span ids under traced modes (a
+     traced counting loop ran 2.5 times slower on four carriers than on
+     one); a carrier on a thread now takes span ids 4,096 at a time
+     (`take_spans`), so they are unique but not dense across carriers.
+     Kept at one carrier by default (decisions.md, 2026-11-21).
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.

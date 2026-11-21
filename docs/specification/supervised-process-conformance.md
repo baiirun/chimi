@@ -108,6 +108,7 @@ docs/performance/supervised-process-conformance-baseline.md   written by ts-1765
 chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>]
                   [--backend <native|interpreter>] [--print-actual]
                   [--baseline <report.json>] [--inject-pg05-regression <factor>]
+                  [--carriers <n>]
 ```
 
 - Several kinds may be listed, and each runs in the order given; `all` is
@@ -126,6 +127,15 @@ chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>]
   observability, and forcing kinds reports `unsupported` and does not run
   (see [Backends](#backends)). Static and Core scenarios, C harnesses, and
   checks do not depend on the backend.
+- `--carriers` runs the performance workloads on that many carriers, the
+  runner's `--carriers=<n>` (1 through 256, digits only; the default is
+  1). Several carriers need the real clock, so only PG04, PG05, and PG08,
+  whose `members` workload never sleeps, are measured; every other gate
+  reports `unsupported` and does not run. The limits were set on one
+  carrier. `--carriers` without the `performance` kind is a usage error.
+  `scripts/measure_carriers.py` runs these gates at several counts, next to
+  parallel and serial messaging programs (parallel-scheduler.md, step 3
+  PR 6).
 - `--print-actual` prints the actual diagnostics, outcome, transcript, and
   memory reports next to the expected ones. The lab never writes expected files. Expected
   files are written by hand from the contracts and reviewed like code.
