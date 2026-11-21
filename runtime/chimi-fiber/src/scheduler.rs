@@ -1947,21 +1947,24 @@ impl Scheduler {
         entry: ChimiFiberEntry,
         context: *mut c_void,
     ) -> Result<TaskId, SchedulerError> {
-        self.create_task(parent, entry, context, None)
+        let home = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);
+        self.create_task(parent, home, entry, context, None)
     }
 
-    /// Creates a runnable task at the tail of the ready queue. An
-    /// incarnation task has no parent and emits no task events.
+    /// Creates a runnable task homed on `home`, at the tail of that
+    /// carrier's ready queue; its fiber will run on that carrier's thread.
+    /// An incarnation task has no parent and emits no task events.
     fn create_task(
         &mut self,
         parent: Option<TaskId>,
+        home: ready::Carrier,
         entry: ChimiFiberEntry,
         context: *mut c_void,
         process: Option<IncarnationId>,
     ) -> Result<TaskId, SchedulerError> {
         let id = TaskId(self.next_task);
         let started_at = self.channels.tick();
-        let carrier = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);
+        let carrier = home;
         let fiber = PinnedFiber::new(
             entry,
             context,

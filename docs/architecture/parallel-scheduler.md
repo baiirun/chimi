@@ -711,6 +711,16 @@ four keep one carrier.
        child wait that must let their handle go; and end to end with a
        forced process body whose binding asks the scheduler once more on
        its way out.
+     - 5c-2 as landed: `create_task` takes the home from its caller.
+       `start` homes a child on its parent's carrier and a root on the
+       current carrier, which is carrier 0 wherever the runner starts one.
+       `spawn` homes an incarnation on `membership_home`, its membership id
+       modulo the carrier count, so a restart stays where its predecessor
+       ran; a member's restart is decided on that same carrier, since it
+       ends there. A restarted nested supervisor rebuilds its members under
+       new memberships, so they may move. Tested with a three-carrier
+       supervisor whose crashed member's next incarnation id would land
+       elsewhere.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.
