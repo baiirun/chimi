@@ -863,6 +863,17 @@ four keep one carrier.
        run stalls. That is the program's own race, not a lost wake; the
        ABI test uses a fixture that crashes each member once instead. 5e's
        stress programs must not lean on such timing either.
+     - 5d-4 as landed: the C runner takes `--carriers=<n>`, from 1 through
+       256 (each carrier holds a wake pipe), and exits 64 for anything else,
+       for more than one with `--clock=virtual`, and for more than one in
+       the carrier simulation build. It calls `carriers_create(n)` before
+       the program runs and passes the count and `enter_carrier_thread`
+       (which calls `carrier_thread_enter`) in the scheduler config. The
+       default stays one carrier. Tests (tests/carriers.rs): four workers
+       on their own memberships answer 200 requests, each starting a task
+       and building a list, with the same value on 1, 2, 4 and 8 carriers
+       ten times each; four carriers show four threads in /proc while the
+       program runs; bad counts and the virtual clock are refused.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

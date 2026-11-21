@@ -123,6 +123,21 @@ fn run(executable: &Path, scratch: &Path, flags: &[&str]) -> (Output, String) {
     (process, std::fs::read_to_string(&outcome).unwrap_or_default())
 }
 
+/// True when the runtime is built as the carrier simulation, whose two
+/// carriers share one thread, so `--carriers` above 1 is refused.
+fn simulation() -> bool {
+    std::env::var("CHIMI_TEST_RUNTIME_DEFINES").is_ok_and(|defines| defines.contains("CHIMI_CARRIER_SIMULATION"))
+}
+
+/// Checks that the simulation build refused `process` with exit 64.
+fn refused_in_simulation(process: &Output) {
+    assert_eq!(process.status.code(), Some(64), "{process:?}");
+    assert!(
+        String::from_utf8_lossy(&process.stderr).contains("not available in the carrier simulation build"),
+        "{process:?}"
+    );
+}
+
 fn success(value: &str) -> String {
     format!("{{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":{value}}}\n")
 }
@@ -143,6 +158,10 @@ fn a_program_runs_alike_on_one_carrier_and_on_several() {
         for _ in 0..10 {
             let flag = format!("--carriers={carriers}");
             let (process, outcome) = run(&executable, &scratch, &["--clock=real", &flag]);
+            if simulation() && carriers != "1" {
+                refused_in_simulation(&process);
+                continue;
+            }
             assert!(process.status.success(), "{carriers} carriers: {process:?}");
             assert_eq!(outcome, expected, "{carriers} carriers");
         }
@@ -180,8 +199,12 @@ fn the_runner_refuses_a_bad_carrier_count() {
     assert!(process.status.success(), "{process:?}");
     assert_eq!(outcome, success("7"));
     let (process, outcome) = run(&executable, &scratch, &["--carriers=256"]);
-    assert!(process.status.success(), "{process:?}");
-    assert_eq!(outcome, success("7"));
+    if simulation() {
+        refused_in_simulation(&process);
+    } else {
+        assert!(process.status.success(), "{process:?}");
+        assert_eq!(outcome, success("7"));
+    }
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -226,6 +249,8 @@ fn four_carriers_run_on_four_threads() {
         most
     };
     assert_eq!(count_threads("1"), 1);
-    assert_eq!(count_threads("4"), 4);
+    if !simulation() {
+        assert_eq!(count_threads("4"), 4);
+    }
     std::fs::remove_dir_all(scratch).unwrap();
 }
