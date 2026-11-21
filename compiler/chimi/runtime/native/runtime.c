@@ -6943,6 +6943,10 @@ static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
 
 /* The reactor's key for the waits on a handle's descriptors: nonzero, since
    slot 0 is unused, and distinct per generation. */
+/* The scheduler's key for a handle's waits. The scheduler reads it as slot
+   and generation, and treats a withdraw as final for that generation and
+   older ones of the slot (CHIMI_REQUEST_IO_WITHDRAW), so a slot's generation
+   must only grow. */
 static uint64_t binding_resource_key(uint32_t slot, uint32_t generation) {
   return (uint64_t)slot << 32 | generation;
 }

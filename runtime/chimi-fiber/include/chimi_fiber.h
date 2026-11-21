@@ -209,7 +209,11 @@ enum {
   /* ChimiSchedulerRequest: wakes every task whose IO wait or child wait
      names the resource key in `channel` (nonzero), so each reissues its
      wait; issue it before closing that resource's descriptors. OK with the number woken
-     in `value`; ERROR for key 0. Never parks, and not a cancellation point. */
+     in `value`; ERROR for key 0. Never parks, and not a cancellation point.
+     The withdraw is sticky: a key is `slot << 32 | generation`, with a
+     slot's generation only growing, and a later IO or child wait on that
+     slot at that generation or an older one answers PENDING at once
+     without registering. */
   CHIMI_REQUEST_IO_WITHDRAW = 44,
   /* ChimiSchedulerRequest: waits for a std/signal signal. `value` holds up to
      eight signal codes (1 SIGHUP, 2 SIGUSR1, 3 SIGUSR2), one per byte from

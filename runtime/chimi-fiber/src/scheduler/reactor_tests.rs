@@ -543,3 +543,67 @@ fn a_failed_poll_fails_the_waits_in_flight_instead_of_spinning() {
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen, [-i64::from(RESPONSE_ERROR), i64::from(IO_READABLE)]);
 }
+
+/// Slot 3 at generation 5, as the native runtime builds a handle's key.
+const STICKY: u64 = 3 << 32 | 5;
+
+/// One wait on `fd` for `resource`, not reissued: its first answer.
+fn wait_status(fd: i32, resource: u64) -> i64 {
+    let mut request = blank(REQUEST_IO_WAIT);
+    request.value = i64::from(fd);
+    request.token = u64::from(IO_READABLE);
+    request.channel = resource;
+    issue(&mut request);
+    i64::from(request.status)
+}
+
+unsafe extern "C" fn write_later(context: *mut c_void) -> ChimiFiberResult {
+    sleep(20_000_000);
+    note(99);
+    write_byte(context as usize as i32);
+    succeeded(0)
+}
+
+unsafe extern "C" fn wait_after_a_withdraw(_context: *mut c_void) -> ChimiFiberResult {
+    let (read, write) = pipe();
+    let writer = start(write_later, write as usize as *mut c_void);
+    withdraw(STICKY);
+    // The key and an older one of its slot answer at once, unregistered,
+    // although the pipe stays empty until the writer runs.
+    note(wait_status(read, STICKY));
+    note(wait_status(read, STICKY - 1));
+    // A newer generation and another slot wait for the descriptor.
+    note(wait_once(read, IO_READABLE, STICKY + 1));
+    note(wait_once(read, IO_READABLE, 4 << 32 | 5));
+    result(writer);
+    close(read);
+    close(write);
+    succeeded(0)
+}
+
+/// A withdraw is sticky: a wait that names a withdrawn key, or an older
+/// generation of its slot, answers PENDING at once without registering (the
+/// host then sees its handle closed), while a newer generation or another
+/// slot waits for the descriptor as before.
+#[test]
+fn a_wait_on_a_withdrawn_key_answers_at_once() {
+    let (outcome, seen) = run(wait_after_a_withdraw, process_abi::CLOCK_REAL);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    let pending = i64::from(RESPONSE_PENDING);
+    let readable = i64::from(IO_READABLE);
+    assert_eq!(seen, [pending, pending, 99, readable, readable]);
+}
+
+/// The withdrawn table keeps the newest generation per slot.
+#[test]
+fn the_withdrawn_table_keeps_the_newest_generation_of_each_slot() {
+    let mut reactor = reactor::Reactor::default();
+    assert!(!reactor.is_withdrawn(STICKY));
+    reactor.record_withdraw(STICKY);
+    reactor.record_withdraw(STICKY - 2);
+    assert!(reactor.is_withdrawn(STICKY));
+    assert!(reactor.is_withdrawn(STICKY - 1));
+    assert!(!reactor.is_withdrawn(STICKY + 1));
+    assert!(!reactor.is_withdrawn(4 << 32 | 5));
+    assert!(!reactor.is_withdrawn(2 << 32 | 5));
+}

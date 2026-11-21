@@ -69,9 +69,15 @@ impl Scheduler {
     /// Serves a child wait: `value` is the pid. Ensures: OK when the child
     /// has exited, left unreaped for the host; PENDING with the task parked
     /// while it runs; ERROR for a pid that is not positive or not an
-    /// unreaped child of this process.
+    /// unreaped child of this process; PENDING, woken at once and not
+    /// registered, for a withdrawn key in `channel` (see reactor.rs).
     pub(super) fn handle_child_wait(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         let pid = i32::try_from(request.value).unwrap_or(-1);
+        if pid > 0 && request.channel != 0 && self.reactor.is_withdrawn(request.channel) {
+            request.status = RESPONSE_PENDING;
+            let _ = self.wake_front(owner);
+            return;
+        }
         let check = if pid > 0 {
             sys::check(pid)
         } else {
