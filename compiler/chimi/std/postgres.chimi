@@ -1,0 +1,1409 @@
+/// PostgreSQL databases for `std/sql`, over the PostgreSQL wire protocol
+/// (version 3) on std/net, with std/tls for encryption.
+/// `Postgres.driver(settings)` opens connections to a server, and std/sql
+/// pools them and runs statements on them:
+///
+/// ```text
+/// pub fn main() -> Void needs { network: Network, clock: Clock } {
+///   Sql.open(Postgres.driver(Postgres.defaults), "postgres://app:secret@db.internal/app", Sql.defaults, fn(db) {
+///     Sql.execute(db, "insert into users (name) values ($1)", [Value.Text("Ada")])
+///   })
+/// }
+/// ```
+///
+/// A target is a connection URL, as libpq takes:
+/// `postgres://user:password@host:port/database?sslmode=require`.
+/// `postgresql://` works too. The user, password and database are
+/// percent-decoded; the port defaults to 5432 and the database to the user.
+/// `sslmode` is the only parameter read, and any other one fails the
+/// connect, so a misspelt parameter is never ignored:
+///
+/// - `require` (the default) or `verify-full`: TLS, with the server's
+///   certificate checked against `settings.roots` and the host, as
+///   `Tls.client` always checks. A server without TLS fails the connect.
+/// - `disable`: plain TCP.
+///
+/// libpq's `prefer`, `allow` and `verify-ca` are refused: the first two fall
+/// back to plaintext without saying so, and the last skips the host check.
+///
+/// Authentication is SCRAM-SHA-256 (the server's default since PostgreSQL
+/// 14), a cleartext password over TLS only, or none (`trust`). MD5 is
+/// refused, as PostgreSQL deprecates it.
+///
+/// Placeholders are PostgreSQL's (`$1`, `$2`), and each call runs one
+/// statement. Parameters are sent as text, and the server reads each as its
+/// place in the statement asks: `Null`, `Bool` as `t` or `f`, `Int`,
+/// `Float` and `Decimal` as their text, `Text` as it is, and `Bytes` in
+/// `bytea`'s hex form. Columns come back by their type: `boolean` as
+/// `Bool`, `smallint`, `integer` and `bigint` as `Int`, `real` and `double
+/// precision` as `Float`, `numeric` as `Decimal`, `bytea` as `Bytes`, and
+/// every other type (`text`, `json`, `uuid`, `timestamptz` and the rest) as
+/// the server's text. A `NaN` or infinite number, which no `Float` or
+/// `Decimal` holds, comes back as its text.
+///
+/// A transaction begins with `BEGIN`, and a nested transaction is a
+/// savepoint. Tasks that share a transaction take turns on its connection:
+/// each statement holds it from the request to the end of the reply. A
+/// statement cut off part way (a timeout or a cancel) leaves the protocol
+/// state unknown, so the connection fails every later call with
+/// `SqlError.ConnectionLost` and the pool closes it.
+
+import std/bytes as Bytes
+import std/bytes.{Bytes, IntLayout}
+import std/channel.{Receive}
+import std/clock as Clock
+import std/clock.{Clock}
+import std/debug as Debug
+import std/decimal as Decimal
+import std/duration as Duration
+import std/duration.{Duration}
+import std/float as Float
+import std/int as Int
+import std/list as List
+import std/net as Net
+import std/net.{NetError, Network}
+import std/resource as Resource
+import std/result as Result
+import std/result.{Err, Ok, Result}
+import std/sql as Sql
+import std/sql.{Connection, Driver, SqlError, Value}
+import std/stream as Stream
+import std/stream.{Reader, Writer}
+import std/task as Task
+import std/task.{Timeout}
+import std/text as Text
+import std/tls as Tls
+import std/tls.{Roots, TlsError}
+import std/watch as Watch
+
+// 1. The driver.
+
+/// A driver's settings, to update with what differs: `roots` are the
+/// authorities trusted for TLS (the system's by default), and
+/// `connect_timeout` bounds opening a connection, from the TCP connect
+/// through authentication (10 s by default).
+pub const defaults: { roots: Roots, connect_timeout: Duration } = {
+  roots: Tls.defaults.roots,
+  connect_timeout: Duration.seconds(10),
+}
+
+/// A driver for PostgreSQL servers. It takes its capabilities when it is
+/// built: `network` to connect, and `clock` for `connect_timeout`.
+///
+/// Defects when: `settings.connect_timeout` is not positive.
+/// Cost: O(1).
+pub fn driver(settings: { roots: Roots, connect_timeout: Duration }) -> Driver needs {
+  network: Network,
+  clock: Clock,
+} {
+  case settings.connect_timeout > Duration.zero {
+    True -> Void
+    False -> Debug.crash("Postgres: connect_timeout must be positive")
+  }
+  let given = Given(network, clock, settings.roots, settings.connect_timeout)
+  Sql.driver(fn(target) { connect(given, target) })
+}
+
+// The capabilities and settings a driver took when it was built.
+struct Given {
+  network: Network,
+  clock: Clock,
+  roots: Roots,
+  timeout: Duration,
+}
+
+// 2. Targets.
+
+// Where to connect, and as whom.
+struct Target {
+  host: Text,
+  port: Int,
+  user: Text,
+  password: Text,
+  database: Text,
+  secure: Bool,
+}
+
+fn parse_target(text: Text) -> Target {
+  case Text.contains(text, "\u{0}") {
+    True -> bad_target("a NUL byte, which would end a startup field early")
+    False -> Void
+  }
+  let rest = case (Text.strip_prefix(text, "postgres://"), Text.strip_prefix(text, "postgresql://")) {
+    (Some(after), _) -> after
+    (_, Some(after)) -> after
+    _ -> bad_target("not a postgres:// URL")
+  }
+  let (before_query, query) = case Text.split_once(rest, "?") {
+    Some((before, after)) -> (before, after)
+    None -> (rest, "")
+  }
+  let (authority, path) = case Text.split_once(before_query, "/") {
+    Some((before, after)) -> (before, after)
+    None -> (before_query, "")
+  }
+  let (credentials, location) = case last_split(authority, "@") {
+    Some((before, after)) -> (before, after)
+    None -> ("", authority)
+  }
+  let (user, password) = case Text.split_once(credentials, ":") {
+    Some((name, secret)) -> (decoded(name), decoded(secret))
+    None -> (decoded(credentials), "")
+  }
+  case Text.is_empty(user) {
+    True -> bad_target("no user name")
+    False -> Void
+  }
+  let (host, port) = host_and_port(location)
+  let database = case Text.is_empty(path) {
+    True -> user
+    False -> decoded(path)
+  }
+  Target(host, port, user, password, database, secure_mode(query))
+}
+
+fn bad_target(reason: Text) -> Never {
+  Failure(SqlError.ConnectFailed("Postgres: the target is not usable: ${reason}"))
+}
+
+fn last_split(text: Text, separator: Text) -> Option<(Text, Text)> {
+  let parts = Text.split(text, separator)
+  case List.last(parts) {
+    Some(last) -> case List.length(parts) > 1 {
+      True -> Some((Text.join(List.take(parts, List.length(parts) - 1), separator), last))
+      False -> None
+    }
+    None -> None
+  }
+}
+
+fn host_and_port(location: Text) -> (Text, Int) {
+  let (host, port_text) = case Text.strip_prefix(location, "[") {
+    Some(bracketed) -> case Text.split_once(bracketed, "]") {
+      Some((inside, "")) -> (inside, "")
+      Some((inside, after)) -> case Text.strip_prefix(after, ":") {
+        Some(port) -> (inside, port)
+        None -> bad_target("text after an IPv6 address")
+      }
+      None -> bad_target("an IPv6 address without its closing bracket")
+    }
+    None -> case Text.split_once(location, ":") {
+      Some((name, port)) -> (name, port)
+      None -> (location, "")
+    }
+  }
+  case Text.is_empty(host) {
+    True -> bad_target("no host")
+    False -> Void
+  }
+  let port = case Text.is_empty(port_text) {
+    True -> 5432
+    False -> case Result.capture(fn() { Int.parse(port_text) }) {
+      Ok(number) -> case number >= 1 and number <= 65535 and List.all(Bytes.to_list(Bytes.from_text(port_text)), is_digit) {
+        True -> number
+        False -> bad_target("the port ${port_text}")
+      }
+      Err(_) -> bad_target("the port ${port_text}")
+    }
+  }
+  (host, port)
+}
+
+fn secure_mode(query: Text) -> Bool {
+  modes(List.filter(Text.split(query, "&"), fn(pair) { not Text.is_empty(pair) }))
+}
+
+// The parameters, of which only `sslmode` is known.
+fn modes(pairs: List<Text>) -> Bool {
+  loop state = (pairs, True) {
+    let (left, secure) = state
+    case left {
+      [] -> break secure
+      [pair, ..rest] -> case Text.split_once(pair, "=") {
+        Some(("sslmode", "require")) -> (rest, True)
+        Some(("sslmode", "verify-full")) -> (rest, True)
+        Some(("sslmode", "disable")) -> (rest, False)
+        Some(("sslmode", other)) -> bad_target("sslmode=${other} is not supported; use require or disable")
+        Some((name, _)) -> bad_target("the parameter ${name} is not supported")
+        None -> bad_target("the parameter ${pair} has no value")
+      }
+    }
+  }
+}
+
+// Percent-decodes a URL part.
+fn decoded(text: Text) -> Text {
+  let bytes = Bytes.to_list(Bytes.from_text(text))
+  let out = loop state = (bytes, []) {
+    let (left, done) = state
+    case left {
+      [] -> break done
+      [37, 48, 48, ..] -> bad_target("%00, which would end a startup field early")
+      [37, high, low, ..rest] -> case is_hex(high) and is_hex(low) {
+        True -> (rest, List.push(done, hex_value(high) * 16 + hex_value(low)))
+        False -> bad_target("a bad percent escape")
+      }
+      [37, ..] -> bad_target("a bad percent escape")
+      [byte, ..rest] -> (rest, List.push(done, byte))
+    }
+  }
+  case Result.capture(fn() { Bytes.to_text(Bytes.from(out)) }) {
+    Ok(decoded) -> decoded
+    Err(_) -> bad_target("a percent escape that is not UTF-8")
+  }
+}
+
+fn is_digit(byte: Int) -> Bool {
+  byte >= 48 and byte <= 57
+}
+
+fn is_hex(byte: Int) -> Bool {
+  is_digit(byte) or (byte >= 65 and byte <= 70) or (byte >= 97 and byte <= 102)
+}
+
+fn hex_value(byte: Int) -> Int {
+  case (is_digit(byte), byte >= 97) {
+    (True, _) -> byte - 48
+    (False, True) -> byte - 87
+    (False, False) -> byte - 55
+  }
+}
+
+// 3. Connecting.
+
+// Opens a connection to `text` and authenticates, all within the driver's
+// `connect_timeout`. Every failure is `ConnectFailed`, and the connection is
+// closed however the opening ends, a timeout included.
+fn connect(given: Given, text: Text) -> Connection {
+  let target = parse_target(text)
+  let network = given.network
+  let opened = Result.capture(fn() {
+    Task.timeout(fn() { open(given, target) }, given.timeout) using { network: network, clock: given.clock }
+  })
+  let session = case opened {
+    Ok(session) -> session
+    Err(Timeout.TimedOut(_)) -> connect_failed("no answer within ${Duration.to_text(given.timeout)}")
+    Err(SqlError.ConnectFailed(message)) -> Failure(SqlError.ConnectFailed(message))
+    Err(SqlError.Failed(message)) -> connect_failed(message)
+    Err(SqlError.ConnectionLost) -> connect_failed("the server ended the connection")
+    Err(NetError.Refused) -> connect_failed("the connection was refused")
+    Err(NetError.Unreachable) -> connect_failed("the host is unreachable")
+    Err(NetError.Reset) -> connect_failed("the connection was reset")
+    Err(NetError.Closed) -> connect_failed("the connection closed")
+    Err(NetError.AddressInUse) -> connect_failed("the address is in use")
+    Err(NetError.HostNotFound(host)) -> connect_failed("the host ${host} was not found")
+    Err(NetError.TooManyOpen) -> connect_failed("too many open connections")
+    Err(NetError.TimedOut) -> connect_failed("the connection timed out")
+    Err(NetError.Failed(message)) -> connect_failed(message)
+    Err(TlsError.Untrusted) -> connect_failed("the server's certificate is not trusted")
+    Err(TlsError.Expired) -> connect_failed("the server's certificate has expired")
+    Err(TlsError.WrongHost(host)) -> connect_failed("the server's certificate is not for ${host}")
+    Err(TlsError.Unacceptable(reason)) -> connect_failed(reason)
+    Err(TlsError.NoRoots) -> connect_failed("no trusted roots")
+    Err(TlsError.Handshake(message)) -> connect_failed("the TLS handshake failed: ${message}")
+    Err(TlsError.Invalid(message)) -> connect_failed(message)
+  }
+  Sql.connection(fn(sql, params) {
+    let answer = run(session, sql, params)
+    Sql.reply(answer.columns, answer.rows, answer.affected)
+  }, fn(depth) {
+    begin(session, depth)
+  }, fn(depth) {
+    commit(session, depth)
+  }, fn(depth) {
+    rollback(session, depth)
+  }, fn() {
+    reset(session)
+  }, fn() {
+    close(session)
+  })
+}
+
+fn connect_failed(reason: Text) -> Never {
+  Failure(SqlError.ConnectFailed("Postgres: ${reason}"))
+}
+
+// An open, authenticated connection. Tasks that share it take turns through
+// `gate`, which also holds the bytes read past the last reply, the
+// transaction status, and the transaction levels open (as std/sqlite's
+// binding counts them). A task that finds it held waits on `clock`.
+struct Session {
+  connection: Net.Connection,
+  reader: Reader<NetError>,
+  writer: Writer<NetError>,
+  gate: PostgresGate,
+  clock: Clock,
+}
+
+// The connection is kept only when the startup finishes: `kept` is set as
+// the last step, and both releases close what was opened while it is unset.
+fn open(given: Given, target: Target) -> Session needs {
+  network: Network, clock: Clock
+} {
+  let kept = Watch.starting_with(False).publisher
+  Resource.scoped(fn() { Net.connect(target.host, target.port) }, fn(raw) { close_unless(kept, raw) }, fn(raw) {
+    case target.secure {
+      True -> {
+        upgrade(raw)
+        Resource.scoped(fn() {
+          Tls.client(raw, target.host, { roots: given.roots })
+        }, fn(secured) { close_unless(kept, secured) }, fn(secured) {
+          started(secured, target, kept, given.clock)
+        })
+      }
+      False -> started(raw, target, kept, given.clock)
+    }
+  })
+}
+
+fn close_unless(kept: Watch.Publisher<Bool>, connection: Net.Connection) -> Void {
+  case current(kept, False) {
+    True -> Void
+    False -> Net.close(connection)
+  }
+}
+
+// The current value of a watch that only this module publishes to, or
+// `otherwise` once it has gone.
+fn current<T>(watch: Watch.Publisher<T>, otherwise: T) -> T {
+  case Result.capture(fn() { Watch.receive(Watch.subscribe(watch)) }) {
+    Ok(Receive.Received(value)) -> value
+    _ -> otherwise
+  }
+}
+
+fn store<T>(watch: Watch.Publisher<T>, value: T) -> Void {
+  let _ = Result.capture(fn() { Watch.publish(watch, value) })
+  Void
+}
+
+// An SSLRequest. The server answers with one byte, `S` to go on with TLS.
+// Anything after that byte would have been sent before the handshake, so
+// it is refused rather than read as if it came over TLS.
+fn upgrade(raw: Net.Connection) -> Void {
+  write(Net.writer(raw), Bytes.append(int32(8), int32(80877103)))
+  let answer = read_chunk(Net.reader(raw))
+  case answered(answer) {
+    [83] -> Void
+    [78] -> connect_failed("the server does not accept TLS; connect with sslmode=disable only to a server you reach over a trusted network")
+    [] -> connect_failed("the server ended the connection")
+    _ -> connect_failed("the server's answer to the TLS request is not PostgreSQL's")
+  }
+}
+
+fn answered(read: Option<Bytes>) -> List<Int> {
+  case read {
+    Some(bytes) -> Bytes.to_list(bytes)
+    None -> []
+  }
+}
+
+// Sends the StartupMessage, authenticates and reads up to the first
+// ReadyForQuery.
+fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Bool>, clock: Clock) -> Session {
+  let reader = Net.reader(connection)
+  let writer = Net.writer(connection)
+  write(writer, startup_message(target))
+  let ready = loop inbox = Inbox(reader, Bytes.empty(), 0) {
+    let (kind, body, next) = receive(inbox)
+    case kind {
+      82 -> authenticate(next, writer, target, body)
+      90 -> break (ready_status(body), rest_of(next))
+      69 -> connect_failed(server_error(body).message)
+      83 -> next
+      75 -> next
+      78 -> next
+      _ -> connect_failed("the server sent an unexpected message during startup")
+    }
+  }
+  let (status, leftover) = ready
+  store(kept, True)
+  Session(connection, reader, writer, native_gate(status, leftover), clock)
+}
+
+fn startup_message(target: Target) -> Bytes {
+  let pairs = [
+    ("user", target.user),
+    ("database", target.database),
+    ("client_encoding", "UTF8"),
+    ("application_name", "chimi"),
+    ("DateStyle", "ISO"),
+  ]
+  let body = Bytes.concat(List.append(List.flat_map(pairs, fn(pair) {
+    let (name, value) = pair
+    [cstring(name), cstring(value)]
+  }), [Bytes.from([0])]))
+  Bytes.concat([int32(Bytes.length(body) + 8), int32(196608), body])
+}
+
+// One authentication request. SCRAM reads the server's next messages
+// itself, so the inbox after it is past the exchange.
+fn authenticate(inbox: Inbox, writer: Writer<NetError>, target: Target, body: Bytes) -> Inbox {
+  let (code, fields) = take_int32(Fields(body, 0))
+  case code {
+    0 -> inbox
+    3 -> {
+      case target.secure {
+        True -> Void
+        False -> connect_failed("the server asks for a cleartext password, which is only sent over TLS; use scram-sha-256 or sslmode=require")
+      }
+      write(writer, message(112, cstring(password_of(target))))
+      inbox
+    }
+    5 -> connect_failed("MD5 password authentication is not supported; use scram-sha-256")
+    10 -> scram(inbox, writer, password_of(target), mechanisms(fields))
+    2 -> connect_failed("Kerberos authentication is not supported")
+    6 -> connect_failed("SCM credential authentication is not supported")
+    7 -> connect_failed("GSSAPI authentication is not supported")
+    9 -> connect_failed("SSPI authentication is not supported")
+    _ -> connect_failed("the server asks for authentication method ${code}, which is not supported")
+  }
+}
+
+fn password_of(target: Target) -> Text {
+  case Text.is_empty(target.password) {
+    True -> connect_failed("the server asks for a password, and the target has none")
+    False -> target.password
+  }
+}
+
+fn mechanisms(fields: Fields) -> List<Text> {
+  loop state = (fields, []) {
+    let (left, names) = state
+    let (name, rest) = take_cstring(left)
+    case Text.is_empty(name) {
+      True -> break names
+      False -> (rest, List.push(names, name))
+    }
+  }
+}
+
+// SCRAM-SHA-256 without channel binding (RFC 5802, RFC 7677). The server
+// proves it knows the password too, so a server that does not is refused.
+fn scram(inbox: Inbox, writer: Writer<NetError>, password: Text, offered: List<Text>) -> Inbox {
+  case List.contains(offered, "SCRAM-SHA-256") {
+    True -> Void
+    False -> connect_failed("the server offers ${Text.join(offered, ", ")}, and only SCRAM-SHA-256 is supported")
+  }
+  let nonce = base64(native_random(18))
+  let first_bare = "n=,r=${nonce}"
+  let first = Bytes.from_text("n,,${first_bare}")
+  write(writer, message(112, Bytes.concat([cstring("SCRAM-SHA-256"), int32(Bytes.length(first)), first])))
+  let (server_first, after_first) = sasl(inbox, 11)
+  let attributes = scram_attributes(server_first)
+  let server_nonce = attribute(attributes, "r")
+  case Text.starts_with(server_nonce, nonce) and Text.byte_length(server_nonce) > Text.byte_length(nonce) {
+    True -> Void
+    False -> connect_failed("the server's SCRAM nonce does not extend the client's")
+  }
+  let salt = base64_decoded(attribute(attributes, "s"))
+  let iterations = case Result.capture(fn() { Int.parse(attribute(attributes, "i")) }) {
+    Ok(count) -> count
+    Err(_) -> connect_failed("the server's SCRAM iteration count is not a number")
+  }
+  let final_bare = "c=biws,r=${server_nonce}"
+  let auth_message = "${first_bare},${server_first},${final_bare}"
+  let (proof, signature) = case native_scram(Bytes.from_text(password), salt, iterations, Bytes.from_text(auth_message)) {
+    Ok(computed) -> computed
+    Err((_, reason)) -> connect_failed(reason)
+  }
+  write(writer, message(112, Bytes.from_text("${final_bare},p=${base64(proof)}")))
+  let (server_final, after_final) = sasl(after_first, 12)
+  let final_attributes = scram_attributes(server_final)
+  case List.find(final_attributes, fn(pair) { named(pair, "e") }) {
+    Some((_, reason)) -> connect_failed("the server refused the SCRAM proof: ${reason}")
+    None -> Void
+  }
+  let verifier = base64_decoded(attribute(final_attributes, "v"))
+  case verifier == signature {
+    True -> after_final
+    False -> connect_failed("the server's SCRAM signature is wrong, so it does not know the password")
+  }
+}
+
+// The next SASL message, which must be authentication request `code`, as
+// text. An ErrorResponse instead fails with the server's message.
+fn sasl(inbox: Inbox, code: Int) -> (Text, Inbox) {
+  let (kind, body, next) = receive(inbox)
+  case kind {
+    82 -> {
+      let (found, fields) = take_int32(Fields(body, 0))
+      case found == code {
+        True -> (utf8(rest_of_fields(fields)), next)
+        False -> connect_failed("the server broke off the SCRAM exchange")
+      }
+    }
+    69 -> connect_failed(server_error(body).message)
+    _ -> connect_failed("the server broke off the SCRAM exchange")
+  }
+}
+
+fn scram_attributes(text: Text) -> List<(Text, Text)> {
+  List.map(Text.split(text, ","), fn(part) {
+    case Text.split_once(part, "=") {
+      Some(pair) -> pair
+      None -> connect_failed("the server's SCRAM message is malformed")
+    }
+  })
+}
+
+fn attribute(attributes: List<(Text, Text)>, name: Text) -> Text {
+  case List.find(attributes, fn(pair) { named(pair, name) }) {
+    Some((_, value)) -> value
+    None -> connect_failed("the server's SCRAM message has no ${name} attribute")
+  }
+}
+
+fn named(pair: (Text, Text), name: Text) -> Bool {
+  let (found, _) = pair
+  found == name
+}
+
+// 4. Taking turns on a connection.
+
+// What a call left behind: its outcome, the bytes read past ReadyForQuery,
+// and the transaction status that ReadyForQuery gave.
+struct Settled<T> {
+  outcome: Result<T, SqlError>,
+  rest: Bytes,
+  status: Int,
+}
+
+// Runs `body` while holding the connection. `body` gets the bytes read past
+// the last reply and returns once it has read through a ReadyForQuery, so
+// the connection is in step again. A body that fails instead, or is cut off
+// by a cancel or a timeout, leaves the protocol state unknown, and the
+// release marks the connection broken: this call and every later one fail
+// with `ConnectionLost`. A failed statement is an outcome, not a failure of
+// `body`, so it does not break the connection.
+//
+// The claim is the scope's acquire, so a cancel cannot fall between taking
+// the connection and the release that gives it back, and its token keeps a
+// release from touching a later holder. All of this state is in the gate
+// rather than in watches, because a watch ends with the task that made it,
+// and the task that opened a connection hands it on to others.
+fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError) -> T {
+  let outcome = loop pause = 1 {
+    let attempt = Resource.scoped(fn() { native_claim(session.gate) }, fn(claimed) {
+      case claimed {
+        Some((token, _)) -> native_abandon(session.gate, token)
+        None -> Void
+      }
+    }, fn(claimed) {
+      case claimed {
+        Some((token, leftover)) -> {
+          let settled = body(leftover)
+          case settled.outcome {
+            // A FATAL error ends the session even when ReadyForQuery follows.
+            Err(SqlError.ConnectionLost) -> Failure(SqlError.ConnectionLost)
+            _ -> native_settle(session.gate, token, settled.status, settled.rest)
+          }
+          Some(settled.outcome)
+        }
+        None -> None
+      }
+    })
+    case attempt {
+      Some(result) -> break result
+      None -> case native_status(session.gate) == -1 {
+        True -> Failure(SqlError.ConnectionLost)
+        False -> {
+          wait(session.clock, pause)
+          smaller(pause * 2, longest_pause)
+        }
+      }
+    }
+  }
+  case outcome {
+    Ok(value) -> value
+    Err(failure) -> Failure(failure)
+  }
+}
+
+// The longest wait, in milliseconds, between a waiting task's tries for a
+// connection another task holds. Tasks share a connection only inside one
+// transaction, where each call is one statement's round trip.
+const longest_pause: Int = 20
+
+fn wait(clock: Clock, milliseconds: Int) -> Void {
+  Clock.sleep(Duration.milliseconds(milliseconds)) using { clock: clock }
+}
+
+fn smaller(a: Int, b: Int) -> Int {
+  case a < b {
+    True -> a
+    False -> b
+  }
+}
+
+// 5. Statements.
+
+// What a statement gave back. `tag` is CommandComplete's, as `INSERT 0 1`.
+struct Answer {
+  columns: List<Text>,
+  rows: List<List<Value>>,
+  affected: Int,
+  tag: Text,
+}
+
+// A result column: its name and its type's OID.
+struct Column {
+  name: Text,
+  oid: Int,
+}
+
+const status_idle: Int = 73
+
+// Runs a statement for std/sql. Inside a transaction, the transaction must
+// still be open: a `COMMIT` or `ROLLBACK` run as a statement ends it, and the
+// statements after it would otherwise commit on their own.
+fn run(session: Session, sql: Text, params: List<Value>) -> Answer {
+  exclusive(session, fn(leftover) {
+    let open = native_depth(session.gate)
+    let status = native_status(session.gate)
+    case open > 0 and status == status_idle {
+      True -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      False -> exchange(session, leftover, sql, params)
+    }
+  })
+}
+
+// One statement over the extended protocol: Parse, Bind, Describe, Execute
+// and Sync, read through the ReadyForQuery that ends the reply. A statement
+// that cannot be sent (text holding a NUL byte) is refused before anything
+// is written.
+fn exchange(session: Session, leftover: Bytes, sql: Text, params: List<Value>) -> Settled<Answer> {
+  let status = native_status(session.gate)
+  case List.any(List.push(texts(params), sql), fn(text) { Text.contains(text, "\u{0}") }) {
+    True -> Settled(Err(SqlError.Rejected("22021", "Postgres: a statement or parameter holds a NUL byte, which PostgreSQL text cannot")), leftover, status)
+    False -> {
+      write(session.writer, Bytes.concat([
+        message(80, Bytes.concat([cstring(""), cstring(sql), int16(0)])),
+        message(66, Bytes.concat([cstring(""), cstring(""), int16(0), int16(List.length(params)), Bytes.concat(List.map(params, parameter)), int16(0)])),
+        message(68, Bytes.append(Bytes.from([80]), cstring(""))),
+        message(69, Bytes.append(cstring(""), int32(0))),
+        message(83, Bytes.empty()),
+      ]))
+      collect(session, Inbox(session.reader, leftover, 0))
+    }
+  }
+}
+
+fn texts(params: List<Value>) -> List<Text> {
+  List.filter_map(params, fn(param) {
+    case param {
+      Value.Text(text) -> Some(text)
+      _ -> None
+    }
+  })
+}
+
+// The reply so far: the columns, the rows, CommandComplete's tag, and the
+// first failure, after which rows are read past.
+struct Reading {
+  columns: List<Column>,
+  rows: List<List<Value>>,
+  tag: Text,
+  failure: Option<SqlError>,
+}
+
+fn collect(session: Session, start: Inbox) -> Settled<Answer> {
+  loop state = (start, Reading([], [], "", None)) {
+    let (inbox, reading) = state
+    let (kind, body, next) = receive(inbox)
+    case kind {
+      // ReadyForQuery.
+      90 -> break Settled(answer(reading), rest_of(next), ready_status(body))
+      // RowDescription.
+      84 -> (next, Reading(columns(body), reading.rows, reading.tag, reading.failure))
+      // DataRow.
+      68 -> case reading.failure {
+        Some(_) -> (next, reading)
+        None -> case Result.capture(fn() { row(reading.columns, body) }) {
+          Ok(values) -> (next, Reading(reading.columns, List.push(reading.rows, values), reading.tag, None))
+          Err(failure) -> (next, failed(reading, failure))
+        }
+      }
+      // CommandComplete.
+      67 -> (next, Reading(reading.columns, reading.rows, utf8(Bytes.slice(body, 0..larger(Bytes.length(body) - 1, 0))), reading.failure))
+      // ErrorResponse.
+      69 -> (next, failed(reading, sql_error(server_error(body))))
+      // CopyInResponse: the server waits for data, so a CopyFail ends it.
+      71 -> {
+        // The server skipped the Sync sent with the statement while it
+        // waited for data, so another one ends the reply.
+        write(session.writer, Bytes.append(message(102, cstring("COPY is not supported")), message(83, Bytes.empty())))
+        (next, failed(reading, copy_refused()))
+      }
+      // CopyOutResponse, then its CopyData and CopyDone, read past.
+      72 -> (next, failed(reading, copy_refused()))
+      100 -> (next, reading)
+      99 -> (next, reading)
+      // ParseComplete, BindComplete, NoData, EmptyQueryResponse.
+      49 -> (next, reading)
+      50 -> (next, reading)
+      110 -> (next, reading)
+      73 -> (next, reading)
+      // NoticeResponse, ParameterStatus, NotificationResponse.
+      78 -> (next, reading)
+      83 -> (next, reading)
+      65 -> (next, reading)
+      _ -> Failure(SqlError.Failed("Postgres: the server sent an unexpected message (${Int.to_text(kind)})"))
+    }
+  }
+}
+
+fn failed(reading: Reading, failure: SqlError) -> Reading {
+  case reading.failure {
+    Some(_) -> reading
+    None -> Reading(reading.columns, reading.rows, reading.tag, Some(failure))
+  }
+}
+
+fn copy_refused() -> SqlError {
+  SqlError.Rejected("0A000", "Postgres: COPY is not supported")
+}
+
+fn answer(reading: Reading) -> Result<Answer, SqlError> {
+  case reading.failure {
+    Some(failure) -> Err(failure)
+    None -> Ok(Answer(List.map(reading.columns, fn(column) { column.name }), reading.rows, affected(reading.tag, not List.is_empty(reading.columns)), reading.tag))
+  }
+}
+
+// The rows a write changed, from CommandComplete's tag: its last word for
+// a write, and 0 for a query, which changes nothing. `SELECT n` is a write
+// only without result columns, as for `CREATE TABLE ... AS`.
+fn affected(tag: Text, described: Bool) -> Int {
+  let words = Text.split(tag, " ")
+  let counted = case List.first(words) {
+    Some("INSERT") -> True
+    Some("UPDATE") -> True
+    Some("DELETE") -> True
+    Some("MERGE") -> True
+    Some("COPY") -> True
+    Some("SELECT") -> not described
+    _ -> False
+  }
+  case (counted, List.last(words)) {
+    (True, Some(last)) -> case Result.capture(fn() { Int.parse(last) }) {
+      Ok(count) -> count
+      Err(_) -> 0
+    }
+    _ -> 0
+  }
+}
+
+fn ready_status(body: Bytes) -> Int {
+  case Bytes.get(body, 0) {
+    Some(status) -> status
+    None -> Failure(SqlError.Failed("Postgres: the server sent a malformed ReadyForQuery"))
+  }
+}
+
+// 6. Values.
+
+fn parameter(value: Value) -> Bytes {
+  case value {
+    Value.Null -> int32(-1)
+    Value.Bool(True) -> sized(Bytes.from_text("t"))
+    Value.Bool(False) -> sized(Bytes.from_text("f"))
+    Value.Int(number) -> sized(Bytes.from_text(Int.to_text(number)))
+    Value.Float(number) -> sized(Bytes.from_text(Float.to_text(number)))
+    Value.Decimal(number) -> sized(Bytes.from_text(Decimal.to_text(number)))
+    Value.Text(text) -> sized(Bytes.from_text(text))
+    Value.Bytes(bytes) -> sized(Bytes.append(Bytes.from_text("\\x"), hex(bytes)))
+  }
+}
+
+fn sized(bytes: Bytes) -> Bytes {
+  Bytes.append(int32(Bytes.length(bytes)), bytes)
+}
+
+fn columns(body: Bytes) -> List<Column> {
+  let (count, start) = take_int16(Fields(body, 0))
+  let (_, found) = loop state = (start, []) {
+    let (fields, found) = state
+    case List.length(found) == count {
+      True -> break (fields, found)
+      False -> {
+        let (name, after_name) = take_cstring(fields)
+        // The table's OID and the column's number, then the type's OID,
+        // then its size, modifier and format.
+        let (oid, after_oid) = take_int32(skip(after_name, 6))
+        (skip(after_oid, 8), List.push(found, Column(name, oid)))
+      }
+    }
+  }
+  found
+}
+
+fn row(columns: List<Column>, body: Bytes) -> List<Value> {
+  let (count, start) = take_int16(Fields(body, 0))
+  case count == List.length(columns) {
+    True -> Void
+    False -> Failure(SqlError.Failed("Postgres: the server sent a row whose width does not match its columns"))
+  }
+  let (_, values) = List.reduce(columns, (start, []), fn(state, column) {
+    let (fields, values) = state
+    let (length, after_length) = take_int32(fields)
+    case length == -1 {
+      True -> (after_length, List.push(values, Value.Null))
+      False -> {
+        let (raw, after) = take_bytes(after_length, length)
+        (after, List.push(values, decode(column, raw)))
+      }
+    }
+  })
+  values
+}
+
+// A column's value by its type's OID: bool 16, int8 20, int2 21, int4 23,
+// float4 700, float8 701, numeric 1700 and bytea 17. Every other type is
+// the server's text.
+fn decode(column: Column, raw: Bytes) -> Value {
+  let text = utf8(raw)
+  case column.oid {
+    16 -> case text {
+      "t" -> Value.Bool(True)
+      "f" -> Value.Bool(False)
+      _ -> unreadable(column, "boolean")
+    }
+    20 -> whole(column, text)
+    21 -> whole(column, text)
+    23 -> whole(column, text)
+    700 -> real(column, text)
+    701 -> real(column, text)
+    1700 -> numeric(column, text)
+    17 -> Value.Bytes(bytea(column, raw))
+    _ -> Value.Text(text)
+  }
+}
+
+fn whole(column: Column, text: Text) -> Value {
+  case Result.capture(fn() { Int.parse(text) }) {
+    Ok(number) -> Value.Int(number)
+    Err(_) -> unreadable(column, "integer")
+  }
+}
+
+fn real(column: Column, text: Text) -> Value {
+  case is_not_finite(text) {
+    True -> Value.Text(text)
+    False -> case Result.capture(fn() { Float.parse(text) }) {
+      Ok(number) -> Value.Float(number)
+      Err(_) -> unreadable(column, "floating-point")
+    }
+  }
+}
+
+fn numeric(column: Column, text: Text) -> Value {
+  case is_not_finite(text) {
+    True -> Value.Text(text)
+    False -> case Result.capture(fn() { Decimal.parse(text) }) {
+      Ok(number) -> Value.Decimal(number)
+      Err(_) -> Failure(SqlError.Failed("Postgres: the column ${column.name} holds a numeric that does not fit a Decimal"))
+    }
+  }
+}
+
+fn is_not_finite(text: Text) -> Bool {
+  text == "NaN" or text == "Infinity" or text == "-Infinity"
+}
+
+fn unreadable(column: Column, kind: Text) -> Never {
+  Failure(SqlError.Failed("Postgres: the column ${column.name} holds a value that is not ${kind}"))
+}
+
+// bytea's hex form, `\x` and two digits a byte, or its older escape form,
+// in which a backslash starts `\\` or three octal digits.
+fn bytea(column: Column, raw: Bytes) -> Bytes {
+  case Bytes.to_list(raw) {
+    [92, 120, ..digits] -> unhex(column, digits)
+    bytes -> unescape(column, bytes)
+  }
+}
+
+fn unhex(column: Column, digits: List<Int>) -> Bytes {
+  let out = loop state = (digits, []) {
+    let (left, done) = state
+    case left {
+      [] -> break done
+      [high, low, ..rest] -> case is_hex(high) and is_hex(low) {
+        True -> (rest, List.push(done, hex_value(high) * 16 + hex_value(low)))
+        False -> unreadable(column, "bytea")
+      }
+      _ -> unreadable(column, "bytea")
+    }
+  }
+  Bytes.from(out)
+}
+
+fn unescape(column: Column, bytes: List<Int>) -> Bytes {
+  let out = loop state = (bytes, []) {
+    let (left, done) = state
+    case left {
+      [] -> break done
+      [92, 92, ..rest] -> (rest, List.push(done, 92))
+      [92, a, b, c, ..rest] -> case is_octal(a) and is_octal(b) and is_octal(c) {
+        True -> (rest, List.push(done, (a - 48) * 64 + (b - 48) * 8 + (c - 48)))
+        False -> unreadable(column, "bytea")
+      }
+      [92, ..] -> unreadable(column, "bytea")
+      [byte, ..rest] -> (rest, List.push(done, byte))
+    }
+  }
+  Bytes.from(out)
+}
+
+fn is_octal(byte: Int) -> Bool {
+  byte >= 48 and byte <= 55
+}
+
+fn hex(bytes: Bytes) -> Bytes {
+  let digits = Bytes.from_text("0123456789abcdef")
+  Bytes.from(List.flat_map(Bytes.to_list(bytes), fn(byte) {
+    [digit_at(digits, byte / 16), digit_at(digits, Int.modulo(byte, 16))]
+  }))
+}
+
+fn digit_at(digits: Bytes, index: Int) -> Int {
+  case Bytes.get(digits, index) {
+    Some(digit) -> digit
+    None -> 0
+  }
+}
+
+// 7. Failures.
+
+// An ErrorResponse's fields: severity (the untranslated `V`, else `S`),
+// SQLSTATE, message, and the constraint's name. The detail field is never
+// read, because it can hold a row's values.
+struct ServerError {
+  severity: Text,
+  code: Text,
+  message: Text,
+  constraint: Text,
+}
+
+fn server_error(body: Bytes) -> ServerError {
+  let fields = loop state = (Fields(body, 0), []) {
+    let (left, found) = state
+    let (kind, after_kind) = take_int8(left)
+    case kind == 0 {
+      True -> break found
+      False -> {
+        let (value, after_value) = take_cstring(after_kind)
+        (after_value, List.push(found, (kind, value)))
+      }
+    }
+  }
+  let severity = case field(fields, 86) {
+    "" -> field(fields, 83)
+    untranslated -> untranslated
+  }
+  ServerError(severity, field(fields, 67), field(fields, 77), field(fields, 110))
+}
+
+fn field(fields: List<(Int, Text)>, kind: Int) -> Text {
+  case List.find(fields, fn(pair) {
+    let (found, _) = pair
+    found == kind
+  }) {
+    Some((_, value)) -> value
+    None -> ""
+  }
+}
+
+// SQLSTATE classes to `SqlError`. A FATAL or PANIC error ends the session,
+// so the connection is lost whatever its code.
+fn sql_error(error: ServerError) -> SqlError {
+  let class = case Text.byte_length(error.code) >= 2 {
+    True -> Text.byte_slice(error.code, 0..2)
+    False -> error.code
+  }
+  case (error.severity, error.code, class) {
+    ("FATAL", _, _) -> SqlError.ConnectionLost
+    ("PANIC", _, _) -> SqlError.ConnectionLost
+    (_, "40001", _) -> SqlError.Conflict(error.message)
+    (_, "40P01", _) -> SqlError.Conflict(error.message)
+    (_, "55P03", _) -> SqlError.Conflict(error.message)
+    (_, _, "23") -> SqlError.ConstraintFailed(error.constraint, error.message)
+    (_, _, "42") -> SqlError.Rejected(error.code, error.message)
+    (_, _, "0A") -> SqlError.Rejected(error.code, error.message)
+    (_, _, "22") -> SqlError.Rejected(error.code, error.message)
+    (_, _, "25") -> SqlError.Rejected(error.code, error.message)
+    (_, _, "08") -> SqlError.Rejected(error.code, error.message)
+    _ -> SqlError.Failed("Postgres: ${error.code}: ${error.message}")
+  }
+}
+
+fn larger(a: Int, b: Int) -> Int {
+  case a > b {
+    True -> a
+    False -> b
+  }
+}
+
+// 8. Transactions.
+
+// `depth` 0 is the transaction, and n the nth savepoint inside it. Tasks
+// that share a transaction could otherwise open two savepoints at the same
+// depth, and a rollback would undo the other task's.
+fn begin(session: Session, depth: Int) -> Void {
+  exclusive(session, fn(leftover) {
+    let open = native_depth(session.gate)
+    let status = native_status(session.gate)
+    case (open == depth, depth > 0 and status == status_idle) {
+      (_, True) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (True, False) -> {
+        let settled = exchange(session, leftover, begin_statement(depth), [])
+        case settled.outcome {
+          Ok(_) -> native_set_depth(session.gate, depth + 1)
+          Err(_) -> Void
+        }
+        done(settled)
+      }
+      (False, False) -> Settled(Err(SqlError.Failed("Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another")), leftover, status)
+    }
+  })
+}
+
+fn begin_statement(depth: Int) -> Text {
+  case depth == 0 {
+    True -> "BEGIN"
+    False -> "SAVEPOINT chimi_${depth}"
+  }
+}
+
+// A `COMMIT` of a transaction that had failed rolls it back, and the server
+// says so in the tag, which must not pass for a commit. A transaction that a
+// statement already ended (`ROLLBACK` run by hand) has nothing to commit:
+// the server would answer `COMMIT` with a warning.
+fn commit(session: Session, depth: Int) -> Void {
+  exclusive(session, fn(leftover) {
+    let status = native_status(session.gate)
+    let settled = case (status == status_idle, depth == 0) {
+      (True, _) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (False, True) -> exchange(session, leftover, "COMMIT", [])
+      (False, False) -> exchange(session, leftover, "RELEASE SAVEPOINT chimi_${depth}", [])
+    }
+    case settled.outcome {
+      Ok(answer) -> {
+        native_set_depth(session.gate, depth)
+        case answer.tag == "ROLLBACK" {
+          True -> Settled(Err(SqlError.Failed("Postgres: the transaction had failed and was rolled back")), settled.rest, settled.status)
+          False -> done(settled)
+        }
+      }
+      Err(_) -> done(settled)
+    }
+  })
+}
+
+// A savepoint's rollback undoes it and then ends it. After a failed release
+// the savepoint may be gone already (SQLSTATE 3B001), and after a statement
+// ended the transaction nothing is open; either way the rollback has
+// nothing left to do.
+fn rollback(session: Session, depth: Int) -> Void {
+  exclusive(session, fn(leftover) {
+    native_set_depth(session.gate, depth)
+    let status = native_status(session.gate)
+    case (status == status_idle, depth == 0) {
+      // Nothing is open: a statement already ended the transaction.
+      (True, _) -> Settled(Ok(Void), leftover, status)
+      (False, True) -> done(exchange(session, leftover, "ROLLBACK", []))
+      (False, False) -> {
+        let undone = exchange(session, leftover, "ROLLBACK TO SAVEPOINT chimi_${depth}", [])
+        case undone.outcome {
+          Ok(_) -> done(exchange(session, undone.rest, "RELEASE SAVEPOINT chimi_${depth}", []))
+          Err(SqlError.Failed(message)) -> case Text.starts_with(message, "Postgres: 3B001: ") {
+            True -> Settled(Ok(Void), undone.rest, undone.status)
+            False -> done(undone)
+          }
+          Err(_) -> done(undone)
+        }
+      }
+    }
+  })
+}
+
+// Rolls back whatever is left open, so the pool can hand the connection out
+// again. A broken connection fails with `ConnectionLost`.
+fn reset(session: Session) -> Void {
+  exclusive(session, fn(leftover) {
+    native_set_depth(session.gate, 0)
+    let status = native_status(session.gate)
+    case status == status_idle {
+      True -> Settled(Ok(Void), leftover, status)
+      False -> done(exchange(session, leftover, "ROLLBACK", []))
+    }
+  })
+}
+
+fn done<T>(settled: Settled<T>) -> Settled<Void> {
+  case settled.outcome {
+    Ok(_) -> Settled(Ok(Void), settled.rest, settled.status)
+    Err(failure) -> Settled(Err(failure), settled.rest, settled.status)
+  }
+}
+
+// Sends Terminate when the connection is free, and closes it either way:
+// the claim is a scope's acquire, so a cancel during the write still gives
+// the gate back (broken) and closes the socket.
+fn close(session: Session) -> Void {
+  Resource.scoped(fn() { native_claim(session.gate) }, fn(claimed) {
+    case claimed {
+      Some((token, _)) -> native_abandon(session.gate, token)
+      None -> Void
+    }
+    Net.close(session.connection)
+  }, fn(claimed) {
+    case claimed {
+      Some(_) -> {
+        let _ = Result.capture(fn() {
+          Stream.write(session.writer, message(88, Bytes.empty()))
+        })
+        Void
+      }
+      None -> Void
+    }
+  })
+}
+
+// 9. Messages.
+
+// Bytes read off the connection, of which those from `at` on are not yet
+// used.
+struct Inbox {
+  reader: Reader<NetError>,
+  bytes: Bytes,
+  at: Int,
+}
+
+fn rest_of(inbox: Inbox) -> Bytes {
+  Bytes.slice(inbox.bytes, inbox.at..Bytes.length(inbox.bytes))
+}
+
+// PostgreSQL's own limit on a message is 1 GB.
+const max_message_bytes: Int = 1073741824
+
+// The next message: its type byte, its body, and the inbox after it.
+fn receive(inbox: Inbox) -> (Int, Bytes, Inbox) {
+  let header = filled(inbox, 5)
+  let kind = case Bytes.get(header.bytes, header.at) {
+    Some(byte) -> byte
+    None -> malformed()
+  }
+  let length = case Bytes.read_int(header.bytes, header.at + 1, IntLayout.I32Be) {
+    Some(length) -> length
+    None -> malformed()
+  }
+  case length >= 4 and length <= max_message_bytes {
+    True -> Void
+    False -> malformed()
+  }
+  let whole = filled(header, length + 1)
+  let body = Bytes.slice(whole.bytes, (whole.at + 5)..(whole.at + length + 1))
+  (kind, body, Inbox(whole.reader, whole.bytes, whole.at + length + 1))
+}
+
+fn malformed() -> Never {
+  Failure(SqlError.Failed("Postgres: the server sent a malformed message"))
+}
+
+// An inbox holding at least `count` unread bytes, read once into one buffer.
+fn filled(inbox: Inbox, count: Int) -> Inbox {
+  let unread = Bytes.length(inbox.bytes) - inbox.at
+  case unread >= count {
+    True -> inbox
+    False -> {
+      let parts = loop state = ([rest_of(inbox)], unread) {
+        let (parts, total) = state
+        case total >= count {
+          True -> break parts
+          False -> {
+            let read = read_chunk(inbox.reader)
+            case read {
+              Some(chunk) -> (List.push(parts, chunk), total + Bytes.length(chunk))
+              None -> Failure(SqlError.ConnectionLost)
+            }
+          }
+        }
+      }
+      Inbox(inbox.reader, Bytes.concat(parts), 0)
+    }
+  }
+}
+
+fn read_chunk(reader: Reader<NetError>) -> Option<Bytes> {
+  case Result.capture(fn() { Stream.read(reader) }) {
+    Ok(read) -> read
+    Err(_) -> Failure(SqlError.ConnectionLost)
+  }
+}
+
+fn write(writer: Writer<NetError>, bytes: Bytes) -> Void {
+  case Result.capture(fn() { Stream.write(writer, bytes) }) {
+    Ok(_) -> Void
+    Err(_) -> Failure(SqlError.ConnectionLost)
+  }
+}
+
+fn message(kind: Int, body: Bytes) -> Bytes {
+  Bytes.concat([Bytes.from([kind]), int32(Bytes.length(body) + 4), body])
+}
+
+fn int32(value: Int) -> Bytes {
+  Bytes.from_int(value, IntLayout.I32Be)
+}
+
+fn int16(value: Int) -> Bytes {
+  Bytes.from_int(value, IntLayout.I16Be)
+}
+
+fn cstring(text: Text) -> Bytes {
+  Bytes.append(Bytes.from_text(text), Bytes.from([0]))
+}
+
+fn utf8(bytes: Bytes) -> Text {
+  case Result.capture(fn() { Bytes.to_text(bytes) }) {
+    Ok(text) -> text
+    Err(_) -> Failure(SqlError.Failed("Postgres: the server sent text that is not UTF-8"))
+  }
+}
+
+// A message body being read, from `at` on.
+struct Fields {
+  bytes: Bytes,
+  at: Int,
+}
+
+fn take_int8(fields: Fields) -> (Int, Fields) {
+  case Bytes.get(fields.bytes, fields.at) {
+    Some(value) -> (value, skip(fields, 1))
+    None -> malformed()
+  }
+}
+
+fn take_int16(fields: Fields) -> (Int, Fields) {
+  case Bytes.read_int(fields.bytes, fields.at, IntLayout.I16Be) {
+    Some(value) -> (value, skip(fields, 2))
+    None -> malformed()
+  }
+}
+
+fn take_int32(fields: Fields) -> (Int, Fields) {
+  case Bytes.read_int(fields.bytes, fields.at, IntLayout.I32Be) {
+    Some(value) -> (value, skip(fields, 4))
+    None -> malformed()
+  }
+}
+
+fn take_bytes(fields: Fields, count: Int) -> (Bytes, Fields) {
+  case count >= 0 and fields.at + count <= Bytes.length(fields.bytes) {
+    True -> (Bytes.slice(fields.bytes, fields.at..(fields.at + count)), skip(fields, count))
+    False -> malformed()
+  }
+}
+
+fn take_cstring(fields: Fields) -> (Text, Fields) {
+  let rest = rest_of_fields(fields)
+  case Bytes.index_of(rest, Bytes.from([0])) {
+    Some(end) -> (utf8(Bytes.slice(rest, 0..end)), skip(fields, end + 1))
+    None -> malformed()
+  }
+}
+
+fn rest_of_fields(fields: Fields) -> Bytes {
+  Bytes.slice(fields.bytes, fields.at..Bytes.length(fields.bytes))
+}
+
+fn skip(fields: Fields, count: Int) -> Fields {
+  Fields(fields.bytes, fields.at + count)
+}
+
+// 10. Base64 (RFC 4648), for SCRAM's nonce, salt, proof and signature.
+
+const base64_alphabet: Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+fn base64(bytes: Bytes) -> Text {
+  let alphabet = Bytes.from_text(base64_alphabet)
+  let groups = List.chunks(Bytes.to_list(bytes), 3)
+  Bytes.to_text_lossy(Bytes.from(List.flat_map(groups, fn(group) {
+    let (a, b, c, count) = case group {
+      [a, b, c] -> (a, b, c, 4)
+      [a, b] -> (a, b, 0, 3)
+      [a] -> (a, 0, 0, 2)
+      _ -> (0, 0, 0, 0)
+    }
+    let value = a * 65536 + b * 256 + c
+    let digits = [value / 262144, Int.modulo(value / 4096, 64), Int.modulo(value / 64, 64), Int.modulo(value, 64)]
+    List.append(List.map(List.take(digits, count), fn(index) { digit_at(alphabet, index) }), List.repeat(61, 4 - count))
+  })))
+}
+
+fn base64_decoded(text: Text) -> Bytes {
+  let alphabet = Bytes.from_text(base64_alphabet)
+  let codes = Bytes.to_list(Bytes.from_text(text))
+  case Int.modulo(List.length(codes), 4) == 0 {
+    True -> Void
+    False -> connect_failed("the server sent malformed base64")
+  }
+  let unpadded = List.filter(codes, fn(code) { code != 61 })
+  let padding = List.length(codes) - List.length(unpadded)
+  case padding <= 2 and List.take(codes, List.length(unpadded)) == unpadded {
+    True -> Void
+    False -> connect_failed("the server sent malformed base64")
+  }
+  let values = List.map(unpadded, fn(code) {
+    case Bytes.index_of(alphabet, Bytes.from([code])) {
+      Some(index) -> index
+      None -> connect_failed("the server sent malformed base64")
+    }
+  })
+  let decoded = List.flat_map(List.chunks(values, 4), fn(group) {
+    let (a, b, c, d, count) = case group {
+      [a, b, c, d] -> (a, b, c, d, 3)
+      [a, b, c] -> (a, b, c, 0, 2)
+      [a, b] -> (a, b, 0, 0, 1)
+      _ -> connect_failed("the server sent malformed base64")
+    }
+    let value = a * 262144 + b * 4096 + c * 64 + d
+    List.take([value / 65536, Int.modulo(value / 256, 256), Int.modulo(value, 256)], count)
+  })
+  Bytes.from(decoded)
+}
+
+// 11. Tests.
+
+/// The SCRAM-SHA-256 client proof and server signature (base64) for a
+/// password, a base64 salt, an iteration count and the auth message, as
+/// the driver computes them. For a test server that checks the proof.
+/// Defects when: `salt` is not base64, or the count is out of range.
+/// Test-only (`T4401`).
+pub fn scram_for_tests(password: Text, salt: Text, iterations: Int, auth_message: Text) -> (Text, Text) {
+  let salted = case Result.capture(fn() { base64_decoded(salt) }) {
+    Ok(bytes) -> bytes
+    Err(_) -> Debug.crash("Postgres: the salt is not base64")
+  }
+  case native_scram_check(Bytes.from_text(password), salted, iterations, Bytes.from_text(auth_message)) {
+    Ok((proof, signature)) -> (base64(proof), base64(signature))
+    Err((_, reason)) -> Debug.crash("Postgres: ${reason}")
+  }
+}
+
+// 12. The binding (runtime/native/bindings/tls/postgres.c).
+
+native type PostgresGate
+
+native fn native_scram(password: Bytes, salt: Bytes, iterations: Int, auth_message: Bytes) -> Result<(Bytes, Bytes), (Int, Text)>
+native fn native_scram_check(password: Bytes, salt: Bytes, iterations: Int, auth_message: Bytes) -> Result<(Bytes, Bytes), (Int, Text)>
+native fn native_random(count: Int) -> Bytes
+native fn native_gate(status: Int, leftover: Bytes) -> PostgresGate
+native fn native_claim(gate: PostgresGate) -> Option<(Int, Bytes)>
+native fn native_settle(gate: PostgresGate, token: Int, status: Int, leftover: Bytes) -> Void
+native fn native_abandon(gate: PostgresGate, token: Int) -> Void
+native fn native_status(gate: PostgresGate) -> Int
+native fn native_depth(gate: PostgresGate) -> Int
+native fn native_set_depth(gate: PostgresGate, depth: Int) -> Void
