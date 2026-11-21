@@ -2,6 +2,8 @@
 scheduler error and leaves nothing open.
 
 Run: scripts/mutation/mutate.py --timeout 120 scripts/mutation/carrier_setup_mutations.py
+A pipe counts as closed in the test only when close(2) succeeded, so the
+"never closed" mutant drops the call and its result together.
 Results: scripts/mutation/carrier_setup_results.txt.
 """
 
@@ -32,7 +34,7 @@ MUTATIONS = [
       "        self.ready = ready::ReadyQueues::new(1);\n        self.jobs = jobs::Jobs::new(carriers);\n        self.wakes = wakes;", ERROR),
     m("a pipe's ends are never closed", W,
       "            let _closed = sys::close(fd);",
-      "            let _closed = { let _ = fd; true };", CLOSED),
+      "            let _closed = { let _ = fd; false };", CLOSED),
     m("a pipe closes only its read end", W,
       "        for fd in [self.read, self.write] {",
       "        for fd in [self.read] {", CLOSED),
