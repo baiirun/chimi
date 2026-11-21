@@ -524,6 +524,10 @@ fn a_client_talks_to_an_openssl_server() {
         }
         let tests = format!(
             r#"
+import std/clock.{{Clock}}
+import std/http as Http
+import std/http.{{Method}}
+
 fn fetch() -> Text needs {{ network: Network }} {{
   Resource.scoped(fn() {{ Net.connect("127.0.0.1", {port}) }}, Net.close, fn(inner) {{
     let connection = Tls.client(inner, "localhost", trusting(CA))
@@ -532,6 +536,17 @@ fn fetch() -> Text needs {{ network: Network }} {{
     Net.close(connection)
     page
   }})
+}}
+
+// `-www` answers HTTP/1.0 without a length, so the body runs to the close.
+fn page_by_http() -> Text needs {{ network: Network, clock: Clock }} {{
+  let reply = Http.send(Method.Get, "https://localhost:{port}/", [], Bytes.empty(), {{ ..Http.client_defaults, roots: Tls.roots(Bytes.from_text(CA)) }})
+  "${{Http.status(reply)}} ${{Debug.render(Text.contains(Bytes.to_text(Http.response_body(reply)), "</HTML>"))}}"
+}}
+
+test "a page through Http.send" {{
+  let page = page_by_http() using {{ network: Net.host_for_tests() }}
+  page |> Test.assert_equal("200 True")
 }}
 
 test "twenty pages" {{
@@ -555,7 +570,7 @@ test "twenty pages" {{
         let result = scratch.test(&[], &["--clock=real"]);
         let _ = server.kill();
         let _ = server.wait();
-        assert_passed(&result, 1);
+        assert_passed(&result, 2);
     }
 }
 
@@ -801,6 +816,57 @@ fn https() -> Text needs { network: Network, clock: Clock } {
 test "https" {
   let outcome = https() using { network: Net.host_for_tests() }
   outcome |> Test.assert_equal("True hello a/b 0")
+}
+"#,
+        ),
+    )
+    .test(&[], &["--clock=real"]);
+    assert_passed(&result, 1);
+}
+
+// Rejects an HTTPS client that skips the certificate checks or the host
+// name: `Http.send` gets an answer from `Http.serve` over `Tls.listener`
+// when it trusts the fixture authority and names `localhost`, and fails with
+// the `TlsError` when it trusts only the system's roots or names another
+// host the certificate does not cover.
+#[test]
+fn http_send_over_https_checks_the_certificate() {
+    let result = Scratch::new(
+        "https-client",
+        &suite(
+            r#"
+import std/clock.{Clock}
+import std/http as Http
+import std/http.{Method, Request, Response}
+
+fn hello(request: Request) -> Response {
+  Http.text(200, "hello ${Text.join(Http.path(request), "/")} ${Debug.render(Http.header(request, "host"))}")
+}
+
+fn get(url: Text, roots: Tls.Roots) -> Text needs { network: Network, clock: Clock } {
+  case Result.capture(fn() { Http.send(Method.Get, url, [], Bytes.empty(), { ..Http.client_defaults, roots: roots, timeout: Duration.seconds(5) }) }) {
+    Ok(reply) -> "${Http.status(reply)} ${Bytes.to_text(Http.response_body(reply))}"
+    Err(error) -> Debug.render(error)
+  }
+}
+
+fn https() -> Text needs { network: Network, clock: Clock } {
+  let listener = Tls.listener(Net.listen("127.0.0.1", 0), server_identity(SERVER_CERT))
+  let port = Net.port(Net.listener_address(listener))
+  let server = Task.start(fn() { Http.serve(listener, Http.defaults, hello) })
+  let fixture = Tls.roots(Bytes.from_text(CA))
+  let trusted = get("https://localhost:${port}/a/b", fixture)
+  let system = get("https://localhost:${port}/", Tls.defaults.roots)
+  let other_host = get("https://127.0.0.1:${port}/", fixture)
+  Net.close_listener(listener)
+  Task.timeout(fn() { Task.result(server) }, Duration.seconds(5))
+  let shown = Text.join(Text.split(trusted, "${port}"), "PORT")
+  "${shown}|${system}|${other_host} ${Tls.live_sessions_for_tests()}"
+}
+
+test "https" {
+  let outcome = https() using { network: Net.host_for_tests() }
+  outcome |> Test.assert_equal("200 hello a/b Some(\"localhost:PORT\")|TlsError.Untrusted|TlsError.WrongHost(\"127.0.0.1\") 0")
 }
 "#,
         ),

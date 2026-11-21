@@ -319,7 +319,7 @@ test "400" {
 }
 
 test "a head cut short is 400, a request never started is no answer" {
-  exchange("GET /health HTTP/1.1\r\nHost:") |> Test.assert_equal(refused(400, "Bad Request", "bad request: the connection ended inside a request"))
+  exchange("GET /health HTTP/1.1\r\nHost:") |> Test.assert_equal(refused(400, "Bad Request", "bad request: the connection ended inside a head"))
   exchange("") |> Test.assert_equal("")
 }
 
