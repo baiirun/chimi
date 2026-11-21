@@ -1013,7 +1013,8 @@ four keep one carrier.
      the flag empties the watched pipes, as a blocking wait would, so the
      pipe stays the authority and a flag or byte left over only ends one
      later wait early. A signal that lands during a spin is seen when the
-     spin ends, at most 50 µs late. Cross-carrier round trips fell from 22-39
+     spin ends, about 50 µs late while the spinner holds its core. Carrier
+     0's descriptor wait and a stalled root's signal wait do not spin. Cross-carrier round trips fell from 22-39
      µs to 8-10 µs; PG04's start and stop, which are kernel-lock bound, did
      not improve (stop got slower), so their fix is step 4's sharded kernel.
      Numbers: multi-carrier-baseline.md "Spinning before a carrier blocks".

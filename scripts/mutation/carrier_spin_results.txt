@@ -1,0 +1,15 @@
+# mutation run at 8f332ecb1e58fd9236a6f7c741c858870203e257
+# carrier_spin_mutations.py: 7 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- spin] (20s)
+BASELINE ok  [lib -- wake] (1s)
+BASELINE ok  [lib -- cores] (0s)
+BASELINE ok  [lib -- sees_a_wake_while_it_spins] (1s)
+KILLED       a spin never sees the wake [lib -- spin] (33s)
+KILLED       a wake never sets the flag [lib -- spin] (33s)
+KILLED       a caught wake leaves its byte [lib -- wake] (8s)
+KILLED       carriers beyond the cores spin [lib -- cores] (7s)
+KILLED       a spin ignores a zero budget [lib -- spin] (7s)
+KILLED       the carrier never watches its flag [lib -- sees_a_wake_while_it_spins] (7s)
+KILLED       a park skips the spin [lib -- sees_a_wake_while_it_spins] (6s)
+# result: every mutant killed
+exit 0

@@ -437,7 +437,7 @@ mod tests {
     /// A wake written by another thread ends an idle carrier's spin before
     /// its budget, clears the flag, and empties the pipe it was written to.
     #[test]
-    fn a_wake_ends_a_spin_and_keeps_its_byte() {
+    fn a_wake_ends_a_spin_and_empties_its_pipe() {
         let mut wakes = Wakes::new(2).expect("pipes");
         let mut fds = WakeFds::default();
         let fd = wakes.read_fd(Carrier(1)).expect("a pipe");

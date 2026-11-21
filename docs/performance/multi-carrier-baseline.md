@@ -86,8 +86,8 @@ threads and that one carrier's stay consecutive.
 
 ## Spinning before a carrier blocks (step 3 PR 6c)
 
-An idle carrier now spins for up to 50 µs on a wake flag before it blocks in
-`poll`; the waker sets the flag after writing the pipe byte, and a spin that
+An idle carrier now spins for up to 50 µs on a wake flag before it parks or
+sleeps in `poll` (carrier 0's descriptor wait does not spin); the waker sets the flag after writing the pipe byte, and a spin that
 sees it empties the pipe and runs again. It spins only when every carrier
 can have a core (`available_parallelism`): with more carriers than cores a
 spinning carrier would take a core from one with work. Same host, same

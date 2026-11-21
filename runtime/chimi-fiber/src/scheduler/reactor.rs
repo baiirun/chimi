@@ -520,8 +520,12 @@ pub(super) struct IoWaitPlan {
 impl IoWaitPlan {
     /// Blocks in poll(2) without the kernel. Returns which watched
     /// descriptors are ready, or None when poll(2) failed.
+    /// The wait empties the wake pipes that woke it, so the carrier's wake
+    /// flag is spent too (`WakeFds::settle`); this wait does not spin.
     pub(super) fn block(&self) -> Option<Vec<bool>> {
-        sys::wait(&self.watched, self.timeout, self.wake_fds.as_slice())
+        let ready = sys::wait(&self.watched, self.timeout, self.wake_fds.as_slice());
+        self.wake_fds.settle();
+        ready
     }
 }
 
