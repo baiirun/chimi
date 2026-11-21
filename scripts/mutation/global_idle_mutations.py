@@ -5,7 +5,10 @@ task or a job.
 
 Run: scripts/mutation/mutate.py --timeout 120 scripts/mutation/global_idle_mutations.py
 Each mutant must turn its filtered test red; a mutant that loses a wake
-makes the round-robin driver fail rather than hang.
+makes the round-robin driver fail rather than hang. The verifier's own
+mutants against the whole suite found five gaps (the last parker's wake
+with a timer pending, carrier 0's own due timer while it waits, and the
+order of the host and descriptor checks); they are the last five here.
 Results: scripts/mutation/global_idle_results.txt.
 """
 
@@ -19,6 +22,9 @@ RUNNING = "carrier_zero_waits_for_a_carrier_running_a_fiber"
 LAST = "the_last_carrier_to_park_wakes_carrier_zero"
 DUE = "an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero"
 REAL = "carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer"
+LAST_TIMER = "the_last_carrier_to_park_wakes_carrier_zero_with_a_timer_pending"
+OWN_TIMER = "carrier_zero_waiting_for_others_runs_its_own_due_timer"
+ORDER = "carrier_zero_serves_the_host_and_descriptors_while_others_run"
 
 
 def m(name, file, old, new, test):
@@ -68,4 +74,19 @@ MUTATIONS = [
     m("has_work looks only at jobs", S,
       "        !self.ready.is_empty_for(carrier) || !self.jobs.is_empty_for(carrier)",
       "        !self.jobs.is_empty_for(carrier)", DUE),
+    m("the last carrier to park wakes carrier 0 only with no timer", S,
+      "        if self.others_quiet() {\n            self.wake_carrier(ready::Carrier(0));",
+      "        if self.others_quiet() && self.timers.earliest().is_none() {\n            self.wake_carrier(ready::Carrier(0));", LAST_TIMER),
+    m("carrier 0 waiting for others parks with its own task ready", S,
+      "    fn wait_for_others(&mut self) -> carrier::IdleStep {\n        self.fire_due_timers();\n        if self.has_work(self.current) {\n            return carrier::IdleStep::Continue;\n        }",
+      "    fn wait_for_others(&mut self) -> carrier::IdleStep {\n        self.fire_due_timers();", OWN_TIMER),
+    m("carrier 0 waiting for others holds its due timers", S,
+      "    fn wait_for_others(&mut self) -> carrier::IdleStep {\n        self.fire_due_timers();",
+      "    fn wait_for_others(&mut self) -> carrier::IdleStep {", OWN_TIMER),
+    m("carrier 0 waits for others before descriptors", S,
+      "        if !self.reactor.is_empty() || !self.children.is_empty() {\n            return carrier::IdleStep::Io(self.prepare_io_wait());\n        }\n        if !self.others_quiet() {\n            return self.wait_for_others();\n        }",
+      "        if !self.others_quiet() {\n            return self.wait_for_others();\n        }\n        if !self.reactor.is_empty() || !self.children.is_empty() {\n            return carrier::IdleStep::Io(self.prepare_io_wait());\n        }", ORDER),
+    m("carrier 0 waits for others before the host", S,
+      "            return self.park_step();\n        }\n",
+      "            return self.park_step();\n        }\n        if !self.others_quiet() {\n            return self.wait_for_others();\n        }\n", ORDER),
 ]

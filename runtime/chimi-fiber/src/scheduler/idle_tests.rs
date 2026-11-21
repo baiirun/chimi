@@ -286,3 +286,85 @@ fn carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer() {
     };
     assert!(wait <= std::time::Duration::from_millis(5));
 }
+
+/// The last carrier to park wakes carrier 0 even with a timer pending, so
+/// carrier 0, parked while that carrier still ran, jumps to the timer.
+#[test]
+fn the_last_carrier_to_park_wakes_carrier_zero_with_a_timer_pending() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
+    let sleeper = start_sleeper(&mut scheduler, 1, 5 * SECOND);
+    scheduler.drive();
+    signal::drain(zero);
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    scheduler.enter_carrier(Carrier(1));
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(readable(zero), "the last to park woke carrier 0");
+    assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
+    assert!(succeeded(&scheduler, sleeper));
+}
+
+/// Carrier 0 waiting for another carrier still fires its own due timer and
+/// runs the task it wakes, rather than parking with that task ready.
+#[test]
+fn carrier_zero_waiting_for_others_runs_its_own_due_timer() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let _busy = start_sleeper(&mut scheduler, 1, 0);
+    scheduler.enter_carrier(Carrier(0));
+    let task = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    let now = scheduler.now();
+    scheduler.start_wake_timer(task, now).expect("timer");
+    assert!(matches!(scheduler.idle_step(), IdleStep::Continue));
+    assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Runnable);
+}
+
+/// While another carrier runs, carrier 0 still returns to the host for a
+/// host operation and still waits on descriptors: neither waits for the
+/// other carriers.
+#[test]
+fn carrier_zero_serves_the_host_and_descriptors_while_others_run() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let _busy = start_sleeper(&mut scheduler, 1, 0);
+    scheduler.enter_carrier(Carrier(0));
+    let task = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    let (read, write) = {
+        let mut ends = [0; 2];
+        // SAFETY: room for the two descriptors pipe(2) writes.
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        (ends[0], ends[1])
+    };
+    let mut io = SchedulerRequest {
+        kind: REQUEST_IO_WAIT,
+        status: 0,
+        task: 0,
+        channel: 0,
+        owner: 0,
+        token: u64::from(IO_READABLE),
+        value: i64::from(read),
+        entry: None,
+        context: ptr::null_mut(),
+    };
+    scheduler.handle_io_wait(task, &mut io);
+    assert_eq!(io.status, RESPONSE_PENDING);
+    assert!(matches!(scheduler.idle_step(), IdleStep::Io(_)));
+    scheduler.begin_host_operation();
+    assert!(matches!(scheduler.idle_step(), IdleStep::Done(Idle::AwaitingHost)));
+    scheduler.end_host_operation();
+    scheduler.clear_io_wait(task);
+    drop(scheduler);
+    // SAFETY: the test opened both ends and closes each once.
+    unsafe {
+        libc::close(read);
+        libc::close(write);
+    }
+}
