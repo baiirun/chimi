@@ -826,6 +826,21 @@ four keep one carrier.
        stays so a later constant form cannot bring the race back. The
        fixture runs five carriers, so exactly two is untested here; 5d-4's
        flag tests and 5e cover it.
+     - 5d-2 as landed: `process_abi::run_on_carriers(scheduler, root,
+       code)` takes the kernel, runs the root with carriers 1 and up on
+       scoped threads, and hands the kernel back with the outcome;
+       `chimi_scheduler_run` uses it (one carrier until 5d-3, so no thread
+       is spawned). Spawned carriers wait at a start gate until every one
+       has a thread. If a spawn fails they leave without touching the
+       kernel and the run defects with `SCHEDULER_DEFECT_CODE`, its roots
+       unstarted and the kernel runnable again; if the spawning loop
+       unwinds, a guard sends them away too. The run asserts the last
+       run's end is cleared before any carrier starts (the review found it
+       guarded only by a race). A parked run's kernel is forgotten on the
+       ABI path, since its fibers may be homed on joined threads; the
+       test-only `run_root_on_threads` refuses one instead. Tests: a stack
+       overflow on a carrier thread ends only its task, and a failed spawn
+       leaves the roots unstarted and the kernel able to run them all.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

@@ -188,9 +188,7 @@ pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
 }
 
 /// The loop of a carrier other than 0: drives its tasks and parks when it
-/// has none, until the run ends. Test-only until the carriers get threads
-/// (step 3 PR 5c-6).
-#[cfg(test)]
+/// has none, until the run ends.
 pub(super) fn run_carrier(kernel: &mut impl KernelAccess) {
     loop {
         drive(kernel);

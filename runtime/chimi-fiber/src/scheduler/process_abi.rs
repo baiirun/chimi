@@ -802,28 +802,31 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
 /// 1 and up on scoped threads spawned for the run and joined before it
 /// returns, so no carrier reaches the kernel between the run's end and its
 /// exit (parallel-scheduler.md, "5c-5 as landed"). The kernel is shared
-/// behind its lock for the run and handed back after it. Test-only until the
-/// runner flag (step 3 PR 5d).
+/// behind its lock for the run and handed back with its outcome. One
+/// carrier spawns no thread.
 ///
 /// Requires, with several carriers: every root other than `root` is
 /// started on carrier 0 or ends within the run, since a finished run's
-/// other carriers must hold no fiber (`Scheduler::retire_carrier`). Panics
-/// if the run parks: its fibers would stay homed on threads it joined,
-/// where nothing can resume or destroy them. A panic on any carrier aborts
-/// the process, as one in `chimi_scheduler_run` does, since the other
-/// carriers would wait for it forever.
-#[cfg(test)]
-pub(super) fn run_root_on_threads(
-    scheduler: &mut Scheduler,
+/// other carriers must hold no fiber (`Scheduler::retire_carrier`). A run
+/// that parks leaves fibers homed on the threads it joined, where nothing
+/// can resume or destroy them, so its kernel must be forgotten, never run
+/// again or dropped. The spawned carriers wait at a gate until every one
+/// has its thread; if one cannot get a thread, the others leave without
+/// touching the kernel and the run defects with `SCHEDULER_DEFECT_CODE`,
+/// its root unstarted. A panic on any carrier aborts the process, since
+/// the other carriers would wait for it forever.
+pub(super) fn run_on_carriers(
+    scheduler: Scheduler,
     root: TaskId,
     deadlock_code: i64,
-) -> RootRun {
-    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
-    let kernel = Mutex::new(std::mem::replace(scheduler, placeholder));
+) -> (RootRun, Scheduler) {
+    let kernel = Mutex::new(scheduler);
     let carriers = {
         let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
-        // Before any carrier starts, so none sees the last run's end.
+        // Before any carrier starts, so none sees the last run's end and
+        // leaves before carrier 0's `run_root` would clear it.
         held.begin_run(root);
+        assert!(held.run_end.is_none(), "a carrier would start into the last run's end");
         // Work the caller queued through the kernel directly marked the
         // carriers it is for without waking them. Every carrier of the run
         // drives before it first waits, so it finds that work anyway; the
@@ -831,26 +834,121 @@ pub(super) fn run_root_on_threads(
         drop(held.take_wakes());
         held.ready.carriers()
     };
+    let gate = StartGate::default();
     let run = std::thread::scope(|scope| {
+        // Should anything below unwind, the scope would join carriers still
+        // waiting at the gate; send them away first.
+        let _undecided = CloseOnUnwind(&gate);
         for index in 1..carriers {
-            let kernel = &kernel;
-            let spawned = std::thread::Builder::new()
-                .name(format!("carrier {index}"))
-                .spawn_scoped(scope, move || {
+            let (kernel, gate) = (&kernel, &gate);
+            let body = move || {
+                if gate.wait() {
                     abort_on_panic(|| {
                         super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
                     });
-                });
-            if spawned.is_err() {
-                abort_on_panic(|| panic!("carrier {index} got no thread"));
+                }
+            };
+            if spawn_carrier(scope, index, body).is_err() {
+                gate.open(false);
+                return RootRun {
+                    outcome: defect_outcome(SCHEDULER_DEFECT_CODE),
+                    deadlock: Vec::new(),
+                };
             }
         }
+        gate.open(true);
         abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
     });
-    drop(std::mem::replace(
-        scheduler,
-        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
-    ));
+    (run, kernel.into_inner().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Spawns carrier `index`'s thread in `scope`.
+fn spawn_carrier<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    index: u32,
+    body: impl FnOnce() + Send + 'scope,
+) -> std::io::Result<()> {
+    #[cfg(test)]
+    if test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.get() == Some(index)) {
+        // Slowly, so the carriers already spawned are waiting at the gate.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        return Err(std::io::Error::other("injected spawn failure"));
+    }
+    std::thread::Builder::new()
+        .name(format!("carrier {index}"))
+        .spawn_scoped(scope, body)
+        .map(drop)
+}
+
+#[cfg(test)]
+pub(super) mod test_hooks {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The carrier whose thread `run_on_carriers` fails to spawn, after
+        /// a pause.
+        pub(in crate::scheduler) static FAIL_SPAWN_OF: Cell<Option<u32>> = const { Cell::new(None) };
+    }
+}
+
+/// Holds spawned carriers until the run knows every carrier has a thread:
+/// `wait` returns true to run, false to leave without the kernel.
+#[derive(Default)]
+struct StartGate {
+    decision: Mutex<Option<bool>>,
+    opened: std::sync::Condvar,
+}
+
+impl StartGate {
+    fn open(&self, run: bool) {
+        *self.decision.lock().unwrap_or_else(PoisonError::into_inner) = Some(run);
+        self.opened.notify_all();
+    }
+
+    /// Opens the gate with `false` unless it was already decided.
+    fn close_if_undecided(&self) {
+        let mut decision = self.decision.lock().unwrap_or_else(PoisonError::into_inner);
+        if decision.is_none() {
+            *decision = Some(false);
+            drop(decision);
+            self.opened.notify_all();
+        }
+    }
+
+    fn wait(&self) -> bool {
+        let mut decision = self.decision.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(run) = *decision {
+                return run;
+            }
+            decision = self.opened.wait(decision).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// Sends the carriers waiting at a gate away when dropped undecided, as
+/// when the spawning loop unwinds.
+struct CloseOnUnwind<'gate>(&'gate StartGate);
+
+impl Drop for CloseOnUnwind<'_> {
+    fn drop(&mut self) {
+        self.0.close_if_undecided();
+    }
+}
+
+/// Runs `root` on carrier threads (`run_on_carriers`) against `scheduler`,
+/// and panics if a run on several threads parks, since the kernel it hands
+/// back could then be neither run again nor dropped.
+#[cfg(test)]
+pub(super) fn run_root_on_threads(
+    scheduler: &mut Scheduler,
+    root: TaskId,
+    deadlock_code: i64,
+) -> RootRun {
+    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
+    let carriers = scheduler.ready.carriers();
+    let (run, kernel) = run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code);
+    drop(std::mem::replace(scheduler, kernel));
     assert!(
         carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,
         "a run on several carrier threads parked, leaving fibers on joined threads"
@@ -859,11 +957,11 @@ pub(super) fn run_root_on_threads(
 }
 
 /// Runs `body`, aborting the process if it panics (the panic hook has
-/// printed the message by then).
-#[cfg(test)]
+/// printed the message by then): with several carriers the others would
+/// wait for this one forever.
 fn abort_on_panic<R>(body: impl FnOnce() -> R) -> R {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
-        eprintln!("a carrier panicked; the others would wait for it forever");
+        eprintln!("a carrier panicked; the run cannot go on without it, so the process aborts");
         std::process::abort()
     })
 }
@@ -977,11 +1075,9 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     let Ok(root) = scheduler.start_root_with_context(entry, config.context) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     };
-    // The carrier loop runs against the kernel behind its lock, as each of
-    // several carriers will, so the performance gates measure the lock.
-    let kernel = Mutex::new(scheduler);
-    let run = run_root(&mut Locked::new(&kernel, Carrier::default()), root, DEADLOCK_DEFECT_CODE);
-    let scheduler = kernel.into_inner().unwrap_or_else(PoisonError::into_inner);
+    // The carrier loop runs against the kernel behind its lock even with
+    // one carrier, so the performance gates measure the lock.
+    let (run, scheduler) = run_on_carriers(scheduler, root, DEADLOCK_DEFECT_CODE);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);
     if let Some(report) = config.deadlock_report
@@ -1001,8 +1097,9 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     }
     if run.outcome.state == ChimiFiberState::Parked as u32 {
         // The root waits on the host. Its fibers cannot be destroyed while
-        // parked (destruction unwinds through foreign frames), so the
-        // suspended execution is left in place rather than torn down.
+        // parked (destruction unwinds through foreign frames), and with
+        // several carriers some are homed on threads already joined, so
+        // the suspended execution is left in place rather than torn down.
         std::mem::forget(scheduler);
     }
     run.outcome
