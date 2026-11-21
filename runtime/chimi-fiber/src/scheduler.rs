@@ -1280,6 +1280,17 @@ impl Scheduler {
         }
     }
 
+    /// Queues `task` on `carrier`, its home: the one way work becomes ready,
+    /// so a carrier other than the current one can be told about it.
+    fn enqueue(&mut self, carrier: ready::Carrier, task: TaskId, front: bool) {
+        debug_assert_eq!(carrier, self.tasks[&task].carrier, "a task waits on its home");
+        if front {
+            self.ready.push_front(carrier, task);
+        } else {
+            self.ready.push_back(carrier, task);
+        }
+    }
+
     pub fn wake(&mut self, task: TaskId) -> Result<(), SchedulerError> {
         self.wake_at(task, false)
     }
@@ -1296,11 +1307,7 @@ impl Scheduler {
         if record.phase == TaskPhase::Parked {
             record.phase = TaskPhase::Runnable;
             let carrier = record.carrier;
-            if front {
-                self.ready.push_front(carrier, task);
-            } else {
-                self.ready.push_back(carrier, task);
-            }
+            self.enqueue(carrier, task, front);
             self.emit(task, TaskEventKind::Woken, None, true);
         }
         Ok(())
@@ -1824,7 +1831,7 @@ impl Scheduler {
                 .insert(id);
         }
         self.peak_tasks = self.peak_tasks.max(self.tasks.len());
-        self.ready.push_back(carrier, id);
+        self.enqueue(carrier, id, false);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
     }
@@ -1851,6 +1858,7 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .filter(|record| record.phase == TaskPhase::Runnable)?;
+        debug_assert_eq!(record.carrier, self.current, "a task resumed off its home carrier");
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
@@ -2494,7 +2502,7 @@ impl Scheduler {
                     let record = self.tasks.get_mut(&parent).expect("waiting parent");
                     record.phase = TaskPhase::Runnable;
                     let carrier = record.carrier;
-                    self.ready.push_back(carrier, parent);
+                    self.enqueue(carrier, parent, false);
                     self.emit(parent, TaskEventKind::Woken, Some(task), true);
                 }
                 TaskOutcome::Cancelled => {

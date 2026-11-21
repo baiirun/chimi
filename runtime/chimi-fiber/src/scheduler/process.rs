@@ -2094,7 +2094,7 @@ impl Scheduler {
             let task_record = self.tasks.get_mut(&task).expect("incarnation task");
             task_record.phase = TaskPhase::Runnable;
             let carrier = task_record.carrier;
-            self.ready.push_front(carrier, task);
+            self.enqueue(carrier, task, true);
         }
         let terminated = self.await_incarnation(incarnation);
         debug_assert!(
