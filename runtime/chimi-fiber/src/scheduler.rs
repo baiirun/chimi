@@ -3995,6 +3995,11 @@ mod tests {
             assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
             (ends[0], ends[1])
         };
+        // Carrier 0 also watches the signal pipe, ahead of its own.
+        wake_one(&mut scheduler);
+        clock::block_real(wait, &[read, fd1]);
+        assert!(!readable(fd1), "a sleep empties every pipe that woke it");
+
         io.value = i64::from(read);
         scheduler.drive();
         scheduler.handle_io_wait(task, &mut io);
