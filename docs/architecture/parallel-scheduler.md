@@ -721,6 +721,20 @@ four keep one carrier.
        new memberships, so they may move. Tested with a three-carrier
        supervisor whose crashed member's next incarnation id would land
        elsewhere.
+     - 5c-4 as landed: `root_step` calls `stop_carriers` in the hold where
+       it returns Finished or Parked, never while work is left, and
+       `begin_run` clears it when `run_root` starts. A carrier other than
+       0 then leaves its loop (`IdleStep::Exit`, the test-only
+       `carrier::run_carrier`) instead of parking; it does not count as
+       parked afterwards, so a later run needs its carriers started again,
+       which 5c-6 does by spawning and joining them per run. A host
+       operation returns `AwaitingHost` only once the others are quiet,
+       carrier 0 meanwhile waiting for them (its own timers still fire),
+       and `end_host_operation` wakes carrier 0. Only tests begin host
+       operations today; a fiber on another carrier that spun until one
+       ended would hold carrier 0 from the host. Both idle waits now fire
+       due timers and drain the carrier's host releases first
+       (`refill_before_waiting`).
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.

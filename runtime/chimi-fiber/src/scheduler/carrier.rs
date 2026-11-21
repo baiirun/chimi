@@ -128,6 +128,19 @@ pub(super) enum IdleStep {
     /// The virtual clock moved under the kernel, or a due timer gave this
     /// carrier work; look again.
     Continue,
+    /// The run has ended: a carrier other than 0 leaves its loop.
+    Exit,
+}
+
+/// What a carrier does after one idle step.
+#[derive(Debug, PartialEq)]
+pub(super) enum Waited {
+    /// It waited, or has work; drive again.
+    Again,
+    /// Carrier 0's verdict.
+    Idle(Idle),
+    /// The run has ended for this carrier.
+    Exit,
 }
 
 /// Runs ready tasks until this carrier's ready queue is empty and no queued
@@ -156,18 +169,36 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
 pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
     loop {
         drive(kernel);
-        if let Some(idle) = wait_idle(kernel) {
-            return idle;
+        match wait_idle(kernel) {
+            Waited::Again => {}
+            Waited::Idle(idle) => return idle,
+            Waited::Exit => unreachable!("only a carrier other than 0 exits, in run_carrier"),
         }
     }
 }
 
-/// What a carrier `drive` left with nothing runnable does: returns why it
-/// is idle, or None once it has waited (for descriptors, a timer, its wake
-/// pipe, or a virtual-time jump) and should drive again.
-pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Option<Idle> {
+/// The loop of a carrier other than 0: drives its tasks and parks when it
+/// has none, until the run ends. Test-only until the carriers get threads
+/// (step 3 PR 5c-6).
+#[cfg(test)]
+pub(super) fn run_carrier(kernel: &mut impl KernelAccess) {
+    loop {
+        drive(kernel);
+        match wait_idle(kernel) {
+            Waited::Again => {}
+            Waited::Exit => return,
+            Waited::Idle(_) => unreachable!("only carrier 0 gives a verdict"),
+        }
+    }
+}
+
+/// What a carrier `drive` left with nothing runnable does: gives carrier
+/// 0's verdict, leaves once the run has ended, or waits (for descriptors,
+/// a timer, its wake pipe, or a virtual-time jump) and drives again.
+pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
     match kernel.with(Scheduler::idle_step) {
-        IdleStep::Done(idle) => return Some(idle),
+        IdleStep::Done(idle) => return Waited::Idle(idle),
+        IdleStep::Exit => return Waited::Exit,
         IdleStep::Io(plan) => {
             let ready = plan.block();
             kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
@@ -185,7 +216,7 @@ pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Option<Idle> {
         }
         IdleStep::Continue => {}
     }
-    None
+    Waited::Again
 }
 
 /// Runs every carrier of a kernel in turn on this thread, as a test stands
@@ -221,6 +252,7 @@ pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
             match kernel.with(Scheduler::idle_step) {
                 IdleStep::Done(idle) => return idle,
                 IdleStep::Park(fds) => parked[index as usize] = Some(fds),
+                IdleStep::Exit => panic!("carrier {index} left a run that gave no verdict"),
                 IdleStep::Io(plan) if others_parked => {
                     let ready = plan.block();
                     kernel.with(|kernel| kernel.finish_io_wait(plan, ready));

@@ -806,6 +806,9 @@ pub struct Scheduler {
     /// `others_quiet` counts, so a wake does not clear the flag. Carrier 0
     /// never parks this way; it waits for the others.
     parked: Vec<bool>,
+    /// Set when a run ends (`stop_carriers`): every carrier but 0 leaves
+    /// its loop at its next idle step instead of parking.
+    stopping: bool,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -927,6 +930,7 @@ impl Scheduler {
             any_carrier: false,
             wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
             parked: vec![false],
+            stopping: false,
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -979,11 +983,14 @@ impl Scheduler {
         self.host_operations += 1;
     }
 
+    /// Ends a begun host operation and wakes carrier 0, which may be
+    /// waiting for it while other carriers run.
     pub fn end_host_operation(&mut self) {
         self.host_operations = self
             .host_operations
             .checked_sub(1)
             .expect("end_host_operation without a matching begin");
+        self.wake_carrier(ready::Carrier(0));
     }
 
     /// Registers a timer that wakes `task` from its park at `deadline`.
@@ -1041,8 +1048,13 @@ impl Scheduler {
             return self.park_step();
         }
         // The host must be able to end the operations it began, so they
-        // return before the scheduler blocks in a descriptor wait.
+        // return before the scheduler blocks in a descriptor wait; while
+        // another carrier runs, carrier 0 waits for it first, and an ended
+        // operation wakes it.
         if self.host_operations > 0 {
+            if !self.others_quiet() {
+                return self.wait_for_others();
+            }
             return carrier::IdleStep::Done(Idle::AwaitingHost);
         }
         // A descriptor or child wait is a host operation in flight: it
@@ -1077,15 +1089,18 @@ impl Scheduler {
         carrier::IdleStep::Continue
     }
 
-    /// The idle step of a carrier other than 0: fire the timers already due,
-    /// and if that left this carrier nothing to run, park on its wake pipe
-    /// (under the real clock only until the earliest timer, so a timer is
-    /// not held up by a busy carrier 0). The last carrier to park wakes
+    /// The idle step of a carrier other than 0: leave the loop once the run
+    /// has ended; else fire the timers already due and drain this carrier's
+    /// host releases, and if that left it nothing to run, park on its wake
+    /// pipe (under the real clock only until the earliest timer, so a timer
+    /// is not held up by a busy carrier 0). The last carrier to park wakes
     /// carrier 0, which alone decides whether the program is finished,
     /// stuck, or due a virtual-time jump.
     fn park_step(&mut self) -> carrier::IdleStep {
-        self.fire_due_timers();
-        if self.has_work(self.current) {
+        if self.stopping {
+            return carrier::IdleStep::Exit;
+        }
+        if self.refill_before_waiting() {
             return carrier::IdleStep::Continue;
         }
         self.parked[self.current.0 as usize] = true;
@@ -1106,8 +1121,7 @@ impl Scheduler {
     /// already due, then sleeps until the earliest timer (real clock) or
     /// parks (virtual clock, or no timer) until a carrier wakes it.
     fn wait_for_others(&mut self) -> carrier::IdleStep {
-        self.fire_due_timers();
-        if self.has_work(self.current) {
+        if self.refill_before_waiting() {
             return carrier::IdleStep::Continue;
         }
         match self.timers.earliest() {
@@ -1116,6 +1130,32 @@ impl Scheduler {
                 self.idle_wake_fds(),
             ),
             _ => carrier::IdleStep::Park(self.idle_wake_fds()),
+        }
+    }
+
+    /// Fires the timers already due and drains this carrier's host releases
+    /// (a release hook a fired timer ran may have queued one), so a carrier
+    /// never waits with work it could have; true if it has some now.
+    fn refill_before_waiting(&mut self) -> bool {
+        self.fire_due_timers();
+        let drained = self.drain_host_releases();
+        drained || self.has_work(self.current)
+    }
+
+    /// Starts a run of `root`: the carriers run until it ends again.
+    pub(super) fn begin_run(&mut self, root: TaskId) {
+        self.stopping = false;
+        self.set_signal_root(root);
+    }
+
+    /// Ends the run for every carrier: each one but 0 leaves its loop at
+    /// its next idle step (`IdleStep::Exit`), and a parked one is woken to
+    /// take it. Called in the kernel hold that ends the run, so no carrier
+    /// parks after it without seeing it.
+    pub(super) fn stop_carriers(&mut self) {
+        self.stopping = true;
+        for carrier in 1..self.ready.carriers() {
+            self.wake_carrier(ready::Carrier(carrier));
         }
     }
 
@@ -4135,7 +4175,7 @@ mod tests {
         assert_eq!(scheduler.idle_wake_fds().as_slice(), [fd1], "the signal pipe is carrier 0's");
         wake(&mut scheduler, 1);
         let started = std::time::Instant::now();
-        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the park");
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again, "the wake ended the park");
         assert!(started.elapsed() < quick, "the park ended at the wake");
         assert!(!readable(fd1), "the park emptied the pipe");
 
@@ -4143,7 +4183,7 @@ mod tests {
         assert_eq!(scheduler.idle_wake_fds().as_slice(), [signal_read, fd0]);
         write_byte(signal_write);
         wake(&mut scheduler, 0);
-        assert_eq!(carrier::wait_idle(&mut scheduler), None);
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again);
         assert!(!readable(fd0) && !readable(signal_read), "a sleep empties every pipe that woke it");
 
         let mut io = SchedulerRequest {
@@ -4167,7 +4207,7 @@ mod tests {
         write_byte(signal_write);
         wake(&mut scheduler, 0);
         let started = std::time::Instant::now();
-        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the wait");
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again, "the wake ended the wait");
         assert!(started.elapsed() < quick);
         assert!(
             !readable(fd0) && !readable(signal_read),
