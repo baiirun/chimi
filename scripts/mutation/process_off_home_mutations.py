@@ -5,6 +5,11 @@ Run: scripts/mutation/mutate.py --timeout 120 scripts/mutation/process_off_home_
 Each mutant must turn its filtered test red. The two that make a carrier spin
 (a re-armed spent deadline, a teardown that cannot run a fiber) end in
 TIMEOUT, which mutate.py counts as killed.
+The review's zero-deadline case (a forced draining body must still arm its
+deadline) is covered by compiler/chimi/tests/resources.rs
+a_zero_deadline_forces_the_child_of_a_body_that_already_returned, outside this
+crate; with the earlier guard (`&& !stopping.forced`) it fails with a
+virtual-time deadlock.
 Results: scripts/mutation/process_off_home_results.txt.
 """
 
@@ -34,4 +39,11 @@ MUTATIONS = [
     m("any fiber may be resumed anywhere", S,
       "        self.any_carrier\n            || record.carrier == self.current",
       "        true\n            || record.carrier == self.current", STOP),
+    m("a dropped kernel leaves its jobs queued", S,
+      "        self.any_carrier = true;\n        self.run_queued_jobs();",
+      "        self.any_carrier = true;", "a_kernel_dropped_with_a_queued_job_runs_it"),
+    m("a dropped kernel runs only the current carrier's jobs", S,
+      "        for carrier in 0..self.ready.carriers() {\n            while let Some(job) = self.jobs.pop_front(ready::Carrier(carrier)) {",
+      "        for _carrier in 0..1 {\n            while let Some(job) = self.jobs.pop_front(self.current) {",
+      "a_kernel_dropped_with_a_queued_job_runs_it"),
 ]

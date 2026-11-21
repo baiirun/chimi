@@ -698,6 +698,57 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
     assert_eq!(result.outcome, success("3"), "{}", result.outcome);
 }
 
+// Rejects a zero shutdown deadline that leaves a child stuck in its release
+// once its body has returned: the deadline still fires, at once, and forces
+// the child, so the removal takes no time.
+#[test]
+fn a_zero_deadline_forces_the_child_of_a_body_that_already_returned() {
+    let result = run_virtual(
+        "process-child-forced-at-once",
+        r#"pub enum Message {
+  Start(never: Receiver<Int>)
+}
+
+fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
+  case Process.receive(inbox) {
+    Message.Start(never) -> {
+      let _child = Task.start(fn() {
+        Resource.scoped(
+          fn() { 1 },
+          fn(_held) {
+            let _ = take(never)
+            Void
+          },
+          fn(held) {
+            Clock.sleep(Duration.seconds(100))
+            held
+          },
+        )
+      })
+      Clock.sleep(Duration.seconds(1))
+      Void
+    }
+  }
+}
+
+pub fn main() -> Int needs { clock: Clock.Clock } {
+  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
+  let managed = Supervisor.start_process(root, Process.spec(body, 3, Duration.seconds(0)), Supervisor.Restart.Never)
+  let never = Channel.bounded(1)
+  Process.send(Supervisor.address(managed), Message.Start(never.receiver))
+  Clock.sleep(Duration.seconds(2))
+  let start = Clock.now()
+  Supervisor.remove_process(root, managed)
+  let elapsed = Duration.to_seconds(Clock.since(start))
+  Supervisor.stop(root)
+  let keep = never.sender
+  elapsed
+}
+"#,
+    );
+    assert_eq!(result.outcome, success("0"), "{}", result.outcome);
+}
+
 // Rejects a process body torn down by a child's defect without its release:
 // the release gives the handle back (7) before the incarnation ends.
 #[test]

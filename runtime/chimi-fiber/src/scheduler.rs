@@ -3614,6 +3614,35 @@ mod tests {
         assert_eq!(scheduler.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
+    thread_local! {
+        static TERMINAL_EVENTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    unsafe extern "C" fn count_terminal_events(_context: *mut c_void, event: *const SchedulerTraceEvent) {
+        // SAFETY: the scheduler passes a valid event for the call's length.
+        let (family, kind) = unsafe { ((*event).family, (*event).kind) };
+        if family == SCHEDULER_TRACE_TASK && kind == TaskEventKind::Terminal as u32 + 1 {
+            TERMINAL_EVENTS.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    /// A kernel dropped with an unwind job queued on another carrier runs
+    /// the job, so the task ends as it would have: its terminal is
+    /// published, not skipped by a bare fiber drop.
+    #[test]
+    fn a_kernel_dropped_with_a_queued_job_runs_it() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        TERMINAL_EVENTS.with(|count| count.set(0));
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Full, 3);
+        scheduler.enter_carrier(ready::Carrier(2));
+        let task = start_parked(&mut scheduler);
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.cancel(None, task).expect("cancel");
+        scheduler.set_trace_sink(Some(count_terminal_events), std::ptr::null_mut());
+        drop(scheduler);
+        assert_eq!(TERMINAL_EVENTS.with(std::cell::Cell::get), 1);
+    }
+
     /// A task waiting for its unwind job is not published terminal when its
     /// last child ends meanwhile; the job ends it.
     #[test]

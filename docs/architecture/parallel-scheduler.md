@@ -561,22 +561,26 @@ four keep one carrier.
          whether a fiber may run on the current carrier (its home; never
          ran and given Cancel; or teardown). `await_incarnation` runs the
          body inline only then; otherwise the body waits on its home queue
-         and the caller takes its "not yet" path. A forced body arms no new
-         deadline. `Drop` sets `any_carrier`, runs every carrier's queued
+         and the caller takes its "not yet" path. A forced body left
+         waiting on its home arms no new deadline; a forced body that is
+         already draining still arms one, even at once, since its firing
+         forces the descendants still in their releases (the review found
+         that a zero deadline otherwise deadlocked such a child). `Drop` sets `any_carrier`, runs every carrier's queued
          jobs, then tears processes down as before, all on the dropping
          thread; 5c replaces this with each carrier draining its own
          before it exits. Tests stop a supervisor homed on carrier 1 from
          carrier 0 (the transcript matches one carrier's), fire a shutdown
          deadline on carrier 0, and drop a kernel whose processes live on
-         carrier 1. Mutants in `process_off_home_mutations.py`, all four
-         killed (one by a timeout: the teardown otherwise spins).
+         carrier 1, and drop a kernel with a job queued on another carrier.
+         Mutants in `process_off_home_mutations.py`, all six killed (one by
+         a timeout: the teardown otherwise spins).
        - Left for 5b-5 and 5b-6 (review): a queued job must wake its home
          carrier, and the idle check must count every carrier's jobs, or a
          home carrier asleep in its idle wait leaves the task draining with
-         its fiber, and carrier 0 could report a deadlock. Left for 5c: a
-         scheduler dropped with a job queued drops that parked fiber on
-         the dropping thread; each carrier must run its jobs before it
-         exits.
+         its fiber, and carrier 0 could report a deadlock. Left for 5c: each
+         carrier must run its own jobs before it exits (5b-4's `Drop` runs
+         them all on the dropping thread, which only a one-thread kernel
+         may do).
      - 5b-5: wake descriptors. One non-blocking pipe per carrier, none with
        one carrier. The kernel marks carriers under the lock (work queued
        for another carrier; a reactor, child or signal wait registered off
