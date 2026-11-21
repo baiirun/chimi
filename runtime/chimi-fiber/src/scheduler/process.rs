@@ -2334,27 +2334,55 @@ impl Scheduler {
         }
     }
 
-    /// One pass of `tear_down_processes` for a finished run whose carriers
-    /// are all idle with processes still left. It does not loop: a body on
-    /// another carrier is forced by a job there, which the run then drives
-    /// before it calls this again. True if the pass moved anything: an
-    /// incarnation or a blocked plan fewer, or work or a timer queued.
+    /// One step of `tear_down_processes` for a finished run whose carriers
+    /// are all idle with processes still left; true if it moved anything.
+    /// It does not loop, since a body on another carrier ends only once its
+    /// home runs it: the run drives that, then calls this again. It forces
+    /// the bodies stop plans wait on, and resumes the plans whose blocker
+    /// is gone. Only if that moved nothing does it shut down and force every
+    /// incarnation left, as a last resort; otherwise a resumed plan's next
+    /// graceful stop is left to run, as one carrier runs it.
     pub(super) fn force_survivors(&mut self) -> bool {
-        let before = (self.kernel.incarnations.len(), self.blocked_plan_count());
         let blockers: Vec<_> = self.kernel.blocked.keys().copied().collect();
+        let before = self.survivor_state();
         for blocker in blockers {
             if self.kernel.blocked.contains_key(&blocker) && self.blocker_can_be_cleared(blocker) {
                 self.clear_blocker(blocker);
             }
         }
+        if self.survivor_state() != before {
+            return true;
+        }
         let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
         for incarnation in leftover {
-            self.end_leftover(incarnation);
+            if !self.kernel.incarnations.contains_key(&incarnation) {
+                continue;
+            }
+            self.begin_shutdown(incarnation);
+            if !self.await_incarnation(incarnation) {
+                let armed = self.kernel.incarnations[&incarnation]
+                    .stopping
+                    .as_ref()
+                    .and_then(|stopping| stopping.timer);
+                self.force(incarnation);
+                // `force` leaves the deadline it disarms queued, which would
+                // hold the finished run until it fires for nothing.
+                if let Some(timer) = armed {
+                    self.cancel_timer(timer);
+                }
+            }
         }
-        (self.kernel.incarnations.len(), self.blocked_plan_count()) != before
-            || !self.ready.is_empty()
-            || !self.jobs.is_empty()
-            || self.timers.earliest().is_some()
+        self.survivor_state() != before
+    }
+
+    /// What `force_survivors` counts as moved: the incarnations and blocked
+    /// plans left, and whether work or a timer is queued.
+    fn survivor_state(&self) -> (usize, usize, bool) {
+        (
+            self.kernel.incarnations.len(),
+            self.blocked_plan_count(),
+            !self.ready.is_empty() || !self.jobs.is_empty() || self.timers.earliest().is_some(),
+        )
     }
 
     fn blocked_plan_count(&self) -> usize {

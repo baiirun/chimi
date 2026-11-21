@@ -4569,6 +4569,11 @@ fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
     };
     assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "the run forces it");
     assert_eq!(lab.scheduler.run_end, None);
+    assert_eq!(
+        lab.terminations().is_empty(),
+        carriers > 1,
+        "a body on another carrier is forced only once its home runs it"
+    );
     lab.settle_carriers();
     assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
     assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
@@ -4585,6 +4590,85 @@ fn forcing_the_processes_left_ends_them_at_home_as_one_carrier_does() {
     let two = force_survivors_from_carrier_zero(2);
     assert!(two.iter().any(|event| event.ends_with("cause=forced")), "{two:?}");
     assert_eq!(two, force_survivors_from_carrier_zero(1));
+}
+
+/// Stops a supervisor of a plain member and one whose cleanup parks for
+/// good (stopped first, its deadline disarmed), with the plain member homed
+/// on the last carrier, then ends a finished root's run. Returns the
+/// transcript and the virtual time the run took.
+fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(carriers);
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(
+            vec![
+                Member::Process(spec_with(&PLAIN, None, 64), Restart::Never),
+                Member::Process(spec_with(&PARKS, None, 64), Restart::Never),
+            ],
+            0,
+        ))
+        .unwrap();
+    lab.settle_carriers();
+    assert_eq!(lab.scheduler.incarnation_homes()[0].1, carriers - 1, "the plain member's home");
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.stop_supervisor(root);
+    for carrier in 0..carriers {
+        lab.scheduler.enter_carrier(ready::Carrier(carrier));
+        lab.scheduler.drive();
+    }
+    lab.scheduler.disarm_shutdown_deadlines();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let main = lab.scheduler.start_root(finishes_at_once).unwrap();
+    lab.scheduler.drive();
+    let start = lab.scheduler.now().as_nanos();
+    let mut deadlock = Vec::new();
+    for _ in 0..8 {
+        lab.scheduler.enter_carrier(ready::Carrier(0));
+        match lab.scheduler.root_step(main, Idle::Quiescent, 1, &mut deadlock) {
+            process_abi::RootStep::Finished => {
+                return (lab.transcript(), lab.scheduler.now().as_nanos() - start);
+            }
+            _ => lab.settle_carriers(),
+        }
+    }
+    panic!("the run never finished");
+}
+
+/// Forcing a stuck member resumes its stop plan, which stops the next
+/// member gracefully; the run leaves that stop to run at the member's home
+/// instead of forcing it too, so the ends and the time match one
+/// carrier's, with no stale deadline holding the run.
+#[test]
+fn forcing_a_stuck_member_leaves_its_sibling_a_graceful_stop() {
+    let (two, took) = end_run_after_a_stuck_sibling(2);
+    assert!(two.iter().any(|event| event.ends_with("cause=forced")), "{two:?}");
+    assert!(two.iter().any(|event| event.ends_with("cause=cancelled")), "{two:?}");
+    assert_eq!(took, 0);
+    assert_eq!((two, took), end_run_after_a_stuck_sibling(1));
+}
+
+/// The last resort of the pass: an incarnation no plan waits on is shut
+/// down and forced, and the deadline the force leaves is cancelled.
+#[test]
+fn a_process_no_plan_waits_on_is_forced_as_a_last_resort() {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(2);
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.scheduler
+        .start_supervisor(policy(
+            vec![Member::Process(spec_with(&PARKS, Some(COUNTER), 64), Restart::Never)],
+            0,
+        ))
+        .unwrap();
+    lab.settle_carriers();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    assert!(lab.scheduler.force_survivors());
+    assert_eq!(lab.scheduler.timers.earliest(), None, "no deadline is left queued");
+    lab.settle_carriers();
+    assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
+    assert_eq!(lab.terminations().last().map(|(_, cause)| *cause), Some(TerminalCause::Forced));
 }
 
 /// A process incarnation runs on its membership id modulo the carrier

@@ -418,7 +418,7 @@ fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
     for carrier in [2, 1] {
         scheduler.enter_carrier(Carrier(carrier));
         run_carrier(&mut scheduler);
-        assert!(matches!(scheduler.idle_step(), IdleStep::Exit(_)));
+        assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
         assert!(!scheduler.parked[carrier as usize], "it left without parking");
     }
     assert!(succeeded(&scheduler, late), "a carrier runs what it has before it leaves");
@@ -447,7 +447,7 @@ fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
     ));
     assert!(readable(one));
     scheduler.enter_carrier(Carrier(1));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Exit(_)));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
 
     scheduler.run_end = None;
     scheduler.enter_carrier(Carrier(0));
@@ -482,38 +482,52 @@ fn holds_fiber(scheduler: &Scheduler, task: TaskId) -> bool {
     scheduler.tasks[&task].fiber.is_some()
 }
 
-/// A carrier leaving a finished run first runs the jobs queued for it,
-/// then hands over every fiber homed on it to be destroyed on its thread;
-/// another carrier's fibers stay where they are.
+/// A carrier leaving a finished run checks that the run left it nothing:
+/// a fiber still homed on it could only be destroyed off its home, by
+/// `Drop` on carrier 0's thread.
 #[test]
-fn a_carrier_leaving_a_finished_run_retires_its_own_fibers() {
+fn a_carrier_leaving_a_finished_run_checks_it_holds_no_fiber() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(3);
-    let kept = start_parked(&mut scheduler, 1);
-    let ended = start_parked(&mut scheduler, 1);
-    let elsewhere = start_parked(&mut scheduler, 2);
+    let left = start_parked(&mut scheduler, 1);
     let own = start_parked(&mut scheduler, 0);
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
+    scheduler.enter_carrier(Carrier(2));
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Exit), "carrier 2 holds none");
+    scheduler.enter_carrier(Carrier(1));
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.idle_step()));
+    let message = caught.err().and_then(|panic| panic.downcast::<String>().ok());
+    assert!(
+        message.is_some_and(|message| message.contains("holding its fiber on carrier 1")),
+        "carrier 1 still holds a fiber"
+    );
+    assert!(holds_fiber(&scheduler, left) && holds_fiber(&scheduler, own));
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.cancel(None, left).expect("cancel");
+    scheduler.drive();
+    assert!(!holds_fiber(&scheduler, left));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Exit), "carrier 1 holds none now");
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.cancel(None, own).expect("cancel");
+}
+
+/// A finished run leaves no job behind either.
+#[test]
+fn a_carrier_leaving_a_finished_run_checks_it_owes_no_job() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let ended = start_parked(&mut scheduler, 1);
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, ended).expect("cancel");
     assert!(!scheduler.jobs.is_empty_for(Carrier(1)), "carrier 1 owes the unwind");
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
     scheduler.enter_carrier(Carrier(1));
-    let IdleStep::Exit(retired) = scheduler.with(Scheduler::idle_step) else {
-        panic!("carrier 1 leaves a finished run");
-    };
-    assert!(scheduler.jobs.is_empty(), "it ran its job before leaving");
-    assert!(matches!(
-        scheduler.tasks[&ended].phase,
-        TaskPhase::Terminal(TaskOutcome::Cancelled)
-    ));
-    assert_eq!(retired.len(), 1, "the parked fiber homed on carrier 1");
-    assert!(!holds_fiber(&scheduler, kept));
-    assert!(holds_fiber(&scheduler, elsewhere) && holds_fiber(&scheduler, own));
-    drop(retired);
-    scheduler.enter_carrier(Carrier(0));
-    for task in [elsewhere, own] {
-        scheduler.cancel(None, task).expect("cancel");
-    }
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.idle_step()));
+    let message = caught.err().and_then(|panic| panic.downcast::<String>().ok());
+    assert!(message.is_some_and(|message| message.contains("left a job on carrier 1")));
+    scheduler.drive();
+    assert!(scheduler.jobs.is_empty() && !holds_fiber(&scheduler, ended));
 }
 
 /// A carrier leaving a parked run keeps its fibers: the root waits on the
@@ -526,10 +540,7 @@ fn a_carrier_leaving_a_parked_run_keeps_its_fibers() {
     scheduler.enter_carrier(Carrier(0));
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Parked));
     scheduler.enter_carrier(Carrier(1));
-    let IdleStep::Exit(retired) = scheduler.with(Scheduler::idle_step) else {
-        panic!("carrier 1 leaves a parked run");
-    };
-    assert!(retired.is_empty());
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Exit));
     assert!(holds_fiber(&scheduler, kept));
     scheduler.cancel(None, kept).expect("cancel");
 }
