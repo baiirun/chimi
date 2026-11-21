@@ -484,3 +484,44 @@ fn a_child_wait_is_a_cancellation_point() {
     assert_eq!(seen, [1]);
     assert!(reap(child).success());
 }
+
+/// The resource key the child wait below names.
+const CHILD_RESOURCE: u64 = 7 << 32 | 1;
+
+unsafe extern "C" fn wait_on_a_resource(context: *mut c_void) -> ChimiFiberResult {
+    let mut request = blank(REQUEST_CHILD_WAIT);
+    request.value = context as usize as i64;
+    request.channel = CHILD_RESOURCE;
+    issue(&mut request);
+    note(i64::from(request.status));
+    succeeded(0)
+}
+
+unsafe extern "C" fn withdraw_a_child_wait(context: *mut c_void) -> ChimiFiberResult {
+    let waiter = start(wait_on_a_resource, context);
+    // Let the waiter park (a zero sleep does not yield to a new task).
+    sleep(10_000_000);
+    let mut other = blank(REQUEST_IO_WITHDRAW);
+    other.channel = CHILD_RESOURCE + 1;
+    call(&mut other);
+    note(other.value);
+    let mut withdraw = blank(REQUEST_IO_WITHDRAW);
+    withdraw.channel = CHILD_RESOURCE;
+    call(&mut withdraw);
+    note(withdraw.value);
+    result(waiter);
+    succeeded(0)
+}
+
+/// A withdraw of a child wait's resource wakes it while the child still runs,
+/// as it does an IO wait, so a host that closes the resource can wake a task
+/// waiting on its child; a withdraw of another key wakes nothing.
+#[test]
+fn a_withdraw_wakes_a_child_wait_on_its_resource() {
+    let mut child = shell("exec sleep 30");
+    let (outcome, seen) = run(withdraw_a_child_wait, process_abi::CLOCK_REAL, pid_context(&child));
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [0, 1, i64::from(RESPONSE_PENDING)]);
+    child.kill().unwrap();
+    assert!(!reap(child).success());
+}

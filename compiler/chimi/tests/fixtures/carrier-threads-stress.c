@@ -136,10 +136,11 @@ static ChimiBindingResult *binding_use(ChimiBindingCall *call) {
 }
 
 static ChimiBindingResult *binding_close(ChimiBindingCall *call) {
+  Resource *resource = chimi_binding_handle(call, 0, &resource_type);
   chimi_binding_close_handle(call, 0, &resource_type);
   /* The state stays valid for the rest of the call that closed it. */
-  Resource *resource = chimi_binding_handle(call, 0, &resource_type);
-  CHECK(resource == NULL, "a closed handle still gave its state");
+  if (resource) CHECK(atomic_load(&resource->alive) == 1, "a close released the state its own call holds");
+  CHECK(chimi_binding_handle(call, 0, &resource_type) == NULL, "a closed handle still gave its state");
   return chimi_binding_success(call, chimi_binding_void(call));
 }
 

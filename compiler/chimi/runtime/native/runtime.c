@@ -6338,8 +6338,10 @@ typedef struct {
   size_t start;
   size_t end;
   /* Standard input's lock, since tasks on any carrier may read "-"; NULL for a
-     file one call reads. A reader holds it while it takes the bytes of a
-     line and lets go before a park and before each callback. */
+     file one call reads. A reader holds it while it takes a line's bytes and
+     lets go before each callback and while it waits for more input, so, as
+     with one carrier, two readers of "-" may split a line that arrives in
+     pieces; it keeps the buffer whole, not the lines. */
   pthread_mutex_t *lock;
 } ByteInput;
 
@@ -6466,8 +6468,9 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
   ChimiControl *control = NULL;
   AllocationScope allocation_scope;
   allocation_scope_begin(&allocation_scope);
-  /* The input's lock is held while a line's bytes are taken, and let go once
-     the line ends (a newline, the end, a failure or a line too long). */
+  /* The input's lock is held while a line's bytes are taken (except while
+     input_next waits), and let go once the line ends (a newline, the end, a
+     failure or a line too long). */
   bool held = false;
   for (;;) {
     if (!held) {
@@ -7001,15 +7004,27 @@ static void native_handle_unreferenced(uint64_t key) {
   binding_handle_close((uint32_t)((key & ~NATIVE_HANDLE_KEY) >> 32), (uint32_t)key, NULL, false);
 }
 
-/* Runs every open handle's release once, when the program ends. */
+/* Runs every handle's release once, when the program ends and nothing runs:
+   the open ones, and the ones closed while held. A call can still count as
+   holding a handle then, when its task was abandoned inside it (a forced
+   process body that parked again), so holders are ignored. */
 static void release_binding_handles(void) {
   for (uint32_t slot = 1;; ++slot) {
+    BindingRelease release = {0};
     pthread_mutex_lock(&binding_handle_lock);
-    bool more = slot < binding_handle_count;
-    uint32_t generation = more ? binding_handles[slot].generation : 0;
+    if (slot >= binding_handle_count) {
+      pthread_mutex_unlock(&binding_handle_lock);
+      return;
+    }
+    BindingHandleSlot *entry = &binding_handles[slot];
+    if (entry->type != NULL || entry->closing != NULL) {
+      if (entry->type != NULL) ++entry->generation;
+      release = (BindingRelease){entry->type ? entry->type : entry->closing, entry->state};
+      entry->users = 0;
+      binding_slot_free(entry, slot);
+    }
     pthread_mutex_unlock(&binding_handle_lock);
-    if (!more) return;
-    binding_handle_close(slot, generation, NULL, false);
+    binding_release_run(release);
   }
 }
 
@@ -12626,7 +12641,15 @@ int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid) {
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   chimi_binding_prepare_children();
   if (CHIMI_REQUIRES_SCHEDULER) {
-    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};
+    /* The handle's key, so a close of the handle by another task, which
+       withdraws it, wakes this wait: the close only releases the child once
+       this call returns. */
+    uint64_t resource = 0;
+    if (handle != CHIMI_BINDING_NO_HANDLE) {
+      const ChimiValue *value = binding_argument(call, handle, VALUE_NATIVE_HANDLE);
+      resource = binding_resource_key(value->as.handle.slot, value->as.handle.generation);
+    }
+    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid, .channel = resource};
     if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;
     if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
     if (request.status == CHIMI_RESPONSE_ERROR) return CHIMI_BINDING_WAIT_FAILED;

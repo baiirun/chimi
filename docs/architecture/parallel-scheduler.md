@@ -474,6 +474,18 @@ four keep one carrier.
        misses the wait, which parks until the descriptor is ready. The
        kernel should keep, per slot, the last generation withdrawn, and
        answer a wait on that generation or an older one as withdrawn.
+     - Left for 5c: holding a handle keeps its state alive but does not
+       serialize calls on it, so two carriers may run calls on one handle
+       at once (a TLS session read on one and written on another, an exec
+       command built on one while another starts it). Before real threads
+       run, each binding type's state needs its own lock, or the runtime
+       runs one call per handle at a time. The binding sources
+       (`bindings/`) are not scanned by `runtime_state.rs`.
+     - A close also wakes a child wait on the handle (its key is now in
+       `CHILD_WAIT`'s `channel`), since a close while another task waits
+       no longer kills the child until that wait's call returns. At
+       program end every handle is released, including ones an
+       abandoned call still counts as holding.
    - 5b, kernel pieces on one thread: the carrier id passed through
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one
