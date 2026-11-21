@@ -865,6 +865,8 @@ fn spawn_carrier<'scope>(
 ) -> std::io::Result<()> {
     #[cfg(test)]
     if test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.get() == Some(index)) {
+        // Slowly, so the carriers already spawned are waiting at the gate.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         return Err(std::io::Error::other("injected spawn failure"));
     }
     std::thread::Builder::new()
@@ -878,7 +880,8 @@ pub(super) mod test_hooks {
     use std::cell::Cell;
 
     thread_local! {
-        /// The carrier whose thread `run_on_carriers` fails to spawn.
+        /// The carrier whose thread `run_on_carriers` fails to spawn, after
+        /// a pause.
         pub(in crate::scheduler) static FAIL_SPAWN_OF: Cell<Option<u32>> = const { Cell::new(None) };
     }
 }
