@@ -226,6 +226,8 @@ static void a_task_on_an_unbound_thread_aborts(void) {
 }
 
 int main(void) {
+  /* A race that corrupts a table can leave a thread spinning; fail instead. */
+  alarm(60);
   carrier_bind(&carrier_first);
   decode_constants();
   a_close_during_a_read_waits_for_it();
