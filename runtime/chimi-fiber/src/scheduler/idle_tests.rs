@@ -5,7 +5,7 @@
 //! has a ready task or a job. `carrier::round_robin` stands in for the
 //! carriers' threads and fails if a wake is lost.
 
-use super::carrier::{IdleStep, KernelAccess, round_robin};
+use super::carrier::{IdleStep, KernelAccess, round_robin, run_carrier};
 use super::ready::Carrier;
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_request};
@@ -324,11 +324,11 @@ fn carrier_zero_waiting_for_others_runs_its_own_due_timer() {
     assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Runnable);
 }
 
-/// While another carrier runs, carrier 0 still returns to the host for a
-/// host operation and still waits on descriptors: neither waits for the
-/// other carriers.
+/// While another carrier runs, carrier 0 still waits on descriptors, but
+/// returns to the host for a host operation only once every other carrier
+/// has parked; an ended operation wakes it.
 #[test]
-fn carrier_zero_serves_the_host_and_descriptors_while_others_run() {
+fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(2);
     let _busy = start_sleeper(&mut scheduler, 1, 0);
@@ -358,13 +358,144 @@ fn carrier_zero_serves_the_host_and_descriptors_while_others_run() {
     assert_eq!(io.status, RESPONSE_PENDING);
     assert!(matches!(scheduler.idle_step(), IdleStep::Io(_)));
     scheduler.begin_host_operation();
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 still runs");
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.drive();
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
+    scheduler.enter_carrier(Carrier(0));
     assert!(matches!(scheduler.idle_step(), IdleStep::Done(Idle::AwaitingHost)));
-    scheduler.end_host_operation();
+    let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
+    signal::drain(zero);
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.with(Scheduler::end_host_operation);
+    assert!(readable(zero), "an operation ended on carrier 1 wakes carrier 0");
     scheduler.clear_io_wait(task);
     drop(scheduler);
     // SAFETY: the test opened both ends and closes each once.
     unsafe {
         libc::close(read);
         libc::close(write);
+    }
+}
+
+/// The end of a run marks every carrier but 0, and each one leaves its loop
+/// at its next idle step instead of parking.
+#[test]
+fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(3);
+    let fds: Vec<i32> = (0..3)
+        .map(|carrier| scheduler.wakes.read_fd(Carrier(carrier)).expect("a wake pipe"))
+        .collect();
+    let late = start_sleeper(&mut scheduler, 2, 0);
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.with(Scheduler::stop_carriers);
+    assert!(!readable(fds[0]), "carrier 0 ended the run");
+    assert!(readable(fds[1]) && readable(fds[2]));
+    for carrier in [2, 1] {
+        scheduler.enter_carrier(Carrier(carrier));
+        run_carrier(&mut scheduler);
+        assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
+        assert!(!scheduler.parked[carrier as usize], "it left without parking");
+    }
+    assert!(succeeded(&scheduler, late), "a carrier runs what it has before it leaves");
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.begin_run(late);
+    assert!(!scheduler.stopping, "the next run starts the carriers again");
+}
+
+/// The root's last idle step ends the run in the hold that sees it finish,
+/// so another carrier taking the kernel next leaves; a parked root ends it
+/// too, and the next run starts it again.
+#[test]
+fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let one = scheduler.wakes.read_fd(Carrier(1)).expect("a wake pipe");
+    let root = start_sleeper(&mut scheduler, 0, 0);
+    assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
+    assert!(succeeded(&scheduler, root));
+    signal::drain(one);
+    let mut deadlock = Vec::new();
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(
+        scheduler.with(|kernel| kernel.root_step(root, Idle::Quiescent, 1, &mut deadlock)),
+        process_abi::RootStep::Finished
+    ));
+    assert!(readable(one));
+    scheduler.enter_carrier(Carrier(1));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
+
+    scheduler.stopping = false;
+    scheduler.enter_carrier(Carrier(0));
+    let parked = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    signal::drain(one);
+    assert!(matches!(
+        scheduler.with(|kernel| kernel.root_step(parked, Idle::Stalled(Vec::new()), 1, &mut deadlock)),
+        process_abi::RootStep::Parked
+    ));
+    assert!(scheduler.stopping && readable(one), "a parked root ends the run too");
+    scheduler.cancel(None, parked).expect("cancel");
+}
+
+/// A root step that leaves the run going does not end it.
+#[test]
+fn a_root_still_running_leaves_the_carriers_running() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let root = start_sleeper(&mut scheduler, 0, 5 * SECOND);
+    scheduler.drive();
+    let mut deadlock = Vec::new();
+    assert!(matches!(
+        scheduler.root_step(root, Idle::AwaitingHost, 1, &mut deadlock),
+        process_abi::RootStep::Continue
+    ));
+    assert!(!scheduler.stopping);
+    scheduler.enter_carrier(Carrier(1));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
+    assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
+}
+
+thread_local! {
+    /// Releases the test host hands over, as (kind, id).
+    static HOST_RELEASES: std::cell::RefCell<Vec<(u32, u64)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn take_test_release(_context: *mut std::ffi::c_void, kind: *mut u32, id: *mut u64) -> bool {
+    HOST_RELEASES.with(|queue| match queue.borrow_mut().pop() {
+        Some((taken_kind, taken_id)) => {
+            // SAFETY: the scheduler passes two writable outputs.
+            unsafe {
+                *kind = taken_kind;
+                *id = taken_id;
+            }
+            true
+        }
+        None => false,
+    })
+}
+
+/// A carrier about to wait drains the host releases queued for it first
+/// (here, one a release hook queued after its last drive), and looks again
+/// instead of waiting with what they woke: carrier 0 waiting for the
+/// others, and a carrier other than 0 about to park.
+#[test]
+fn a_carrier_drains_its_host_releases_before_it_waits() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    scheduler.take_release = Some((take_test_release, ptr::null_mut()));
+    let _busy = start_sleeper(&mut scheduler, 1, 0);
+    for carrier in [0, 1] {
+        let done = start_sleeper(&mut scheduler, carrier, 0);
+        scheduler.drive();
+        assert!(succeeded(&scheduler, done));
+        HOST_RELEASES.with(|queue| queue.borrow_mut().push((REQUEST_TASK_RELEASE, done.0)));
+        assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "carrier {carrier}");
+        assert!(HOST_RELEASES.with(|queue| queue.borrow().is_empty()));
+        assert!(!scheduler.tasks.contains_key(&done), "the release removed the ended task");
     }
 }

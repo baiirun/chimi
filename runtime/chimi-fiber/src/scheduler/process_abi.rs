@@ -711,7 +711,10 @@ impl Scheduler {
             Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
                 return RootStep::WaitForSignal(self.idle_wake_fds());
             }
-            Idle::Stalled(_) if root_live(self) => return RootStep::Parked,
+            Idle::Stalled(_) if root_live(self) => {
+                self.stop_carriers();
+                return RootStep::Parked;
+            }
             Idle::Stalled(_) | Idle::Quiescent => {}
         }
         let root_done = matches!(
@@ -723,6 +726,7 @@ impl Scheduler {
         }
         self.shutdown_processes();
         if !self.has_blocked_plans() && self.ready.is_empty() && self.jobs.is_empty() {
+            self.stop_carriers();
             RootStep::Finished
         } else {
             RootStep::Continue
@@ -763,7 +767,7 @@ pub(super) enum RootStep {
 /// driven to completion.
 fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) -> RootRun {
     let mut deadlock = Vec::new();
-    kernel.with(|kernel| kernel.set_signal_root(root));
+    kernel.with(|kernel| kernel.begin_run(root));
     loop {
         let idle = super::carrier::run_until_idle(kernel);
         match kernel.with(|kernel| kernel.root_step(root, idle, deadlock_code, &mut deadlock)) {
