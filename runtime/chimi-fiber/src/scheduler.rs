@@ -6,6 +6,8 @@ mod child;
 mod child_tests;
 mod carrier;
 mod clock;
+#[cfg(test)]
+mod idle_tests;
 mod jobs;
 mod process;
 mod process_abi;
@@ -795,6 +797,10 @@ pub struct Scheduler {
     /// The carriers' wake pipes, and which to wake once the lock is
     /// released.
     wakes: wake::Wakes,
+    /// One flag per carrier: set when the carrier parks on its wake pipe
+    /// with nothing to do, cleared when it next takes the kernel or is
+    /// woken. Carrier 0 never parks this way; it waits for the others.
+    parked: Vec<bool>,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -915,6 +921,7 @@ impl Scheduler {
             current: ready::Carrier::default(),
             any_carrier: false,
             wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
+            parked: vec![false],
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -1025,6 +1032,9 @@ impl Scheduler {
     /// What an idle carrier does next, decided under the kernel lock once
     /// `drive` found nothing runnable.
     fn idle_step(&mut self) -> carrier::IdleStep {
+        if self.current != ready::Carrier(0) {
+            return self.park_step();
+        }
         // The host must be able to end the operations it began, so they
         // return before the scheduler blocks in a descriptor wait.
         if self.host_operations > 0 {
@@ -1035,6 +1045,9 @@ impl Scheduler {
         // exists.
         if !self.reactor.is_empty() || !self.children.is_empty() {
             return carrier::IdleStep::Io(self.prepare_io_wait());
+        }
+        if !self.others_quiet() {
+            return self.wait_for_others();
         }
         let Some(deadline) = self.timers.earliest() else {
             return carrier::IdleStep::Done(self.idle_outcome());
@@ -1057,6 +1070,54 @@ impl Scheduler {
         }
         self.fire_due_timers();
         carrier::IdleStep::Continue
+    }
+
+    /// The idle step of a carrier other than 0: fire the timers already due,
+    /// and if that left this carrier nothing to run, park on its wake pipe.
+    /// The last carrier to park wakes carrier 0, which alone decides
+    /// whether the program is finished, stuck, or due a virtual-time jump.
+    fn park_step(&mut self) -> carrier::IdleStep {
+        self.fire_due_timers();
+        if self.has_work(self.current) {
+            return carrier::IdleStep::Continue;
+        }
+        self.parked[self.current.0 as usize] = true;
+        if self.others_quiet() {
+            self.wake_carrier(ready::Carrier(0));
+        }
+        carrier::IdleStep::Park(self.idle_wake_fds())
+    }
+
+    /// Carrier 0's idle step while another carrier still runs or has work
+    /// queued: time holds and no verdict is given. It fires the timers
+    /// already due, then sleeps until the earliest timer (real clock) or
+    /// parks (virtual clock, or no timer) until a carrier wakes it.
+    fn wait_for_others(&mut self) -> carrier::IdleStep {
+        self.fire_due_timers();
+        if self.has_work(self.current) {
+            return carrier::IdleStep::Continue;
+        }
+        match self.timers.earliest() {
+            Some(deadline) if self.clock.mode() == ClockMode::Real => carrier::IdleStep::Sleep(
+                clock::real_wait(self.clock.now(), deadline),
+                self.idle_wake_fds(),
+            ),
+            _ => carrier::IdleStep::Park(self.idle_wake_fds()),
+        }
+    }
+
+    /// True when `carrier` has a ready task or a job.
+    fn has_work(&self, carrier: ready::Carrier) -> bool {
+        !self.ready.is_empty_for(carrier) || !self.jobs.is_empty_for(carrier)
+    }
+
+    /// True when every carrier but 0 is parked and no carrier has a ready
+    /// task or a job: the only state in which carrier 0 may move virtual
+    /// time or say the program is idle. Always true with one carrier.
+    fn others_quiet(&self) -> bool {
+        self.parked[1..].iter().all(|parked| *parked)
+            && self.ready.is_empty()
+            && self.jobs.is_empty()
     }
 
     /// Why a carrier with nothing runnable, no host operation, no IO wait
@@ -1211,6 +1272,7 @@ impl Scheduler {
     fn enter_carrier(&mut self, carrier: ready::Carrier) {
         debug_assert!(carrier.0 < self.ready.carriers(), "unknown carrier {carrier:?}");
         self.current = carrier;
+        self.parked[carrier.0 as usize] = false;
     }
 
     /// A kernel with `carriers` ready queues, driven from one thread by
@@ -1229,6 +1291,7 @@ impl Scheduler {
         self.ready = ready::ReadyQueues::new(carriers);
         self.jobs = jobs::Jobs::new(carriers);
         self.wakes = wake::Wakes::new(carriers).expect("a wake pipe per carrier");
+        self.parked = vec![false; carriers as usize];
     }
 
     /// Wakes `carrier` once the kernel lock is released, so an idle wait
@@ -1237,6 +1300,7 @@ impl Scheduler {
     fn wake_carrier(&mut self, carrier: ready::Carrier) {
         if carrier != self.current {
             self.wakes.mark(carrier);
+            self.parked[carrier.0 as usize] = false;
         }
     }
 
@@ -3973,8 +4037,9 @@ mod tests {
         assert_eq!(unsafe { libc::write(fd, (&raw const byte).cast(), 1) }, 1);
     }
 
-    /// A carrier's idle sleep and descriptor wait both end at a byte on its
-    /// wake pipe, and empty every pipe that woke them; only carrier 0 also
+    /// A carrier's idle waits (carrier 1's park, carrier 0's sleep and
+    /// descriptor wait) end at a byte on its wake pipe, and empty every pipe
+    /// that woke them; only carrier 0 also
     /// watches the signal pipe; a task may not wait on a wake pipe itself.
     #[test]
     fn an_idle_wait_ends_at_its_carriers_wake() {
@@ -3998,9 +4063,9 @@ mod tests {
         assert_eq!(scheduler.idle_wake_fds().as_slice(), [fd1], "the signal pipe is carrier 0's");
         wake(&mut scheduler, 1);
         let started = std::time::Instant::now();
-        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the sleep");
-        assert!(started.elapsed() < quick, "the sleep ended at the wake, not the timer");
-        assert!(!readable(fd1), "the sleep emptied the pipe");
+        assert_eq!(carrier::wait_idle(&mut scheduler), None, "the wake ended the park");
+        assert!(started.elapsed() < quick, "the park ended at the wake");
+        assert!(!readable(fd1), "the park emptied the pipe");
 
         scheduler.enter_carrier(ready::Carrier(0));
         assert_eq!(scheduler.idle_wake_fds().as_slice(), [signal_read, fd0]);
