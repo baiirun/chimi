@@ -1940,31 +1940,21 @@ impl Scheduler {
 
     /// Applies what `task`'s resume returned: its park and request, or its end.
     fn complete_run(&mut self, task: TaskId, event: ChimiFiberEvent) {
-        let Some(end) = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take()) else {
-            self.apply_step(task, event);
-            return;
-        };
-        // An end decided while the fiber ran on this carrier, applied now,
-        // as it would have been had the fiber been parked or ready then.
-        self.forcing += u32::from(end.forced);
-        if event.state == ChimiFiberState::Parked as u32 {
-            // Its request, if any, is dropped unserved, as a cancel drops it.
-            let record = self.tasks.get_mut(&task).expect("running task");
-            record.phase = TaskPhase::Parked;
-            record.park += 1;
-            self.emit(task, TaskEventKind::Parked, None, true);
-            self.begin_terminal(task, end.outcome, false);
-        } else {
-            // It ended first: the decided end wins unless the fiber's own
-            // outcome is a defect, as for a cancellation that waited.
-            let record = self.tasks.get_mut(&task).expect("running task");
-            record.terminating = Some(match record.terminating {
-                Some(recorded) if recorded.is_defect() && !end.outcome.is_defect() => recorded,
-                _ => end.outcome,
-            });
-            self.apply_step(task, event);
+        let end = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());
+        self.apply_step(task, event);
+        // An end decided while the fiber ran on this carrier applies as if
+        // decided just after this step: the step's park is served first, as
+        // one carrier always serves it, and an end the step already reached
+        // is not overridden.
+        if let Some(end) = end
+            && self.tasks.get(&task).is_some_and(|record| record.phase.is_live())
+        {
+            if end.forced {
+                self.force_terminal(task, end.outcome, false);
+            } else {
+                self.cancel_task(task, end.outcome);
+            }
         }
-        self.forcing -= u32::from(end.forced);
     }
 
     /// Applies an ordinary step's return: a park and its request, or the end.
@@ -2495,7 +2485,6 @@ impl Scheduler {
         let forced = self.forcing > 0;
         let record = self.tasks.get_mut(&task).expect("running task");
         debug_assert_ne!(record.carrier, self.current, "a running task ends on its own carrier");
-        record.command = ChimiFiberCommand::Cancel;
         record.pending_end = Some(match record.pending_end {
             Some(recorded) if recorded.outcome.is_defect() || !outcome.is_defect() => jobs::PendingEnd {
                 outcome: recorded.outcome,
@@ -3373,6 +3362,62 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, task).expect("cancel");
         assert!(scheduler.jobs.is_empty());
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+    }
+
+    thread_local! {
+        static SERVED_STATUS: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    }
+
+    /// Asks the time once, records the answer's status, then parks until
+    /// cancelled.
+    unsafe extern "C" fn ask_the_time_then_park(_context: *mut c_void) -> crate::ChimiFiberResult {
+        let mut request = SchedulerRequest {
+            kind: REQUEST_TIMER_NOW,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value: 0,
+            entry: None,
+            context: std::ptr::null_mut(),
+        };
+        let mut command = unsafe {
+            crate::chimi_fiber_request((&raw mut request).cast(), std::ptr::null())
+        };
+        SERVED_STATUS.with(|served| served.set(request.status));
+        while command != ChimiFiberCommand::Cancel {
+            command = unsafe { crate::chimi_fiber_park(std::ptr::null()) };
+        }
+        crate::ChimiFiberResult {
+            state: ChimiFiberState::Cancelled as u32,
+            value: 0,
+            defect_code: 0,
+        }
+    }
+
+    /// A cancel decided while the fiber runs elsewhere applies after the
+    /// step it interrupts: the request that step parks on is served first,
+    /// as one carrier serves it, and only then is the fiber unwound.
+    #[test]
+    fn a_pending_end_serves_the_request_its_step_parked_on() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        SERVED_STATUS.with(|served| served.set(u32::MAX));
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let task = scheduler.start_root(ask_the_time_then_park).expect("task");
+        let runnable = scheduler
+            .ready
+            .pop_front(ready::Carrier(1))
+            .and_then(|task| scheduler.prepare_run(task))
+            .expect("runnable");
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.cancel(None, task).expect("cancel");
+        scheduler.enter_carrier(ready::Carrier(1));
+        let event = resume_fiber(runnable.fiber, runnable.command);
+        scheduler.complete(runnable, event);
+        assert_eq!(SERVED_STATUS.with(std::cell::Cell::get), RESPONSE_OK);
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 

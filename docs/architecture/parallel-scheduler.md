@@ -540,9 +540,13 @@ four keep one carrier.
          unwind's result decides a defect, overflow or park) and
          `end_drained` (drop the fiber, cancel children and supervisors,
          publish), shared by the inline path and the job. A pending end
-         applies in `complete_run`: a fiber that parked is unwound there;
-         one that ended takes the decided end as `terminating`, so its own
-         defect still wins. With one carrier no job or pending end is ever
+         applies in `complete_run` as if decided just after the step: the
+         step's park and request are served first, as one carrier always
+         serves them (a scope exit or a transfer completion must not be
+         dropped), and then, if the task is still live, it is cancelled
+         (`cancel_task`), or forced (`force_terminal`) when the end was.
+         An end the step already reached is not overridden, as a cancel
+         after the end is ignored with one carrier. With one carrier no job or pending end is ever
          made, so the inline path is the old code. A process shutdown off
          its home carrier (`await_incarnation`, `force`) is 5b-4's. Mutants in `unwind_jobs_mutations.py`,
          all eight killed.
@@ -553,6 +557,13 @@ four keep one carrier.
        at once forever). Process teardown, which must finish
        synchronously, enters the home carrier in 5b; 5c must run it on
        each carrier before the carriers exit.
+       - Left for 5b-5 and 5b-6 (review): a queued job must wake its home
+         carrier, and the idle check must count every carrier's jobs, or a
+         home carrier asleep in its idle wait leaves the task draining with
+         its fiber, and carrier 0 could report a deadlock. Left for 5c: a
+         scheduler dropped with a job queued drops that parked fiber on
+         the dropping thread; each carrier must run its jobs before it
+         exits.
      - 5b-5: wake descriptors. One non-blocking pipe per carrier, none with
        one carrier. The kernel marks carriers under the lock (work queued
        for another carrier; a reactor, child or signal wait registered off

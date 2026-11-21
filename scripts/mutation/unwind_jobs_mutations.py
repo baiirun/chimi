@@ -37,9 +37,15 @@ MUTATIONS = [
       "        if false {",
       "a_cancel_while_the_fiber_runs_elsewhere_applies_when_it_parks"),
     m("a pending end is never applied",
-      "        let Some(end) = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take()) else {",
-      "        let Some(end) = self.tasks.get_mut(&task).and_then(|_record| None::<jobs::PendingEnd>) else {",
+      "        let end = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());",
+      "        let end = self.tasks.get_mut(&task).and_then(|_record| None::<jobs::PendingEnd>);",
       "a_cancel_while_the_fiber_runs_elsewhere_applies_when_it_parks"),
+    m("a pending end drops the request its step parked on",
+      "        self.apply_step(task, event);\n        // An end decided",
+      "        if end.is_none() {\n            self.apply_step(task, event);\n        } else {\n"
+      "            let record = self.tasks.get_mut(&task).expect(\"running task\");\n"
+      "            record.phase = TaskPhase::Parked;\n            record.park += 1;\n        }\n        // An end decided",
+      "a_pending_end_serves_the_request_its_step_parked_on"),
     m("a carrier runs no jobs",
       "            while let Some(job) = self.jobs.pop_front(self.current) {",
       "            while let Some(job) = None::<jobs::Job> {",

@@ -18,7 +18,9 @@ pub(super) enum Job {
     Unwind { task: TaskId, forced: bool },
 }
 
-/// An end decided while the task's fiber ran on another carrier.
+/// An end decided while the task's fiber ran on another carrier: its home
+/// carrier applies it once the resume returns, as a cancel (`cancel_task`)
+/// or, when `forced`, a forced end (`force_terminal`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PendingEnd {
     pub(super) outcome: TaskOutcome,
