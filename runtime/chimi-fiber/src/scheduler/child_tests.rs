@@ -525,3 +525,29 @@ fn a_withdraw_wakes_a_child_wait_on_its_resource() {
     child.kill().unwrap();
     assert!(!reap(child).success());
 }
+
+unsafe extern "C" fn wait_after_a_withdraw(context: *mut c_void) -> ChimiFiberResult {
+    let mut withdraw = blank(REQUEST_IO_WITHDRAW);
+    withdraw.channel = CHILD_RESOURCE;
+    call(&mut withdraw);
+    let started = now();
+    let mut request = blank(REQUEST_CHILD_WAIT);
+    request.value = context as usize as i64;
+    request.channel = CHILD_RESOURCE;
+    issue(&mut request);
+    note(i64::from(request.status));
+    note(i64::from(now() - started < 1_000_000_000));
+    succeeded(0)
+}
+
+/// A child wait on a withdrawn key answers PENDING at once, while the child
+/// still runs, as an IO wait does (see reactor.rs).
+#[test]
+fn a_child_wait_on_a_withdrawn_key_answers_at_once() {
+    let mut child = shell("exec sleep 5");
+    let (outcome, seen) = run(wait_after_a_withdraw, process_abi::CLOCK_REAL, pid_context(&child));
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    assert_eq!(seen, [i64::from(RESPONSE_PENDING), 1]);
+    child.kill().unwrap();
+    assert!(!reap(child).success());
+}
