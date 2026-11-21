@@ -712,7 +712,7 @@ impl Scheduler {
                 return RootStep::WaitForSignal(self.idle_wake_fds());
             }
             Idle::Stalled(_) if root_live(self) => {
-                self.stop_carriers();
+                self.stop_carriers(super::carrier::RunEnd::Parked);
                 return RootStep::Parked;
             }
             Idle::Stalled(_) | Idle::Quiescent => {}
@@ -725,12 +725,19 @@ impl Scheduler {
             return RootStep::Continue;
         }
         self.shutdown_processes();
-        if !self.has_blocked_plans() && self.ready.is_empty() && self.jobs.is_empty() {
-            self.stop_carriers();
-            RootStep::Finished
-        } else {
-            RootStep::Continue
+        if !self.ready.is_empty() || !self.jobs.is_empty() {
+            return RootStep::Continue;
         }
+        // A process left with a timer pending (a shutdown deadline) is
+        // given it. With none, every carrier is idle and nothing can move a
+        // process but forcing it, so the run forces what is left and ends
+        // once nothing is, or forcing moves nothing.
+        let left = !self.kernel.incarnations.is_empty() || self.has_blocked_plans();
+        if left && (self.timers.earliest().is_some() || self.force_survivors()) {
+            return RootStep::Continue;
+        }
+        self.stop_carriers(super::carrier::RunEnd::Finished);
+        RootStep::Finished
     }
 
     /// The finished root's outcome, its value handed to the caller.

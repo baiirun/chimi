@@ -807,8 +807,9 @@ pub struct Scheduler {
     /// never parks this way; it waits for the others.
     parked: Vec<bool>,
     /// Set when a run ends (`stop_carriers`): every carrier but 0 leaves
-    /// its loop at its next idle step instead of parking.
-    stopping: bool,
+    /// its loop at its next idle step instead of parking, retiring its
+    /// fibers first if the run finished.
+    run_end: Option<carrier::RunEnd>,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -871,8 +872,13 @@ fn reply_with_outcome(request: &mut SchedulerRequest, outcome: TaskOutcome) {
 
 impl Drop for Scheduler {
     fn drop(&mut self) {
-        // Teardown runs on one thread. With several carriers each must run
-        // its own jobs and process teardown before it exits (PR 5c).
+        // Teardown runs on the dropping thread, resuming any fiber here,
+        // which only a kernel whose carriers all ran on this thread may do.
+        // A finished run on several threads leaves it nothing off carrier 0:
+        // the run forces the processes left before it ends
+        // (`force_survivors`), and each other carrier checks it holds no
+        // fiber as it leaves (`retire_carrier`). A parked run keeps its
+        // fibers on their carriers, so dropping it is for one thread only.
         self.any_carrier = true;
         self.run_queued_jobs();
         if !self.kernel.incarnations.is_empty() || self.has_blocked_plans() {
@@ -930,7 +936,7 @@ impl Scheduler {
             any_carrier: false,
             wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
             parked: vec![false],
-            stopping: false,
+            run_end: None,
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -1090,14 +1096,17 @@ impl Scheduler {
     }
 
     /// The idle step of a carrier other than 0: leave the loop once the run
-    /// has ended; else fire the timers already due and drain this carrier's
+    /// has ended (checking it left nothing here if it finished); else fire the timers already due and drain this carrier's
     /// host releases, and if that left it nothing to run, park on its wake
     /// pipe (under the real clock only until the earliest timer, so a timer
     /// is not held up by a busy carrier 0). The last carrier to park wakes
     /// carrier 0, which alone decides whether the program is finished,
     /// stuck, or due a virtual-time jump.
     fn park_step(&mut self) -> carrier::IdleStep {
-        if self.stopping {
+        if let Some(end) = self.run_end {
+            if end == carrier::RunEnd::Finished {
+                self.retire_carrier();
+            }
             return carrier::IdleStep::Exit;
         }
         if self.refill_before_waiting() {
@@ -1144,19 +1153,42 @@ impl Scheduler {
 
     /// Starts a run of `root`: the carriers run until it ends again.
     pub(super) fn begin_run(&mut self, root: TaskId) {
-        self.stopping = false;
+        self.run_end = None;
         self.set_signal_root(root);
     }
 
     /// Ends the run for every carrier: each one but 0 leaves its loop at
     /// its next idle step (`IdleStep::Exit`), and a parked one is woken to
     /// take it. Called in the kernel hold that ends the run, so no carrier
-    /// parks after it without seeing it.
-    pub(super) fn stop_carriers(&mut self) {
-        self.stopping = true;
+    /// parks after it without seeing it. A parked run's carriers keep their
+    /// fibers for the next run.
+    pub(super) fn stop_carriers(&mut self, end: carrier::RunEnd) {
+        self.run_end = Some(end);
         for carrier in 1..self.ready.carriers() {
             self.wake_carrier(ready::Carrier(carrier));
         }
+    }
+
+    /// Checks, as a carrier other than 0 leaves a finished run, that the
+    /// run left it nothing to resume or destroy: no job, and no task homed
+    /// here still holding its fiber. A finished run ends only once every
+    /// process is gone (`root_step`), and every other task on such a
+    /// carrier belongs to a process body, so its fibers all ended there;
+    /// `Drop`, on carrier 0's thread, then never touches one of them.
+    /// Panics otherwise: such a fiber could only be destroyed off its home.
+    fn retire_carrier(&self) {
+        let current = self.current;
+        assert!(self.jobs.is_empty_for(current), "a finished run left a job on carrier {}", current.0);
+        let held = self
+            .tasks
+            .iter()
+            .find(|(_, record)| record.carrier == current && record.fiber.is_some());
+        assert!(
+            held.is_none(),
+            "a finished run left task {:?} holding its fiber on carrier {}",
+            held.map(|(task, _)| *task),
+            current.0
+        );
     }
 
     /// True when `carrier` has a ready task or a job.

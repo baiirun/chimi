@@ -132,6 +132,16 @@ pub(super) enum IdleStep {
     Exit,
 }
 
+/// How a run ended for the carriers (`Scheduler::stop_carriers`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RunEnd {
+    /// The root finished and no process is left: no carrier but 0 holds a
+    /// fiber any more (`Scheduler::retire_carrier` checks it).
+    Finished,
+    /// The root waits on the host: the fibers stay for the next run.
+    Parked,
+}
+
 /// What a carrier does after one idle step.
 #[derive(Debug, PartialEq)]
 pub(super) enum Waited {
