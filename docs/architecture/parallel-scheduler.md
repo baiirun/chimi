@@ -601,9 +601,13 @@ four keep one carrier.
          only carrier 0 also watches the signal pipe. A task may not wait
          on a wake pipe. With one carrier no pipe exists, and the wait
          descriptors are held in a fixed array, so nothing allocates.
-         Tests in `scheduler.rs` cover each mark, the write after unlock,
-         and each wait ending at its carrier's byte. Mutants in
-         `wake_pipe_mutations.py`, all 19 killed.
+         The carrier loop's idle step is `carrier::wait_idle`, so a test
+         can run one. Tests in `scheduler.rs` cover each mark, the write
+         after unlock, each wait (the loop's sleep, a descriptor wait, a
+         stalled root's) ending at its carrier's byte, and a wait emptying
+         both the signal and the wake pipe. Mutants in
+         `wake_pipe_mutations.py`, all 24 killed; the last five came from
+         the verifier's own run against the whole suite.
        - Left for 5b-6 (review): `idle_step` still lets any carrier build a
          descriptor wait or a timed sleep; 5b-6 restricts both to carrier
          0, which the marks already assume. Left for 5c: the stop mark, and
