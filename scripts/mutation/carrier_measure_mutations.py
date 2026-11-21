@@ -17,7 +17,10 @@ def lab(name, file, old, new, filter=""):
 
 
 def epoch(name, old, new):
-    return dict(name=name, file=C, edits=[(old, new)], targets=["carriers", "carrier_stress"], filter="")
+    # The carrier-threads fixture takes epochs and span ids on four threads
+    # and checks that none repeats; the program suites cannot see a repeat.
+    return dict(name=name, file=C, edits=[(old, new)], targets=["runtime_state"],
+                filter="across_carrier_threads")
 
 
 MUTATIONS = [
@@ -63,4 +66,13 @@ MUTATIONS = [
     epoch("blocks overlap between carriers",
           "atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);",
           "atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);"),
+    epoch("a carrier never takes a span block",
+          "  if (carrier->end_span - carrier->next_span < count) {",
+          "  if (false) {"),
+    epoch("span blocks overlap between carriers",
+          "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);",
+          "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);"),
+    epoch("one carrier's epochs restart at every block",
+          "    carrier->next_epoch = start;\n",
+          "    carrier->next_epoch = start - (start > 1 ? 1 : 0);\n"),
 ]

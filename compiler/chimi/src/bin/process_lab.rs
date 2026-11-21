@@ -53,6 +53,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut kinds: Option<Vec<Kind>> = None;
     let mut baseline = None;
     let mut options = Options::default();
+    let mut carriers_given = false;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         let mut value = |flag: &str| {
@@ -86,6 +87,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 );
             }
             "--carriers" => {
+                carriers_given = true;
                 let count = value("--carriers")?;
                 // Digits only, as the runner takes them: `parse` alone
                 // would accept a leading `+`.
@@ -136,8 +138,12 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 .into(),
         );
     }
-    if options.carriers > 1 && !measures_gates {
+    if carriers_given && !measures_gates {
         return Err("--carriers runs performance gates; add the `performance` kind".into());
+    }
+    // The saved baselines were measured on one carrier.
+    if baseline.is_some() && options.carriers > 1 {
+        return Err("--baseline compares one-carrier gates; leave out --carriers".into());
     }
     Ok((kinds, options, baseline))
 }

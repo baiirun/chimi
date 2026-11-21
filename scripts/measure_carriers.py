@@ -73,23 +73,33 @@ def median_time(executable, carriers, arguments, expected, samples, scratch):
     )
 
 
-def independent_copies(executable, copies, arguments, samples):
+def independent_copies(executable, copies, arguments, expected, samples, scratch):
     """The wall time of `copies` one-carrier runs at once: what this host
     gives `copies` threads with nothing shared, the ceiling for a speedup."""
 
     def once():
+        outcomes = [scratch / f"copy-{index}.jsonl" for index in range(copies)]
+        for outcome in outcomes:
+            if outcome.exists():
+                outcome.unlink()
         started = time.perf_counter_ns()
         children = [
             subprocess.Popen(
-                [str(executable), "--chimi-runner", "--clock=real", "--trace=off", "--", *arguments],
+                [str(executable), "--chimi-runner", "--clock=real", "--trace=off",
+                 f"--outcome-file={outcome}", "--", *arguments],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
-            for _ in range(copies)
+            for outcome in outcomes
         ]
         if any(child.wait() != 0 for child in children):
             sys.exit(f"an independent copy of {executable} failed")
-        return time.perf_counter_ns() - started
+        elapsed = time.perf_counter_ns() - started
+        for outcome in outcomes:
+            line = json.loads(outcome.read_text().splitlines()[-1])
+            if line.get("outcome") != "success" or line.get("value") != expected:
+                sys.exit(f"an independent copy of {executable} ended with {line}, expected {expected}")
+        return elapsed
 
     once()
     return statistics.median(once() for _ in range(samples))
@@ -142,7 +152,7 @@ def main():
             # n copies, each with 1/n of the counting work.
             row["independent_count_ms"] = independent_copies(
                 fan_out, carriers, [str(options.fan_out_size // carriers), "0"],
-                options.samples) / 1e6
+                8 * (options.fan_out_size // carriers), options.samples, scratch) / 1e6
             row["fan_out_lists_ms"] = median_time(
                 fan_out, carriers, [str(options.list_size), "1"],
                 8 * options.list_size, options.samples, scratch) / 1e6

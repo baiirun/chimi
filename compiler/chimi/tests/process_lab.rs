@@ -151,6 +151,8 @@ fn a_baseline_or_injection_without_performance_is_an_error() {
         &["static", "--baseline", baseline][..],
         &["static", "--inject-pg05-regression", "3"],
         &["static", "--carriers", "2"],
+        &["static", "--carriers", "1"],
+        &["performance", "--baseline", baseline, "--carriers", "2"],
         &[
             "performance",
             "--scenario",

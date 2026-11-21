@@ -109,6 +109,9 @@ static int64_t shared_file;
 static _Atomic int64_t closed_reads;
 /* Per thread, then per round. */
 static uint64_t spans[THREADS * ROUNDS];
+/* Three mark epochs per round, so each thread takes more than one block. */
+enum { EPOCHS_PER_ROUND = 3 };
+static uint64_t epochs[THREADS * ROUNDS * EPOCHS_PER_ROUND];
 static uint64_t draws[THREADS * ROUNDS];
 
 /* A binding handle's state. A use counts itself in `users` for its length, so
@@ -333,6 +336,8 @@ static void *carrier_thread(void *raw_index) {
     }
     uint64_t span = begin_node(&runtime, 0, 1, "carrier_round");
     spans[index * ROUNDS + round] = span;
+    for (uint32_t epoch = 0; epoch < EPOCHS_PER_ROUND; ++epoch)
+      epochs[(index * ROUNDS + round) * EPOCHS_PER_ROUND + epoch] = take_mark_epoch();
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
     ChimiSchedulerTraceEvent started = {.task = index + 1};
     emit_scheduler_event(&runtime, &started);
@@ -494,6 +499,17 @@ static ChimiValue *constant_window(void) {
 }
 
 /* On one carrier, a short window of a constant compacts it, as any list. */
+/* One carrier sees the epochs and span ids a single shared counter would
+   give: consecutive, across a block boundary. */
+static void a_carrier_alone_takes_consecutive_ids(void) {
+  uint64_t first = take_mark_epoch();
+  for (uint64_t taken = 1; taken < 2 * MARK_EPOCH_BLOCK; ++taken)
+    CHECK(take_mark_epoch() == first + taken, "one carrier's epochs skip after %" PRIu64, first + taken - 1);
+  uint64_t span = take_spans(&runtime, 1);
+  CHECK(take_spans(&runtime, 3) == span + 1 && take_spans(&runtime, 1) == span + 4,
+        "one carrier's span ids are not consecutive");
+}
+
 static void a_constant_compacts_on_one_carrier(void) {
   ChimiValue *constant = constant_window();
   ChimiValue *window = list_slice(constant, 1, 5);
@@ -608,6 +624,7 @@ int main(void) {
   decode_constants();
   a_close_during_a_read_waits_for_it();
   a_constant_compacts_on_one_carrier();
+  a_carrier_alone_takes_consecutive_ids();
   carriers_create(THREADS + 1);
   CHECK(carrier_count == THREADS + 1, "%zu carriers", carrier_count);
   a_fiber_on_an_unbound_thread_aborts(start_a_task_unbound, "task");
@@ -665,10 +682,17 @@ int main(void) {
   CHECK(carrier_first.heap_totals.live_fragments == before.live_fragments - THREADS * ROUNDS,
         "carrier 0 counts %" PRId64 " fragments", carrier_first.heap_totals.live_fragments);
 
+  /* Several carriers take span ids and mark epochs in blocks, so they are
+     unique but not dense. */
   qsort(spans, THREADS * ROUNDS, sizeof(uint64_t), compare_words);
-  for (size_t index = 0; index < THREADS * ROUNDS; ++index)
-    CHECK(spans[index] == index + 2, "span ids are not 2 to %d: %" PRIu64 " at %zu",
-          THREADS * ROUNDS + 1, spans[index], index);
+  CHECK(spans[0] >= 2, "span id %" PRIu64 " is below 2", spans[0]);
+  for (size_t index = 1; index < THREADS * ROUNDS; ++index)
+    CHECK(spans[index] != spans[index - 1], "span id %" PRIu64 " taken twice", spans[index]);
+  size_t epoch_count = THREADS * ROUNDS * EPOCHS_PER_ROUND;
+  qsort(epochs, epoch_count, sizeof(uint64_t), compare_words);
+  CHECK(epochs[0] != 0, "mark epoch 0, which every new header holds, was handed out");
+  for (size_t index = 1; index < epoch_count; ++index)
+    CHECK(epochs[index] != epochs[index - 1], "mark epoch %" PRIu64 " taken twice", epochs[index]);
 
   rewind(runtime.telemetry);
   char line[1024];

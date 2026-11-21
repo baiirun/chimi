@@ -61,7 +61,7 @@ fn carriers() -> u32 {
 }
 
 /// The gates measured above one carrier: their workload, `members`, never
-/// sleeps and already runs under the real clock.
+/// sleeps, so the real clock that several carriers need changes nothing.
 pub(super) fn runs_on_carriers(id: &str) -> bool {
     matches!(id, "PG04" | "PG05" | "PG08")
 }

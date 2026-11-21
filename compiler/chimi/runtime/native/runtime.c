@@ -593,6 +593,11 @@ typedef struct {
      next_mark_epoch a block at a time (take_mark_epoch). */
   uint64_t next_epoch;
   uint64_t end_epoch;
+  /* This carrier's unused span ids, [next_span, end_span), taken from the
+     runtime's counter a block at a time when several carriers run
+     (take_spans). */
+  uint64_t next_span;
+  uint64_t end_span;
   PointerStack mark_stack;
   PointerStack copy_stack;
   /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
@@ -2583,9 +2588,36 @@ static void profile_leave(uint32_t outer) {
   if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
 }
 
+/* Span ids a carrier takes from the runtime's counter at once when several
+   carriers run. Traced modes take a span per node, and one shared fetch-add
+   per node made a traced counting loop slower on four carriers than on one
+   (step 3 PR 6a review). */
+enum { SPAN_BLOCK = 4096 };
+
+/* `count` consecutive span ids that no other node has; returns the first.
+   One carrier takes them straight from the counter, so its ids stay dense
+   and in order, as a transcript expects; with several, ids are unique but
+   neither dense nor ordered across carriers. */
+static uint64_t take_spans(ChimiRuntime *runtime, uint64_t count) {
+#ifdef CHIMI_CARRIER_SIMULATION
+  /* The simulated carriers share one thread, so nothing contends. */
+  return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
+#else
+  if (carrier_count == 1) return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
+  if (carrier->end_span - carrier->next_span < count) {
+    uint64_t size = count > SPAN_BLOCK ? count : SPAN_BLOCK;
+    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);
+    carrier->end_span = carrier->next_span + size;
+  }
+  uint64_t first = carrier->next_span;
+  carrier->next_span += count;
+  return first;
+#endif
+}
+
 static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
   if (runtime->silent) return parent;
-  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+  uint64_t span = take_spans(runtime, 1);
   if (runtime->full_trace) emit_event(runtime, "operation_started", node, span, (int64_t)parent, operation, NULL);
   return span;
 }
@@ -3404,7 +3436,7 @@ static ChimiValue *application_arguments(int32_t count, const char **argv) {
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
 ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t node_count,
                                                int64_t raw) {
-  if (!runtime->silent) atomic_fetch_add_explicit(&runtime->next_span, node_count, memory_order_relaxed);
+  if (!runtime->silent) take_spans(runtime, node_count);
   return success(integer_value(raw));
 }
 
@@ -7506,7 +7538,7 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_CONSTRUCTOR) return construct_value(callable->symbol, arguments);
   if (callable->kind == CALL_DEPENDENCY) {
     if (!runtime->silent) {
-      uint64_t dependency_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+      uint64_t dependency_span = take_spans(runtime, 1);
       emit_dependency(runtime, call_node, dependency_span, span, callable);
     }
     return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
@@ -8846,7 +8878,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
       arguments[argument_count++] = argument_roots[0];
     }
   }
-  uint64_t span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);
+  uint64_t span = take_spans(runtime, 1);
   if (!control)
     control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
                      new_environment(0));
@@ -13191,6 +13223,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     for (uint32_t repeat = 0; repeat < benchmark_repeats; ++repeat) {
       runtime.next_sequence = 0;
       runtime.next_span = 2;
+      for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
+        carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {
