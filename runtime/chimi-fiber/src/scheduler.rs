@@ -1459,6 +1459,9 @@ impl Scheduler {
         if let Some(fd) = self.wakes.read_fd(self.current) {
             fds.push(fd);
         }
+        if let Some((pending, spin)) = self.wakes.pending(self.current) {
+            fds.watch(pending, spin);
+        }
         fds
     }
 
@@ -4209,6 +4212,38 @@ mod tests {
         let byte = 1_u8;
         // SAFETY: a one-byte buffer that outlives the call.
         assert_eq!(unsafe { libc::write(fd, (&raw const byte).cast(), 1) }, 1);
+    }
+
+    /// An idle carrier spins on its wake flag before it blocks, so a wake
+    /// seen there ends the park with no byte read: here the flag is set
+    /// alone, and a byte written a second later is only a backstop that
+    /// would end a park that skipped the spin.
+    #[test]
+    fn an_idle_carrier_sees_a_wake_while_it_spins() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        let (pending, spin) = scheduler.wakes.pending(ready::Carrier(1)).expect("a flag");
+        if spin.is_zero() {
+            // Fewer cores than carriers: nothing spins on this host.
+            return;
+        }
+        scheduler.enter_carrier(ready::Carrier(1));
+        let _task = start_parked(&mut scheduler);
+        scheduler.wakes.mark(ready::Carrier(1));
+        let marked = scheduler.take_wakes();
+        // SAFETY: the flag lives in the scheduler's `Wakes`, alive here.
+        unsafe { &*pending }.store(true, std::sync::atomic::Ordering::Release);
+        let backstop = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            marked.write();
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the park ended at the flag, not at the backstop's byte"
+        );
+        backstop.join().expect("backstop");
     }
 
     /// A carrier's idle waits (carrier 1's park, carrier 0's sleep and

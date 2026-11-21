@@ -1007,6 +1007,17 @@ four keep one carrier.
      one); a carrier on a thread now takes span ids 4,096 at a time
      (`take_spans`), so they are unique but not dense across carriers.
      Kept at one carrier by default (decisions.md, 2026-11-21).
+   - 6c as landed: an idle carrier spins up to 50 µs on a wake flag
+     (`WakeFds::spin`, set by `Marked::write` after the byte) before it
+     blocks, and only when every carrier can have a core. A spin that sees
+     the flag empties the watched pipes, as a blocking wait would, so the
+     pipe stays the authority and a flag or byte left over only ends one
+     later wait early. A signal that lands during a spin is seen when the
+     spin ends, about 50 µs late while the spinner holds its core. Carrier
+     0's descriptor wait and a stalled root's signal wait do not spin. Cross-carrier round trips fell from 22-39
+     µs to 8-10 µs; PG04's start and stop, which are kernel-lock bound, did
+     not improve (stop got slower), so their fix is step 4's sharded kernel.
+     Numbers: multi-carrier-baseline.md "Spinning before a carrier blocks".
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.
