@@ -45,7 +45,7 @@ MUTATIONS = [
         "        let end = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());",
         "        let _ = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());\n        let end: Option<jobs::PendingEnd> = None;",
     )]),
-    dict(name="M9 first resume elsewhere keeps the old home", file=S, targets=T, edits=[(
+    dict(name="M9 first resume elsewhere keeps the old home", file=S, targets=["carrier_stress", "carriers"], edits=[(
         "        if !record.ran {\n            record.carrier = self.current;\n        }\n",
         "",
     )]),

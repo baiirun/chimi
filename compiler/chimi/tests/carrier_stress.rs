@@ -5,6 +5,7 @@
 //! tokens, selects racing plain receives on one queue, a restart storm with
 //! shutdown deadlines, stops that force processes parked in their cleanup,
 //! stops that force processes with live tasks (some with a zero deadline),
+//! deadlines that fire away from the busy bodies they force,
 //! and socket handles opened and closed on every carrier. A run that has
 //! not ended after two minutes fails as a hang.
 
@@ -467,6 +468,89 @@ pub fn main() -> Int needs { clock: Clock } {
 }
 "#;
 
+/// Thirty times, eight processes reply once and then spin and sleep 1 ms
+/// in turn inside `Resource.scoped`, and are stopped with a 1 ms or 3 ms
+/// deadline. Each stop finds bodies mid-spin on other carriers, so their
+/// deadlines fire away from home and the force waits for each body's own
+/// carrier to end it.
+const BUSY_FORCED: &str = r#"
+pub enum Message {
+  Go(reply: Sender<Int>, released: Sender<Int>)
+}
+
+fn spin(n: Int) -> Int {
+  loop i = 0 {
+    case i == n {
+      True -> break i
+      False -> i + 1
+    }
+  }
+}
+
+fn busy(inbox: Inbox<Message>) -> Void needs { clock: Clock } {
+  case Process.receive(inbox) {
+    Message.Go(reply, released) -> {
+      Resource.scoped(fn() { 1 }, fn(token: Int) { Channel.send(released, token) }, fn(token: Int) {
+        Channel.send(reply, token)
+        loop i = 0 {
+          let _ = spin(5000)
+          Clock.sleep(Duration.milliseconds(1))
+          i + 1
+        }
+        Void
+      })
+    }
+  }
+}
+
+fn round(within: Duration.Duration) -> Int needs { clock: Clock } {
+  let spec = Process.spec(busy, 4, within)
+  let replies = Channel.bounded(8)
+  let released = Channel.bounded(8)
+  let root = Supervisor.start(Supervisor.policy([], 8, Supervisor.restarts(0, Duration.seconds(30))))
+  let started = loop w = 0 {
+    case w == 8 {
+      True -> break w
+      False -> {
+        let to = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))
+        let _ = Process.send(to, Message.Go(replies.sender, released.sender))
+        w + 1
+      }
+    }
+  }
+  let heard = loop count = 0 {
+    case count == started {
+      True -> break count
+      False -> {
+        let next = Channel.receive(replies.receiver)
+        case next {
+          Receive.Received(one) -> count + one
+          Receive.Drained -> break -100
+        }
+      }
+    }
+  }
+  Supervisor.stop(root)
+  heard
+}
+
+pub fn main() -> Int needs { clock: Clock } {
+  loop state = (0, 0) {
+    let (n, total) = state
+    case n == 30 {
+      True -> break total
+      False -> {
+        let within = case n % 2 == 0 {
+          True -> Duration.milliseconds(1)
+          False -> Duration.milliseconds(3)
+        }
+        (n + 1, total + round(within))
+      }
+    }
+  }
+}
+"#;
+
 /// Four processes on carriers of their own each open a loopback listener,
 /// connect to it, echo a line and close both ends, 25 times.
 const HANDLE_CHURN: &str = r#"
@@ -661,6 +745,11 @@ fn stops_that_force_processes_parked_in_their_cleanup_end_every_round() {
 #[test]
 fn stops_with_zero_and_short_deadlines_force_bodies_with_live_tasks() {
     stress("tasks", FORCED_WITH_TASKS, 200, 10);
+}
+
+#[test]
+fn deadlines_that_fire_away_from_home_force_busy_bodies() {
+    stress("busy", BUSY_FORCED, 240, 5);
 }
 
 #[test]

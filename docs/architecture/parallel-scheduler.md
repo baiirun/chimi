@@ -900,20 +900,38 @@ four keep one carrier.
        test forces an unstarted body from carrier 0, and a program stops
        six busy processes with a 50 ms deadline on four carriers.
    - 5e, the looped stress programs at 2 to 8 carriers.
-     - 5e as landed: tests/carrier_stress.rs builds five programs whose
+     - 5e as landed: tests/carrier_stress.rs builds seven programs whose
        value does not depend on interleaving or timing, and runs each on 1,
-       2, 4 and 8 carriers (10 or 20 times each in the suite): six
-       processes in a ring passing four tokens 3000 hops each; six
-       receivers of one queue, half in `Select.first` and half in
-       `Channel.receive`, taking 1 to 4000 with none lost or doubled; four
+       2, 4 and 8 carriers (10 or 20 times each in the suite, two minutes
+       at most per run): six processes in a ring passing four tokens 3000
+       hops each; eight receivers of one queue fed by three producer
+       processes, half in a two-arm `Select.first` and half in
+       `Channel.receive`, taking 1 to 6000 with none lost or doubled; four
        registered workers that defect after every second answer, about a
-       hundred restarts with 10 ms shutdown deadlines, a lost round asked
-       again after 20 ms; twenty rounds of six processes stopped with a
-       5 ms deadline while their `Resource.scoped` release sleeps, so each
-       cancellation unwind parks at home and is forced; and four processes
+       hundred restarts while main keeps asking; twenty rounds of six
+       processes stopped with a 5 ms deadline while their
+       `Resource.scoped` release sleeps, so each cancellation unwind parks
+       at home and is forced; twenty-five rounds of eight processes with
+       three sleeping tasks each, stopped with 2 ms and zero deadlines, so
+       forced bodies' tasks end through unwind jobs; thirty rounds of
+       eight processes stopped mid-spin with 1 ms and 3 ms deadlines, so
+       deadlines fire away from the bodies they force; and four processes
        opening, echoing over and closing loopback sockets 25 times each.
-       Before landing, each ran 150 times at 2, 4 and 8 carriers (2250
-       runs) on the debug fiber archive with no failure.
+       The review's verifier found a heap corruption the first programs
+       missed, there before 5e and possible on one carrier: a zero shutdown
+       deadline forces a body at once, and `begin_shutdown` (and `force`)
+       wrote `RESPONSE_FORCED` into the request of a body that was
+       Runnable, whose request had already been answered (a woken task
+       keeps its request pointer until it resumes). A `Channel.send` whose
+       value the receiver had taken then read as forced, and the C runtime
+       freed the message the receiver owned. At 2 to 8 carriers the
+       verifier's program crashed in about 70% of runs. A force now writes
+       the status only into a parked body's open request; a woken body
+       learns it was forced from its resume's terminal context, as before.
+       Tests: process_tests.rs `a_force_leaves_the_answer_of_a_woken_bodys_send_alone`
+       (deterministic, one carrier) and the zero-deadline stress program,
+       both failing without the fix. Mutants of the cross-carrier paths
+       are in scripts/mutation/carrier_stress_mutations.py.
        Hazards closed: a process body now makes the bound-carrier check a
        task makes (`require_bound_carrier`); the fixture tests it through
        the task entry, since the process entry is built only into the
