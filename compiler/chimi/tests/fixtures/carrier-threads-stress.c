@@ -5,7 +5,7 @@
    - copy values into fragments that another carrier adopts or frees, so a
      carrier's memory counters go below zero and only their sum is the
      process's;
-   - take span ids, emit telemetry events, count the operation profile, draw
+   - take span ids, emit runtime and scheduler telemetry events, count the operation profile, draw
      from the `random` stream and record into one shared test Recorder;
    - read one shared file handle, which one of them closes half way.
 
@@ -143,6 +143,8 @@ static void *carrier_thread(void *raw_index) {
     uint64_t span = begin_node(&runtime, 0, 1, "carrier_round");
     spans[index * ROUNDS + round] = span;
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
+    ChimiSchedulerTraceEvent started = {.task = index + 1};
+    emit_scheduler_event(&runtime, &started);
     profile_leave(profile_enter(0, "carrier_round"));
     draws[index * ROUNDS + round] = random_next();
     ChimiValue *arguments[] = {recorder, list};
@@ -291,7 +293,7 @@ int main(void) {
           events, line);
     ++events;
   }
-  CHECK(events == THREADS * ROUNDS && runtime.trace_events_constructed == events, "%" PRIu64 " events", events);
+  CHECK(events == 2 * THREADS * ROUNDS && runtime.trace_events_constructed == events, "%" PRIu64 " events", events);
 
   CHECK(profile_rows[0].evaluations == THREADS * ROUNDS, "%" PRIu64 " evaluations", profile_rows[0].evaluations);
 

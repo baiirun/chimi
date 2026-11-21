@@ -39,6 +39,13 @@ MUTATIONS = [
         "  fputs(\"}}\\n\", output);\n  pthread_mutex_unlock(&trace_lock);",
         "  if (outcome) { fputs(\"\\\"outcome\\\":\", output); json_string(output, control_name(outcome)); }\n"
         "  fputs(\"}}\\n\", output);")]),
+    m("a scheduler event is written without the trace lock", [(
+        "  FILE *output = runtime->telemetry;\n  pthread_mutex_lock(&trace_lock);\n"
+        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output);\n"
+        "  json_string(output, scheduler_event_name(event));",
+        "  FILE *output = runtime->telemetry;\n"
+        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output);\n"
+        "  json_string(output, scheduler_event_name(event));")]),
     m("span ids come from a plain counter", [(
         "static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {\n"
         "  if (runtime->silent) return parent;\n"
