@@ -62,6 +62,8 @@ enum OnCancel {
     Stubborn,
     /// Cleanup sends to its own direct and named address.
     SendToSelf(u64),
+    /// Cleanup parks with no request, so nothing but a force ends it.
+    Parks,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,6 +79,10 @@ static PLAIN: Behavior = Behavior {
 };
 static STUBBORN: Behavior = Behavior {
     on_cancel: OnCancel::Stubborn,
+    greet: None,
+};
+static PARKS: Behavior = Behavior {
+    on_cancel: OnCancel::Parks,
     greet: None,
 };
 
@@ -361,6 +367,10 @@ fn cleanup(behavior: Behavior, me: u64) -> ChimiFiberResult {
             if sleep_until(i64::MAX) == RESPONSE_FORCED {
                 break;
             }
+        },
+        // A forced body is abandoned at its next park, so this never returns.
+        OnCancel::Parks => loop {
+            unsafe { chimi_fiber_park(ptr::null()) };
         },
         OnCancel::SendToSelf(label) => {
             let direct = send(
@@ -4474,6 +4484,107 @@ fn a_kernel_with_processes_on_another_carrier_tears_down() {
     lab.settle_carriers();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     drop(lab);
+}
+
+unsafe extern "C" fn finishes_at_once(_context: *mut c_void) -> ChimiFiberResult {
+    ChimiFiberResult {
+        state: ChimiFiberState::Succeeded as u32,
+        value: 0,
+        defect_code: 0,
+    }
+}
+
+// ----- The end of a run with processes left (PR 5c-5) ----------------------
+
+/// A finished root's run gives a process still left on another carrier its
+/// shutdown deadline while it is pending, forcing nothing early, and ends
+/// only once the process is gone.
+#[test]
+fn a_finished_run_gives_a_process_left_its_shutdown_deadline() {
+    let second = Duration::from_secs(1);
+    let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
+    stubborn.shutdown_within = second;
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(2);
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.scheduler
+        .start_supervisor(policy(vec![Member::Process(stubborn, Restart::Never)], 0))
+        .unwrap();
+    lab.settle_carriers();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let root = lab.scheduler.start_root(finishes_at_once).unwrap();
+    lab.scheduler.drive();
+    let stopped_at = lab.scheduler.now().as_nanos();
+    let mut deadlock = Vec::new();
+    let mut step = |lab: &mut Lab| {
+        lab.scheduler.enter_carrier(ready::Carrier(0));
+        lab.scheduler.root_step(root, Idle::Quiescent, 1, &mut deadlock)
+    };
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "the stop runs on carrier 1");
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.scheduler.drive();
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Park(_)));
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "its deadline is pending");
+    assert!(lab.terminations().is_empty(), "nothing is forced before the deadline");
+    assert_eq!(lab.scheduler.run_end, None);
+    lab.settle_carriers();
+    assert_eq!(
+        timed_terminations(&lab).last(),
+        Some(&(stopped_at + second.as_nanos() as i64, TerminalCause::Forced))
+    );
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Finished));
+    assert_eq!(lab.scheduler.run_end, Some(carrier::RunEnd::Finished));
+}
+
+/// Stops a supervisor homed on the last carrier from carrier 0 and lets
+/// its home run the member's cleanup, which parks with no request and its
+/// deadline disarmed, so nothing but forcing can end it; then ends a finished
+/// root's run, which forces it, and returns the transcript.
+fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
+    let home = ready::Carrier(carriers - 1);
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(carriers);
+    lab.scheduler.enter_carrier(home);
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(
+            vec![Member::Process(spec_with(&PARKS, Some(COUNTER), 64), Restart::Never)],
+            0,
+        ))
+        .unwrap();
+    lab.settle_carriers();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.stop_supervisor(root);
+    lab.scheduler.enter_carrier(home);
+    lab.scheduler.drive();
+    lab.scheduler.disarm_shutdown_deadlines();
+    assert!(lab.terminations().is_empty(), "the cleanup lingers");
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let main = lab.scheduler.start_root(finishes_at_once).unwrap();
+    lab.scheduler.drive();
+    let mut deadlock = Vec::new();
+    let mut step = |lab: &mut Lab| {
+        lab.scheduler.enter_carrier(ready::Carrier(0));
+        lab.scheduler.root_step(main, Idle::Quiescent, 1, &mut deadlock)
+    };
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "the run forces it");
+    assert_eq!(lab.scheduler.run_end, None);
+    lab.settle_carriers();
+    assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Finished));
+    assert!(!lab.scheduler.force_survivors(), "nothing is left to move");
+    lab.transcript()
+}
+
+/// A finished run whose processes left can only be forced forces them
+/// before it ends, a body on another carrier through its home, with the
+/// transcript one carrier gives.
+#[test]
+fn forcing_the_processes_left_ends_them_at_home_as_one_carrier_does() {
+    let two = force_survivors_from_carrier_zero(2);
+    assert!(two.iter().any(|event| event.ends_with("cause=forced")), "{two:?}");
+    assert_eq!(two, force_survivors_from_carrier_zero(1));
 }
 
 /// A process incarnation runs on its membership id modulo the carrier

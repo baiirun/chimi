@@ -1431,6 +1431,21 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Cancels every stopping incarnation's shutdown deadline, as if it had
+    /// none left: a body then lingers until something forces it.
+    #[cfg(test)]
+    pub(super) fn disarm_shutdown_deadlines(&mut self) {
+        let timers: Vec<_> = self
+            .kernel
+            .incarnations
+            .values_mut()
+            .filter_map(|incarnation| incarnation.stopping.as_mut()?.timer.take())
+            .collect();
+        for timer in timers {
+            self.cancel_timer(timer);
+        }
+    }
+
     /// Each live incarnation's membership and its task's home carrier, in
     /// membership order.
     #[cfg(test)]
@@ -2304,41 +2319,79 @@ impl Scheduler {
         // Force a lingering body whose plan waits on it; a body that already
         // ended and waits only on supervisors it started cannot be forced.
         // A plan whose blocker is already gone is resumed.
-        loop {
-            let next = self
-                .kernel
-                .blocked
-                .keys()
-                .copied()
-                .find(|blocker| match blocker {
-                    Blocker::Incarnation(incarnation) => self
-                        .kernel
-                        .incarnations
-                        .get(incarnation)
-                        .is_none_or(|record| {
-                            !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
-                        }),
-                    Blocker::Supervisor(supervisor) => {
-                        !self.kernel.supervisors.contains_key(supervisor)
-                    }
-                });
-            match next {
-                Some(Blocker::Incarnation(incarnation))
-                    if self.kernel.incarnations.contains_key(&incarnation) =>
-                {
-                    self.force(incarnation);
-                }
-                Some(blocker) => self.resume_blocked(blocker),
-                None => break,
+        while let Some(blocker) = self
+            .kernel
+            .blocked
+            .keys()
+            .copied()
+            .find(|blocker| self.blocker_can_be_cleared(*blocker))
+        {
+            self.clear_blocker(blocker);
+        }
+        let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        for incarnation in leftover {
+            self.end_leftover(incarnation);
+        }
+    }
+
+    /// One pass of `tear_down_processes` for a finished run whose carriers
+    /// are all idle with processes still left. It does not loop: a body on
+    /// another carrier is forced by a job there, which the run then drives
+    /// before it calls this again. True if the pass moved anything: an
+    /// incarnation or a blocked plan fewer, or work or a timer queued.
+    pub(super) fn force_survivors(&mut self) -> bool {
+        let before = (self.kernel.incarnations.len(), self.blocked_plan_count());
+        let blockers: Vec<_> = self.kernel.blocked.keys().copied().collect();
+        for blocker in blockers {
+            if self.kernel.blocked.contains_key(&blocker) && self.blocker_can_be_cleared(blocker) {
+                self.clear_blocker(blocker);
             }
         }
         let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
         for incarnation in leftover {
-            if self.kernel.incarnations.contains_key(&incarnation) {
-                self.begin_shutdown(incarnation);
-                if !self.await_incarnation(incarnation) {
-                    self.force(incarnation);
-                }
+            self.end_leftover(incarnation);
+        }
+        (self.kernel.incarnations.len(), self.blocked_plan_count()) != before
+            || !self.ready.is_empty()
+            || !self.jobs.is_empty()
+            || self.timers.earliest().is_some()
+    }
+
+    fn blocked_plan_count(&self) -> usize {
+        self.kernel.blocked.values().map(Vec::len).sum()
+    }
+
+    /// True when teardown can act on `blocker`: a body that has not ended,
+    /// which is forced, or a blocker already gone, whose plans resume.
+    fn blocker_can_be_cleared(&self, blocker: Blocker) -> bool {
+        match blocker {
+            Blocker::Incarnation(incarnation) => {
+                self.kernel.incarnations.get(&incarnation).is_none_or(|record| {
+                    !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
+                })
+            }
+            Blocker::Supervisor(supervisor) => !self.kernel.supervisors.contains_key(&supervisor),
+        }
+    }
+
+    fn clear_blocker(&mut self, blocker: Blocker) {
+        match blocker {
+            Blocker::Incarnation(incarnation)
+                if self.kernel.incarnations.contains_key(&incarnation) =>
+            {
+                self.force(incarnation);
+            }
+            blocker => self.resume_blocked(blocker),
+        }
+    }
+
+    /// Shuts down an incarnation teardown found still left, forcing it if
+    /// it does not end at once.
+    fn end_leftover(&mut self, incarnation: IncarnationId) {
+        if self.kernel.incarnations.contains_key(&incarnation) {
+            self.begin_shutdown(incarnation);
+            if !self.await_incarnation(incarnation) {
+                self.force(incarnation);
             }
         }
     }

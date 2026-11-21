@@ -5,7 +5,7 @@
 //! has a ready task or a job. `carrier::round_robin` stands in for the
 //! carriers' threads and fails if a wake is lost.
 
-use super::carrier::{IdleStep, KernelAccess, round_robin, run_carrier};
+use super::carrier::{IdleStep, KernelAccess, RunEnd, round_robin, run_carrier};
 use super::ready::Carrier;
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_request};
@@ -412,19 +412,19 @@ fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
         .collect();
     let late = start_sleeper(&mut scheduler, 2, 0);
     scheduler.enter_carrier(Carrier(0));
-    scheduler.with(Scheduler::stop_carriers);
+    scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
     assert!(!readable(fds[0]), "carrier 0 ended the run");
     assert!(readable(fds[1]) && readable(fds[2]));
     for carrier in [2, 1] {
         scheduler.enter_carrier(Carrier(carrier));
         run_carrier(&mut scheduler);
-        assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
+        assert!(matches!(scheduler.idle_step(), IdleStep::Exit(_)));
         assert!(!scheduler.parked[carrier as usize], "it left without parking");
     }
     assert!(succeeded(&scheduler, late), "a carrier runs what it has before it leaves");
     scheduler.enter_carrier(Carrier(0));
     scheduler.begin_run(late);
-    assert!(!scheduler.stopping, "the next run starts the carriers again");
+    assert_eq!(scheduler.run_end, None, "the next run starts the carriers again");
 }
 
 /// The root's last idle step ends the run in the hold that sees it finish,
@@ -447,9 +447,9 @@ fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
     ));
     assert!(readable(one));
     scheduler.enter_carrier(Carrier(1));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Exit(_)));
 
-    scheduler.stopping = false;
+    scheduler.run_end = None;
     scheduler.enter_carrier(Carrier(0));
     let parked = scheduler
         .start_root(chimi_fixture_generated_many_parks)
@@ -460,8 +460,78 @@ fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
         scheduler.with(|kernel| kernel.root_step(parked, Idle::Stalled(Vec::new()), 1, &mut deadlock)),
         process_abi::RootStep::Parked
     ));
-    assert!(scheduler.stopping && readable(one), "a parked root ends the run too");
+    assert!(
+        scheduler.run_end == Some(RunEnd::Parked) && readable(one),
+        "a parked root ends the run too"
+    );
     scheduler.cancel(None, parked).expect("cancel");
+}
+
+/// Starts a task on `home` that parks until it is cancelled, and runs it to
+/// its first park there.
+fn start_parked(scheduler: &mut Scheduler, home: u32) -> TaskId {
+    scheduler.enter_carrier(Carrier(home));
+    let task = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    task
+}
+
+fn holds_fiber(scheduler: &Scheduler, task: TaskId) -> bool {
+    scheduler.tasks[&task].fiber.is_some()
+}
+
+/// A carrier leaving a finished run first runs the jobs queued for it,
+/// then hands over every fiber homed on it to be destroyed on its thread;
+/// another carrier's fibers stay where they are.
+#[test]
+fn a_carrier_leaving_a_finished_run_retires_its_own_fibers() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(3);
+    let kept = start_parked(&mut scheduler, 1);
+    let ended = start_parked(&mut scheduler, 1);
+    let elsewhere = start_parked(&mut scheduler, 2);
+    let own = start_parked(&mut scheduler, 0);
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.cancel(None, ended).expect("cancel");
+    assert!(!scheduler.jobs.is_empty_for(Carrier(1)), "carrier 1 owes the unwind");
+    scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
+    scheduler.enter_carrier(Carrier(1));
+    let IdleStep::Exit(retired) = scheduler.with(Scheduler::idle_step) else {
+        panic!("carrier 1 leaves a finished run");
+    };
+    assert!(scheduler.jobs.is_empty(), "it ran its job before leaving");
+    assert!(matches!(
+        scheduler.tasks[&ended].phase,
+        TaskPhase::Terminal(TaskOutcome::Cancelled)
+    ));
+    assert_eq!(retired.len(), 1, "the parked fiber homed on carrier 1");
+    assert!(!holds_fiber(&scheduler, kept));
+    assert!(holds_fiber(&scheduler, elsewhere) && holds_fiber(&scheduler, own));
+    drop(retired);
+    scheduler.enter_carrier(Carrier(0));
+    for task in [elsewhere, own] {
+        scheduler.cancel(None, task).expect("cancel");
+    }
+}
+
+/// A carrier leaving a parked run keeps its fibers: the root waits on the
+/// host, and a later run resumes them.
+#[test]
+fn a_carrier_leaving_a_parked_run_keeps_its_fibers() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let kept = start_parked(&mut scheduler, 1);
+    scheduler.enter_carrier(Carrier(0));
+    scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Parked));
+    scheduler.enter_carrier(Carrier(1));
+    let IdleStep::Exit(retired) = scheduler.with(Scheduler::idle_step) else {
+        panic!("carrier 1 leaves a parked run");
+    };
+    assert!(retired.is_empty());
+    assert!(holds_fiber(&scheduler, kept));
+    scheduler.cancel(None, kept).expect("cancel");
 }
 
 /// A root step that leaves the run going does not end it: a root still
@@ -477,7 +547,7 @@ fn a_root_still_running_leaves_the_carriers_running() {
         scheduler.root_step(root, Idle::AwaitingHost, 1, &mut deadlock),
         process_abi::RootStep::Continue
     ));
-    assert!(!scheduler.stopping);
+    assert_eq!(scheduler.run_end, None);
     let done = start_sleeper(&mut scheduler, 0, 0);
     scheduler.drive();
     assert!(succeeded(&scheduler, done));
@@ -487,7 +557,7 @@ fn a_root_still_running_leaves_the_carriers_running() {
         scheduler.root_step(done, Idle::Quiescent, 1, &mut deadlock),
         process_abi::RootStep::Continue
     ));
-    assert!(!scheduler.stopping, "carrier 1 still has a task");
+    assert_eq!(scheduler.run_end, None, "carrier 1 still has a task");
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));

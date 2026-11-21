@@ -128,9 +128,25 @@ pub(super) enum IdleStep {
     /// The virtual clock moved under the kernel, or a due timer gave this
     /// carrier work; look again.
     Continue,
-    /// The run has ended: a carrier other than 0 leaves its loop.
-    Exit,
+    /// The run has ended: a carrier other than 0 leaves its loop,
+    /// destroying the fibers it retired once the kernel is unlocked.
+    Exit(Retired),
 }
+
+/// How a run ended for the carriers (`Scheduler::stop_carriers`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RunEnd {
+    /// The root finished and no process is left: each carrier retires its
+    /// fibers as it leaves.
+    Finished,
+    /// The root waits on the host: the fibers stay for the next run.
+    Parked,
+}
+
+/// The fibers a carrier leaving a finished run took from the kernel,
+/// destroyed on drop. Dropped only on that carrier's thread, outside the
+/// kernel lock.
+pub(super) type Retired = Vec<super::PinnedFiber>;
 
 /// What a carrier does after one idle step.
 #[derive(Debug, PartialEq)]
@@ -198,7 +214,10 @@ pub(super) fn run_carrier(kernel: &mut impl KernelAccess) {
 pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
     match kernel.with(Scheduler::idle_step) {
         IdleStep::Done(idle) => return Waited::Idle(idle),
-        IdleStep::Exit => return Waited::Exit,
+        IdleStep::Exit(retired) => {
+            drop(retired);
+            return Waited::Exit;
+        }
         IdleStep::Io(plan) => {
             let ready = plan.block();
             kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
@@ -252,7 +271,7 @@ pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
             match kernel.with(Scheduler::idle_step) {
                 IdleStep::Done(idle) => return idle,
                 IdleStep::Park(fds) => parked[index as usize] = Some(fds),
-                IdleStep::Exit => panic!("carrier {index} left a run that gave no verdict"),
+                IdleStep::Exit(_) => panic!("carrier {index} left a run that gave no verdict"),
                 IdleStep::Io(plan) if others_parked => {
                     let ready = plan.block();
                     kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
