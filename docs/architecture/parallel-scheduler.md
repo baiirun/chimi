@@ -873,7 +873,19 @@ four keep one carrier.
        on their own memberships answer 200 requests, each starting a task
        and building a list, with the same value on 1, 2, 4 and 8 carriers
        ten times each; four carriers show four threads in /proc while the
-       program runs; bad counts and the virtual clock are refused.
+       program runs; bad counts and the virtual clock are refused. The
+       count must start with a digit, since `strtoul` alone takes a sign
+       or a space (`--carriers=-18446744073709551612` read as 4).
+       The review found a scheduler bug the flag made reachable: a stop
+       whose deadline forced a process body that had never run, from
+       another carrier, ran its first resume there (`may_resume_here`
+       allows it) while its record still named its old home, so debug
+       builds aborted on "a task resumed off its home carrier", and a
+       release build left a record whose home disagreed with its fiber's
+       thread. A fiber's first resume now makes the current carrier its
+       home (`prepare_run`), as `Home` already records. Tests: a scheduler
+       test forces an unstarted body from carrier 0, and a program stops
+       six busy processes with a 50 ms deadline on four carriers.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

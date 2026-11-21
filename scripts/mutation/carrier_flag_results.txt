@@ -1,18 +1,16 @@
-# carrier_flag_mutations.py: 9 mutants against compiler/chimi (R4 step 3 PR 5d-4)
-BASELINE ok  [carriers]
-KILLED       the count never reaches the scheduler [carriers]
-KILLED       carrier threads are not bound [carriers]
-KILLED       a carrier thread binds carrier 0 [carriers]
-KILLED       the carriers are never created [carriers]
-KILLED       several carriers run under virtual time [carriers]
-KILLED       0 carriers is accepted [carriers]
-KILLED       the upper bound is off by one [carriers]
-KILLED       no upper bound [carriers]
-KILLED       trailing text is accepted [carriers]
+# mutation run at 656b0afbdc3e2f9ffebd9b380f3f4ce7e0ee852e
+# carrier_flag_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [carriers] (127s)
+BASELINE ok  [carriers -- a_stop_that_forces] (41s)
+KILLED       the count never reaches the scheduler [carriers] (96s)
+KILLED       carrier threads are not bound [carriers] (65s)
+KILLED       a carrier thread binds carrier 0 [carriers] (62s)
+KILLED       the carriers are never created [carriers] (64s)
+KILLED       several carriers run under virtual time [carriers] (77s)
+KILLED       0 carriers is accepted [carriers] (79s)
+KILLED       the upper bound is off by one [carriers] (76s)
+KILLED       no upper bound [carriers] (79s)
+KILLED       trailing text is accepted [carriers] (82s)
+KILLED       a leading sign or space is accepted [carriers] (76s)
+KILLED       a fiber that never ran keeps its old home [carriers -- a_stop_that_forces] (72s)
 # result: every mutant killed
-
-The first run had three more mutants, each dropping one of the parse's
-checks for an empty, negative or overflowing count. All three survived
-because they were redundant: strtoul reads those as 0 or ULONG_MAX, which
-the range already refuses. The parse now has one range check, and the
-mutants are gone with the code they mutated.
