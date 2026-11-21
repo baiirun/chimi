@@ -786,6 +786,13 @@ connection stays usable.
   reply) lives in its native gate, not in watches, because a watch ends with
   the task that made it and the task that opened a connection hands it on.
   A release acts only for the call holding the connection, by its token.
+  Turns are not fair: a task that runs statements back to back can keep the
+  connection until it stops, and a waiting task needs its timer to fire, so
+  a test where tasks share a transaction runs on `--clock=real`, as any test
+  that mixes sockets and timers does.
+- A connection from `Net.pair` belongs to the task that opened it, and the
+  pool opens connections in a borrowing task and hands them on, so the
+  driver's tests use a server on loopback rather than `Net.pair`.
 - A call cut off part way (a timeout or a cancel inside the statement), a
   broken stream, a reply the driver cannot read, and an ErrorResponse of
   severity FATAL or PANIC leave the protocol state unknown. That call fails,

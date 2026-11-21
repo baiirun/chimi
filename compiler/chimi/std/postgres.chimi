@@ -1148,19 +1148,27 @@ fn done<T>(settled: Settled<T>) -> Settled<Void> {
   }
 }
 
-// Sends Terminate when the connection is free, and closes it either way.
+// Sends Terminate when the connection is free, and closes it either way:
+// the claim is a scope's acquire, so a cancel during the write still gives
+// the gate back (broken) and closes the socket.
 fn close(session: Session) -> Void {
-  let free = native_claim(session.gate)
-  case free {
-    Some((token, _)) -> {
-      let _ = Result.capture(fn() {
-        Stream.write(session.writer, message(88, Bytes.empty()))
-      })
-      native_abandon(session.gate, token)
+  Resource.scoped(fn() { native_claim(session.gate) }, fn(claimed) {
+    case claimed {
+      Some((token, _)) -> native_abandon(session.gate, token)
+      None -> Void
     }
-    None -> Void
-  }
-  Net.close(session.connection)
+    Net.close(session.connection)
+  }, fn(claimed) {
+    case claimed {
+      Some(_) -> {
+        let _ = Result.capture(fn() {
+          Stream.write(session.writer, message(88, Bytes.empty()))
+        })
+        Void
+      }
+      None -> Void
+    }
+  })
 }
 
 // 9. Messages.
