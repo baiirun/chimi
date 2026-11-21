@@ -4,7 +4,7 @@
 //! watchdog, since a lost wake shows up as a hang, and its fibers check that
 //! they never change thread and never run with the kernel lock held.
 
-use super::process_abi::run_root_on_threads;
+use super::process_abi::{run_root_on_threads, test_hooks};
 use super::ready::Carrier;
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_request};
@@ -207,4 +207,88 @@ fn a_run_on_several_threads_that_parks_is_refused() {
     assert_eq!(scheduler.run_end, Some(carrier::RunEnd::Parked));
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, root).expect("cancel");
+}
+
+#[inline(never)]
+#[allow(unconditional_recursion)]
+fn recurse(depth: u64) -> u64 {
+    let frame = std::hint::black_box([depth; 64]);
+    recurse(frame[0] + 1) + frame[1]
+}
+
+/// Parks once, so its carrier's thread is its home, then overflows its
+/// stack there.
+unsafe extern "C" fn overflows(_context: *mut std::ffi::c_void) -> ChimiFiberResult {
+    // SAFETY: `hops` with one hop, on this fiber.
+    unsafe { hops(ptr::without_provenance_mut(1)) };
+    std::hint::black_box(recurse(0));
+    ended(ChimiFiberState::Succeeded, 0)
+}
+
+/// A fiber that overflows its stack on a carrier thread ends in a stack
+/// overflow, caught on that thread's own signal stack, and the run goes on.
+#[test]
+fn a_stack_overflow_on_a_carrier_thread_ends_only_its_task() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    under_watchdog(Duration::from_secs(30), || {
+        let mut scheduler =
+            Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        scheduler.set_carriers(2);
+        scheduler.enter_carrier(Carrier(0));
+        let root = scheduler
+            .start_root_with_context(hops, 5 as *mut std::ffi::c_void)
+            .expect("root");
+        scheduler.enter_carrier(Carrier(1));
+        let overflowing = scheduler.start_root(overflows).expect("overflowing root");
+        scheduler.enter_carrier(Carrier(0));
+        let run = run_root_on_threads(&mut scheduler, root, 1);
+        assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
+        assert!(
+            matches!(
+                scheduler.tasks[&overflowing].phase,
+                TaskPhase::Terminal(TaskOutcome::StackOverflow { .. })
+            ),
+            "{:?}",
+            scheduler.tasks[&overflowing].phase
+        );
+    });
+}
+
+/// A carrier that cannot get a thread fails the run before any carrier
+/// touches the kernel: the carriers already spawned leave at the gate, the
+/// run defects with its roots unstarted, and the same kernel runs them all
+/// once threads can be had.
+#[test]
+fn a_carrier_without_a_thread_fails_the_run_before_it_starts() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    under_watchdog(Duration::from_secs(30), || {
+        let mut scheduler =
+            Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        scheduler.set_carriers(3);
+        let mut tasks = Vec::new();
+        for carrier in 0..3 {
+            scheduler.enter_carrier(Carrier(carrier));
+            tasks.push(
+                scheduler
+                    .start_root_with_context(hops, 3 as *mut std::ffi::c_void)
+                    .expect("task"),
+            );
+        }
+        scheduler.enter_carrier(Carrier(0));
+        test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.set(Some(2)));
+        let failed = run_root_on_threads(&mut scheduler, tasks[0], 1);
+        test_hooks::FAIL_SPAWN_OF.with(|carrier| carrier.set(None));
+        assert_eq!(failed.outcome.state, ChimiFiberState::Defected as u32);
+        assert_eq!(failed.outcome.defect_code, SCHEDULER_DEFECT_CODE);
+        for task in &tasks {
+            assert!(scheduler.tasks[task].phase.is_live(), "task {task:?} ran: {:?}", scheduler.tasks[task].phase);
+        }
+        THREADS.lock().expect("threads").clear();
+        let run = run_root_on_threads(&mut scheduler, tasks[0], 1);
+        assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
+        for task in &tasks {
+            assert!(matches!(scheduler.tasks[task].phase, TaskPhase::Terminal(TaskOutcome::Succeeded(_))));
+        }
+        assert_eq!(THREADS.lock().expect("threads").len(), 3);
+    });
 }
