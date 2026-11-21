@@ -15,6 +15,7 @@ S = "src/scheduler.rs"
 TIME = "time_moves_only_once_every_other_carrier_has_parked"
 DEADLOCK = "a_deadlock_is_reported_only_once_every_carrier_is_idle"
 WORK = "carrier_zero_waits_while_another_carrier_has_work"
+RUNNING = "carrier_zero_waits_for_a_carrier_running_a_fiber"
 LAST = "the_last_carrier_to_park_wakes_carrier_zero"
 DUE = "an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero"
 REAL = "carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer"
@@ -30,7 +31,7 @@ MUTATIONS = [
       "        if false {\n            return self.wait_for_others();", DEADLOCK),
     m("parked carriers are not counted", S,
       "        self.parked[1..].iter().all(|parked| *parked)\n",
-      "        true\n", WORK),
+      "        true\n", RUNNING),
     m("ready queues are not counted", S,
       "            && self.ready.is_empty()\n            && self.jobs.is_empty()",
       "            && self.jobs.is_empty()", WORK),
@@ -48,7 +49,7 @@ MUTATIONS = [
       "", TIME),
     m("a carrier taking the kernel stays parked", S,
       "        self.current = carrier;\n        self.parked[carrier.0 as usize] = false;",
-      "        self.current = carrier;", WORK),
+      "        self.current = carrier;", RUNNING),
     m("an idle carrier does not fire due timers", S,
       "    fn park_step(&mut self) -> carrier::IdleStep {\n        self.fire_due_timers();",
       "    fn park_step(&mut self) -> carrier::IdleStep {", DUE),
@@ -58,9 +59,12 @@ MUTATIONS = [
     m("any carrier waits on descriptors", S,
       "        if self.current != ready::Carrier(0) {\n            return self.park_step();\n        }",
       "        if self.current != ready::Carrier(0)\n            && self.reactor.is_empty()\n            && self.children.is_empty()\n        {\n            return self.park_step();\n        }", DUE),
+    m("a parked carrier sleeps past a timer", S,
+      "        match self.timers.earliest() {\n            Some(deadline) if self.clock.mode() == ClockMode::Real => carrier::IdleStep::Sleep(\n                clock::real_wait(self.clock.now(), deadline),\n                self.idle_wake_fds(),\n            ),\n            _ => carrier::IdleStep::Park(self.idle_wake_fds()),\n        }\n    }\n\n    /// Carrier 0's",
+      "        carrier::IdleStep::Park(self.idle_wake_fds())\n    }\n\n    /// Carrier 0's", REAL),
     m("carrier 0 waiting for others parks past a timer", S,
-      "            Some(deadline) if self.clock.mode() == ClockMode::Real => carrier::IdleStep::Sleep(",
-      "            Some(deadline) if false => carrier::IdleStep::Sleep(", REAL),
+      "            return carrier::IdleStep::Continue;\n        }\n        match self.timers.earliest() {\n            Some(deadline) if self.clock.mode() == ClockMode::Real => carrier::IdleStep::Sleep(",
+      "            return carrier::IdleStep::Continue;\n        }\n        match self.timers.earliest() {\n            Some(deadline) if false => carrier::IdleStep::Sleep(", REAL),
     m("has_work looks only at jobs", S,
       "        !self.ready.is_empty_for(carrier) || !self.jobs.is_empty_for(carrier)",
       "        !self.jobs.is_empty_for(carrier)", DUE),

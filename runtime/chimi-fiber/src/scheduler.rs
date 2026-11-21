@@ -798,8 +798,10 @@ pub struct Scheduler {
     /// released.
     wakes: wake::Wakes,
     /// One flag per carrier: set when the carrier parks on its wake pipe
-    /// with nothing to do, cleared when it next takes the kernel or is
-    /// woken. Carrier 0 never parks this way; it waits for the others.
+    /// with nothing to do, cleared when it next takes the kernel. Work
+    /// handed to a parked carrier is seen in its queues, which
+    /// `others_quiet` counts, so a wake does not clear the flag. Carrier 0
+    /// never parks this way; it waits for the others.
     parked: Vec<bool>,
     next_task: u64,
     stack_bytes: usize,
@@ -1073,9 +1075,11 @@ impl Scheduler {
     }
 
     /// The idle step of a carrier other than 0: fire the timers already due,
-    /// and if that left this carrier nothing to run, park on its wake pipe.
-    /// The last carrier to park wakes carrier 0, which alone decides
-    /// whether the program is finished, stuck, or due a virtual-time jump.
+    /// and if that left this carrier nothing to run, park on its wake pipe
+    /// (under the real clock only until the earliest timer, so a timer is
+    /// not held up by a busy carrier 0). The last carrier to park wakes
+    /// carrier 0, which alone decides whether the program is finished,
+    /// stuck, or due a virtual-time jump.
     fn park_step(&mut self) -> carrier::IdleStep {
         self.fire_due_timers();
         if self.has_work(self.current) {
@@ -1085,7 +1089,13 @@ impl Scheduler {
         if self.others_quiet() {
             self.wake_carrier(ready::Carrier(0));
         }
-        carrier::IdleStep::Park(self.idle_wake_fds())
+        match self.timers.earliest() {
+            Some(deadline) if self.clock.mode() == ClockMode::Real => carrier::IdleStep::Sleep(
+                clock::real_wait(self.clock.now(), deadline),
+                self.idle_wake_fds(),
+            ),
+            _ => carrier::IdleStep::Park(self.idle_wake_fds()),
+        }
     }
 
     /// Carrier 0's idle step while another carrier still runs or has work
@@ -1300,7 +1310,6 @@ impl Scheduler {
     fn wake_carrier(&mut self, carrier: ready::Carrier) {
         if carrier != self.current {
             self.wakes.mark(carrier);
-            self.parked[carrier.0 as usize] = false;
         }
     }
 

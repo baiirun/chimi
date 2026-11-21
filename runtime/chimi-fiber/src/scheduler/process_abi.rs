@@ -722,7 +722,7 @@ impl Scheduler {
             return RootStep::Continue;
         }
         self.shutdown_processes();
-        if !self.has_blocked_plans() && self.ready.is_empty() {
+        if !self.has_blocked_plans() && self.ready.is_empty() && self.jobs.is_empty() {
             RootStep::Finished
         } else {
             RootStep::Continue

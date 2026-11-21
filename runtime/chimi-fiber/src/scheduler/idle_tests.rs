@@ -19,7 +19,7 @@ const SECOND: i64 = 1_000_000_000;
 
 fn virtual_kernel(carriers: u32) -> Scheduler {
     let mut scheduler =
-        Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Full, ClockMode::Virtual));
     scheduler.set_carriers(carriers);
     scheduler
 }
@@ -93,7 +93,13 @@ fn time_moves_only_once_every_other_carrier_has_parked() {
     let late = start_sleeper(&mut scheduler, 1, 5 * SECOND);
     let early = start_sleeper(&mut scheduler, 2, 3 * SECOND);
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
-    assert_eq!(scheduler.now(), Instant::from_nanos(5 * SECOND));
+    let jumps: Vec<i64> = scheduler
+        .clock_events()
+        .iter()
+        .filter(|event| event.kind == ClockEventKind::Advanced)
+        .map(|event| event.time.as_nanos())
+        .collect();
+    assert_eq!(jumps, [3 * SECOND, 5 * SECOND]);
     assert!(succeeded(&scheduler, late) && succeeded(&scheduler, early));
 }
 
@@ -116,18 +122,57 @@ fn a_deadlock_is_reported_only_once_every_carrier_is_idle() {
     assert!(succeeded(&scheduler, sleeper));
 }
 
-/// Carrier 0 gives no verdict while another carrier has a ready task, or
-/// a job, even when that carrier is parked: it parks too, and the work
-/// still runs.
+/// Carrier 0 neither moves time nor gives a verdict while another carrier
+/// runs a fiber, even with every queue empty: it parks, until that carrier
+/// parks too.
+#[test]
+fn carrier_zero_waits_for_a_carrier_running_a_fiber() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(2);
+    let sleeper = start_sleeper(&mut scheduler, 1, 5 * SECOND);
+    let mut resumes = 0;
+    let runnable = scheduler.next_runnable(&mut resumes).expect("the sleeper's first step");
+    assert!(scheduler.ready.is_empty() && scheduler.jobs.is_empty());
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 runs a fiber");
+    scheduler.enter_carrier(Carrier(1));
+    let event = resume_fiber(runnable.fiber, runnable.command);
+    scheduler.complete(runnable, event);
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "time jumps once it parks");
+    assert_eq!(scheduler.now(), Instant::from_nanos(5 * SECOND));
+
+    // A parked carrier taking the kernel again is no longer parked.
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 is back");
+    assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
+    assert!(succeeded(&scheduler, sleeper));
+}
+
+/// Carrier 0 gives no verdict while a parked carrier has a ready task or a
+/// job that another carrier handed it: it parks too, and the work still
+/// runs.
 #[test]
 fn carrier_zero_waits_while_another_carrier_has_work() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(2);
-    let ready = start_sleeper(&mut scheduler, 1, 0);
+    scheduler.enter_carrier(Carrier(1));
+    let woken = scheduler
+        .start_root(chimi_fixture_generated_many_parks)
+        .expect("task");
+    scheduler.drive();
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
+    scheduler.wake(woken).expect("wake");
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "a ready task on carrier 1");
+    let Idle::Deadlock(parked) = round_robin(&mut scheduler) else {
+        panic!("the woken task parks again for good");
+    };
+    assert_eq!(parked.iter().map(|parked| parked.task).collect::<Vec<_>>(), [woken]);
+    scheduler.cancel(None, woken).expect("cancel");
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
-    assert!(succeeded(&scheduler, ready));
 
     scheduler.enter_carrier(Carrier(1));
     let parked = scheduler
@@ -214,8 +259,9 @@ fn an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero() {
     }
 }
 
-/// Under the real clock, carrier 0 waiting for another carrier sleeps only
-/// until the earliest timer, so the timer still fires on time.
+/// Under the real clock, a carrier waiting with nothing to do sleeps only
+/// until the earliest timer, so the timer fires on time: carrier 0 while
+/// another carrier runs, and a parked carrier other than 0.
 #[test]
 fn carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
@@ -230,6 +276,12 @@ fn carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer() {
     scheduler.start_wake_timer(task, soon).expect("timer");
     let IdleStep::Sleep(wait, _) = scheduler.idle_step() else {
         panic!("a timer is pending, so carrier 0 sleeps until it");
+    };
+    assert!(wait <= std::time::Duration::from_millis(5));
+    scheduler.enter_carrier(Carrier(1));
+    scheduler.drive();
+    let IdleStep::Sleep(wait, _) = scheduler.idle_step() else {
+        panic!("a timer is pending, so carrier 1 parks only until it");
     };
     assert!(wait <= std::time::Duration::from_millis(5));
 }
