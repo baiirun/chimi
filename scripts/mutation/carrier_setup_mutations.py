@@ -26,7 +26,7 @@ MUTATIONS = [
       "SchedulerError::CarrierSetupFailed({ let _ = error; None })", ERROR),
     m("a failed set keeps the pipes opened before it", W,
       "            (0..carriers).map(|_| Pipe::open()).collect::<io::Result<_>>()?",
-      "            {\n                let pipes: Vec<io::Result<Pipe>> = (0..carriers).map(|_| Pipe::open()).collect();\n                if pipes.iter().any(Result::is_err) {\n                    let error = pipes.into_iter().find_map(Result::err).expect(\"an error\");\n                    return Err(error);\n                }\n                pipes.into_iter().map(Result::unwrap).collect()\n            }", CLOSED),
+      "            {\n                let pipes: Vec<io::Result<Pipe>> = (0..carriers).map(|_| Pipe::open()).collect();\n                if pipes.iter().any(Result::is_err) {\n                    let error = io::Error::from_raw_os_error(libc::EMFILE);\n                    std::mem::forget(pipes);\n                    return Err(error);\n                }\n                pipes.into_iter().map(Result::unwrap).collect()\n            }", CLOSED),
     m("carriers are installed with one queue", S,
       "        self.ready = ready::ReadyQueues::new(carriers);\n        self.jobs = jobs::Jobs::new(carriers);\n        self.wakes = wakes;",
       "        self.ready = ready::ReadyQueues::new(1);\n        self.jobs = jobs::Jobs::new(carriers);\n        self.wakes = wakes;", ERROR),
