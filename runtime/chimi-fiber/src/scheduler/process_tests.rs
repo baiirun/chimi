@@ -4475,3 +4475,42 @@ fn a_kernel_with_processes_on_another_carrier_tears_down() {
     lab.scheduler.enter_carrier(ready::Carrier(0));
     drop(lab);
 }
+
+/// A process incarnation runs on its membership id modulo the carrier
+/// count, whichever carrier started the supervisor, so a supervisor's
+/// members spread over the carriers and a restart stays on its
+/// predecessor's carrier. With one carrier every member is on carrier 0.
+#[test]
+fn members_spread_over_the_carriers_and_a_restart_stays_put() {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(3);
+    lab.scheduler.enter_carrier(ready::Carrier(2));
+    lab.scheduler
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
+            2,
+        ))
+        .unwrap();
+    lab.settle_carriers();
+    let homes = lab.scheduler.incarnation_homes();
+    assert_eq!(homes.len(), 3);
+    assert!(homes.iter().all(|&(membership, home)| u64::from(home) == membership % 3));
+    let mut carriers: Vec<u32> = homes.iter().map(|&(_, home)| home).collect();
+    carriers.sort_unstable();
+    assert_eq!(carriers, [0, 1, 2], "one member per carrier");
+
+    // PEER is membership 2 on carrier 2. Its replacement is incarnation 4,
+    // and 4 % 3 is carrier 1, so homing on the incarnation would move it.
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    lab.deliver(named(PEER), Msg::Crash);
+    lab.settle_carriers();
+    assert_eq!(lab.started().len(), 4, "the crashed member restarted");
+    assert_eq!(lab.scheduler.incarnation_homes(), homes, "on the same carrier");
+
+    let mut one = Lab::new();
+    one.scheduler
+        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 0))
+        .unwrap();
+    one.settle();
+    assert!(one.scheduler.incarnation_homes().iter().all(|&(_, home)| home == 0));
+}
