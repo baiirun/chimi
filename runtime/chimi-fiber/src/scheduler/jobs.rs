@@ -52,7 +52,7 @@ impl Jobs {
     }
 
     /// True when no carrier has a job waiting.
-    #[allow(dead_code, reason = "global idle (PR 5b-6) counts jobs")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "global idle (PR 5b-6) counts jobs"))]
     pub(super) fn is_empty(&self) -> bool {
         self.queues.iter().all(VecDeque::is_empty)
     }

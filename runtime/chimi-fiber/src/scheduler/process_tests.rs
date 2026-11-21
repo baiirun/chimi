@@ -4378,3 +4378,92 @@ fn releasing_survivors_frees_each_held_mailbox_entry_and_monitor_once() {
         );
     }
 }
+
+// ----- Several carriers on one thread (parallel-scheduler.md, PR 5b-4) ------
+
+/// Runs `stop` on a supervisor of three members homed on carrier 1, from
+/// carrier 0, then lets carrier 1 run. Returns the transcript and whether
+/// nothing had terminated before carrier 1 ran.
+fn stop_from_carrier_zero(carriers: u32) -> (Vec<String>, bool) {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(carriers);
+    let home = ready::Carrier(carriers - 1);
+    lab.scheduler.enter_carrier(home);
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
+            0,
+        ))
+        .unwrap();
+    lab.settle();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.stop_supervisor(root);
+    let waited = lab.terminations().is_empty();
+    lab.scheduler.enter_carrier(home);
+    lab.settle();
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+    (lab.transcript(), waited)
+}
+
+/// A supervisor stopped from another carrier stops its members on their
+/// home carrier, in reverse order, as one carrier does: the first member's
+/// shutdown waits for its home, and each end resumes the plan there.
+#[test]
+fn a_supervisor_stopped_from_another_carrier_stops_its_members_at_home_in_reverse_order() {
+    let (two, waited) = stop_from_carrier_zero(2);
+    assert!(waited, "no member ends before its home carrier runs");
+    let (one, inline) = stop_from_carrier_zero(1);
+    assert!(!inline, "one carrier stops them inline");
+    assert_eq!(two, one);
+}
+
+/// A shutdown deadline fired on another carrier forces the body without
+/// re-arming the spent deadline (which would fire again at once, forever):
+/// the idle carrier returns, and the body's home ends it as forced.
+#[test]
+fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
+    let second = Duration::from_secs(1);
+    let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
+    stubborn.shutdown_within = second;
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(2);
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(vec![Member::Process(stubborn, Restart::Never)], 0))
+        .unwrap();
+    lab.settle();
+    let stopped_at = lab.scheduler.now().as_nanos();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.stop_supervisor(root);
+    // The body's home runs its cleanup, which lingers; time stays put.
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.scheduler.drive();
+    assert!(lab.terminations().is_empty(), "the stubborn cleanup lingers");
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    let _ = lab.scheduler.run_until_idle();
+    assert!(lab.terminations().is_empty(), "the force waits for the body's home");
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.settle();
+    assert_eq!(
+        timed_terminations(&lab).last(),
+        Some(&(stopped_at + second.as_nanos() as i64, TerminalCause::Forced))
+    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
+}
+
+/// Dropping a kernel whose processes live on several carriers tears them
+/// down on the dropping thread, as one carrier does.
+#[test]
+fn a_kernel_with_processes_on_another_carrier_tears_down() {
+    let mut lab = Lab::new();
+    lab.scheduler.set_carriers(2);
+    lab.scheduler.enter_carrier(ready::Carrier(1));
+    lab.scheduler
+        .start_supervisor(policy(vec![counter_member(COUNTER)], 0))
+        .unwrap();
+    lab.settle();
+    lab.scheduler.enter_carrier(ready::Carrier(0));
+    drop(lab);
+}

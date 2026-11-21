@@ -788,6 +788,9 @@ pub struct Scheduler {
     jobs: jobs::Jobs,
     /// The carrier running this scheduler's loop now.
     current: ready::Carrier,
+    /// Set while the scheduler is torn down on one thread: every fiber is
+    /// then resumed where the teardown runs, whatever its home carrier.
+    any_carrier: bool,
     next_task: u64,
     stack_bytes: usize,
     trace_mode: TraceMode,
@@ -850,6 +853,10 @@ fn reply_with_outcome(request: &mut SchedulerRequest, outcome: TaskOutcome) {
 
 impl Drop for Scheduler {
     fn drop(&mut self) {
+        // Teardown runs on one thread. With several carriers each must run
+        // its own jobs and process teardown before it exits (PR 5c).
+        self.any_carrier = true;
+        self.run_queued_jobs();
         if !self.kernel.incarnations.is_empty() || self.has_blocked_plans() {
             self.tear_down_processes();
         }
@@ -902,6 +909,7 @@ impl Scheduler {
             ready: ready::ReadyQueues::new(1),
             jobs: jobs::Jobs::new(1),
             current: ready::Carrier::default(),
+            any_carrier: false,
             next_task: 1,
             stack_bytes,
             trace_mode,
@@ -1204,9 +1212,16 @@ impl Scheduler {
     #[cfg(test)]
     fn with_carriers(stack_bytes: usize, trace_mode: TraceMode, carriers: u32) -> Self {
         let mut scheduler = Self::new(stack_bytes, trace_mode);
-        scheduler.ready = ready::ReadyQueues::new(carriers);
-        scheduler.jobs = jobs::Jobs::new(carriers);
+        scheduler.set_carriers(carriers);
         scheduler
+    }
+
+    /// Gives a kernel with no ready task or job `carriers` carriers.
+    #[cfg(test)]
+    fn set_carriers(&mut self, carriers: u32) {
+        assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
+        self.ready = ready::ReadyQueues::new(carriers);
+        self.jobs = jobs::Jobs::new(carriers);
     }
 
     /// Housekeeping `drive` does before its first resume and after each one.
@@ -1873,7 +1888,10 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .filter(|record| record.phase == TaskPhase::Runnable)?;
-        debug_assert_eq!(record.carrier, self.current, "a task resumed off its home carrier");
+        debug_assert!(
+            self.any_carrier || record.carrier == self.current,
+            "a task resumed off its home carrier"
+        );
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
@@ -1904,12 +1922,38 @@ impl Scheduler {
         })
     }
 
+    /// True when `task`'s fiber, resumed with `command`, may run on the
+    /// current carrier: it is the fiber's home, the fiber never ran and the
+    /// command is Cancel (it then returns without running, so nothing is
+    /// pinned), or the scheduler is being torn down.
+    fn may_resume_here(&self, task: TaskId, command: ChimiFiberCommand) -> bool {
+        let record = &self.tasks[&task];
+        self.any_carrier
+            || record.carrier == self.current
+            || (!record.ran && command == ChimiFiberCommand::Cancel)
+    }
+
+    /// Runs every carrier's queued jobs here, for teardown.
+    fn run_queued_jobs(&mut self) {
+        for carrier in 0..self.ready.carriers() {
+            while let Some(job) = self.jobs.pop_front(ready::Carrier(carrier)) {
+                if let Some(runnable) = self.prepare_job(job) {
+                    let event = resume_fiber(runnable.fiber, runnable.command);
+                    self.complete(runnable, event);
+                }
+            }
+        }
+    }
+
     /// Enters the fiber a job resumes; None if the job's task is gone.
     fn prepare_job(&mut self, job: jobs::Job) -> Option<carrier::Runnable> {
         match job {
             jobs::Job::Unwind { task, forced } => {
                 let record = self.tasks.get_mut(&task)?;
-                debug_assert_eq!(record.carrier, self.current, "a job run off its home carrier");
+                debug_assert!(
+                    self.any_carrier || record.carrier == self.current,
+                    "a job run off its home carrier"
+                );
                 debug_assert!(matches!(record.phase, TaskPhase::Draining(_)), "an unwind job's task drains");
                 let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL);
                 Some(carrier::Runnable {
@@ -2459,13 +2503,11 @@ impl Scheduler {
             cause(outcome),
             false,
         );
-        let record = &self.tasks[&task];
-        if record.carrier != self.current && record.ran {
+        if !self.may_resume_here(task, ChimiFiberCommand::Cancel) {
             // A started fiber unwinds only on its home carrier's thread: a
-            // job there resumes it, then ends the task. An unstarted one
-            // given Cancel returns without running, so it pins nothing.
+            // job there resumes it, then ends the task.
             let forced = self.forcing > 0;
-            let carrier = record.carrier;
+            let carrier = self.tasks[&task].carrier;
             self.jobs.push_back(carrier, jobs::Job::Unwind { task, forced });
             return;
         }
