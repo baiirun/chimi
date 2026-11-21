@@ -367,7 +367,7 @@ impl Scheduler {
             }
             Check::Waiting => {
                 let id = self.reactor.register(owner, fd, interest, request.channel);
-                // Only carrier 0 polls descriptors.
+                // Carrier 0 will poll descriptors (5b-6).
                 self.wake_carrier(super::ready::Carrier(0));
                 self.tasks.get_mut(&owner).expect("waiting task").io_wait = Some(id);
                 request.status = RESPONSE_PENDING;
@@ -514,14 +514,14 @@ pub(super) struct IoWaitPlan {
     watched: Vec<(i32, u32)>,
     timeout: Option<Duration>,
     /// The signal pipe and the waiting carrier's wake pipe.
-    wake_fds: Vec<i32>,
+    wake_fds: super::wake::WakeFds,
 }
 
 impl IoWaitPlan {
     /// Blocks in poll(2) without the kernel. Returns which watched
     /// descriptors are ready, or None when poll(2) failed.
     pub(super) fn block(&self) -> Option<Vec<bool>> {
-        sys::wait(&self.watched, self.timeout, &self.wake_fds)
+        sys::wait(&self.watched, self.timeout, self.wake_fds.as_slice())
     }
 }
 

@@ -52,6 +52,10 @@ impl KernelAccess for Locked<'_> {
             let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
             #[cfg(test)]
             let _held = HeldMark::set();
+            debug_assert!(
+                !kernel.wakes.any_marked(),
+                "every access that marks a carrier writes its wake on unlock"
+            );
             kernel.enter_carrier(self.carrier);
             let result = operation(&mut kernel);
             (result, kernel.take_wakes())
@@ -117,7 +121,7 @@ pub(super) enum IdleStep {
     Io(IoWaitPlan),
     /// Sleep on the real clock without the kernel (or until the signal pipe
     /// or the carrier's wake pipe is readable), then fire due timers.
-    Sleep(Duration, Vec<i32>),
+    Sleep(Duration, super::wake::WakeFds),
     /// The virtual clock moved under the kernel; look again.
     Continue,
 }
@@ -155,7 +159,7 @@ pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
                 kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
             }
             IdleStep::Sleep(wait, wake_fds) => {
-                clock::block_real(wait, &wake_fds);
+                clock::block_real(wait, wake_fds.as_slice());
                 kernel.with(Scheduler::fire_due_timers);
             }
             IdleStep::Continue => {}

@@ -88,12 +88,10 @@ impl Clock {
     /// Waits until `deadline`: virtual time jumps there (never backwards) and
     /// real time sleeps the thread for at most `MAX_REAL_WAIT`, so callers
     /// loop until the deadline is due. Returns true when virtual time moved.
-    /// Under the real clock a byte written to one of `wake_fds` ends the
-    /// wait early.
-    pub(super) fn wait_until(&mut self, deadline: Instant, wake_fds: &[i32]) -> bool {
+    pub(super) fn wait_until(&mut self, deadline: Instant) -> bool {
         match self {
             Self::Real { .. } => {
-                block_real(real_wait(self.now(), deadline), wake_fds);
+                block_real(real_wait(self.now(), deadline), &[]);
                 false
             }
             Self::Virtual { now } => {

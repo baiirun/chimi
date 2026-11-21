@@ -233,7 +233,7 @@ impl Scheduler {
             waiter.mask = mask;
             waiter.woken_for = None;
         } else {
-            // Only carrier 0 watches the signal pipe.
+            // Carrier 0 watches the signal pipe.
             self.wake_carrier(super::ready::Carrier(0));
             self.signals.waiters.push(SignalWaiter {
                 task: owner,
@@ -340,12 +340,6 @@ impl Scheduler {
         }
         true
     }
-
-    /// The runner's wake pipe; a stalled root's run blocks until its
-    /// handler writes to it.
-    pub(super) fn signal_wake_fd(&self) -> Option<i32> {
-        self.signals.wake_fd
-    }
 }
 
 /// The codes of a signal wait's `value`, or none when it lists none or a
@@ -392,14 +386,16 @@ pub(super) fn wait_readable(fds: &[i32], timeout: Option<std::time::Duration>) {
         // Round up so a wait never ends before its deadline.
         i32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
     });
-    let mut polls: Vec<libc::pollfd> = fds
-        .iter()
-        .map(|&fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect();
+    let mut polls = [libc::pollfd {
+        fd: -1,
+        events: libc::POLLIN,
+        revents: 0,
+    }; 2];
+    assert!(fds.len() <= polls.len(), "at most the signal and wake pipes");
+    let polls = &mut polls[..fds.len()];
+    for (poll, &fd) in polls.iter_mut().zip(fds) {
+        poll.fd = fd;
+    }
     // SAFETY: `polls` is a valid, exclusively borrowed array for the call.
     let ready = unsafe {
         libc::poll(

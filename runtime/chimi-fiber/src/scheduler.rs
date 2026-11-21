@@ -1046,7 +1046,7 @@ impl Scheduler {
                 self.idle_wake_fds(),
             );
         }
-        if self.clock.wait_until(deadline, &[]) {
+        if self.clock.wait_until(deadline) {
             self.emit_clock(ClockEvent {
                 sequence: 0,
                 kind: ClockEventKind::Advanced,
@@ -1246,17 +1246,20 @@ impl Scheduler {
     }
 
     /// What the current carrier's idle wait watches besides its own work:
-    /// the signal pipe and its wake pipe.
-    fn idle_wake_fds(&self) -> Vec<i32> {
-        self.signals
-            .wake_fd()
-            .into_iter()
-            .chain(self.wakes.read_fd(self.current))
-            .collect()
+    /// its wake pipe, and on carrier 0, which owns signals, the signal pipe.
+    fn idle_wake_fds(&self) -> wake::WakeFds {
+        let mut fds = wake::WakeFds::default();
+        if let Some(fd) = self.signals.wake_fd().filter(|_| self.current == ready::Carrier(0)) {
+            fds.push(fd);
+        }
+        if let Some(fd) = self.wakes.read_fd(self.current) {
+            fds.push(fd);
+        }
+        fds
     }
 
     /// Registers a timer. One earlier than every other wakes carrier 0,
-    /// whose idle wait sleeps until the earliest timer.
+    /// which will own the timed idle wait (5b-6).
     fn insert_timer(&mut self, deadline: Instant, target: TimerTarget) -> TimerId {
         if self
             .timers
@@ -3951,7 +3954,8 @@ mod tests {
     }
 
     /// An idle carrier's sleep and descriptor wait both end at a byte on its
-    /// wake pipe, and empty it; a task may not wait on a wake pipe itself.
+    /// wake pipe, and empty it; only carrier 0 also watches the signal pipe;
+    /// a task may not wait on a wake pipe itself.
     #[test]
     fn an_idle_wait_ends_at_its_carriers_wake() {
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
@@ -3959,6 +3963,14 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(1));
         let task = start_parked(&mut scheduler);
         let fd1 = scheduler.wakes.read_fd(ready::Carrier(1)).expect("a wake pipe");
+        let (signal_read, signal_write) = {
+            let mut ends = [0; 2];
+            // SAFETY: room for the two descriptors pipe(2) writes.
+            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+            (ends[0], ends[1])
+        };
+        let mut signal_word = 0_i32;
+        scheduler.set_signal_source(&raw mut signal_word, signal_read);
         let later = scheduler.clock.now().saturating_add(std::time::Duration::from_secs(60));
         scheduler.start_wake_timer(task, later).expect("timer");
         let wake_one = |scheduler: &mut Scheduler| {
@@ -3971,7 +3983,8 @@ mod tests {
         };
         wake_one(&mut scheduler);
         let started = std::time::Instant::now();
-        clock::block_real(wait, &fds);
+        assert_eq!(fds.as_slice(), [fd1], "the signal pipe is carrier 0's alone");
+        clock::block_real(wait, fds.as_slice());
         assert!(started.elapsed() < std::time::Duration::from_millis(500), "the wake ended the sleep");
         assert!(!readable(fd1), "the sleep emptied the pipe");
 
@@ -4014,10 +4027,17 @@ mod tests {
         assert!(!readable(fd1), "the wait emptied the pipe");
         scheduler.finish_io_wait(plan, Some(vec![false]));
         scheduler.clear_io_wait(task);
-        // SAFETY: the test opened both ends and closes each once.
+        scheduler.enter_carrier(ready::Carrier(0));
+        assert_eq!(
+            scheduler.idle_wake_fds().as_slice(),
+            [signal_read, scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe")]
+        );
+        drop(scheduler);
+        // SAFETY: the test opened these ends and closes each once.
         unsafe {
-            libc::close(read);
-            libc::close(write);
+            for fd in [read, write, signal_read, signal_write] {
+                libc::close(fd);
+            }
         }
     }
 

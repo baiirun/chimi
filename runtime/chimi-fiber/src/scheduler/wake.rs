@@ -39,7 +39,8 @@ impl Wakes {
         }
     }
 
-    /// The marked carriers' write ends, clearing the marks.
+    /// The marked carriers' write ends, clearing the marks. A carrier marked
+    /// more than once since the last take is written once.
     pub(super) fn take(&mut self) -> Marked {
         let mut ends = Vec::new();
         for (pipe, marked) in self.pipes.iter().zip(&mut self.marked) {
@@ -55,11 +56,36 @@ impl Wakes {
         self.pipes.get(carrier.0 as usize).map(|pipe| pipe.read)
     }
 
+    /// True when some carrier is marked and not yet written.
+    pub(super) fn any_marked(&self) -> bool {
+        self.marked.contains(&true)
+    }
+
     /// True when `fd` is one of the pipes' ends: no task may wait on it.
     pub(super) fn owns(&self, fd: i32) -> bool {
         self.pipes
             .iter()
             .any(|pipe| pipe.read == fd || pipe.write == fd)
+    }
+}
+
+/// What an idle wait watches besides its own work: at most the signal pipe
+/// and the waiting carrier's wake pipe, held without allocating.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct WakeFds {
+    fds: [i32; 2],
+    len: usize,
+}
+
+impl WakeFds {
+    /// Requires: fewer than two descriptors pushed so far.
+    pub(super) fn push(&mut self, fd: i32) {
+        self.fds[self.len] = fd;
+        self.len += 1;
+    }
+
+    pub(super) fn as_slice(&self) -> &[i32] {
+        &self.fds[..self.len]
     }
 }
 
@@ -109,7 +135,22 @@ impl Drop for Pipe {
 mod sys {
     use std::io;
 
-    /// A pipe whose ends are non-blocking and closed on exec.
+    /// A pipe whose ends are non-blocking and closed on exec, set atomically
+    /// so a fork on another thread cannot inherit it.
+    #[cfg(target_os = "linux")]
+    pub(super) fn open_pipe() -> io::Result<(i32, i32)> {
+        let mut ends = [0_i32; 2];
+        // SAFETY: `ends` has room for the two descriptors pipe2(2) writes.
+        if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((ends[0], ends[1]))
+    }
+
+    /// A pipe whose ends are non-blocking and closed on exec. macOS has no
+    /// pipe2, so a fork on another thread between the calls could inherit
+    /// it; the scheduler forks no children of its own.
+    #[cfg(target_os = "macos")]
     pub(super) fn open_pipe() -> io::Result<(i32, i32)> {
         let mut ends = [0_i32; 2];
         // SAFETY: `ends` has room for the two descriptors pipe(2) writes.
