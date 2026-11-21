@@ -687,8 +687,8 @@ four keep one carrier.
      Also found for later (advisor): a C-runtime fiber cannot run on a
      carrier thread until the runtime exports a way to bind one (5d); the
      host hooks run on whichever carrier holds the lock, which the header
-     should say (5d); `list_slice`'s in-place compaction needs a lock
-     before 5e; `park_step` may park with this carrier's host releases
+     should say (5d); `list_slice`'s in-place compaction of a shared
+     constant (5d-1); `park_step` may park with this carrier's host releases
      undrained (to check in 5c-4).
      - 5c-3 as landed: `Scheduler::with_options_carriers(options, n)` and
        `install_carriers`, which opens the pipes before changing anything,
@@ -791,7 +791,41 @@ four keep one carrier.
        resumable; a new earliest timer's wake to carrier 0 is masked in
        these tests by the last parker's wake.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
-     with `--clock=virtual`.
+     with `--clock=virtual`. Split in four (advisor):
+     - 5d-1: shared constants. A module constant lives in the static area
+       and every carrier may read it, so `list_slice` must not compact one
+       in place while carriers run on threads: it copies the window
+       instead. C only, no ABI change. Tested under ThreadSanitizer.
+     - 5d-2: the threaded runner becomes production code
+       (`run_on_carriers`), and `chimi_scheduler_run` uses it. A parked run
+       is allowed there, because the ABI path forgets the kernel; a failed
+       spawn ends the run as a scheduler defect.
+     - 5d-3: fiber ABI 29. The config gains the carrier count (0 or 1 is
+       one) and a hook to bind a carrier thread to the C runtime, appended
+       after `take_release`. More than one carrier with the virtual clock
+       is a defect. The header says which thread runs each hook.
+     - 5d-4: `--carriers=<n>` in the C runner, exit 64 for a bad value or
+       for more than one with `--clock=virtual`. The default stays 1.
+     Also for later: non-atomic close-on-exec off Linux gets its own small
+     PR before 5e; `exit()` from a carrier, blocking binding releases under
+     the lock, and `strerror` go to 5e.
+     - 5d-1 as landed: `list_shared_across_threads` is true for a list in
+       the static area when there is more than one carrier, outside the
+       simulation build (whose carriers share one thread). `list_slice`
+       then copies the window into the slicing carrier's heap, so nothing
+       rewrites a constant or appends to the static area while carriers
+       run. One carrier compacts a constant as before, so the memory
+       report of a one-carrier run is unchanged. The stress fixture slices
+       one constant from four threads and checks that the windows are
+       copies, the constant keeps its vector, a long window of a whole
+       constant shares its vector, and each carrier's own list still
+       compacts; without the fix ThreadSanitizer reports the race. The
+       review found the case latent: `decode_constant` builds every list
+       constant whole, and a whole list is never compacted, so only a
+       constant built as a window (the fixture's) reaches it. The guard
+       stays so a later constant form cannot bring the race back. The
+       fixture runs five carriers, so exactly two is untested here; 5d-4's
+       flag tests and 5e cover it.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

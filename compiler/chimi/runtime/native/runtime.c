@@ -314,7 +314,8 @@ struct ChimiRuntime {
    - A heap value never points into another heap or into a fragment, so a heap
      can be destroyed, and a fragment freed, without looking at anything else.
    - Values never change after construction (the one exception, list_slice's
-     compaction, allocates into the area of the value it updates). So a value
+     compaction, allocates into the area of the value it updates, and leaves
+     module constants alone when carriers run on threads). So a value
      never points to a value allocated after it, and a survivor never points to
      a young value. A minor pass therefore marks from the state through young
      allocations only, and survivors are walked only by a full pass.
@@ -1616,6 +1617,20 @@ enum { LIST_RETAINED_FRACTION = 4 };
 static bool list_retains_too_much(uint32_t window, uint32_t vector) {
   return (uint64_t)window * LIST_RETAINED_FRACTION < vector;
 }
+/* True when `list` is a module constant and carriers run on threads. Compacting it
+   would rewrite a value other threads read, and allocate in the static area while
+   they run. The simulation's carriers share one thread, so it compacts as one
+   carrier does. decode_constant builds every list constant whole, and a whole
+   list is never compacted, so today this guards only a constant built as a
+   window of a longer vector. */
+static bool list_shared_across_threads(const ChimiValue *list) {
+#ifdef CHIMI_CARRIER_SIMULATION
+  (void)list;
+  return false;
+#else
+  return carrier_count > 1 && allocation_header(list)->area->role == AREA_STATIC;
+#endif
+}
 /* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
    The window shares the vector in O(1) unless it is shorter than a quarter of it,
    so a small window does not keep a large vector alive. Then `list` itself is
@@ -1629,16 +1644,16 @@ static bool list_retains_too_much(uint32_t window, uint32_t vector) {
 
    The compact vector is allocated in the area that holds `list`, so `list` never
    points into a younger area: a survivor's new vector is itself a survivor. The
-   in-place update is safe because one carrier runs every fiber and none switches
-   inside list_slice; parallel carriers (R4) would have to publish the vector and
-   start together, for example through an atomic pointer to an immutable window,
-   or leave shared values uncompacted. */
+   in-place update is safe because a heap value belongs to one fiber, which does not
+   switch inside list_slice. A module constant is the exception: when carriers run
+   on threads, every carrier may read it at once, so its window is copied instead
+   (list_shared_across_threads). */
 static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
   if (from > to || to > list->as.list.length) return NULL;
   if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
   uint32_t length = to - from;
   if (list_retains_too_much(length, list->as.list.vector.length)) {
-    if (list_retains_too_much(length, list->as.list.length))
+    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))
       return list_value(list_copy_window(list, from, length, NULL), 0, length);
     list->as.list.vector =
       list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);
@@ -2543,8 +2558,9 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
 /* Void, True and False are each one shared value in the static area, because values
    never change after construction and conditions and effects produce them on almost
    every pass. Static values are never collected, copied or freed. decode_constants
-   creates all three at startup, before any carrier runs, so the static area is never
-   appended to while fibers run. */
+   creates all three at startup, before any carrier runs. While carriers run on
+   threads, nothing appends to the static area: list_slice copies a constant's
+   window rather than compacting it there. */
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   if (!shared_values[index]) {

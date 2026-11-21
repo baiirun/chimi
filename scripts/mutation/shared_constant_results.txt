@@ -1,0 +1,23 @@
+# shared_constant_mutations.py: 6 mutants against compiler/chimi (R4 step 3 PR 5d-1)
+BASELINE ok  [runtime_state]
+KILLED       a shared constant is compacted [runtime_state]
+KILLED       a constant is shared on one carrier too [runtime_state]
+KILLED       no constant is shared [runtime_state]
+KILLED       every list is shared on threads [runtime_state]
+KILLED       a shared constant's window is shared, not copied [runtime_state]
+KILLED       every constant's window is copied on threads, however long [runtime_state]
+# result: every mutant killed
+
+The first run left two survivors: copying every list's window on threads,
+and sharing a constant's vector instead of copying the window. The stress
+fixture now checks that a carrier's own list still compacts and that a
+constant's window holds only its elements, which kills both.
+
+The verifier's own ten mutants left four survivors. Copying every
+constant's window however long it is is now killed by the check that a
+long window of a whole constant shares its vector (added above). Three are
+not observable here: `carrier_count > 2` (the fixture runs five carriers,
+so exactly two is left to 5d-4's flag tests and 5e), removing the
+simulation branch (the simulation suite never slices a constant built as a
+window), and testing `area->heap == NULL` for the static role (equivalent,
+since list_slice never sees a fragment's value).
