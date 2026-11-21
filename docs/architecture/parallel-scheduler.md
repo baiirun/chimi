@@ -620,6 +620,32 @@ four keep one carrier.
        empty. The last carrier to park wakes carrier 0. Tested with a
        round-robin driver on one thread that fails if every carrier parks
        with no descriptor readable and no verdict.
+       - As landed: `idle_step` on a carrier other than 0 is `park_step`:
+         fire due timers, run again if that gave the carrier work, else
+         set its `parked` flag and park on its wake pipe (new
+         `IdleStep::Park`), or under the real clock sleep only until the
+         earliest timer, so a busy carrier 0 cannot hold that timer up.
+         The last carrier to park wakes carrier 0. Carrier 0 keeps its old
+         path, with one new check after the descriptor wait: unless
+         `others_quiet` (every other carrier parked, no ready task or job
+         on any carrier) it fires due timers and sleeps until the earliest
+         timer (real clock) or parks, with no time jump and no verdict
+         (`wait_for_others`). A carrier's flag clears only when it takes
+         the kernel; work handed to it while parked is seen in its queues.
+         With one carrier `others_quiet` is always true, so nothing
+         changes. A root finishes only with no job queued. The test-only
+         `carrier::round_robin` runs each carrier in turn and fails on a
+         lost wake; the 5b-4 tests that needed several carriers to settle
+         use it. Tests in `idle_tests.rs`; mutants in
+         `global_idle_mutations.py`, all 14 killed.
+       - Left for 5c (review): when carrier 0 returns a verdict or the
+         root's run ends, every parked carrier must be woken (the stop
+         mark), or its thread waits forever. `Idle::AwaitingHost` is still
+         decided before `others_quiet`, so carrier 0 returns to the host
+         while other carriers may have work; `end_host_operation` should
+         then wake carrier 0. The round-robin driver checks lost wakes only
+         for `Park`; a carrier 0 sleep or descriptor wait it skips is not
+         checked.
    - 5c, real threads behind a test-only API: a `Send` wrapper for the
      kernel and unstarted fibers, spawning and joining, each carrier
      destroying its own fibers before it exits, and placement.
