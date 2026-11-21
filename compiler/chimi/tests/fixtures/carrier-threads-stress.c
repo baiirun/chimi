@@ -21,9 +21,12 @@
    seeded stream's, and the closed handle reads as closed. Built with
    ThreadSanitizer when the compiler supports it, so an access outside the
    locks fails the run. Last, every thread slices one module constant,
-   which must not be compacted under the others. Two single-threaded checks come first: a close during
-   a read leaves the descriptor open until the read gives it back, and a task
-   started on a thread that never entered its carrier aborts.
+   which must not be compacted under the others.
+
+   Three single-threaded checks come first: a close during a read leaves the
+   descriptor open until the read gives it back, a module constant compacts
+   on one carrier as any list does, and a task started on a thread that
+   never entered its carrier aborts.
 
    usage: carrier-threads-stress     prints "ok" */
 #include "runtime.c"
@@ -465,6 +468,27 @@ static void a_waiting_call_lets_its_handle_go(bool child) {
 enum { CONSTANT_LENGTH = 8, CONSTANT_VECTOR = 64, SLICE_ROUNDS = 2000 };
 static ChimiValue *shared_constant;
 
+/* A module constant of CONSTANT_LENGTH elements sharing a CONSTANT_VECTOR
+   vector, built in the static area. */
+static ChimiValue *constant_window(void) {
+  AllocationArea *previous = carrier->fiber.target;
+  carrier->fiber.target = &static_area;
+  ChimiValue *elements[CONSTANT_VECTOR];
+  for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
+  ChimiValue *whole = list_from_values(elements, CONSTANT_VECTOR);
+  ChimiValue *constant = list_value(whole->as.list.vector, 0, CONSTANT_LENGTH);
+  carrier->fiber.target = previous;
+  return constant;
+}
+
+/* On one carrier, a short window of a constant compacts it, as any list. */
+static void a_constant_compacts_on_one_carrier(void) {
+  ChimiValue *constant = constant_window();
+  ChimiValue *window = list_slice(constant, 1, 5);
+  CHECK(window && list_get(window, 0)->as.integer == 1, "a window of the constant");
+  CHECK(constant->as.list.vector.length == CONSTANT_LENGTH, "one carrier did not compact the constant");
+}
+
 static void *slice_thread(void *raw_index) {
   size_t index = (size_t)(uintptr_t)raw_index;
   carrier_thread_enter(index + 1);
@@ -486,18 +510,13 @@ static void *slice_thread(void *raw_index) {
    compaction would rewrite it, and allocate in the static area, under the
    other threads, which ThreadSanitizer reports. */
 static void slicing_a_shared_constant_from_every_thread(void) {
-  AllocationArea *previous = carrier->fiber.target;
-  carrier->fiber.target = &static_area;
-  ChimiValue *elements[CONSTANT_VECTOR];
-  for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
-  ChimiValue *whole = list_from_values(elements, CONSTANT_VECTOR);
-  shared_constant = list_value(whole->as.list.vector, 0, CONSTANT_LENGTH);
-  carrier->fiber.target = previous;
+  shared_constant = constant_window();
+  ListNode *root = shared_constant->as.list.vector.root;
   pthread_t threads[THREADS];
   for (size_t index = 0; index < THREADS; ++index)
     CHECK(pthread_create(&threads[index], NULL, slice_thread, (void *)(uintptr_t)index) == 0, "start");
   for (size_t index = 0; index < THREADS; ++index) pthread_join(threads[index], NULL);
-  CHECK(shared_constant->as.list.vector.root == whole->as.list.vector.root &&
+  CHECK(shared_constant->as.list.vector.root == root &&
         shared_constant->as.list.vector.length == CONSTANT_VECTOR,
         "the constant was compacted while carriers ran on threads");
 }
@@ -562,6 +581,7 @@ int main(void) {
   carrier_bind(&carrier_first);
   decode_constants();
   a_close_during_a_read_waits_for_it();
+  a_constant_compacts_on_one_carrier();
   carriers_create(THREADS + 1);
   CHECK(carrier_count == THREADS + 1, "%zu carriers", carrier_count);
   a_task_on_an_unbound_thread_aborts();
