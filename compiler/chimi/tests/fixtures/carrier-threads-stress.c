@@ -497,16 +497,23 @@ static void *slice_thread(void *raw_index) {
   for (uint32_t round = 0; round < SLICE_ROUNDS; ++round) {
     ChimiValue *window = list_slice(shared_constant, 1, 5);
     CHECK(window && list_length(window) == 4, "a window of the constant");
+    CHECK(window->as.list.vector.length == 4, "a window kept the constant's whole vector");
     for (uint32_t at = 0; at < 4; ++at)
       CHECK(list_get(window, at)->as.integer == (int64_t)at + 1, "element %u of a window", at);
   }
+  /* A list in this carrier's own heap still compacts. */
+  ChimiValue *elements[CONSTANT_VECTOR];
+  for (uint32_t at = 0; at < CONSTANT_VECTOR; ++at) elements[at] = integer_value(at);
+  ChimiValue *own = list_value(list_from_values(elements, CONSTANT_VECTOR)->as.list.vector, 0, CONSTANT_LENGTH);
+  CHECK(list_slice(own, 1, 5) && own->as.list.vector.length == CONSTANT_LENGTH, "a carrier's own list did not compact");
   heap_destroy(heap);
   carrier->fiber.heap = &main_heap;
   return NULL;
 }
 
-/* Every carrier slices one module constant at once. Each window is a copy
-   in the slicing carrier's heap, and the constant keeps its vector: a
+/* Every carrier slices one module constant at once, and a list of its own.
+   Each window of the constant is a copy in the slicing carrier's heap, and
+   the constant keeps its vector, while the carrier's own list compacts: a
    compaction would rewrite it, and allocate in the static area, under the
    other threads, which ThreadSanitizer reports. */
 static void slicing_a_shared_constant_from_every_thread(void) {
