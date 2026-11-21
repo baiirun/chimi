@@ -139,14 +139,15 @@ fn carrier_zero_waits_for_a_carrier_running_a_fiber() {
     let event = resume_fiber(runnable.fiber, runnable.command);
     scheduler.complete(runnable, event);
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
-    scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "time jumps once it parks");
-    assert_eq!(scheduler.now(), Instant::from_nanos(5 * SECOND));
-
     // A parked carrier taking the kernel again is no longer parked.
     scheduler.enter_carrier(Carrier(1));
     scheduler.enter_carrier(Carrier(0));
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 is back");
+    scheduler.enter_carrier(Carrier(1));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
+    scheduler.enter_carrier(Carrier(0));
+    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "time jumps once it parks");
+    assert_eq!(scheduler.now(), Instant::from_nanos(5 * SECOND));
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
     assert!(succeeded(&scheduler, sleeper));
 }
