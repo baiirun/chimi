@@ -531,6 +531,21 @@ four keep one carrier.
        a job on the home carrier runs the cleanup resume without the lock,
        then the rest of `begin_terminal` under it. While a job is pending,
        `finish_draining` does not publish the task's terminal.
+       - As landed: `scheduler/jobs.rs` holds a FIFO of jobs per carrier
+         (`Job::Unwind { task, forced }`) and `PendingEnd`. A carrier runs
+         its jobs before its ready tasks; `drive` resumes a job's fiber
+         without the lock like any other, and `Scheduler::complete`
+         dispatches on `RunKind`. `begin_terminal` keeps its order up to
+         `CancellationRequested`; its tail is now `end_after_unwind` (the
+         unwind's result decides a defect, overflow or park) and
+         `end_drained` (drop the fiber, cancel children and supervisors,
+         publish), shared by the inline path and the job. A pending end
+         applies in `complete_run`: a fiber that parked is unwound there;
+         one that ended takes the decided end as `terminating`, so its own
+         defect still wins. With one carrier no job or pending end is ever
+         made, so the inline path is the old code. A process shutdown off
+         its home carrier (`await_incarnation`, `force`) is 5b-4's. Mutants in `unwind_jobs_mutations.py`,
+         all eight killed.
      - 5b-4: `await_incarnation` off home. It runs the body inline only
        on its home carrier; otherwise the body stays queued there and the
        caller takes the "not yet" path it already has. A forced body arms

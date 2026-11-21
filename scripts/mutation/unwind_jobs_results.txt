@@ -1,0 +1,16 @@
+# mutation run at f798cd550f2003eab7f128671de626ec5c9a6272
+# unwind_jobs_mutations.py: 8 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_cancel_from_another_carrier_unwinds_on_the_home_carrier] (15s)
+BASELINE ok  [lib -- a_cancel_from_another_carrier_ends_an_unstarted_task_at_once] (0s)
+BASELINE ok  [lib -- a_task_waiting_for_its_unwind_outlives_its_last_child] (0s)
+BASELINE ok  [lib -- a_forced_end_from_another_carrier_queues_a_forced_job] (0s)
+BASELINE ok  [lib -- a_cancel_while_the_fiber_runs_elsewhere_applies_when_it_parks] (0s)
+KILLED       an unwind always runs inline [lib -- a_cancel_from_another_carrier_unwinds_on_the_home_carrier] (5s)
+KILLED       an unstarted task also waits for a job [lib -- a_cancel_from_another_carrier_ends_an_unstarted_task_at_once] (4s)
+KILLED       a draining task with its fiber can be published [lib -- a_task_waiting_for_its_unwind_outlives_its_last_child] (4s)
+KILLED       a job forgets that its end was forced [lib -- a_forced_end_from_another_carrier_queues_a_forced_job] (3s)
+KILLED       a running task is drained at once [lib -- a_cancel_while_the_fiber_runs_elsewhere_applies_when_it_parks] (3s)
+KILLED       a pending end is never applied [lib -- a_cancel_while_the_fiber_runs_elsewhere_applies_when_it_parks] (4s)
+KILLED       a carrier runs no jobs [lib -- a_cancel_from_another_carrier_unwinds_on_the_home_carrier] (3s)
+KILLED       a job's unwind does not end the task [lib -- a_cancel_from_another_carrier_unwinds_on_the_home_carrier] (4s)
+# result: every mutant killed
