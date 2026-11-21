@@ -9,6 +9,10 @@ Results: scripts/mutation/unwind_jobs_results.txt.
 CRATE = "runtime/chimi-fiber"
 
 S = "src/scheduler.rs"
+JOBS = (
+    "            while let Some(job) = self.jobs.pop_front(self.current) {\n"
+    "                if let Some(runnable) = self.prepare_job(job) {\n"
+    "                    return Some(runnable);\n                }\n            }\n")
 
 
 def m(name, old, new, test, file=S):
@@ -66,13 +70,10 @@ MUTATIONS = [
       "                self.forcing += u32::from(forced);\n                self.end_after_unwind",
       "                self.forcing += 0;\n                self.end_after_unwind",
       "a_forced_job_forces_the_tasks_children"),
-    m("ready tasks run before jobs",
-      "            while let Some(job) = self.jobs.pop_front(self.current) {\n"
-      "                if let Some(runnable) = self.prepare_job(job) {\n"
-      "                    return Some(runnable);\n                }\n            }\n",
-      "            if self.ready.carriers() == 0 {\n"
-      "                return None;\n            }\n",
-      "a_carrier_runs_its_jobs_before_its_ready_tasks"),
+    dict(name="ready tasks run before jobs", file=S, edits=[
+        (JOBS, ""),
+        ("            if !self.drain_host_releases() {\n", JOBS + "            if !self.drain_host_releases() {\n")],
+        targets=["lib"], filter="a_carrier_runs_its_jobs_before_its_ready_tasks"),
     m("a later cancel replaces a pending defect",
       "            Some(recorded) if recorded.outcome.is_defect() || !outcome.is_defect() => jobs::PendingEnd {",
       "            Some(recorded) if false => jobs::PendingEnd {",
