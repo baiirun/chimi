@@ -468,6 +468,8 @@ four keep one carrier.
        fails it), reads standard input from a pipe, and writes console
        lines. Queued console output needs the scheduler, so the fixture
        covers only direct writes; 5e's stress programs cover the queue.
+       With one carrier the console takes no lock: a print-only program
+       measured about 25 ns a line slower with it.
      - Left for 5b: `chimi_binding_wait` checks that its handle is open
        and then registers the wait. With several carriers a close on
        another carrier can land between the two, and its withdraw then

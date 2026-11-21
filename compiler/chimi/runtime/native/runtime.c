@@ -6667,11 +6667,16 @@ static ConsoleStream console_streams[2] = {
 static pthread_mutex_t console_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local bool console_lock_held;
 
+/* With one carrier there is no other writer, so a line takes no lock: the
+   lock measured about 25 ns a line on a program that only prints.
+   carrier_count changes only before carrier threads start. */
 static void console_enter(void) {
+  if (carrier_count == 1) return;
   pthread_mutex_lock(&console_lock);
   console_lock_held = true;
 }
 static void console_leave(void) {
+  if (carrier_count == 1) return;
   console_lock_held = false;
   pthread_mutex_unlock(&console_lock);
 }
