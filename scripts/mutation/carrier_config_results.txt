@@ -1,4 +1,4 @@
-# carrier_config_mutations.py: 7 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-3)
+# carrier_config_mutations.py: 11 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-3)
 BASELINE ok  [lib]
 KILLED       several carriers run under virtual time [lib]
 KILLED       0 carriers is taken literally [lib]
@@ -7,8 +7,17 @@ KILLED       the enter hook is never called [lib]
 KILLED       the enter hook names the wrong carrier [lib]
 KILLED       the enter hook gets no context [lib]
 KILLED       the enter hook runs after the carrier's first drive [lib]
+KILLED       a parked run on several carriers is dropped [lib]
+KILLED       a carrier without a wake pipe aborts [lib]
+KILLED       the enter hook runs under the kernel lock [lib]
+KILLED       the enter hook runs before the gate decides [lib]
 # result: every mutant killed
 
-The first run left the last alive: nothing checked that the hook ran
-before the carrier's fibers. a_carrier_thread_is_entered_before_its_first_fiber
-now has each fiber on a carrier thread check its thread was entered.
+The first run left "after the carrier's first drive" alive: nothing checked
+that the hook ran before the carrier's fibers, which
+a_carrier_thread_is_entered_before_its_first_fiber now does. The last four
+are the verifier's survivors, each now killed: the parked two-carrier ABI
+test leaves a member's fiber on the joined thread, a wake-pipe failure is
+injected through the ABI, the enter hook asserts it runs outside the lock,
+and a failed start must enter no carrier. The verifier's other survivors
+were the unneeded Sync impl (removed) and documentation gaps (fixed).
