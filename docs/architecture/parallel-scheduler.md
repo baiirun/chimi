@@ -362,7 +362,13 @@ four keep one carrier.
      or their stack check is off. A thread that never binds aliases
      carrier 0, so PR 5 also adds a debug check that each carrier thread
      bound its own carrier.
-   - The memory counters become signed per-carrier deltas.
+   - The memory counters become signed per-carrier deltas. Moved to PR 5
+     (decided 2026-11-21): with one carrier, and in the simulation, which
+     carries one set of counters from carrier to carrier, no test can tell
+     deltas from today's counters. And a per-carrier peak of a delta means
+     nothing until PR 6 decides what the report's peaks mean. PR 5 has the
+     first allocation freed on another thread, so the change is tested
+     there.
    - New test: a count reaches zero inside a release hook, on a carrier
      where no fiber requests again.
 4. **One `Mutex` around the kernel (one carrier).** The lock is held except
