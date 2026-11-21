@@ -812,15 +812,17 @@ pub(super) fn run_root_on_threads(
 ) -> RootRun {
     let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
     let kernel = Mutex::new(std::mem::replace(scheduler, placeholder));
-    let (carriers, wakes) = {
+    let carriers = {
         let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
         // Before any carrier starts, so none sees the last run's end.
         held.begin_run(root);
-        // Work the caller queued for other carriers before the run, through
-        // the kernel directly, marked carriers it never woke.
-        (held.ready.carriers(), held.take_wakes())
+        // Work the caller queued through the kernel directly marked the
+        // carriers it is for without waking them. Every carrier of the run
+        // drives before it first waits, so it finds that work anyway; the
+        // marks are only cleared, as `Locked` expects none left.
+        drop(held.take_wakes());
+        held.ready.carriers()
     };
-    wakes.write();
     let run = std::thread::scope(|scope| {
         for index in 1..carriers {
             let kernel = &kernel;
