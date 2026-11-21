@@ -27,9 +27,9 @@ MUTATIONS = [
     m("the last holder does not release", [(
         "    if (--entry->users > 0 || entry->closing == NULL) continue;",
         "    if (--entry->users > 0 || entry->closing == NULL || true) continue;")]),
-    m("a closed handle reads as open while held", [(
-        "      entry->closing = entry->type;\n      entry->type = NULL;",
-        "      entry->closing = entry->type;")]),
+    # Removed as equivalent: "a closed handle reads as open while held" (keeping
+    # `type` set beside `closing`). The close bumps the generation, so every
+    # lookup already misses the slot, and the last holder still releases once.
     m("handle lookups take no lock", [(
         "  if (value == NULL) return NULL;\n  pthread_mutex_lock(&binding_handle_lock);\n"
         "  BindingHandleSlot *entry = binding_handle_slot(value);\n"
