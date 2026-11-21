@@ -93,6 +93,8 @@ impl Scheduler {
                 let _ = self.wake_front(owner);
             }
             Check::Running => {
+                // Carrier 0 will wait for children (5b-6).
+                self.wake_carrier(super::ready::Carrier(0));
                 self.children.waiters.push(ChildWaiter {
                     task: owner,
                     pid,

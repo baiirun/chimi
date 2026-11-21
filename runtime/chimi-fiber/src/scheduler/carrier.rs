@@ -21,13 +21,16 @@ pub(crate) trait KernelAccess {
 
 impl KernelAccess for Scheduler {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        operation(self)
+        let result = operation(self);
+        self.take_wakes().write();
+        result
     }
 }
 
 /// The kernel behind its lock, as one carrier reaches it. Each access tells
 /// the kernel which carrier holds it, so ready work and wakes are routed by
-/// carrier rather than by whoever ran last. Access cannot fail: a panic
+/// carrier rather than by whoever ran last, and wakes the carriers it handed
+/// work to once the lock is released. Access cannot fail: a panic
 /// while the lock is held aborts in `chimi_scheduler_run` (an `extern "C"`
 /// function), so a poisoned lock is only taken over, never reported.
 pub(crate) struct Locked<'kernel> {
@@ -45,11 +48,20 @@ impl<'kernel> Locked<'kernel> {
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
-        #[cfg(test)]
-        let _held = HeldMark::set();
-        kernel.enter_carrier(self.carrier);
-        operation(&mut kernel)
+        let (result, wakes) = {
+            let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            let _held = HeldMark::set();
+            debug_assert!(
+                !kernel.wakes.any_marked(),
+                "every access that marks a carrier writes its wake on unlock"
+            );
+            kernel.enter_carrier(self.carrier);
+            let result = operation(&mut kernel);
+            (result, kernel.take_wakes())
+        };
+        wakes.write();
+        result
     }
 }
 
@@ -108,8 +120,8 @@ pub(super) enum IdleStep {
     /// Wait on descriptors without the kernel, then apply what was found.
     Io(IoWaitPlan),
     /// Sleep on the real clock without the kernel (or until the signal pipe
-    /// is readable), then fire due timers.
-    Sleep(Duration, Option<i32>),
+    /// or the carrier's wake pipe is readable), then fire due timers.
+    Sleep(Duration, super::wake::WakeFds),
     /// The virtual clock moved under the kernel; look again.
     Continue,
 }
@@ -140,17 +152,27 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
 pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
     loop {
         drive(kernel);
-        match kernel.with(Scheduler::idle_step) {
-            IdleStep::Done(idle) => return idle,
-            IdleStep::Io(plan) => {
-                let ready = plan.block();
-                kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
-            }
-            IdleStep::Sleep(wait, wake_fd) => {
-                clock::block_real(wait, wake_fd);
-                kernel.with(Scheduler::fire_due_timers);
-            }
-            IdleStep::Continue => {}
+        if let Some(idle) = wait_idle(kernel) {
+            return idle;
         }
     }
+}
+
+/// What a carrier `drive` left with nothing runnable does: returns why it
+/// is idle, or None once it has waited (for descriptors, a timer, its wake
+/// pipe, or a virtual-time jump) and should drive again.
+pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Option<Idle> {
+    match kernel.with(Scheduler::idle_step) {
+        IdleStep::Done(idle) => return Some(idle),
+        IdleStep::Io(plan) => {
+            let ready = plan.block();
+            kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
+        }
+        IdleStep::Sleep(wait, wake_fds) => {
+            clock::block_real(wait, wake_fds.as_slice());
+            kernel.with(Scheduler::fire_due_timers);
+        }
+        IdleStep::Continue => {}
+    }
+    None
 }

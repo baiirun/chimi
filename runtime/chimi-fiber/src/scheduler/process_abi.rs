@@ -683,7 +683,7 @@ impl Scheduler {
     }
 
     /// What the root's run does after the carrier went idle with `idle`.
-    fn root_step(
+    pub(super) fn root_step(
         &mut self,
         root: TaskId,
         idle: Idle,
@@ -709,7 +709,7 @@ impl Scheduler {
                 }
             }
             Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
-                return RootStep::WaitForSignal(self.signal_wake_fd());
+                return RootStep::WaitForSignal(self.idle_wake_fds());
             }
             Idle::Stalled(_) if root_live(self) => return RootStep::Parked,
             Idle::Stalled(_) | Idle::Quiescent => {}
@@ -744,10 +744,11 @@ impl Scheduler {
 }
 
 /// What a root's run does next once its carrier is idle.
-enum RootStep {
+pub(super) enum RootStep {
     Continue,
-    /// Wait, without the kernel, until the signal pipe is readable.
-    WaitForSignal(Option<i32>),
+    /// Wait, without the kernel, until the signal pipe or the carrier's wake
+    /// pipe is readable.
+    WaitForSignal(super::wake::WakeFds),
     /// The root waits on the host; the run returns with it parked.
     Parked,
     Finished,
@@ -767,9 +768,9 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
         let idle = super::carrier::run_until_idle(kernel);
         match kernel.with(|kernel| kernel.root_step(root, idle, deadlock_code, &mut deadlock)) {
             RootStep::Continue => {}
-            RootStep::WaitForSignal(fd) => {
-                if let Some(fd) = fd {
-                    super::signal::wait_readable(fd, None);
+            RootStep::WaitForSignal(fds) => {
+                if !fds.as_slice().is_empty() {
+                    super::signal::wait_readable(fds.as_slice(), None);
                 }
             }
             RootStep::Parked => {

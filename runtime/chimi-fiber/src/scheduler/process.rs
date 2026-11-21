@@ -1906,9 +1906,7 @@ impl Scheduler {
         let stopping = record.stopping.as_mut().expect("stopping incarnation");
         if stopping.timer.is_none() && !(stopping.forced && waits_on_home) {
             let deadline = stopping.deadline.max(now);
-            let timer = self
-                .timers
-                .insert(deadline, TimerTarget::ShutdownDeadline(incarnation));
+            let timer = self.insert_timer(deadline, TimerTarget::ShutdownDeadline(incarnation));
             self.kernel
                 .incarnations
                 .get_mut(&incarnation)
