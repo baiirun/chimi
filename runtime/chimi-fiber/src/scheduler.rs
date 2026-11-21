@@ -3421,6 +3421,157 @@ mod tests {
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
+    thread_local! {
+        static UNWIND_TERMINAL: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    }
+
+    /// Parks until cancelled, then records whether its unwind is terminal.
+    unsafe extern "C" fn record_terminal_unwind(_context: *mut c_void) -> crate::ChimiFiberResult {
+        while unsafe { crate::chimi_fiber_park(std::ptr::null()) } != ChimiFiberCommand::Cancel {}
+        UNWIND_TERMINAL.with(|terminal| terminal.set(scope::chimi_fiber_cancel_is_terminal()));
+        crate::ChimiFiberResult {
+            state: ChimiFiberState::Cancelled as u32,
+            value: 0,
+            defect_code: 0,
+        }
+    }
+
+    /// A job unwinds as the inline path does: in a terminal unwind, and with
+    /// the unwind's own result (here a defect) deciding the outcome.
+    #[test]
+    fn a_jobs_unwind_is_terminal_and_its_result_decides_the_outcome() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        UNWIND_TERMINAL.with(|terminal| terminal.set(u32::MAX));
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let recorder = scheduler.start_root(record_terminal_unwind).expect("recorder");
+        let defecting = scheduler
+            .start_root(chimi_fixture_generated_cancel_defect)
+            .expect("defecting");
+        scheduler.drive();
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.cancel(None, recorder).expect("cancel recorder");
+        scheduler.cancel(None, defecting).expect("cancel defecting");
+        scheduler.enter_carrier(ready::Carrier(1));
+        scheduler.drive();
+        assert_eq!(UNWIND_TERMINAL.with(std::cell::Cell::get), 1);
+        assert_eq!(
+            scheduler.tasks[&defecting].phase,
+            TaskPhase::Terminal(TaskOutcome::Defected { origin: defecting, code: 88 })
+        );
+    }
+
+    /// A carrier runs its jobs before its ready tasks.
+    #[test]
+    fn a_carrier_runs_its_jobs_before_its_ready_tasks() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Full, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let ready_task = start_parked(&mut scheduler);
+        let cancelled = start_parked(&mut scheduler);
+        scheduler.wake(ready_task).expect("wake");
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.cancel(None, cancelled).expect("cancel");
+        scheduler.enter_carrier(ready::Carrier(1));
+        scheduler.drive();
+        let sequence = |task, kind| {
+            scheduler
+                .events()
+                .iter()
+                .rfind(|event| event.task == task && event.kind == kind)
+                .map(|event| event.sequence)
+                .expect("event")
+        };
+        assert!(
+            sequence(cancelled, TaskEventKind::CleanupCompleted)
+                < sequence(ready_task, TaskEventKind::Parked),
+            "the job ran first"
+        );
+    }
+
+    /// Ends decided while a fiber runs elsewhere merge as `terminating`
+    /// does: a defect wins over a cancel, and any forced end makes it forced.
+    #[test]
+    fn pending_ends_merge_with_a_defect_and_a_force_winning() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let task = start_parked(&mut scheduler);
+        scheduler.wake(task).expect("wake");
+        let _runnable = scheduler
+            .ready
+            .pop_front(ready::Carrier(1))
+            .and_then(|task| scheduler.prepare_run(task))
+            .expect("runnable");
+        scheduler.enter_carrier(ready::Carrier(0));
+        let defect = TaskOutcome::Defected { origin: task, code: 5 };
+        scheduler.cancel_task(task, TaskOutcome::Cancelled);
+        scheduler.cancel_task(task, defect);
+        assert_eq!(
+            scheduler.tasks[&task].pending_end,
+            Some(jobs::PendingEnd { outcome: defect, forced: false })
+        );
+        scheduler.force_terminal(task, TaskOutcome::Cancelled, false);
+        assert_eq!(
+            scheduler.tasks[&task].pending_end,
+            Some(jobs::PendingEnd { outcome: defect, forced: true })
+        );
+        // The fiber is left parked; its record is forgotten at drop.
+        scheduler.tasks.get_mut(&task).expect("task").pending_end = None;
+        scheduler.tasks.get_mut(&task).expect("task").phase = TaskPhase::Parked;
+    }
+
+    /// A forced end decided while the fiber runs elsewhere stays forced when
+    /// it applies: a task waiting for its releases (`terminating`) ends at
+    /// once instead of waiting on.
+    #[test]
+    fn a_pending_forced_end_does_not_wait_for_releases() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let task = start_parked(&mut scheduler);
+        scheduler.wake(task).expect("wake");
+        let runnable = scheduler
+            .ready
+            .pop_front(ready::Carrier(1))
+            .and_then(|task| scheduler.prepare_run(task))
+            .expect("runnable");
+        // As if a cancellation already waits for its releases.
+        scheduler.tasks.get_mut(&task).expect("task").terminating = Some(TaskOutcome::Cancelled);
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.force_terminal(task, TaskOutcome::Cancelled, false);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let event = resume_fiber(runnable.fiber, runnable.command);
+        scheduler.complete(runnable, event);
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+    }
+
+    /// A forced job's unwind ends the task's children at once, even one
+    /// waiting for its releases.
+    #[test]
+    fn a_forced_job_forces_the_tasks_children() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(ready::Carrier(1));
+        let root = start_parked(&mut scheduler);
+        let child = scheduler
+            .start_child(root, chimi_fixture_generated_many_parks)
+            .expect("child");
+        scheduler.drive();
+        // As if the child's cancellation already waits for its releases.
+        scheduler.tasks.get_mut(&child).expect("child").terminating = Some(TaskOutcome::Cancelled);
+        scheduler.enter_carrier(ready::Carrier(0));
+        // A forced end of the root alone, as `force_terminal` begins one.
+        scheduler.forcing += 1;
+        scheduler.begin_terminal(root, TaskOutcome::Cancelled, false);
+        scheduler.forcing -= 1;
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Parked);
+        scheduler.enter_carrier(ready::Carrier(1));
+        scheduler.drive();
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+        assert_eq!(scheduler.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+    }
+
     /// A task waiting for its unwind job is not published terminal when its
     /// last child ends meanwhile; the job ends it.
     #[test]
