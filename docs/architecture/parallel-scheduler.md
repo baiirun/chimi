@@ -419,6 +419,40 @@ four keep one carrier.
      the wait is seen only when it ends (at most `MAX_REAL_WAIT`). PR 5's
      per-carrier wake descriptor ends such a wait at once.
 5. **N carrier threads behind a runner flag (`--carriers=N`, default 1).**
+   Split into five PRs (advisor review, 2026-11-21), each merging with one
+   carrier and behavior unchanged:
+   - 5a, the C runtime safe for N threads. Carrier states are sized at
+     startup. `binding_handles` and every other table fibers touch outside
+     the kernel lock get a lock: open files, test mailboxes, process
+     defects, profile rows, the `random` stream and the span counter. The
+     memory and copy counters become signed per-carrier deltas, summed in
+     the report. `carrier_thread_enter` binds a thread's carrier and
+     computes its stack limit. Tested with pthread C fixtures under gcc's
+     ThreadSanitizer and with the simulation suite.
+   - 5b, kernel pieces on one thread: the carrier id passed through
+     `Locked`, jobs for the inline resumes, the wake descriptors and the
+     global idle check. Tested on a two-carrier kernel driven from one
+     thread, which also kills the ready-queue mutant PR 2 left.
+   - 5c, real threads behind a test-only API: a `Send` wrapper for the
+     kernel and unstarted fibers, spawning and joining, each carrier
+     destroying its own fibers before it exits, and placement.
+   - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
+     with `--clock=virtual`.
+   - 5e, the looped stress programs at 2 to 8 carriers.
+   Design points: one wake descriptor per carrier, written after unlock
+   when another carrier queues work for it or a new earliest timer is set.
+   Only carrier 0 polls descriptors, children and the signal pipe, since
+   the reactor is one table, and another carrier that registers a wait
+   wakes carrier 0. Global idle is every carrier idle with every ready
+   and job queue empty, no timer, no IO or child wait and no host
+   operation; only carrier 0 acts on it. An inline resume whose fiber
+   lives on another carrier becomes a job there. The job runs the resume
+   without the lock, then the rest of `begin_terminal` under it, and the
+   inline path stays when the home is the current carrier.
+   ThreadSanitizer is available for C through gcc only. Rust's needs a
+   nightly toolchain, which is not installed, and corosensei's stack
+   switches are invisible to it anyway, so Rust thread tests rely on
+   stress loops and assertions.
    - Each carrier has a wake descriptor. The carrier loop polls it, and
      carrier 0 also polls the signal pipe.
    - A fiber stays on the carrier of its first resume. Corosensei's
