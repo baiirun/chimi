@@ -7,9 +7,8 @@ This is the normative contract for the Phase 7b network modules of the
 the modules a service uses to talk over the network. It covers `std/net`
 (CHI-255), the `std/http` server (CHI-257), and `std/sql`'s
 driver-independent layer (CHI-258), and `std/tls`'s client, server and
-listener (HTTPS serving), the `std/http` client, and `std/sqlite`, the
-SQLite driver for `std/sql`. The Postgres driver adds its section when it
-lands.
+listener (HTTPS serving), the `std/http` client, and the two drivers for
+`std/sql`: `std/sqlite` and `std/postgres`.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative. The
 modules follow the [standard library conventions](standard-library-conventions.md),
@@ -660,6 +659,170 @@ source, checksum and compile options). The design note is
   other tasks.
 - A settings record (the busy limit is fixed at 5 s).
 
+## std/postgres (the PostgreSQL driver)
+
+`Postgres.driver(settings)` is a `std/sql` driver for PostgreSQL servers,
+written in Chimi over `std/net` and `std/tls`. It speaks version 3 of the
+wire protocol, which every server since PostgreSQL 7.4 speaks. Its natives
+(SCRAM's key derivation, random bytes, and a connection's turn-taking gate)
+live in the tls binding package, in `postgres.c`, which links the same
+mbedTLS. The design note is `plans/std-postgres-design.md` in the project
+files.
+
+### Opening
+
+- `Postgres.driver(settings)` needs `network: Network` and `clock: Clock` and
+  takes both when it is built. `settings` is updated from
+  `Postgres.defaults`: `roots` (the system's) and `connect_timeout` (10 s),
+  which bounds the whole opening, from the TCP connect through
+  authentication. A `connect_timeout` that is not positive MUST defect.
+- A target is a libpq connection URL,
+  `postgres://user:password@host:port/database?sslmode=...`, or
+  `postgresql://`. The user, password and database are percent-decoded; an
+  IPv6 host is in brackets; the port defaults to 5432 and the database to the
+  user. A target without a user or host, with a port outside 1 to 65535, or
+  with a bad percent escape fails with `SqlError.ConnectFailed`, and so does
+  a NUL byte, raw or as `%00`, which would end a startup field early and
+  let a target set any startup parameter.
+- `sslmode` is the only parameter read. Any other one, and a parameter
+  without a value, MUST fail to connect, so a misspelt parameter is never
+  ignored. `require` (the default) and `verify-full` are TLS, with the
+  certificate checked against `roots` and the host, since `Tls.client` always
+  checks both. `disable` is plain TCP. `prefer`, `allow` and `verify-ca` MUST
+  be refused: the first two fall back to plaintext without saying so, and the
+  last skips the host check.
+- With TLS, the driver sends an SSLRequest and MUST refuse a server that
+  answers anything but the single byte `S`: an `N` (no TLS) fails to
+  connect, and a byte after the `S` would have arrived before the handshake,
+  where anyone on the path could have put it.
+- The StartupMessage carries `user`, `database`, `client_encoding=UTF8`,
+  `application_name=chimi` and `DateStyle=ISO`.
+- Authentication is SCRAM-SHA-256 without channel binding, a cleartext
+  password over TLS only, or none (`trust`). The driver MUST check the
+  server's SCRAM signature, so a server that runs SCRAM without knowing the
+  password fails to connect, as does one that skips the signature or does
+  not extend the client's nonce. A server that asks for no password at all
+  is accepted, as libpq accepts it by default; over TLS the verified
+  certificate is what proves the server, and over plain TCP nothing does. A
+  SCRAM iteration count above 1,000,000 fails to connect, since the key
+  derivation runs on the task's thread where `connect_timeout` cannot stop
+  it. A cleartext request over plain TCP MUST be refused, so
+  no password is sent unencrypted. MD5 and every other method are refused by
+  name. The password is sent as its UTF-8 bytes, without SASLprep.
+- Every failure while opening is `ConnectFailed`, with the server's message
+  for an ErrorResponse, and the socket is closed however the opening ends,
+  the timeout included.
+
+### Statements
+
+- Each call runs one statement over the extended protocol (Parse, Bind,
+  Describe, Execute, Sync) with the unnamed statement and portal, and reads
+  through the ReadyForQuery that ends the reply. The server refuses several
+  statements in one text with `Rejected("42601", ...)`. An empty text runs
+  nothing and changes nothing.
+- Parameters are sent as text with no declared types, so the server reads
+  each as its place in the statement asks, as libpq's `PQexecParams` with no
+  types does. `Null` is SQL NULL, `Bool` is `t` or `f`, `Int`, `Float` and
+  `Decimal` are their text, `Text` is as it is, and `Bytes` is `bytea`'s hex
+  form. A statement or `Text` parameter holding a NUL byte, which PostgreSQL
+  text cannot hold, MUST fail with `Rejected("22021", ...)` before anything
+  is sent.
+- `affected` is the count in CommandComplete's tag for `INSERT`, `UPDATE`,
+  `DELETE`, `MERGE` and `COPY`, and for a `SELECT` tag that returned no
+  columns (`CREATE TABLE ... AS`). It is 0 for a query and for any other
+  command.
+- NoticeResponse, ParameterStatus and NotificationResponse are read past.
+  COPY MUST fail with `Rejected("0A000", ...)` and leave the connection in
+  step: a `COPY ... FROM STDIN` is ended with CopyFail and another Sync
+  (the server skipped the first while it waited for data), and the rows of a
+  `COPY ... TO STDOUT` are read past.
+
+### Values
+
+| Column type (OID) | `Value` |
+|---|---|
+| `boolean` (16) | `Bool` |
+| `smallint`, `integer`, `bigint` (21, 23, 20) | `Int` |
+| `real`, `double precision` (700, 701) | `Float`, or `Text` for `NaN` and `±Infinity` |
+| `numeric` (1700) | `Decimal`, or `Text` for `NaN` and `±Infinity` |
+| `bytea` (17) | `Bytes`, from the hex form or the older escape form |
+| every other type (`text`, `json`, `uuid`, `timestamptz`, ...) | `Text`, the server's text form |
+| SQL NULL | `Null` |
+
+A `numeric` beyond a `Decimal`, a value that is not its type's text, and
+text that is not UTF-8 fail with `SqlError.Failed` naming the column. The
+failure is that call's alone: the rest of the reply is read, so the
+connection stays usable.
+
+### Transactions
+
+- A transaction begins with `BEGIN`; savepoint n is `SAVEPOINT chimi_n`, its
+  commit `RELEASE SAVEPOINT chimi_n`, and its rollback `ROLLBACK TO SAVEPOINT
+  chimi_n` then `RELEASE SAVEPOINT chimi_n`. A rollback after a failed
+  release, when the savepoint is gone (SQLSTATE `3B001`), does nothing.
+- A `COMMIT` that the server answers with the tag `ROLLBACK` (the
+  transaction had failed) MUST fail with `SqlError.Failed`, so a failed
+  transaction never passes for a committed one.
+- Tasks that share a transaction MUST NOT open two savepoints at one depth at
+  once; the second fails with `SqlError.Failed` and runs nothing, as in
+  std/sqlite.
+- After a statement ends the transaction (a `COMMIT` or `ROLLBACK` run as a
+  statement), every later statement, savepoint and commit on it MUST fail
+  with `SqlError.TransactionEnded`, so work a statement rolled back never
+  passes for committed. Its rollback then does nothing. A hand-run
+  `COMMIT AND CHAIN` or `ROLLBACK AND CHAIN` starts a new transaction that
+  the driver cannot tell from the first, so it is not caught.
+- `reset` sends `ROLLBACK` when the last ReadyForQuery said a transaction was
+  open or failed, and nothing when it said idle.
+
+### Sharing a connection
+
+- Tasks that share a transaction take turns on its connection: each call
+  holds the connection from its request to the end of the reply, so two
+  calls' messages never interleave. A task that finds it held waits for the
+  holder to give it back, trying again after 1 ms, then waits that double
+  up to 20 ms. The connection's shared state (who holds it, whether it is
+  broken, the transaction status and depth, the bytes read past the last
+  reply) lives in its native gate, not in watches, because a watch ends with
+  the task that made it and the task that opened a connection hands it on.
+  A release acts only for the call holding the connection, by its token.
+  Turns are not fair: a task that runs statements back to back can keep the
+  connection until it stops, and a waiting task needs its timer to fire, so
+  a test where tasks share a transaction runs on `--clock=real`, as any test
+  that mixes sockets and timers does.
+- A connection from `Net.pair` belongs to the task that opened it, and the
+  pool opens connections in a borrowing task and hands them on, so the
+  driver's tests use a server on loopback rather than `Net.pair`.
+- A call cut off part way (a timeout or a cancel inside the statement), a
+  broken stream, a reply the driver cannot read, and an ErrorResponse of
+  severity FATAL or PANIC leave the protocol state unknown. That call fails,
+  and the connection MUST then fail every later call, `reset` included,
+  with `SqlError.ConnectionLost`, so the pool closes it.
+- `close` sends Terminate when no call holds the connection, and closes the
+  socket.
+
+### Failures
+
+| Server error | `SqlError` |
+|---|---|
+| severity `FATAL` or `PANIC` (as `57P01`, an administrator's shutdown) | `ConnectionLost` |
+| `40001` (serialization), `40P01` (deadlock), `55P03` (lock not available) | `Conflict(message)` |
+| class `23` (integrity) | `ConstraintFailed(the constraint's name, or "", message)` |
+| classes `08`, `0A`, `22`, `25` and `42` (protocol, not supported, data, transaction state, syntax or access) | `Rejected(SQLSTATE, message)` |
+| anything else | `Failed("Postgres: SQLSTATE: message")` |
+
+The message is the server's primary message. The detail field is never
+read, because it can hold a row's values. The primary message can still
+quote the parameter that failed (as `22P02`'s `invalid input syntax for type
+integer: "..."`), as the server writes it.
+
+### Not yet
+
+- Channel binding (SCRAM-SHA-256-PLUS) and SASLprep of the password.
+- LISTEN/NOTIFY, COPY, and query cancellation (CancelRequest).
+- Binary results, and a cache of prepared statements.
+- Several hosts, `.pgpass` and service files, and Unix-domain sockets.
+
 ## std/tls
 
 `std/tls` puts TLS over any `Net.Connection` and gives back a
@@ -838,3 +1001,8 @@ refuses the peer's versions.
 | A fake pair and a fake network | `tests/net.rs` `a_fake_pair_and_a_fake_network_stand_in_for_sockets` |
 | The runner closes `network` on `main` | `tests/net.rs` `main_gets_the_real_network_by_declaring_the_need` |
 | `host_for_tests` is test-only (`T4401`); a test without `using` is `T4400` | `tests/net.rs` `only_a_test_that_asks_gets_the_real_network` |
+| Postgres: the startup message, trust, SCRAM (RFC 7677's example, a wrong or missing signature, a nonce not extended, a server error), cleartext refused without TLS and sent over it, MD5 and errors at startup, TLS refused, untrusted or for another host, bytes after the TLS answer, the connect timeout | `tests/postgres.rs` `startup_and_authentication` |
+| Postgres: parameters as text, every column type with NaN and both bytea forms, affected rows by tag, each SQLSTATE class, COPY both ways, an empty statement, NUL bytes | `tests/postgres.rs` `values_tags_and_failures` |
+| Postgres: savepoints, a failed release, a commit answered with `ROLLBACK`, reset, a statement after the transaction ended, a commit and a savepoint after a statement ended it, a FATAL error, bytes read past a reply kept, a connection opened by a task that has ended, a cut-off call and a broken reply breaking the connection, four tasks on one transaction, two nested transactions at once | `tests/postgres.rs` `transactions_and_sharing` |
+| Postgres: target URLs, percent-decoding and NUL bytes, IPv6, ports and parameters | `tests/postgres.rs` `targets` |
+| Postgres against PostgreSQL's own server: every type round-trips, failures by SQLSTATE, COPY both ways, transactions and savepoints, a failed commit, a rollback run by hand, a deadlock, a pool of 20 tasks, TLS, SCRAM and cleartext over TLS | `tests/postgres.rs` `a_real_postgresql_server` |

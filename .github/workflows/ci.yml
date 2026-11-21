@@ -40,6 +40,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # tests/postgres.rs runs a real PostgreSQL server. Ubuntu's image ships
+      # one; macOS's does not, and the test finds Homebrew's keg-only build.
+      - name: Install PostgreSQL (macOS)
+        if: runner.os == 'macOS'
+        run: brew install postgresql@16
       - name: Test the workspace
         run: cargo test --workspace --quiet
       - name: Check feature-gated targets
