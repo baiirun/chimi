@@ -380,9 +380,9 @@ four keep one carrier.
    - Shape (advisor review, 2026-11-21): `Scheduler` stays the kernel type,
      holding nearly all state: tasks, ready queues, channels, processes,
      clock and timers, events and the trace sink, host hooks, reactor
-     registrations, children, signals and `host_operations`. A `Carrier`
-     owns the loop (`drive`, `run_until_idle`, `wait_for_io`, `run`) and
-     its id, which today is `current`. The loop is written once against
+     registrations, children, signals and `host_operations`. The carrier
+     loop (`drive`, `run_until_idle`) is separate from it; its id is still
+     the kernel's `current` until PR 5 gives each carrier thread its own. The loop is written once against
      kernel access that is either a plain `&mut Scheduler` (the existing
      methods and unit tests) or a `Mutex<Scheduler>` (`chimi_scheduler_run`,
      so the gates measure the lock).
@@ -397,9 +397,9 @@ four keep one carrier.
      until PR 5 turns them into jobs. Hooks called under the lock (trace
      sink, release, copy, violation and defect reports) must never park or
      call into the scheduler.
-   - A poisoned lock is taken over (`into_inner`), so one panicking test
-     does not fail the rest. A stalled run that forgets the scheduler
-     forgets the whole mutex.
+   - Lock access cannot fail: a panic under the lock aborts inside the C
+     entry point, so a poisoned lock is only taken over. A stalled run
+     takes the scheduler back out of the mutex before forgetting it.
    - As landed: `scheduler/carrier.rs` holds the loop (`drive`,
      `run_until_idle`) over `KernelAccess`, and `chimi_scheduler_run` runs
      it against `Mutex<Scheduler>` (std's, uncontended). The kernel is taken

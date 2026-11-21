@@ -382,15 +382,15 @@ impl Scheduler {
         }
     }
 
-    /// The idle wait while a registration or a child wait exists. Under the
-    /// real clock it ends by the earliest timer deadline or after
+    /// The idle wait while a registration or a child wait exists, prepared
+    /// under the kernel lock so the wait itself can run without it. Under
+    /// the real clock it ends by the earliest timer deadline or after
     /// `MAX_REAL_WAIT`; under the virtual clock time is held, so it waits for
     /// a descriptor or a signal only. Either way it ends by the child
-    /// waiters' `recheck_interval`. Wakes the ready tasks and the child
-    /// waiters whose child exited, then fires the timers due by now, which
-    /// under the virtual clock are only those at the current instant.
-    /// The descriptor wait an idle carrier is about to block in, taken
-    /// under the kernel lock so the wait itself can run without it.
+    /// waiters' `recheck_interval`. `finish_io_wait` then wakes the ready
+    /// tasks and the child waiters whose child exited, and fires the timers
+    /// due by now, which under the virtual clock are only those at the
+    /// current instant.
     pub(super) fn prepare_io_wait(&self) -> IoWaitPlan {
         let timeout = match self.clock.mode() {
             // A timer already due fires without moving time, so it must not

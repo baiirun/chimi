@@ -16,12 +16,12 @@ use super::{
     RESPONSE_UNAVAILABLE, SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome,
     SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
-use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use super::carrier::{KernelAccess, Locked};
+use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
-use std::sync::{Mutex, PoisonError};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 pub const ADDRESS_NAMED: u32 = 1;

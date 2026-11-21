@@ -5,12 +5,12 @@
 //! context of a started task, which its entry or `release_task_context`
 //! consumes.
 
+use super::carrier::KernelAccess;
 use super::*;
 use crate::{ChimiFiberResult, chimi_fiber_request};
 use std::cell::{Cell, RefCell};
 use std::ptr;
 use std::sync::Mutex;
-use super::carrier::KernelAccess;
 
 const STACK: usize = 64 * 1024;
 

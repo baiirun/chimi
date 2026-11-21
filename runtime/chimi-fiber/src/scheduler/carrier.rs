@@ -24,9 +24,9 @@ impl KernelAccess for Scheduler {
     }
 }
 
-/// The kernel behind its lock. A panic while it was held (a failed test)
-/// leaves the lock poisoned; the state is taken over rather than every later
-/// access failing too.
+/// The kernel behind its lock. Access cannot fail: a panic while the lock
+/// is held aborts in `chimi_scheduler_run` (an `extern "C"` function), so a
+/// poisoned lock is only taken over, never reported.
 pub(crate) struct Locked<'kernel>(pub(crate) &'kernel Mutex<Scheduler>);
 
 impl KernelAccess for Locked<'_> {
