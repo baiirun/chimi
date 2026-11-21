@@ -79,6 +79,69 @@ const WORKERS: &str = concat!(
     "}\n",
 );
 
+/// Six busy processes, each spinning in its body and in a task after it
+/// replies, are stopped with a 50 ms shutdown deadline, so the stop forces
+/// bodies on other carriers, some of them before they first ran. The value
+/// does not depend on which.
+const BUSY: &str = concat!(
+    "import std/channel as Channel\n",
+    "import std/channel.{Receive, Sender}\n",
+    "import std/clock as Clock\n",
+    "import std/duration as Duration\n",
+    "import std/list as List\n",
+    "import std/process as Process\n",
+    "import std/process.{Inbox}\n",
+    "import std/supervisor as Supervisor\n",
+    "import std/task as Task\n",
+    "\n",
+    "pub enum Message {\n",
+    "  Spin(reply: Sender<Int>)\n",
+    "}\n",
+    "\n",
+    "fn spin(n: Int) -> Int {\n",
+    "  loop i = 0 {\n",
+    "    case i == n {\n",
+    "      True -> break i\n",
+    "      False -> i + 1\n",
+    "    }\n",
+    "  }\n",
+    "}\n",
+    "\n",
+    "fn work(inbox: Inbox<Message>) -> Void {\n",
+    "  loop handled = 0 {\n",
+    "    case Process.receive(inbox) {\n",
+    "      Message.Spin(reply) -> {\n",
+    "        Channel.send(reply, 1)\n",
+    "        let t = Task.start(fn() { spin(3000000) })\n",
+    "        spin(3000000) + Task.result(t)\n",
+    "        handled + 1\n",
+    "      }\n",
+    "    }\n",
+    "  }\n",
+    "  Void\n",
+    "}\n",
+    "\n",
+    "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+    "  let root = Supervisor.start(Supervisor.policy([], 8, Supervisor.restarts(0, Duration.seconds(30))))\n",
+    "  let spec = Process.spec(work, 4, Duration.milliseconds(50))\n",
+    "  let replies = Channel.bounded(16)\n",
+    "  let started = loop i = 0 {\n",
+    "    case i == 6 {\n",
+    "      True -> break i\n",
+    "      False -> {\n",
+    "        let a = Supervisor.address(Supervisor.start_process(root, spec, Supervisor.Restart.Never))\n",
+    "        let _ = Process.send(a, Message.Spin(replies.sender))\n",
+    "        i + 1\n",
+    "      }\n",
+    "    }\n",
+    "  }\n",
+    "  let _ = Channel.receive(replies.receiver)\n",
+    "  Clock.sleep(Duration.milliseconds(5))\n",
+    "  Supervisor.stop(root)\n",
+    "  started\n",
+    "}\n",
+);
+
 fn scratch_directory(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "chimi-carriers-{name}-{}-{:?}",
@@ -169,6 +232,27 @@ fn a_program_runs_alike_on_one_carrier_and_on_several() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// A stop whose deadline forces busy processes, some on other carriers and
+/// some not yet started, ends the same way on one carrier and on four.
+#[test]
+fn a_stop_that_forces_busy_processes_ends_alike_on_several_carriers() {
+    let scratch = scratch_directory("busy");
+    let executable = build(&scratch, "busy", BUSY);
+    for carriers in ["1", "4"] {
+        for _ in 0..5 {
+            let flag = format!("--carriers={carriers}");
+            let (process, outcome) = run(&executable, &scratch, &["--clock=real", &flag]);
+            if simulation() && carriers != "1" {
+                refused_in_simulation(&process);
+                continue;
+            }
+            assert!(process.status.success(), "{carriers} carriers: {process:?}");
+            assert_eq!(outcome, success("6"), "{carriers} carriers");
+        }
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A count that is not 1 through 256 exits 64 before the program runs, as
 /// does more than one carrier under the virtual clock, which moves only
 /// when every carrier is idle.
@@ -176,7 +260,7 @@ fn a_program_runs_alike_on_one_carrier_and_on_several() {
 fn the_runner_refuses_a_bad_carrier_count() {
     let scratch = scratch_directory("refused");
     let executable = build(&scratch, "refused", "pub fn main() -> Int {\n  7\n}\n");
-    for value in ["0", "-1", "", "two", "4x", "257", "18446744073709551617"] {
+    for value in ["0", "-1", "", "two", "4x", "257", "18446744073709551617", "+4", " 4", "-18446744073709551612"] {
         let flag = format!("--carriers={value}");
         let (process, outcome) = run(&executable, &scratch, &[&flag]);
         assert_eq!(process.status.code(), Some(64), "--carriers={value}: {process:?}");

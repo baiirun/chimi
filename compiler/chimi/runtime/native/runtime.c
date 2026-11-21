@@ -13024,11 +13024,13 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       random_seed_given = true;
     }
     else if (strncmp(argv[index], "--carriers=", 11) == 0) {
-      /* An empty, negative or overflowing count reads as 0 or ULONG_MAX,
-         which the range refuses. */
+      /* strtoul skips spaces and takes a sign, so the count must start with
+         a digit; one that overflows reads as ULONG_MAX, which the range
+         refuses. */
+      const char *count = argv[index] + 11;
       char *end = NULL;
-      unsigned long value = strtoul(argv[index] + 11, &end, 10);
-      if (*end != '\0' || value == 0 || value > CARRIERS_MAX) {
+      unsigned long value = *count >= '0' && *count <= '9' ? strtoul(count, &end, 10) : 0;
+      if (value == 0 || *end != '\0' || value > CARRIERS_MAX) {
         fprintf(stderr, "--carriers requires an integer from 1 through %d\n", CARRIERS_MAX);
         return 64;
       }
