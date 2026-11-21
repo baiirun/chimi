@@ -5,7 +5,8 @@
 //! they never change thread and never run with the kernel lock held.
 
 use super::process_abi::{
-    CLOCK_REAL, CLOCK_VIRTUAL, ChimiSchedulerConfig, chimi_scheduler_run, run_root_on_threads, test_hooks,
+    CLOCK_REAL, CLOCK_VIRTUAL, ChimiSchedulerConfig, EnterHook, chimi_scheduler_run, run_on_carriers,
+    run_root_on_threads, test_hooks,
 };
 use super::ready::Carrier;
 use super::*;
@@ -424,3 +425,68 @@ fn a_parked_run_on_two_carriers_returns_parked_through_the_abi() {
     });
 }
 
+
+/// A fiber on a carrier thread whose enter hook had not run there.
+const UNBOUND: i64 = 79;
+
+/// The thread the run under test was called on, and whether this thread's
+/// carrier was entered.
+static CALLER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    static BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "C" fn bind_carrier(_context: *mut std::ffi::c_void, _carrier: u32) {
+    BOUND.with(|bound| bound.set(true));
+}
+
+/// `hops`, first checking that a fiber on a carrier thread finds the
+/// thread entered, as a C fiber needs its carrier bound before it runs.
+unsafe extern "C" fn bound_hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
+    let caller = CALLER.load(std::sync::atomic::Ordering::Relaxed);
+    if this_thread() != caller && !BOUND.with(std::cell::Cell::get) {
+        return ended(ChimiFiberState::Defected, UNBOUND);
+    }
+    // SAFETY: on this fiber, with the context `hops` takes.
+    unsafe { hops(context) }
+}
+
+/// The enter hook runs on each carrier thread before that carrier runs its
+/// first fiber.
+#[test]
+fn a_carrier_thread_is_entered_before_its_first_fiber() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    under_watchdog(Duration::from_secs(30), || {
+        CALLER.store(this_thread(), std::sync::atomic::Ordering::Relaxed);
+        let mut scheduler =
+            Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        scheduler.set_carriers(3);
+        let mut tasks = Vec::new();
+        for carrier in 0..3 {
+            scheduler.enter_carrier(Carrier(carrier));
+            for _ in 0..2 {
+                tasks.push(
+                    scheduler
+                        .start_root_with_context(bound_hops, 3 as *mut std::ffi::c_void)
+                        .expect("task"),
+                );
+            }
+        }
+        scheduler.enter_carrier(Carrier(0));
+        THREADS.lock().expect("threads").clear();
+        let enter = EnterHook {
+            hook: bind_carrier,
+            context: ptr::null_mut(),
+        };
+        let (run, scheduler) = run_on_carriers(scheduler, tasks[0], 1, Some(enter));
+        assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32, "{}", run.outcome.defect_code);
+        for task in &tasks {
+            assert!(
+                matches!(scheduler.tasks[task].phase, TaskPhase::Terminal(TaskOutcome::Succeeded(_))),
+                "{:?}",
+                scheduler.tasks[task].phase
+            );
+        }
+        assert_eq!(THREADS.lock().expect("threads").len(), 3);
+    });
+}

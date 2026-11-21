@@ -181,8 +181,8 @@ pub type CarrierEnter = unsafe extern "C" fn(*mut c_void, u32);
 /// thread `run_on_carriers` starts.
 #[derive(Clone, Copy)]
 pub(super) struct EnterHook {
-    hook: CarrierEnter,
-    context: *mut c_void,
+    pub(super) hook: CarrierEnter,
+    pub(super) context: *mut c_void,
 }
 
 // SAFETY: the host that passes the hook promises, by
