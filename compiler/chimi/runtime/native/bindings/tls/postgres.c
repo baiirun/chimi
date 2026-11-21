@@ -72,9 +72,11 @@ ChimiBindingResult *chimi_tls_postgres_scram(ChimiBindingCall *call) {
   if (!password) password = none;
   if (!salt) salt = none;
   if (!message) message = none;
-  /* RFC 7677 asks for at least 4096; a server asking for far more would
-     hold the task's thread. */
-  if (iterations < 1 || iterations > 10000000) {
+  /* RFC 7677 asks for at least 4096, and PostgreSQL's default is 4096. A
+     server asking for far more would hold the task's thread inside this
+     call, where connect_timeout cannot reach it; a million takes about a
+     second. */
+  if (iterations < 1 || iterations > 1000000) {
     return chimi_binding_failure(call, 1, "the server asked for an iteration count out of range");
   }
   if (!crypto_ready()) return chimi_binding_failure(call, 1, "the crypto library did not start");
@@ -92,12 +94,19 @@ ChimiBindingResult *chimi_tls_postgres_scram(ChimiBindingCall *call) {
   if (ok) {
     for (int i = 0; i < SHA256_BYTES; i++) proof[i] = client_key[i] ^ client_signature[i];
   }
+  /* Any of these with the proof sent gives the client key, which logs in. */
   memset(salted, 0, sizeof salted);
   memset(client_key, 0, sizeof client_key);
+  memset(stored_key, 0, sizeof stored_key);
+  memset(client_signature, 0, sizeof client_signature);
   memset(server_key, 0, sizeof server_key);
-  if (!ok) return chimi_binding_failure(call, 1, "the SCRAM computation failed");
+  if (!ok) {
+    memset(proof, 0, sizeof proof);
+    return chimi_binding_failure(call, 1, "the SCRAM computation failed");
+  }
   ChimiBindingValue *items[2] = {chimi_binding_make_bytes(call, proof, SHA256_BYTES),
                                  chimi_binding_make_bytes(call, server_signature, SHA256_BYTES)};
+  memset(proof, 0, sizeof proof);
   return chimi_binding_ok(call, chimi_binding_make_tuple(call, items, 2));
 }
 
@@ -115,12 +124,14 @@ ChimiBindingResult *chimi_tls_postgres_random(ChimiBindingCall *call) {
 }
 
 /* A connection's gate. `status` is the last ReadyForQuery's transaction
-   status ('I', 'T' or 'E'), and `leftover` the bytes read past it. */
+   status ('I', 'T' or 'E'), `leftover` the bytes read past it, and `turns`
+   counts the releases, each of which publishes its own number. */
 typedef struct {
   pthread_mutex_t lock;
   int held;
   int broken;
   int status;
+  int64_t turns;
   unsigned char *leftover;
   size_t leftover_length;
 } Gate;
@@ -224,6 +235,19 @@ ChimiBindingResult *chimi_tls_postgres_abandon(ChimiBindingCall *call) {
     pthread_mutex_unlock(&gate->lock);
   }
   return chimi_binding_success(call, chimi_binding_void(call));
+}
+
+/* native_turn(gate) -> Int: a number no other call returns for this gate,
+   for a release to publish, so waiters never see two releases as one. */
+ChimiBindingResult *chimi_tls_postgres_turn(ChimiBindingCall *call) {
+  Gate *gate = chimi_binding_handle(call, 0, &GATE);
+  int64_t turn = 0;
+  if (gate) {
+    pthread_mutex_lock(&gate->lock);
+    turn = ++gate->turns;
+    pthread_mutex_unlock(&gate->lock);
+  }
+  return chimi_binding_success(call, chimi_binding_make_integer(call, turn));
 }
 
 /* native_status(gate) -> Int: the transaction status, or -1 when broken. */

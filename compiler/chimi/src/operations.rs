@@ -447,6 +447,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     binding("std/postgres.native_settle", 3, "tls", "chimi_tls_postgres_settle", false),
     binding("std/postgres.native_abandon", 1, "tls", "chimi_tls_postgres_abandon", false),
     binding("std/postgres.native_status", 1, "tls", "chimi_tls_postgres_status", false),
+    binding("std/postgres.native_turn", 1, "tls", "chimi_tls_postgres_turn", false),
     binding("std/sqlite.native_version", 0, "sqlite", "chimi_sqlite_version", false),
     binding("std/sqlite.native_open", 1, "sqlite", "chimi_sqlite_open", false),
     binding("std/sqlite.native_close", 1, "sqlite", "chimi_sqlite_close", false),

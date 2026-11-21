@@ -233,6 +233,7 @@ fn decoded(text: Text) -> Text {
     let (left, done) = state
     case left {
       [] -> break done
+      [37, 48, 48, ..] -> bad_target("%00, which would end the text early")
       [37, high, low, ..rest] -> case is_hex(high) and is_hex(low) {
         True -> (rest, List.push(done, hex_value(high) * 16 + hex_value(low)))
         False -> bad_target("a bad percent escape")
@@ -572,29 +573,40 @@ struct Settled<T> {
 // release marks the connection broken: this call and every later one fail
 // with `ConnectionLost`. A failed statement is an outcome, not a failure of
 // `body`, so it does not break the connection.
+//
+// The claim is the scope's acquire, so a cancel cannot fall between taking
+// the connection and the release that gives it back. A task that finds the
+// connection held subscribes to `turns` before it tries, so a release after
+// its try wakes it; every release publishes a number of its own, so no two
+// releases look alike to a waiter.
 fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError) -> T {
   let outcome = loop _waiting = True {
-    let seen = current(session.turns, 0)
-    let claimed = native_claim(session.gate)
-    case claimed {
-      Some(leftover) -> break Resource.scoped(fn() { Void }, fn(_) {
-        native_abandon(session.gate)
-        // Past the current count, not `seen`: only the holder of the gate
-        // publishes, so the count it reads now is the latest one.
-        store(session.turns, current(session.turns, 0) + 1)
-      }, fn(_) {
-        let settled = body(leftover)
-        case settled.outcome {
-          // A FATAL error ends the session even when ReadyForQuery follows.
-          Err(SqlError.ConnectionLost) -> Failure(SqlError.ConnectionLost)
-          _ -> native_settle(session.gate, settled.status, settled.rest)
+    let follower = following(session.turns)
+    let attempt = Resource.scoped(fn() { native_claim(session.gate) }, fn(claimed) {
+      case claimed {
+        Some(_) -> give_back(session)
+        None -> Void
+      }
+    }, fn(claimed) {
+      case claimed {
+        Some(leftover) -> {
+          let settled = body(leftover)
+          case settled.outcome {
+            // A FATAL error ends the session even when ReadyForQuery follows.
+            Err(SqlError.ConnectionLost) -> Failure(SqlError.ConnectionLost)
+            _ -> native_settle(session.gate, settled.status, settled.rest)
+          }
+          Some(settled.outcome)
         }
-        settled.outcome
-      })
+        None -> None
+      }
+    })
+    case attempt {
+      Some(result) -> break result
       None -> case native_status(session.gate) == -1 {
         True -> Failure(SqlError.ConnectionLost)
         False -> {
-          next_turn(session.turns, seen)
+          wait_for_turn(follower)
           True
         }
       }
@@ -606,22 +618,33 @@ fn exclusive<T>(session: Session, body: fn(Bytes) -> Settled<T> errors SqlError)
   }
 }
 
-// Waits until `turns` has moved past `seen`, or its watch has gone.
-fn next_turn(turns: Watch.Publisher<Int>, seen: Int) -> Void {
-  let _ = Result.capture(fn() {
+// Gives the connection back: a call that did not settle leaves it broken.
+fn give_back(session: Session) -> Void {
+  native_abandon(session.gate)
+  store(session.turns, native_turn(session.gate))
+}
+
+// A subscription to `turns` whose first value is already taken, so its next
+// receive waits for the next release; `None` once the watch has gone.
+fn following(turns: Watch.Publisher<Int>) -> Option<Watch.Subscription<Int>> {
+  case Result.capture(fn() {
     let follower = Watch.subscribe(turns)
-    loop _waiting = True {
-      let received = Watch.receive(follower)
-      case received {
-        Receive.Received(count) -> case count == seen {
-          True -> True
-          False -> break Void
-        }
-        _ -> break Void
-      }
+    let _ = Watch.receive(follower)
+    follower
+  }) {
+    Ok(follower) -> Some(follower)
+    Err(_) -> None
+  }
+}
+
+fn wait_for_turn(follower: Option<Watch.Subscription<Int>>) -> Void {
+  case follower {
+    Some(subscription) -> {
+      let _ = Result.capture(fn() { Watch.receive(subscription) })
+      Void
     }
-  })
-  Void
+    None -> Void
+  }
 }
 
 // 5. Statements.
@@ -718,7 +741,9 @@ fn collect(session: Session, start: Inbox) -> Settled<Answer> {
       69 -> (next, failed(reading, sql_error(server_error(body))))
       // CopyInResponse: the server waits for data, so a CopyFail ends it.
       71 -> {
-        write(session.writer, message(102, cstring("COPY is not supported")))
+        // The server skipped the Sync sent with the statement while it
+        // waited for data, so another one ends the reply.
+        write(session.writer, Bytes.append(message(102, cstring("COPY is not supported")), message(83, Bytes.empty())))
         (next, failed(reading, copy_refused()))
       }
       // CopyOutResponse, then its CopyData and CopyDone, read past.
@@ -1039,8 +1064,10 @@ fn larger(a: Int, b: Int) -> Int {
 fn begin(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
     let open = current(session.depth, 0)
-    case open == depth {
-      True -> {
+    let status = native_status(session.gate)
+    case (open == depth, depth > 0 and status == status_idle) {
+      (_, True) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (True, False) -> {
         let settled = exchange(session, leftover, begin_statement(depth), [])
         case settled.outcome {
           Ok(_) -> store(session.depth, depth + 1)
@@ -1048,7 +1075,7 @@ fn begin(session: Session, depth: Int) -> Void {
         }
         done(settled)
       }
-      False -> Settled(Err(SqlError.Failed("Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another")), leftover, native_status(session.gate))
+      (False, False) -> Settled(Err(SqlError.Failed("Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another")), leftover, status)
     }
   })
 }
@@ -1061,12 +1088,16 @@ fn begin_statement(depth: Int) -> Text {
 }
 
 // A `COMMIT` of a transaction that had failed rolls it back, and the server
-// says so in the tag, which must not pass for a commit.
+// says so in the tag, which must not pass for a commit. A transaction that a
+// statement already ended (`ROLLBACK` run by hand) has nothing to commit:
+// the server would answer `COMMIT` with a warning.
 fn commit(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
-    let settled = case depth == 0 {
-      True -> exchange(session, leftover, "COMMIT", [])
-      False -> exchange(session, leftover, "RELEASE SAVEPOINT chimi_${depth}", [])
+    let status = native_status(session.gate)
+    let settled = case (status == status_idle, depth == 0) {
+      (True, _) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (False, True) -> exchange(session, leftover, "COMMIT", [])
+      (False, False) -> exchange(session, leftover, "RELEASE SAVEPOINT chimi_${depth}", [])
     }
     case settled.outcome {
       Ok(answer) -> {
@@ -1082,14 +1113,18 @@ fn commit(session: Session, depth: Int) -> Void {
 }
 
 // A savepoint's rollback undoes it and then ends it. After a failed release
-// the savepoint may be gone already (SQLSTATE 3B001); that rollback has
+// the savepoint may be gone already (SQLSTATE 3B001), and after a statement
+// ended the transaction nothing is open; either way the rollback has
 // nothing left to do.
 fn rollback(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
     store(session.depth, depth)
-    case depth == 0 {
-      True -> done(exchange(session, leftover, "ROLLBACK", []))
-      False -> {
+    let status = native_status(session.gate)
+    case (status == status_idle, depth == 0) {
+      // Nothing is open: a statement already ended the transaction.
+      (True, _) -> Settled(Ok(Void), leftover, status)
+      (False, True) -> done(exchange(session, leftover, "ROLLBACK", []))
+      (False, False) -> {
         let undone = exchange(session, leftover, "ROLLBACK TO SAVEPOINT chimi_${depth}", [])
         case undone.outcome {
           Ok(_) -> done(exchange(session, undone.rest, "RELEASE SAVEPOINT chimi_${depth}", []))
@@ -1132,7 +1167,7 @@ fn close(session: Session) -> Void {
       let _ = Result.capture(fn() {
         Stream.write(session.writer, message(88, Bytes.empty()))
       })
-      native_abandon(session.gate)
+      give_back(session)
     }
     None -> Void
   }
@@ -1373,3 +1408,4 @@ native fn native_claim(gate: PostgresGate) -> Option<Bytes>
 native fn native_settle(gate: PostgresGate, status: Int, leftover: Bytes) -> Void
 native fn native_abandon(gate: PostgresGate) -> Void
 native fn native_status(gate: PostgresGate) -> Int
+native fn native_turn(gate: PostgresGate) -> Int

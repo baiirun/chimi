@@ -315,7 +315,11 @@ fn statements(connection: Connection, buffer: Bytes, log: Recorder<Text>, answer
       Ok((66, body, rest)) -> (rest, query, bound(body))
       Ok((83, _, rest)) -> {
         Test.record(log, "${query} ${Debug.render(params)}")
-        send(connection, answer(query, params))
+        let reply = case query == "copy failed" {
+          True -> [error("ERROR", "57014", "COPY from stdin failed", ""), ready("I")]
+          False -> answer(query, params)
+        }
+        send(connection, reply)
         case query == "close" {
           True -> break Void
           False -> (rest, "", [])
@@ -325,10 +329,11 @@ fn statements(connection: Connection, buffer: Bytes, log: Recorder<Text>, answer
         Test.record(log, "terminate")
         break Void
       }
+      // As PostgreSQL does, the Sync sent before a CopyFail was skipped, so
+      // the error waits for the next one.
       Ok((102, body, rest)) -> {
         Test.record(log, "copy fail ${Debug.render(parts(body))}")
-        send(connection, [error("ERROR", "57014", "COPY from stdin failed", ""), ready("I")])
-        (rest, query, params)
+        (rest, "copy failed", params)
       }
       Ok((_, _, rest)) -> (rest, query, params)
     }
@@ -693,7 +698,7 @@ test "copy, empty statements and NUL bytes" {
     Debug.render((query, param))
   })
   [log_of(copy_in), log_of(copy_out), log_of(empty), log_of(nul)] |> Test.assert_equal([
-    "copy t from stdin [] | copy fail [\"COPY is not supported\", \"\"] | terminate => SqlError.Rejected(code: \"0A000\", message: \"Postgres: COPY is not supported\")",
+    "copy t from stdin [] | copy fail [\"COPY is not supported\", \"\"] | copy failed [] | terminate => SqlError.Rejected(code: \"0A000\", message: \"Postgres: COPY is not supported\")",
     "copy t to stdout [] | terminate => SqlError.Rejected(code: \"0A000\", message: \"Postgres: COPY is not supported\")",
     " [] | terminate => 0",
     "terminate => \"(Result.Err(SqlError.Rejected(code: \\\"22021\\\", message: \\\"Postgres: a statement or parameter holds a NUL byte, which PostgreSQL text cannot\\\")), Result.Err(SqlError.Rejected(code: \\\"22021\\\", message: \\\"Postgres: a statement or parameter holds a NUL byte, which PostgreSQL text cannot\\\")))\"",
@@ -775,7 +780,7 @@ test "a statement after the transaction ended" {
     })
   })
     |> log_of
-    |> Test.assert_equal("BEGIN [] | COMMIT [] | ROLLBACK [] | terminate => SqlError.TransactionEnded")
+    |> Test.assert_equal("BEGIN [] | COMMIT [] | terminate => SqlError.TransactionEnded")
 }
 
 test "a call cut off breaks the connection" {
@@ -881,8 +886,27 @@ test "nested transactions in two tasks run one after another" {
     |> log_of
     |> Test.assert_equal("BEGIN [] | SAVEPOINT chimi_1 [] | first [] | RELEASE SAVEPOINT chimi_1 [] | COMMIT [] | terminate => \"(0, Result.Err(SqlError.Failed(\\\"Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another\\\")))\"")
 }
+
+test "a transaction a statement rolled back does not commit" {
+  let ended = served(url, trust, transactional([]), fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let _ = Sql.execute(tx, "a", [])
+      Sql.execute(tx, "ROLLBACK", [])
+    })
+  })
+  let nested = served(url, trust, transactional([]), fn(db) {
+    Sql.transaction(db, fn(tx) {
+      let _ = Sql.execute(tx, "COMMIT", [])
+      Sql.transaction(tx, fn(inner) { Sql.execute(inner, "b", []) })
+    })
+  })
+  [log_of(ended), log_of(nested)] |> Test.assert_equal([
+    "BEGIN [] | a [] | ROLLBACK [] | terminate => SqlError.TransactionEnded",
+    "BEGIN [] | COMMIT [] | terminate => SqlError.TransactionEnded",
+  ])
+}
 "#,
-        12,
+        13,
     );
 }
 
@@ -916,6 +940,7 @@ fn targets() {
     "postgres://u%zz@h/d",
     "postgres://u%2@h/d",
     "postgres://u%ff@h/d",
+    "postgres://app%00options%00-c%20x:secret@db/app",
     "postgres://u:p@ss@h/d?sslmode=disable",
   ], fn(target) {
     let shown = served(target, trust, nothing, fn(db) { Sql.execute(db, "x", []) })
@@ -944,6 +969,7 @@ fn targets() {
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a bad percent escape\")",
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a bad percent escape\")",
     " => SqlError.ConnectFailed(\"Postgres: the target is not usable: a percent escape that is not UTF-8\")",
+    " => SqlError.ConnectFailed(\"Postgres: the target is not usable: %00, which would end the text early\")",
     "connect h 5432 | startup 196608 user u database d => 0",
   ])
 }
@@ -1326,6 +1352,7 @@ fn failures() -> Text needs { network: Network, clock: Clock } {
       rendered(fn() { Sql.execute(db, "select $1, $2", [Value.Int(1)]) }),
       rendered(fn() { Sql.execute(db, "select * from nowhere", []) }),
       rendered(fn() { Sql.execute(db, "copy people to stdout", []) }),
+      rendered(fn() { Sql.execute(db, "copy people from stdin", []) }),
       rendered(fn() { Sql.execute(db, "select 1/0", []) }),
       rendered(fn() { Sql.query(db, "select count(*) as n from people", []) }),
     ]
@@ -1372,6 +1399,12 @@ fn transactions() -> Text needs { network: Network, clock: Clock } {
         Sql.execute(tx, "insert into log values ('late')", [])
       })
     })
+    let rolled_by_hand = rendered(fn() {
+      Sql.transaction(db, fn(tx) {
+        let _ = Sql.execute(tx, "insert into log values ('undone')", [])
+        Sql.execute(tx, "rollback", [])
+      })
+    })
     let shared = rendered(fn() {
       Sql.transaction(db, fn(tx) {
         let tasks = List.map(["a", "b", "c", "d", "e", "f"], fn(name) {
@@ -1381,7 +1414,7 @@ fn transactions() -> Text needs { network: Network, clock: Clock } {
       })
     })
     let entries = Sql.query(db, "select string_agg(entry, ',' order by entry) as entries from log", [])
-    [committed, rolled, partial, failed_commit, ended, shared, Debug.render(entries)]
+    [committed, rolled, partial, failed_commit, ended, rolled_by_hand, shared, Debug.render(entries)]
   })
 }
 
@@ -1444,12 +1477,12 @@ test "values round-trip" {
 
 test "failures" {
   let outcome = failures() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("[\"ConstraintFailed people_pkey\", \"ConstraintFailed \", \"Rejected 42601\", \"Rejected 42601\", \"Rejected 22P02\", \"Rejected 08P01\", \"Rejected 42P01\", \"Rejected 0A000\", \"Rejected 22012\", \"Ok [Row { columns: [\\\"n\\\"], values: [Value.Int(1)] }]\"]")
+  outcome |> Test.assert_equal("[\"ConstraintFailed people_pkey\", \"ConstraintFailed \", \"Rejected 42601\", \"Rejected 42601\", \"Rejected 22P02\", \"Rejected 08P01\", \"Rejected 42P01\", \"Rejected 0A000\", \"Rejected 0A000\", \"Rejected 22012\", \"Ok [Row { columns: [\\\"n\\\"], values: [Value.Int(1)] }]\"]")
 }
 
 test "transactions" {
   let outcome = transactions() using { network: Net.host_for_tests() }
-  outcome |> Test.assert_equal("[\"Ok 1\", \"ConstraintFailed log_entry_key\", \"Ok \\\"ConstraintFailed log_entry_key 1\\\"\", \"SqlError.Failed(\\\"Postgres: the transaction had failed and was rolled back\\\")\", \"SqlError.TransactionEnded\", \"Ok [\\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\"]\", \"[Row { columns: [\\\"entries\\\"], values: [Value.Text(\\\"a,after,b,c,d,e,f,kept,outer\\\")] }]\"]")
+  outcome |> Test.assert_equal("[\"Ok 1\", \"ConstraintFailed log_entry_key\", \"Ok \\\"ConstraintFailed log_entry_key 1\\\"\", \"SqlError.Failed(\\\"Postgres: the transaction had failed and was rolled back\\\")\", \"SqlError.TransactionEnded\", \"SqlError.TransactionEnded\", \"Ok [\\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\", \\\"Ok 1\\\"]\", \"[Row { columns: [\\\"entries\\\"], values: [Value.Text(\\\"a,after,b,c,d,e,f,kept,outer\\\")] }]\"]")
 }
 
 test "a deadlock" {

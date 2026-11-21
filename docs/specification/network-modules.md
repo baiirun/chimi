@@ -681,7 +681,9 @@ files.
   `postgresql://`. The user, password and database are percent-decoded; an
   IPv6 host is in brackets; the port defaults to 5432 and the database to the
   user. A target without a user or host, with a port outside 1 to 65535, or
-  with a bad percent escape fails with `SqlError.ConnectFailed`.
+  with a bad percent escape fails with `SqlError.ConnectFailed`, and so does
+  `%00`, which would end a startup field early and let a target set any
+  startup parameter.
 - `sslmode` is the only parameter read. Any other one, and a parameter
   without a value, MUST fail to connect, so a misspelt parameter is never
   ignored. `require` (the default) and `verify-full` are TLS, with the
@@ -697,9 +699,14 @@ files.
   `application_name=chimi` and `DateStyle=ISO`.
 - Authentication is SCRAM-SHA-256 without channel binding, a cleartext
   password over TLS only, or none (`trust`). The driver MUST check the
-  server's SCRAM signature, so a server that does not know the password
-  fails to connect, as does one that skips the signature or does not extend
-  the client's nonce. A cleartext request over plain TCP MUST be refused, so
+  server's SCRAM signature, so a server that runs SCRAM without knowing the
+  password fails to connect, as does one that skips the signature or does
+  not extend the client's nonce. A server that asks for no password at all
+  is accepted, as libpq accepts it by default; over TLS the verified
+  certificate is what proves the server, and over plain TCP nothing does. A
+  SCRAM iteration count above 1,000,000 fails to connect, since the key
+  derivation runs on the task's thread where `connect_timeout` cannot stop
+  it. A cleartext request over plain TCP MUST be refused, so
   no password is sent unencrypted. MD5 and every other method are refused by
   name. The password is sent as its UTF-8 bytes, without SASLprep.
 - Every failure while opening is `ConnectFailed`, with the server's message
@@ -726,7 +733,8 @@ files.
   command.
 - NoticeResponse, ParameterStatus and NotificationResponse are read past.
   COPY MUST fail with `Rejected("0A000", ...)` and leave the connection in
-  step: a `COPY ... FROM STDIN` is ended with CopyFail, and the rows of a
+  step: a `COPY ... FROM STDIN` is ended with CopyFail and another Sync
+  (the server skipped the first while it waited for data), and the rows of a
   `COPY ... TO STDOUT` are read past.
 
 ### Values
@@ -759,8 +767,9 @@ connection stays usable.
   once; the second fails with `SqlError.Failed` and runs nothing, as in
   std/sqlite.
 - After a statement ends the transaction (a `COMMIT` or `ROLLBACK` run as a
-  statement), every later statement on it MUST fail with
-  `SqlError.TransactionEnded`.
+  statement), every later statement, savepoint and commit on it MUST fail
+  with `SqlError.TransactionEnded`, so work a statement rolled back never
+  passes for committed. Its rollback then does nothing.
 - `reset` sends `ROLLBACK` when the last ReadyForQuery said a transaction was
   open or failed, and nothing when it said idle.
 
@@ -769,7 +778,8 @@ connection stays usable.
 - Tasks that share a transaction take turns on its connection: each call
   holds the connection from its request to the end of the reply, so two
   calls' messages never interleave. A task that finds it held waits for the
-  holder to give it back.
+  holder to give it back, and MUST wake once it does: it subscribes before
+  it tries, and every release publishes a number of its own.
 - A call cut off part way (a timeout or a cancel inside the statement), a
   broken stream, a reply the driver cannot read, and an ErrorResponse of
   severity FATAL or PANIC leave the protocol state unknown. That call fails,
@@ -789,7 +799,9 @@ connection stays usable.
 | anything else | `Failed("Postgres: SQLSTATE: message")` |
 
 The message is the server's primary message. The detail field is never
-read, because it can hold a row's values.
+read, because it can hold a row's values. The primary message can still
+quote the parameter that failed (as `22P02`'s `invalid input syntax for type
+integer: "..."`), as the server writes it.
 
 ### Not yet
 
@@ -978,6 +990,6 @@ refuses the peer's versions.
 | `host_for_tests` is test-only (`T4401`); a test without `using` is `T4400` | `tests/net.rs` `only_a_test_that_asks_gets_the_real_network` |
 | Postgres: the startup message, trust, SCRAM (RFC 7677's example, a wrong or missing signature, a nonce not extended, a server error), cleartext refused without TLS and sent over it, MD5 and errors at startup, TLS refused, untrusted or for another host, bytes after the TLS answer, the connect timeout | `tests/postgres.rs` `startup_and_authentication` |
 | Postgres: parameters as text, every column type with NaN and both bytea forms, affected rows by tag, each SQLSTATE class, COPY both ways, an empty statement, NUL bytes | `tests/postgres.rs` `values_tags_and_failures` |
-| Postgres: savepoints, a failed release, a commit answered with `ROLLBACK`, reset, a statement after the transaction ended, a cut-off call and a broken reply breaking the connection, four tasks on one transaction, two nested transactions at once | `tests/postgres.rs` `transactions_and_sharing` |
-| Postgres: target URLs, percent-decoding, IPv6, ports and parameters | `tests/postgres.rs` `targets` |
-| Postgres against PostgreSQL's own server: every type round-trips, failures by SQLSTATE, transactions and savepoints, a failed commit, a deadlock, a pool of 20 tasks, TLS, SCRAM and cleartext over TLS | `tests/postgres.rs` `a_real_postgresql_server` |
+| Postgres: savepoints, a failed release, a commit answered with `ROLLBACK`, reset, a statement after the transaction ended, a commit and a savepoint after a statement ended it, a FATAL error, bytes read past a reply kept, a cut-off call and a broken reply breaking the connection, four tasks on one transaction, two nested transactions at once | `tests/postgres.rs` `transactions_and_sharing` |
+| Postgres: target URLs, percent-decoding and `%00`, IPv6, ports and parameters | `tests/postgres.rs` `targets` |
+| Postgres against PostgreSQL's own server: every type round-trips, failures by SQLSTATE, COPY both ways, transactions and savepoints, a failed commit, a rollback run by hand, a deadlock, a pool of 20 tasks, TLS, SCRAM and cleartext over TLS | `tests/postgres.rs` `a_real_postgresql_server` |
