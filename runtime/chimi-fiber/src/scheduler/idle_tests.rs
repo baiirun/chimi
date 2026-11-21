@@ -361,9 +361,9 @@ fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 still runs");
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Done(Idle::AwaitingHost)));
+    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Done(Idle::AwaitingHost)));
     let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
     signal::drain(zero);
     scheduler.enter_carrier(Carrier(1));
