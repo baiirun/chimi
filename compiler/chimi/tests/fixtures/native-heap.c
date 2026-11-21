@@ -152,7 +152,7 @@ static void test_a_million_passes_keep_peak_memory_flat(void) {
   }
   CHECK(integer(state) == passes, "state %lld", (long long)integer(state));
   CHECK(carrier->heap_totals.peak_footprint_bytes == peak_after_warmup,
-        "peak footprint grew from %zu to %zu bytes", peak_after_warmup,
+        "peak footprint grew from %" PRId64 " to %" PRId64 " bytes", (int64_t)peak_after_warmup,
         carrier->heap_totals.peak_footprint_bytes);
   CHECK(region.survivors.count <= 2 * allocations_after_warmup + 1,
         "survivors grew from %zu to %zu", allocations_after_warmup, region.survivors.count);
@@ -255,7 +255,7 @@ static void test_adopted_fragments_join_the_innermost_region_and_are_reclaimed(v
     if (round == 3000) peak_at_warmup = carrier->heap_totals.peak_footprint_bytes;
   }
   CHECK(carrier->heap_totals.peak_footprint_bytes == peak_at_warmup, "adopted fragments were not reclaimed");
-  CHECK(carrier->heap_totals.live_fragments == 0, "%zu fragments in transit", carrier->heap_totals.live_fragments);
+  CHECK(carrier->heap_totals.live_fragments == 0, "%" PRId64 " fragments in transit", carrier->heap_totals.live_fragments);
   allocation_scope_end(&region, NULL, NULL);
   enter(previous);
   heap_destroy(receiver);
@@ -322,9 +322,9 @@ static void test_destroying_heaps_and_unadopted_fragments_frees_everything(void)
   enter(previous);
   heap_destroy(heap);
   fragment_free(unread);
-  CHECK(carrier->heap_totals.live_allocations == before.live_allocations, "%zu allocations leaked",
+  CHECK(carrier->heap_totals.live_allocations == before.live_allocations, "%" PRId64 " allocations leaked",
         carrier->heap_totals.live_allocations - before.live_allocations);
-  CHECK(carrier->heap_totals.footprint_bytes == before.footprint_bytes, "%zu bytes leaked",
+  CHECK(carrier->heap_totals.footprint_bytes == before.footprint_bytes, "%" PRId64 " bytes leaked",
         carrier->heap_totals.footprint_bytes - before.footprint_bytes);
   CHECK(carrier->heap_totals.live_fragments == before.live_fragments, "fragments leaked");
   CHECK(carrier->heap_totals.fragment_footprint_bytes == before.fragment_footprint_bytes,
@@ -605,7 +605,7 @@ static void measure_messages(void) {
     allocation_scope_collect(&region, &state, NULL);
   }
   double elapsed = seconds_now() - started;
-  printf("measure int_message_ns=%.1f peak_footprint_bytes=%zu full_passes=%llu\n",
+  printf("measure int_message_ns=%.1f peak_footprint_bytes=%" PRId64 " full_passes=%llu\n",
          elapsed * 1e9 / MESSAGES, carrier->heap_totals.peak_footprint_bytes,
          (unsigned long long)region.full_collections);
   allocation_scope_end(&region, NULL, NULL);

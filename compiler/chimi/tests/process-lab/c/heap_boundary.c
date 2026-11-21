@@ -144,8 +144,8 @@ static BoundaryWork cross_into_foreign_values(uint32_t size) {
         "a fragment copy accepted a pointer into another heap");
   CHECK(fragment == NULL, "a failed copy returned a fragment");
   CHECK(carrier->heap_totals.live_fragments == fragments, "a failed copy kept its fragment");
-  CHECK(carrier->heap_totals.footprint_bytes == footprint, "a failed copy kept %zu bytes",
-        carrier->heap_totals.footprint_bytes - footprint);
+  CHECK(carrier->heap_totals.footprint_bytes == (int64_t)footprint, "a failed copy kept %zu bytes",
+        (size_t)carrier->heap_totals.footprint_bytes - footprint);
   work.copy_peak_bytes = carrier->heap_totals.peak_footprint_bytes - footprint;
   CHECK(list_sum(foreign) == foreign_sum, "the copy changed the foreign list");
   CHECK(foreign_text->as.text.length == size, "the copy changed the foreign Text");
