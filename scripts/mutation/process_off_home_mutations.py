@@ -31,7 +31,7 @@ MUTATIONS = [
       "            if !self.may_resume_here(task, self.tasks[&task].command) {\n                break;",
       "            if false {\n                break;", STOP),
     m("a forced body's spent deadline is re-armed", P,
-      "        if stopping.timer.is_none() && !stopping.forced {",
+      "        if stopping.timer.is_none() && !(stopping.forced && waits_on_home) {",
       "        if stopping.timer.is_none() {", DEADLINE),
     m("a teardown keeps carriers apart", S,
       "        self.any_carrier = true;\n        self.run_queued_jobs();",

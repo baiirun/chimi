@@ -1,10 +1,13 @@
-# mutation run at ee6ef725fdd317d802c5ce7e37514d42e15cb2a4
-# process_off_home_mutations.py: 4 mutants against runtime/chimi-fiber
+# mutation run at c762a4ce2505ddc3b5188f50208282b8d636c74a
+# process_off_home_mutations.py: 6 mutants against runtime/chimi-fiber
 BASELINE ok  [lib -- a_supervisor_stopped_from_another_carrier_stops_its_members_at_home_in_reverse_order] (14s)
 BASELINE ok  [lib -- a_deadline_fired_on_another_carrier_forces_the_body_at_its_home] (0s)
 BASELINE ok  [lib -- a_kernel_with_processes_on_another_carrier_tears_down] (0s)
+BASELINE ok  [lib -- a_kernel_dropped_with_a_queued_job_runs_it] (0s)
 KILLED       a body is run inline off its home [lib -- a_supervisor_stopped_from_another_carrier_stops_its_members_at_home_in_reverse_order] (4s)
-KILLED       a forced body's spent deadline is re-armed [lib -- a_deadline_fired_on_another_carrier_forces_the_body_at_its_home] (44s)
+STALE        a forced body's spent deadline is re-armed: edit text occurs 0 times in src/scheduler/process.rs
 TIMEOUT      a teardown keeps carriers apart [lib -- a_kernel_with_processes_on_another_carrier_tears_down] (120s)
 KILLED       any fiber may be resumed anywhere [lib -- a_supervisor_stopped_from_another_carrier_stops_its_members_at_home_in_reverse_order] (6s)
-# result: every mutant killed
+KILLED       a dropped kernel leaves its jobs queued [lib -- a_kernel_dropped_with_a_queued_job_runs_it] (6s)
+KILLED       a dropped kernel runs only the current carrier's jobs [lib -- a_kernel_dropped_with_a_queued_job_runs_it] (6s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
