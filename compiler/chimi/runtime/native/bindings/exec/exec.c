@@ -367,7 +367,8 @@ static int open_pipe(int target, int ends[2]) {
    marked close-on-exec, where that takes a second call (sockets and pipes
    off Linux). macOS closes every descriptor the file actions do not name
    (POSIX_SPAWN_CLOEXEC_DEFAULT), so an inherited stream is named; glibc
-   closes those above standard error as the last action. */
+   2.34 and later closes those above standard error as the last action.
+   Elsewhere (musl, older glibc) only close-on-exec protects them. */
 #if defined(__APPLE__)
 #define SPAWN_FLAGS (POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT)
 #else
@@ -386,7 +387,10 @@ static int close_other_descriptors(posix_spawn_file_actions_t *actions) {
 
 static bool connect_stdio(posix_spawn_file_actions_t *actions, int fd, int64_t mode, int child_end) {
 #if defined(__APPLE__)
-  if (mode == STDIO_INHERIT) return posix_spawn_file_actions_addinherit_np(actions, fd) == 0;
+  /* A stream the parent has closed stays closed, as without the flag; naming
+     it would fail the spawn. */
+  if (mode == STDIO_INHERIT)
+    return fcntl(fd, F_GETFD) == -1 || posix_spawn_file_actions_addinherit_np(actions, fd) == 0;
 #else
   if (mode == STDIO_INHERIT) return true;
 #endif
