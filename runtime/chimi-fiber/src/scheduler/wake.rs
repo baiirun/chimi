@@ -115,7 +115,20 @@ struct Pipe {
 
 impl Pipe {
     fn open() -> io::Result<Self> {
+        #[cfg(test)]
+        if test_hooks::FAIL_OPEN_AFTER.with(|left| match left.get() {
+            Some(0) => true,
+            Some(n) => {
+                left.set(Some(n - 1));
+                false
+            }
+            None => false,
+        }) {
+            return Err(io::Error::from_raw_os_error(libc::EMFILE));
+        }
         let (read, write) = sys::open_pipe()?;
+        #[cfg(test)]
+        test_hooks::OPENED.with(|opened| opened.borrow_mut().extend([read, write]));
         Ok(Self { read, write })
     }
 }
@@ -124,6 +137,21 @@ impl Drop for Pipe {
     fn drop(&mut self) {
         sys::close(self.read);
         sys::close(self.write);
+        #[cfg(test)]
+        test_hooks::CLOSED.with(|closed| closed.borrow_mut().extend([self.read, self.write]));
+    }
+}
+
+/// Lets a test make the pipe after `n` more fail, and see which descriptors
+/// this thread's pipes opened and closed.
+#[cfg(test)]
+pub(super) mod test_hooks {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        pub(in crate::scheduler) static FAIL_OPEN_AFTER: Cell<Option<u32>> = const { Cell::new(None) };
+        pub(in crate::scheduler) static OPENED: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+        pub(in crate::scheduler) static CLOSED: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
     }
 }
 
@@ -253,6 +281,22 @@ mod tests {
         assert!(readable(fd(2)));
         assert!(!readable(fd(0)) && !readable(fd(1)));
         assert!(wakes.owns(fd(1)) && wakes.owns(wakes.pipes[1].write) && !wakes.owns(-1));
+    }
+
+    /// A pipe that fails to open fails the whole set, and closes every pipe
+    /// already opened for it.
+    #[test]
+    fn a_failed_pipe_closes_the_ones_opened_before_it() {
+        test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(2)));
+        let opened_before = test_hooks::OPENED.with(|opened| opened.borrow().len());
+        let error = Wakes::new(4).err().expect("the third pipe fails");
+        test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
+        assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+        let opened: Vec<i32> =
+            test_hooks::OPENED.with(|opened| opened.borrow()[opened_before..].to_vec());
+        assert_eq!(opened.len(), 4, "two pipes opened before the failure");
+        let closed = test_hooks::CLOSED.with(|closed| closed.borrow().clone());
+        assert!(opened.iter().all(|fd| closed.contains(fd)), "each was closed");
     }
 
     /// A full pipe still reads as woken, and a write to it does not block.

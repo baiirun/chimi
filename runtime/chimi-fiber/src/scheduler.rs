@@ -514,6 +514,9 @@ pub enum SchedulerError {
     TaskStillLive(TaskId),
     Channel(ChannelError),
     FiberCreationFailed,
+    /// A kernel with several carriers could not open a carrier's wake pipe;
+    /// the OS error number, when there is one.
+    CarrierSetupFailed(Option<i32>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1285,8 +1288,44 @@ impl Scheduler {
         self.parked[carrier.0 as usize] = false;
     }
 
-    /// A kernel with `carriers` ready queues, driven from one thread by
-    /// `enter_carrier`, for tests of routing between carriers.
+    /// A kernel with `carriers` carriers, each with its own ready queue, job
+    /// queue and wake pipe. Fails with `CarrierSetupFailed`, leaving no pipe
+    /// open, when a wake pipe cannot be opened (for example at the
+    /// descriptor limit).
+    ///
+    /// Requires: `carriers` is at least 1.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the carrier threads (PR 5c-6) and --carriers (5d) build kernels")
+    )]
+    pub(crate) fn with_options_carriers(
+        options: SchedulerOptions,
+        carriers: u32,
+    ) -> Result<Self, SchedulerError> {
+        let mut scheduler = Self::with_options(options);
+        scheduler.install_carriers(carriers)?;
+        Ok(scheduler)
+    }
+
+    /// Gives a kernel with no ready task or job `carriers` carriers. The
+    /// kernel is unchanged when a wake pipe fails.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the carrier threads (PR 5c-6) and --carriers (5d) build kernels")
+    )]
+    fn install_carriers(&mut self, carriers: u32) -> Result<(), SchedulerError> {
+        assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
+        let wakes = wake::Wakes::new(carriers)
+            .map_err(|error| SchedulerError::CarrierSetupFailed(error.raw_os_error()))?;
+        self.ready = ready::ReadyQueues::new(carriers);
+        self.jobs = jobs::Jobs::new(carriers);
+        self.wakes = wakes;
+        self.parked = vec![false; carriers as usize];
+        Ok(())
+    }
+
+    /// A kernel with `carriers` carriers on the real clock, driven from one
+    /// thread by `enter_carrier`, for tests of routing between carriers.
     #[cfg(test)]
     fn with_carriers(stack_bytes: usize, trace_mode: TraceMode, carriers: u32) -> Self {
         let mut scheduler = Self::new(stack_bytes, trace_mode);
@@ -1294,14 +1333,9 @@ impl Scheduler {
         scheduler
     }
 
-    /// Gives a kernel with no ready task or job `carriers` carriers.
     #[cfg(test)]
     fn set_carriers(&mut self, carriers: u32) {
-        assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
-        self.ready = ready::ReadyQueues::new(carriers);
-        self.jobs = jobs::Jobs::new(carriers);
-        self.wakes = wake::Wakes::new(carriers).expect("a wake pipe per carrier");
-        self.parked = vec![false; carriers as usize];
+        self.install_carriers(carriers).expect("a wake pipe per carrier");
     }
 
     /// Wakes `carrier` once the kernel lock is released, so an idle wait
@@ -3891,6 +3925,22 @@ mod tests {
 
     fn two_carriers() -> std::sync::Mutex<Scheduler> {
         std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
+    }
+
+    /// A kernel whose wake pipe fails to open is an error, not a panic, and
+    /// one that opens has a queue and a pipe for each carrier.
+    #[test]
+    fn a_kernel_whose_wake_pipe_fails_is_an_error() {
+        let options = SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual);
+        wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(1)));
+        let failed = Scheduler::with_options_carriers(options, 3).err();
+        wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
+        assert_eq!(failed, Some(SchedulerError::CarrierSetupFailed(Some(libc::EMFILE))));
+
+        let kernel = Scheduler::with_options_carriers(options, 3).expect("kernel");
+        assert_eq!(kernel.ready.carriers(), 3);
+        assert!(kernel.wakes.read_fd(ready::Carrier(2)).is_some());
+        assert_eq!(kernel.parked.len(), 3);
     }
 
     /// A task woken from carrier 0 for its home on carrier 1 wakes carrier
