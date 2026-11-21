@@ -841,6 +841,28 @@ four keep one carrier.
        test-only `run_root_on_threads` refuses one instead. Tests: a stack
        overflow on a carrier thread ends only its task, and a failed spawn
        leaves the roots unstarted and the kernel able to run them all.
+     - 5d-3 as landed (fiber ABI 29): `ChimiSchedulerConfig` gains
+       `carriers` (0 or 1 is one), `carrier_enter` and `carrier_context`,
+       appended after `take_release`. `chimi_scheduler_run` builds the
+       kernel with that many carriers (`with_options_carriers`, so a wake
+       pipe that cannot be opened defects) and calls the enter hook on
+       each carrier thread before it runs a fiber. More than one carrier
+       under the virtual clock defects before any task runs. The header
+       says which thread runs each hook: the entry and tasks on their
+       carrier's thread without the lock; every other hook on whichever
+       carrier holds the lock, one call at a time; the deadlock report on
+       the caller's thread. Tests run the supervisor fixture through the
+       ABI on three carriers (the enter hook once per carrier thread, the
+       same kinds of trace event as one carrier), refuse two carriers
+       under virtual time, return a parked two-carrier run as parked, and
+       check each carrier thread is entered before its first fiber.
+       Found on the way: ES01's fixture settles a restart with a 1 ms
+       sleep, which one carrier always honours (the restart is ready
+       before the timer) but carriers on threads under the real clock need
+       not, so its second crash can reach the dying incarnation and the
+       run stalls. That is the program's own race, not a lost wake; the
+       ABI test uses a fixture that crashes each member once instead. 5e's
+       stress programs must not lean on such timing either.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

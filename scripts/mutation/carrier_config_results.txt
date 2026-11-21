@@ -1,0 +1,14 @@
+# carrier_config_mutations.py: 7 mutants against runtime/chimi-fiber (R4 step 3 PR 5d-3)
+BASELINE ok  [lib]
+KILLED       several carriers run under virtual time [lib]
+KILLED       0 carriers is taken literally [lib]
+KILLED       the carrier count is ignored [lib]
+KILLED       the enter hook is never called [lib]
+KILLED       the enter hook names the wrong carrier [lib]
+KILLED       the enter hook gets no context [lib]
+KILLED       the enter hook runs after the carrier's first drive [lib]
+# result: every mutant killed
+
+The first run left the last alive: nothing checked that the hook ran
+before the carrier's fibers. a_carrier_thread_is_entered_before_its_first_fiber
+now has each fiber on a carrier thread check its thread was entered.
