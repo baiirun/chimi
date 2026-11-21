@@ -30,4 +30,13 @@ MUTATIONS = [
     m("carriers are installed with one queue", S,
       "        self.ready = ready::ReadyQueues::new(carriers);\n        self.jobs = jobs::Jobs::new(carriers);\n        self.wakes = wakes;",
       "        self.ready = ready::ReadyQueues::new(1);\n        self.jobs = jobs::Jobs::new(carriers);\n        self.wakes = wakes;", ERROR),
+    m("a pipe's ends are never closed", W,
+      "            let _closed = sys::close(fd);",
+      "            let _closed = { let _ = fd; true };", CLOSED),
+    m("a pipe closes only its read end", W,
+      "        for fd in [self.read, self.write] {",
+      "        for fd in [self.read] {", CLOSED),
+    m("a failed install changes the queues first", S,
+      "        let wakes = wake::Wakes::new(carriers)\n            .map_err(|error| SchedulerError::CarrierSetupFailed(error.raw_os_error()))?;\n        self.ready = ready::ReadyQueues::new(carriers);",
+      "        self.ready = ready::ReadyQueues::new(carriers);\n        let wakes = wake::Wakes::new(carriers)\n            .map_err(|error| SchedulerError::CarrierSetupFailed(error.raw_os_error()))?;", ERROR),
 ]

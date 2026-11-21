@@ -3928,7 +3928,8 @@ mod tests {
     }
 
     /// A kernel whose wake pipe fails to open is an error, not a panic, and
-    /// one that opens has a queue and a pipe for each carrier.
+    /// is left as it was; one that opens has a queue and a pipe for each
+    /// carrier.
     #[test]
     fn a_kernel_whose_wake_pipe_fails_is_an_error() {
         let options = SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual);
@@ -3936,6 +3937,15 @@ mod tests {
         let failed = Scheduler::with_options_carriers(options, 3).err();
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
         assert_eq!(failed, Some(SchedulerError::CarrierSetupFailed(Some(libc::EMFILE))));
+
+        let mut kernel = Scheduler::with_options(options);
+        wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(1)));
+        let failed = kernel.install_carriers(3);
+        wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
+        assert!(failed.is_err());
+        assert_eq!(kernel.ready.carriers(), 1, "a failed install changes nothing");
+        assert_eq!(kernel.parked.len(), 1);
+        assert_eq!(kernel.wakes.read_fd(ready::Carrier(0)), None);
 
         let kernel = Scheduler::with_options_carriers(options, 3).expect("kernel");
         assert_eq!(kernel.ready.carriers(), 3);

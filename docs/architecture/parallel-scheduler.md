@@ -647,12 +647,12 @@ four keep one carrier.
          then wake carrier 0. The round-robin driver checks lost wakes only
          for `Park`; a carrier 0 sleep or descriptor wait it skips is not
          checked.
-   - 5c, real threads behind a test-only API: a `Send` wrapper for the
-     kernel and unstarted fibers, spawning and joining, each carrier
-     destroying its own fibers before it exits, and placement.
+   - 5c, real threads behind a test-only API: sharing the kernel between
+     carrier threads, spawning and joining, each carrier destroying its
+     own fibers before it exits, and placement.
      Split into six PRs (advisor review, 2026-11-21), each merging with
-     one carrier and behavior unchanged. 5c-1 and 5c-2 are independent of
-     the rest; 5c-3 to 5c-6 land in order.
+     one carrier and behavior unchanged. 5c-1 and 5c-2 may land in any
+     order, but before 5c-6; 5c-3 to 5c-6 land in order.
      - 5c-1: one binding call per handle at a time. A per-slot lock in
        the binding handle table, held while binding code runs and
        released across `chimi_binding_wait`, skipped with one carrier.
@@ -675,9 +675,13 @@ four keep one carrier.
        (`retire_carrier`) before it exits. `Drop`'s `any_carrier` path
        stays for one-thread kernels only.
      - 5c-6: threads. A test-only `run_root_on_threads` shares the kernel
-       as `Sync` behind its mutex (built and dropped on the main thread, so
-       nothing else needs `Send`; the process records' `Rc` become `Arc`),
-       spawns carriers 1 to N with scoped threads, and joins them; an
+       behind its mutex with scoped threads, built and dropped on the main
+       thread. `Mutex<Scheduler>` is `Sync` only if `Scheduler` is `Send`,
+       which its raw pointers (hook contexts, the signal words, request
+       pointers) and `Rc` process records prevent, so this needs an
+       `unsafe impl Send` with a written argument: every pointer is reached
+       only under the lock, and a started fiber is resumed only on its home
+       (`Rc` becomes `Arc`). It spawns carriers 1 to N and joins them; an
        unstarted fiber needs no wrapper, since its first resume claims its
        home. Stress loops under a watchdog, with fixtures that check a
        fiber never changes thread.
@@ -691,7 +695,8 @@ four keep one carrier.
        `install_carriers`, which opens the pipes before changing anything,
        so a failure leaves the kernel as it was and closes every pipe
        already opened. The test-only `with_carriers` and `set_carriers`
-       use it. Tests inject a failure at the nth pipe.
+       use it. Tests inject a failure at the nth pipe and check that every
+       pipe opened before it was closed and the kernel left as it was.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
      with `--clock=virtual`.
    - 5e, the looped stress programs at 2 to 8 carriers.

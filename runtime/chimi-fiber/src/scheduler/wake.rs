@@ -135,15 +135,19 @@ impl Pipe {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        sys::close(self.read);
-        sys::close(self.write);
-        #[cfg(test)]
-        test_hooks::CLOSED.with(|closed| closed.borrow_mut().extend([self.read, self.write]));
+        for fd in [self.read, self.write] {
+            let _closed = sys::close(fd);
+            #[cfg(test)]
+            if _closed {
+                test_hooks::CLOSED.with(|closed| closed.borrow_mut().push(fd));
+            }
+        }
     }
 }
 
-/// Lets a test make the pipe after `n` more fail, and see which descriptors
-/// this thread's pipes opened and closed.
+/// Lets a test make every pipe after `n` more fail, until it resets the
+/// count, and see which descriptors this thread's pipes opened and closed
+/// (a descriptor counts as closed only when close(2) succeeded).
 #[cfg(test)]
 pub(super) mod test_hooks {
     use std::cell::{Cell, RefCell};
@@ -209,9 +213,10 @@ mod sys {
         let _ = unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
     }
 
-    pub(super) fn close(fd: i32) {
+    /// True when the descriptor was open and is now closed.
+    pub(super) fn close(fd: i32) -> bool {
         // SAFETY: the pipe owns `fd` and closes it once, when dropped.
-        unsafe { libc::close(fd) };
+        unsafe { libc::close(fd) == 0 }
     }
 }
 
@@ -234,7 +239,9 @@ mod sys {
 
     pub(super) fn write_byte(_fd: i32) {}
 
-    pub(super) fn close(_fd: i32) {}
+    pub(super) fn close(_fd: i32) -> bool {
+        true
+    }
 }
 
 #[cfg(all(
