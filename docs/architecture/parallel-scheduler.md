@@ -637,7 +637,8 @@ four keep one carrier.
          `carrier::round_robin` runs each carrier in turn and fails on a
          lost wake; the 5b-4 tests that needed several carriers to settle
          use it. Tests in `idle_tests.rs`; mutants in
-         `global_idle_mutations.py`, all 14 killed.
+         `global_idle_mutations.py`, all 19 killed; the last five came
+         from the verifier's own run against the whole suite.
        - Left for 5c (review): when carrier 0 returns a verdict or the
          root's run ends, every parked carrier must be woken (the stop
          mark), or its thread waits forever. `Idle::AwaitingHost` is still

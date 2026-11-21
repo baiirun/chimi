@@ -1,12 +1,15 @@
-# mutation run at 9319a3a25d235c3cb5e911ab4699444a7e60a65b
-# global_idle_mutations.py: 14 mutants against runtime/chimi-fiber
-BASELINE ok  [lib -- a_deadlock_is_reported_only_once_every_carrier_is_idle] (5s)
+# mutation run at aa63b27cb959e64720bebcff5d4c472fc09bef34
+# global_idle_mutations.py: 19 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_deadlock_is_reported_only_once_every_carrier_is_idle] (15s)
 BASELINE ok  [lib -- carrier_zero_waits_for_a_carrier_running_a_fiber] (0s)
 BASELINE ok  [lib -- carrier_zero_waits_while_another_carrier_has_work] (0s)
 BASELINE ok  [lib -- the_last_carrier_to_park_wakes_carrier_zero] (0s)
 BASELINE ok  [lib -- time_moves_only_once_every_other_carrier_has_parked] (0s)
 BASELINE ok  [lib -- an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero] (0s)
 BASELINE ok  [lib -- carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer] (0s)
+BASELINE ok  [lib -- the_last_carrier_to_park_wakes_carrier_zero_with_a_timer_pending] (0s)
+BASELINE ok  [lib -- carrier_zero_waiting_for_others_runs_its_own_due_timer] (0s)
+BASELINE ok  [lib -- carrier_zero_serves_the_host_and_descriptors_while_others_run] (0s)
 KILLED       carrier 0 ignores the other carriers [lib -- a_deadlock_is_reported_only_once_every_carrier_is_idle] (4s)
 KILLED       parked carriers are not counted [lib -- carrier_zero_waits_for_a_carrier_running_a_fiber] (4s)
 KILLED       ready queues are not counted [lib -- carrier_zero_waits_while_another_carrier_has_work] (5s)
@@ -21,4 +24,9 @@ KILLED       any carrier waits on descriptors [lib -- an_idle_carrier_fires_due_
 KILLED       a parked carrier sleeps past a timer [lib -- carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer] (5s)
 KILLED       carrier 0 waiting for others parks past a timer [lib -- carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer] (5s)
 KILLED       has_work looks only at jobs [lib -- an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero] (4s)
+KILLED       the last carrier to park wakes carrier 0 only with no timer [lib -- the_last_carrier_to_park_wakes_carrier_zero_with_a_timer_pending] (4s)
+KILLED       carrier 0 waiting for others parks with its own task ready [lib -- carrier_zero_waiting_for_others_runs_its_own_due_timer] (5s)
+KILLED       carrier 0 waiting for others holds its due timers [lib -- carrier_zero_waiting_for_others_runs_its_own_due_timer] (5s)
+KILLED       carrier 0 waits for others before descriptors [lib -- carrier_zero_serves_the_host_and_descriptors_while_others_run] (5s)
+KILLED       carrier 0 waits for others before the host [lib -- carrier_zero_serves_the_host_and_descriptors_while_others_run] (5s)
 # result: every mutant killed
