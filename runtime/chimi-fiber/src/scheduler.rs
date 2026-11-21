@@ -1280,10 +1280,10 @@ impl Scheduler {
         }
     }
 
-    /// Queues `task` on `carrier`, its home: the one way work becomes ready,
+    /// Queues `task` on its home carrier: the one way work becomes ready,
     /// so a carrier other than the current one can be told about it.
-    fn enqueue(&mut self, carrier: ready::Carrier, task: TaskId, front: bool) {
-        debug_assert_eq!(carrier, self.tasks[&task].carrier, "a task waits on its home");
+    fn enqueue(&mut self, task: TaskId, front: bool) {
+        let carrier = self.tasks[&task].carrier;
         if front {
             self.ready.push_front(carrier, task);
         } else {
@@ -1306,8 +1306,7 @@ impl Scheduler {
             .ok_or(SchedulerError::UnknownTask(task))?;
         if record.phase == TaskPhase::Parked {
             record.phase = TaskPhase::Runnable;
-            let carrier = record.carrier;
-            self.enqueue(carrier, task, front);
+            self.enqueue(task, front);
             self.emit(task, TaskEventKind::Woken, None, true);
         }
         Ok(())
@@ -1831,7 +1830,7 @@ impl Scheduler {
                 .insert(id);
         }
         self.peak_tasks = self.peak_tasks.max(self.tasks.len());
-        self.enqueue(carrier, id, false);
+        self.enqueue(id, false);
         self.emit(id, TaskEventKind::Started, None, false);
         Ok(id)
     }
@@ -2378,7 +2377,7 @@ impl Scheduler {
         if !fiber_is_terminal {
             // Another task's fiber resumed inline: it must be on its home
             // carrier. With several carriers this becomes a job for that
-            // carrier (parallel-scheduler.md, "Step 3 plan", PR 5).
+            // carrier (parallel-scheduler.md, "Step 3 plan", PR 5b-3).
             debug_assert_eq!(self.tasks[&task].carrier, self.current, "inline resume off home");
             self.emit(
                 task,
@@ -2501,8 +2500,7 @@ impl Scheduler {
                 TaskOutcome::Succeeded(_) => {
                     let record = self.tasks.get_mut(&parent).expect("waiting parent");
                     record.phase = TaskPhase::Runnable;
-                    let carrier = record.carrier;
-                    self.enqueue(carrier, parent, false);
+                    self.enqueue(parent, false);
                     self.emit(parent, TaskEventKind::Woken, Some(task), true);
                 }
                 TaskOutcome::Cancelled => {
@@ -3179,6 +3177,27 @@ mod tests {
         scheduler.enter_carrier(one);
         scheduler.drive();
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked, "its home ran it");
+    }
+
+    /// A child is homed on its parent's carrier, not on the carrier that
+    /// started it, so only the parent's carrier runs it.
+    #[test]
+    fn a_child_is_homed_on_its_parents_carrier() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (zero, one) = (ready::Carrier(0), ready::Carrier(1));
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        scheduler.enter_carrier(one);
+        let parent = start_parked(&mut scheduler);
+        scheduler.enter_carrier(zero);
+        let child = scheduler
+            .start_child(parent, chimi_fixture_generated_many_parks)
+            .expect("child");
+        assert_eq!(scheduler.tasks[&child].carrier, one);
+        scheduler.drive();
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Runnable, "carrier 0 does not run it");
+        scheduler.enter_carrier(one);
+        scheduler.drive();
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Parked, "its home ran it");
     }
 
     /// Each kernel lock tells the kernel which carrier holds it: a task

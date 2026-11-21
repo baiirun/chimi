@@ -499,8 +499,14 @@ four keep one carrier.
        on the task's home carrier. A test-only two-carrier kernel, driven
        from one thread, kills the ready-queue mutant.
        - As landed: `Locked::new(kernel, carrier)`, `Scheduler::enter_carrier`,
-         `Scheduler::with_carriers` (tests only). Mutants in
-         `carrier_routing_mutations.py`, all four killed.
+         `Scheduler::with_carriers` (tests only). `enqueue(task, front)`
+         reads the home from the task's record, so no caller picks a
+         carrier. Debug assertions check that a resume (`prepare_run`) and
+         the two inline resumes run on the task's home; 5b-3 relaxes the
+         inline one for a task that never ran. Tests cover a wake, a root
+         start and a child start across two carriers, and the lock
+         entering its carrier. Mutants in `carrier_routing_mutations.py`,
+         all six killed. The verifier measured PG01 and PG04 within noise.
      - 5b-2: the sticky withdraw. The reactor keeps, per binding slot, the
        last generation withdrawn (`channel` is slot << 32 | generation, as
        `binding_resource_key` builds it). An IO or child wait on that
