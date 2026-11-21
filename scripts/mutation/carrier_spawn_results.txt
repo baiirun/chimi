@@ -1,0 +1,13 @@
+# mutation run at 2b035f66714671b11270a03237c6342022a34e46
+# carrier_spawn_mutations.py: 9 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (7s)
+KILLED       carriers start before the last run's end is cleared [lib] (6s)
+KILLED       marks left from before the run stay set [lib] (5s)
+TIMEOUT      carrier 1 gets no thread [lib] (180s)
+TIMEOUT      the last carrier gets no thread [lib] (180s)
+TIMEOUT      every thread reaches the kernel as carrier 0 [lib] (180s)
+KILLED       two threads reach the kernel as carrier 1 [lib] (64s)
+KILLED       entering a fiber keeps its parked request [lib] (7s)
+KILLED       a parked run on several threads is accepted [lib] (7s)
+KILLED       the kernel is not handed back [lib] (5s)
+# result: every mutant killed

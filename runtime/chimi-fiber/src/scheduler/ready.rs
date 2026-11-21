@@ -48,6 +48,14 @@ impl ReadyQueues {
         }
     }
 
+    pub(super) fn carriers(&self) -> u32 {
+        u32::try_from(self.queues.len()).expect("carrier count fits in u32")
+    }
+
+    pub(super) fn is_empty_for(&self, carrier: Carrier) -> bool {
+        self.queues[carrier.0 as usize].is_empty()
+    }
+
     /// True when no carrier has a task ready.
     pub(super) fn is_empty(&self) -> bool {
         self.queues.iter().all(VecDeque::is_empty)

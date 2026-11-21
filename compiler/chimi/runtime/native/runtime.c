@@ -314,7 +314,8 @@ struct ChimiRuntime {
    - A heap value never points into another heap or into a fragment, so a heap
      can be destroyed, and a fragment freed, without looking at anything else.
    - Values never change after construction (the one exception, list_slice's
-     compaction, allocates into the area of the value it updates). So a value
+     compaction, allocates into the area of the value it updates, and leaves
+     module constants alone when carriers run on threads). So a value
      never points to a value allocated after it, and a survivor never points to
      a young value. A minor pass therefore marks from the state through young
      allocations only, and survivors are walked only by a full pass.
@@ -1616,6 +1617,20 @@ enum { LIST_RETAINED_FRACTION = 4 };
 static bool list_retains_too_much(uint32_t window, uint32_t vector) {
   return (uint64_t)window * LIST_RETAINED_FRACTION < vector;
 }
+/* True when `list` is a module constant and carriers run on threads. Compacting it
+   would rewrite a value other threads read, and allocate in the static area while
+   they run. The simulation's carriers share one thread, so it compacts as one
+   carrier does. decode_constant builds every list constant whole, and a whole
+   list is never compacted, so today this guards only a constant built as a
+   window of a longer vector. */
+static bool list_shared_across_threads(const ChimiValue *list) {
+#ifdef CHIMI_CARRIER_SIMULATION
+  (void)list;
+  return false;
+#else
+  return carrier_count > 1 && allocation_header(list)->area->role == AREA_STATIC;
+#endif
+}
 /* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
    The window shares the vector in O(1) unless it is shorter than a quarter of it,
    so a small window does not keep a large vector alive. Then `list` itself is
@@ -1629,16 +1644,16 @@ static bool list_retains_too_much(uint32_t window, uint32_t vector) {
 
    The compact vector is allocated in the area that holds `list`, so `list` never
    points into a younger area: a survivor's new vector is itself a survivor. The
-   in-place update is safe because one carrier runs every fiber and none switches
-   inside list_slice; parallel carriers (R4) would have to publish the vector and
-   start together, for example through an atomic pointer to an immutable window,
-   or leave shared values uncompacted. */
+   in-place update is safe because a heap value belongs to one fiber, which does not
+   switch inside list_slice. A module constant is the exception: when carriers run
+   on threads, every carrier may read it at once, so its window is copied instead
+   (list_shared_across_threads). */
 static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
   if (from > to || to > list->as.list.length) return NULL;
   if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
   uint32_t length = to - from;
   if (list_retains_too_much(length, list->as.list.vector.length)) {
-    if (list_retains_too_much(length, list->as.list.length))
+    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))
       return list_value(list_copy_window(list, from, length, NULL), 0, length);
     list->as.list.vector =
       list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);
@@ -2543,8 +2558,9 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
 /* Void, True and False are each one shared value in the static area, because values
    never change after construction and conditions and effects produce them on almost
    every pass. Static values are never collected, copied or freed. decode_constants
-   creates all three at startup, before any carrier runs, so the static area is never
-   appended to while fibers run. */
+   creates all three at startup, before any carrier runs. While carriers run on
+   threads, nothing appends to the static area: list_slice copies a constant's
+   window rather than compacting it there. */
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   if (!shared_values[index]) {
@@ -6887,6 +6903,8 @@ struct ChimiBindingCall {
   ChimiValue **arguments;
   uint32_t argument_count;
   uint32_t call_node;
+  /* Which arguments are open handles the call holds (binding_hold). */
+  bool *held;
 };
 
 static ChimiBindingValue *binding_value(ChimiValue *value) { return (ChimiBindingValue *)value; }
@@ -6906,7 +6924,17 @@ static ChimiBindingResult *binding_result(ChimiControl *control) {
    open handle among its arguments for its whole length (binding_hold), so a
    close by another task, or by the call itself, only marks the handle closed:
    its state stays valid until the last call holding it returns, which
-   releases it. */
+   releases it.
+
+   One binding call at a time runs on a handle (`runner`), so a binding's
+   state needs no lock of its own when tasks on several carriers share the
+   handle. A call takes every handle it holds when it starts, waiting on
+   binding_handle_free while another call runs on any of them, and gives
+   them back while it waits on a descriptor or a child or makes any other
+   scheduler request (binding_run, binding_request), so calls on one handle
+   interleave only where a task can park, as they do on one carrier. A
+   call that would wait for a handle blocks its carrier's thread, not just
+   its task: binding code between parks is meant to be short. */
 typedef struct {
   const ChimiBindingType *type;
   void *state;
@@ -6916,6 +6944,9 @@ typedef struct {
   /* The type of a handle closed while held, whose state the last holder
      releases; the slot is not reused before then. */
   const ChimiBindingType *closing;
+  /* The call running binding code on the handle, or NULL. It is one of
+     the holders, so a slot is never freed or reused while it has one. */
+  const ChimiBindingCall *runner;
 } BindingHandleSlot;
 
 /* A state to release once the lock is let go. */
@@ -6930,6 +6961,8 @@ static uint32_t binding_handle_count = 1;
 static uint32_t binding_handle_capacity;
 static uint32_t binding_free_slot;
 static pthread_mutex_t binding_handle_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Signalled when a call stops running on a handle. */
+static pthread_cond_t binding_handle_free = PTHREAD_COND_INITIALIZER;
 
 /* The open slot `value` names, or NULL. The caller holds binding_handle_lock. */
 static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
@@ -6941,8 +6974,11 @@ static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
 }
 
 
-/* The reactor's key for the waits on a handle's descriptors: nonzero, since
-   slot 0 is unused, and distinct per generation. */
+/* The scheduler's key for the waits on a handle's descriptors: nonzero,
+   since slot 0 is unused, and distinct per generation. The scheduler reads
+   it as slot and generation, and treats a withdraw as final for that
+   generation and older ones of the slot (CHIMI_REQUEST_IO_WITHDRAW), so a
+   slot's generation must only grow. */
 static uint64_t binding_resource_key(uint32_t slot, uint32_t generation) {
   return (uint64_t)slot << 32 | generation;
 }
@@ -6959,21 +6995,24 @@ static void binding_slot_free(BindingHandleSlot *entry, uint32_t slot) {
   entry->type = NULL;
   entry->closing = NULL;
   entry->state = NULL;
+  entry->runner = NULL;
   if (entry->generation != UINT32_MAX) {
     entry->state = (void *)(uintptr_t)binding_free_slot;
     binding_free_slot = slot;
   }
 }
 
+static ChimiFiberCommand binding_request(const ChimiBindingCall *call, void *request);
+
 /* Closes the handle (slot, generation) of `type` (NULL for any) when it is
-   open. `withdraw` (true inside a binding call) then wakes every task waiting
-   on the handle's descriptors, so none stays parked on a descriptor the
-   release frees for reuse; each answers CHIMI_BINDING_WAIT_CLOSED. The
+   open. A close from a binding call (`call`; NULL from a collection or a
+   hook) then wakes every task waiting on the handle's descriptors, so none
+   stays parked on a descriptor the release frees for reuse; each answers CHIMI_BINDING_WAIT_CLOSED. The
    handle reads as closed before the withdraw, so a waiter that wakes sees it
    closed. The state is released here unless a binding call holds the
    handle. */
 static void binding_handle_close(uint32_t slot, uint32_t generation, const ChimiBindingType *type,
-                                 bool withdraw) {
+                                 const ChimiBindingCall *call) {
   BindingRelease release = {0};
   bool closed = false;
   pthread_mutex_lock(&binding_handle_lock);
@@ -6993,10 +7032,10 @@ static void binding_handle_close(uint32_t slot, uint32_t generation, const Chimi
   /* The answer is always OK: the withdraw never parks. A forced process body
      that gets CANCEL here is abandoned at its next park, so releasing anyway
      is safe. */
-  if (closed && withdraw && CHIMI_REQUIRES_SCHEDULER) {
+  if (closed && call && CHIMI_REQUIRES_SCHEDULER) {
     ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WITHDRAW,
                                      .channel = binding_resource_key(slot, generation)};
-    scheduler_request(&request);
+    binding_request(call, &request);
   }
   binding_release_run(release);
 }
@@ -7006,7 +7045,7 @@ static void binding_handle_close(uint32_t slot, uint32_t generation, const Chimi
    call holds the handle as an argument, so nothing is withdrawn; this runs
    inside collections and scheduler hooks, where no request may be issued. */
 static void native_handle_unreferenced(uint64_t key) {
-  binding_handle_close((uint32_t)((key & ~NATIVE_HANDLE_KEY) >> 32), (uint32_t)key, NULL, false);
+  binding_handle_close((uint32_t)((key & ~NATIVE_HANDLE_KEY) >> 32), (uint32_t)key, NULL, NULL);
 }
 
 /* Runs every handle's release once, when the program ends and nothing runs:
@@ -7033,20 +7072,80 @@ static void release_binding_handles(void) {
   }
 }
 
+/* True when some call runs on a handle `call` holds. `call` itself never
+   does here: it takes its handles only when it runs on none of them. The
+   caller holds binding_handle_lock. */
+static bool binding_run_blocked(const ChimiBindingCall *call) {
+  for (uint32_t index = 0; index < call->argument_count; ++index) {
+    if (!call->held[index]) continue;
+    const BindingHandleSlot *entry = &binding_handles[call->arguments[index]->as.handle.slot];
+    if (entry->runner != NULL) return true;
+  }
+  return false;
+}
+
+/* Starts (`run`) or stops `call` running on every handle it holds. Starting
+   waits until no other call runs on any of them and then takes them all at
+   once, so two calls sharing handles never each wait for the other. The
+   caller holds binding_handle_lock. */
+static void binding_run_locked(const ChimiBindingCall *call, bool run) {
+  if (run)
+    while (binding_run_blocked(call)) pthread_cond_wait(&binding_handle_free, &binding_handle_lock);
+  bool any = false;
+  for (uint32_t index = 0; index < call->argument_count; ++index) {
+    if (!call->held[index]) continue;
+    binding_handles[call->arguments[index]->as.handle.slot].runner = run ? call : NULL;
+    any = true;
+  }
+  if (any && !run) pthread_cond_broadcast(&binding_handle_free);
+}
+
+/* Lets the call's handles go while it waits (`run` false), or takes them
+   back when the wait ends (`run` true). */
+static void binding_run(const ChimiBindingCall *call, bool run) {
+  pthread_mutex_lock(&binding_handle_lock);
+  binding_run_locked(call, run);
+  pthread_mutex_unlock(&binding_handle_lock);
+}
+
+/* A scheduler request from inside `call`, made with its handles let go.
+   Even a request that answers at once parks the fiber, and the scheduler
+   abandons a forced process body at any park, which would leave a handle
+   taken for good; and on one carrier another task may run first, whose
+   call on the handle would then wait on the thread this one needs. */
+static ChimiFiberCommand binding_request(const ChimiBindingCall *call, void *request) {
+  binding_run(call, false);
+  ChimiFiberCommand command = scheduler_request(request);
+  binding_run(call, true);
+  return command;
+}
+
 /* Holds (`hold`) or lets go of every open handle among a binding call's
-   arguments, marking the ones held in `held`. The last call to let go of a
-   handle closed meanwhile releases its state. */
-static void binding_hold(ChimiValue **arguments, uint32_t count, bool *held, bool hold) {
+   arguments, marking the ones held in `call->held`, and starts or stops
+   the call running on them. The last call to let go of a handle closed
+   meanwhile releases its state. */
+static void binding_hold(ChimiBindingCall *call, bool hold) {
+  ChimiValue **arguments = call->arguments;
+  bool *held = call->held;
+  uint32_t count = call->argument_count;
   BindingRelease releases[8];
   uint32_t release_count = 0;
   pthread_mutex_lock(&binding_handle_lock);
-  for (uint32_t index = 0; index < count; ++index) {
-    if (hold) {
+  if (hold) {
+    for (uint32_t index = 0; index < count; ++index) {
       BindingHandleSlot *entry = binding_handle_slot(arguments[index]);
       held[index] = entry != NULL;
       if (entry) ++entry->users;
-      continue;
     }
+    binding_run_locked(call, true);
+    pthread_mutex_unlock(&binding_handle_lock);
+    return;
+  }
+  /* Every let-go is taken back before the binding code goes on. */
+  for (uint32_t index = 0; index < count; ++index)
+    if (held[index] && binding_handles[arguments[index]->as.handle.slot].runner != call) abort();
+  binding_run_locked(call, false);
+  for (uint32_t index = 0; index < count; ++index) {
     if (!held[index]) continue;
     uint32_t slot = arguments[index]->as.handle.slot;
     BindingHandleSlot *entry = &binding_handles[slot];
@@ -7228,7 +7327,7 @@ ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const Chimi
 void chimi_binding_close_handle(ChimiBindingCall *call, uint32_t index,
                                 const ChimiBindingType *type) {
   const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
-  if (value != NULL) binding_handle_close(value->as.handle.slot, value->as.handle.generation, type, true);
+  if (value != NULL) binding_handle_close(value->as.handle.slot, value->as.handle.generation, type, call);
 }
 
 ChimiBindingResult *chimi_binding_success(ChimiBindingCall *call, ChimiBindingValue *value) {
@@ -7273,7 +7372,7 @@ int chimi_binding_is_cancelled(const ChimiBindingCall *call) {
   if (call->runtime->cancel) return 1;
   if (!CHIMI_REQUIRES_SCHEDULER) return 0;
   ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
-  return scheduler_request(&check) == CHIMI_FIBER_CANCEL;
+  return binding_request(call, &check) == CHIMI_FIBER_CANCEL;
 }
 
 /* True when `handle` names a handle argument that is closed now. */
@@ -7287,11 +7386,21 @@ static bool binding_wait_handle_closed(const ChimiBindingCall *call, uint32_t ha
   return closed;
 }
 
+static int binding_wait_fd(ChimiBindingCall *call, uint32_t handle, int fd, int interest);
+
 int chimi_binding_wait(ChimiBindingCall *call, uint32_t handle, int fd, int interest) {
   if (fd < 0 || interest < CHIMI_BINDING_READABLE ||
       interest > (CHIMI_BINDING_READABLE | CHIMI_BINDING_WRITABLE))
     return CHIMI_BINDING_WAIT_FAILED;
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
+  binding_run(call, false);
+  int answer = binding_wait_fd(call, handle, fd, interest);
+  binding_run(call, true);
+  return answer;
+}
+
+/* chimi_binding_wait's wait, run while the call's handles are let go. */
+static int binding_wait_fd(ChimiBindingCall *call, uint32_t handle, int fd, int interest) {
   if (CHIMI_REQUIRES_SCHEDULER) {
     uint64_t resource = 0;
     if (handle != CHIMI_BINDING_NO_HANDLE) {
@@ -7329,13 +7438,13 @@ static ChimiControl *invoke_binding(ChimiRuntime *runtime, uint32_t binding, Chi
                                     uint32_t argument_count, uint32_t call_node) {
   if (binding >= CHIMI_BINDING_COUNT) return defect("verified binding call has no binding", call_node);
   if (runtime->cancel) return cancelled();
-  ChimiBindingCall call = {runtime, arguments, argument_count, call_node};
   bool held_small[8];
   bool *held = argument_count <= 8 ? held_small : malloc(argument_count * sizeof(*held));
   if (!held) exhausted_memory();
-  binding_hold(arguments, argument_count, held, true);
+  ChimiBindingCall call = {runtime, arguments, argument_count, call_node, held};
+  binding_hold(&call, true);
   ChimiControl *control = (ChimiControl *)CHIMI_BINDINGS[binding].function(&call);
-  binding_hold(arguments, argument_count, held, false);
+  binding_hold(&call, false);
   if (held != held_small) free(held);
   if (control == NULL) return defect("a C binding returned no result", call_node);
   return control;
@@ -12641,10 +12750,20 @@ static void prepare_children_once(void) {
 }
 void chimi_binding_prepare_children(void) { pthread_once(&child_signal_installed, prepare_children_once); }
 
+static int binding_wait_pid(ChimiBindingCall *call, uint32_t handle, int pid);
+
 int chimi_binding_wait_child(ChimiBindingCall *call, uint32_t handle, int pid) {
   if (pid <= 0) return CHIMI_BINDING_WAIT_FAILED;
   if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;
   chimi_binding_prepare_children();
+  binding_run(call, false);
+  int answer = binding_wait_pid(call, handle, pid);
+  binding_run(call, true);
+  return answer;
+}
+
+/* chimi_binding_wait_child's wait, run while the call's handles are let go. */
+static int binding_wait_pid(ChimiBindingCall *call, uint32_t handle, int pid) {
   if (CHIMI_REQUIRES_SCHEDULER) {
     /* The handle's key, so a close of the handle by another task, which
        withdraws it, wakes this wait: the close only releases the child once

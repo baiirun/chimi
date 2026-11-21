@@ -1431,8 +1431,50 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Cancels every stopping incarnation's shutdown deadline, as if it had
+    /// none left: a body then lingers until something forces it.
+    #[cfg(test)]
+    pub(super) fn disarm_shutdown_deadlines(&mut self) {
+        let timers: Vec<_> = self
+            .kernel
+            .incarnations
+            .values_mut()
+            .filter_map(|incarnation| incarnation.stopping.as_mut()?.timer.take())
+            .collect();
+        for timer in timers {
+            self.cancel_timer(timer);
+        }
+    }
+
+    /// Each live incarnation's membership and its task's home carrier, in
+    /// membership order.
+    #[cfg(test)]
+    pub(super) fn incarnation_homes(&self) -> Vec<(u64, u32)> {
+        let mut homes: Vec<(u64, u32)> = self
+            .kernel
+            .incarnations
+            .values()
+            .map(|incarnation| {
+                (incarnation.membership.get(), self.tasks[&incarnation.task].carrier.0)
+            })
+            .collect();
+        homes.sort_unstable();
+        homes
+    }
+
+    /// The carrier a membership's incarnations run on: its id modulo the
+    /// carrier count, so members spread over the carriers and a restart
+    /// stays where its predecessor ran. With one carrier, carrier 0. A
+    /// restarted nested supervisor rebuilds its members under new
+    /// memberships, so they may land on other carriers.
+    fn membership_home(&self, membership: MembershipId) -> super::ready::Carrier {
+        let carriers = u64::from(self.ready.carriers());
+        let home = u32::try_from(membership.get() % carriers).expect("below the carrier count");
+        super::ready::Carrier(home)
+    }
+
     /// Creates the fiber and mailbox and registers the name before the body
-    /// runs. The body's first run joins the tail of the ready queue.
+    /// runs. The body's first run joins the tail of its home's ready queue.
     fn spawn(
         &mut self,
         membership: MembershipId,
@@ -1445,8 +1487,9 @@ impl Scheduler {
         }
         let supervisor = self.kernel.memberships[&membership].supervisor;
         let incarnation = IncarnationId(self.kernel.next_incarnation + 1);
+        let home = self.membership_home(membership);
         let task = self
-            .create_task(None, spec.entry, spec.context, Some(incarnation))
+            .create_task(None, home, spec.entry, spec.context, Some(incarnation))
             .map_err(|_| StartError::SpawnFailed)?;
         self.kernel.next_incarnation += 1;
         if let Some(name) = spec.name {
@@ -1870,10 +1913,13 @@ impl Scheduler {
             if self.tasks[&task].phase != TaskPhase::Runnable {
                 break;
             }
+            // Only the fiber's home carrier may run it inline. Elsewhere the
+            // body stays queued at home, which runs it in turn; the caller
+            // takes the path it has for a body that has not ended yet.
+            if !self.may_resume_here(task, self.tasks[&task].command) {
+                break;
+            }
             let carrier = self.tasks[&task].carrier;
-            // Runs the incarnation's fiber inline, which only its home
-            // carrier may do; see `begin_terminal`.
-            debug_assert_eq!(carrier, self.current, "inline resume off home");
             self.ready.remove(carrier, task);
             self.run(task);
         }
@@ -1887,17 +1933,23 @@ impl Scheduler {
             return false;
         }
         let now = self.clock.now();
+        // A forced body left waiting on its home carrier arms no new
+        // deadline: it would fire at once, force again and arm again,
+        // forever. Its home ends it at its next resume (`abandon_forced` or
+        // `force_terminal`). Anything else arms one as before, a draining
+        // body included, even with a zero deadline: its firing is what
+        // forces the descendants still running their releases.
+        let waits_on_home = !matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
+            && !self.may_resume_here(task, self.tasks[&task].command);
         let record = self
             .kernel
             .incarnations
             .get_mut(&incarnation)
             .expect("lingering incarnation");
         let stopping = record.stopping.as_mut().expect("stopping incarnation");
-        if stopping.timer.is_none() {
+        if stopping.timer.is_none() && !(stopping.forced && waits_on_home) {
             let deadline = stopping.deadline.max(now);
-            let timer = self
-                .timers
-                .insert(deadline, TimerTarget::ShutdownDeadline(incarnation));
+            let timer = self.insert_timer(deadline, TimerTarget::ShutdownDeadline(incarnation));
             self.kernel
                 .incarnations
                 .get_mut(&incarnation)
@@ -2093,13 +2145,14 @@ impl Scheduler {
             self.disarm_wake_sources(task);
             let task_record = self.tasks.get_mut(&task).expect("incarnation task");
             task_record.phase = TaskPhase::Runnable;
-            let carrier = task_record.carrier;
-            self.ready.push_front(carrier, task);
+            self.enqueue(task, true);
         }
         let terminated = self.await_incarnation(incarnation);
         debug_assert!(
-            terminated || matches!(self.tasks[&task].phase, TaskPhase::Draining(_)),
-            "a forced body always ends"
+            terminated
+                || matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
+                || self.tasks[&task].carrier != self.current,
+            "a forced body ends at once on its home carrier"
         );
     }
 
@@ -2266,41 +2319,107 @@ impl Scheduler {
         // Force a lingering body whose plan waits on it; a body that already
         // ended and waits only on supervisors it started cannot be forced.
         // A plan whose blocker is already gone is resumed.
-        loop {
-            let next = self
-                .kernel
-                .blocked
-                .keys()
-                .copied()
-                .find(|blocker| match blocker {
-                    Blocker::Incarnation(incarnation) => self
-                        .kernel
-                        .incarnations
-                        .get(incarnation)
-                        .is_none_or(|record| {
-                            !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
-                        }),
-                    Blocker::Supervisor(supervisor) => {
-                        !self.kernel.supervisors.contains_key(supervisor)
-                    }
-                });
-            match next {
-                Some(Blocker::Incarnation(incarnation))
-                    if self.kernel.incarnations.contains_key(&incarnation) =>
-                {
-                    self.force(incarnation);
-                }
-                Some(blocker) => self.resume_blocked(blocker),
-                None => break,
-            }
+        while let Some(blocker) = self
+            .kernel
+            .blocked
+            .keys()
+            .copied()
+            .find(|blocker| self.blocker_can_be_cleared(*blocker))
+        {
+            self.clear_blocker(blocker);
         }
         let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
         for incarnation in leftover {
-            if self.kernel.incarnations.contains_key(&incarnation) {
-                self.begin_shutdown(incarnation);
-                if !self.await_incarnation(incarnation) {
-                    self.force(incarnation);
+            self.end_leftover(incarnation);
+        }
+    }
+
+    /// One step of `tear_down_processes` for a finished run whose carriers
+    /// are all idle with processes still left; true if it moved anything.
+    /// It does not loop, since a body on another carrier ends only once its
+    /// home runs it: the run drives that, then calls this again. It forces
+    /// the bodies stop plans wait on, and resumes the plans whose blocker
+    /// is gone. Only if that moved nothing does it shut down and force every
+    /// incarnation left, as a last resort; otherwise a resumed plan's next
+    /// graceful stop is left to run, as one carrier runs it.
+    pub(super) fn force_survivors(&mut self) -> bool {
+        let blockers: Vec<_> = self.kernel.blocked.keys().copied().collect();
+        let before = self.survivor_state();
+        for blocker in blockers {
+            if self.kernel.blocked.contains_key(&blocker) && self.blocker_can_be_cleared(blocker) {
+                self.clear_blocker(blocker);
+            }
+        }
+        if self.survivor_state() != before {
+            return true;
+        }
+        let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        for incarnation in leftover {
+            if !self.kernel.incarnations.contains_key(&incarnation) {
+                continue;
+            }
+            self.begin_shutdown(incarnation);
+            if !self.await_incarnation(incarnation) {
+                let armed = self.kernel.incarnations[&incarnation]
+                    .stopping
+                    .as_ref()
+                    .and_then(|stopping| stopping.timer);
+                self.force(incarnation);
+                // `force` leaves the deadline it disarms queued, which would
+                // hold the finished run until it fires for nothing.
+                if let Some(timer) = armed {
+                    self.cancel_timer(timer);
                 }
+            }
+        }
+        self.survivor_state() != before
+    }
+
+    /// What `force_survivors` counts as moved: the incarnations and blocked
+    /// plans left, and whether work or a timer is queued.
+    fn survivor_state(&self) -> (usize, usize, bool) {
+        (
+            self.kernel.incarnations.len(),
+            self.blocked_plan_count(),
+            !self.ready.is_empty() || !self.jobs.is_empty() || self.timers.earliest().is_some(),
+        )
+    }
+
+    fn blocked_plan_count(&self) -> usize {
+        self.kernel.blocked.values().map(Vec::len).sum()
+    }
+
+    /// True when teardown can act on `blocker`: a body that has not ended,
+    /// which is forced, or a blocker already gone, whose plans resume.
+    fn blocker_can_be_cleared(&self, blocker: Blocker) -> bool {
+        match blocker {
+            Blocker::Incarnation(incarnation) => {
+                self.kernel.incarnations.get(&incarnation).is_none_or(|record| {
+                    !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
+                })
+            }
+            Blocker::Supervisor(supervisor) => !self.kernel.supervisors.contains_key(&supervisor),
+        }
+    }
+
+    fn clear_blocker(&mut self, blocker: Blocker) {
+        match blocker {
+            Blocker::Incarnation(incarnation)
+                if self.kernel.incarnations.contains_key(&incarnation) =>
+            {
+                self.force(incarnation);
+            }
+            blocker => self.resume_blocked(blocker),
+        }
+    }
+
+    /// Shuts down an incarnation teardown found still left, forcing it if
+    /// it does not end at once.
+    fn end_leftover(&mut self, incarnation: IncarnationId) {
+        if self.kernel.incarnations.contains_key(&incarnation) {
+            self.begin_shutdown(incarnation);
+            if !self.await_incarnation(incarnation) {
+                self.force(incarnation);
             }
         }
     }

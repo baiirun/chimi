@@ -21,11 +21,23 @@
 //!   process sharing the descriptor can still take the data first; the host
 //!   then waits again (or blocks, for a descriptor it does not own).
 //! - A wait may name the resource its descriptor belongs to (`channel`, a
-//!   host-chosen nonzero key). `CHIMI_REQUEST_IO_WITHDRAW` wakes every wait
+//!   nonzero key in the form below). `CHIMI_REQUEST_IO_WITHDRAW` wakes every wait
 //!   on a key, so a host closing a resource wakes its waiters before the
 //!   descriptor closes and its number can be reused. Closing a descriptor
 //!   a task waits on without withdrawing first is a host bug: poll(2) only
 //!   reports it while the number stays unused.
+//! - A withdraw is sticky. A key is `slot << 32 | generation`, as the
+//!   native runtime's `binding_resource_key` builds it, and a slot's
+//!   generation only grows. Once a key is withdrawn, a wait (IO or child)
+//!   on that slot at that generation or an older one is answered as a
+//!   withdrawn parked wait would be, PENDING and woken at once, without
+//!   registering. With several carriers a close on another carrier can land
+//!   between a host's "is the handle open" check and its wait; the host
+//!   then looks again and sees the handle closed. The answer comes before
+//!   the descriptor is checked, so it holds even when the descriptor is
+//!   ready (its number may already belong to another resource). The table
+//!   keeps one entry per slot ever withdrawn, which the native runtime's
+//!   handle limit bounds.
 //! - A failed poll(2) (not an interruption) wakes every waiter with its
 //!   parked wait answered ERROR, so a reactor that cannot wait never spins.
 //!
@@ -35,7 +47,7 @@
 //! backend would go.
 
 use super::{RESPONSE_ERROR, RESPONSE_OK, RESPONSE_PENDING, Scheduler, SchedulerRequest, TaskId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 /// Interest and ready bit: reading will not block.
@@ -68,6 +80,13 @@ struct IoWait {
 pub(super) struct Reactor {
     next: u64,
     waits: BTreeMap<IoWaitId, IoWait>,
+    /// Per slot of a resource key, the newest generation withdrawn.
+    withdrawn: HashMap<u32, u32>,
+}
+
+/// A resource key's slot and generation (see the module's invariants).
+fn key_parts(resource: u64) -> (u32, u32) {
+    ((resource >> 32) as u32, resource as u32)
 }
 
 /// What an idle or non-blocking wait found.
@@ -97,6 +116,20 @@ impl Reactor {
         id
     }
 
+    /// Remembers that `resource` (nonzero) was withdrawn.
+    pub(super) fn record_withdraw(&mut self, resource: u64) {
+        let (slot, generation) = key_parts(resource);
+        let newest = self.withdrawn.entry(slot).or_insert(generation);
+        *newest = (*newest).max(generation);
+    }
+
+    /// True when `resource` (nonzero) or a newer key of its slot was
+    /// withdrawn.
+    pub(super) fn is_withdrawn(&self, resource: u64) -> bool {
+        let (slot, generation) = key_parts(resource);
+        self.withdrawn.get(&slot).is_some_and(|newest| generation <= *newest)
+    }
+
     /// The tasks waiting on `resource`, in registration order.
     fn waiting_on(&self, resource: u64) -> Vec<TaskId> {
         self.waits
@@ -112,20 +145,21 @@ impl Reactor {
 
     /// The tasks whose descriptors are ready now, without blocking.
     fn ready_now(&self) -> Woken {
-        self.wait(Some(Duration::ZERO), None)
+        self.wait(Some(Duration::ZERO), &[])
     }
 
-    /// Blocks until a registered descriptor is ready, `wake_fd` is readable,
-    /// a signal interrupts the wait, or `timeout` passes (never when none).
+    /// Blocks until a registered descriptor is ready, one of `wake_fds` is
+    /// readable, a signal interrupts the wait, or `timeout` passes (never
+    /// when none).
     /// Returns the tasks whose descriptors are ready, in registration order,
     /// or every registered task when poll(2) failed.
-    fn wait(&self, timeout: Option<Duration>, wake_fd: Option<i32>) -> Woken {
+    fn wait(&self, timeout: Option<Duration>, wake_fds: &[i32]) -> Woken {
         let watched: Vec<(i32, u32)> = self
             .waits
             .values()
             .map(|wait| (wait.fd, wait.interest))
             .collect();
-        let Some(ready) = sys::wait(&watched, timeout, wake_fd) else {
+        let Some(ready) = sys::wait(&watched, timeout, wake_fds) else {
             return Woken {
                 tasks: self.waits.values().map(|wait| wait.task).collect(),
                 failed: true,
@@ -202,19 +236,17 @@ mod sys {
     pub(super) fn wait(
         watched: &[(i32, u32)],
         timeout: Option<Duration>,
-        wake_fd: Option<i32>,
+        wake_fds: &[i32],
     ) -> Option<Vec<bool>> {
         let mut polls: Vec<libc::pollfd> = watched
             .iter()
             .map(|&(fd, interest)| pollfd(fd, interest))
-            .collect();
-        if let Some(fd) = wake_fd {
-            polls.push(libc::pollfd {
+            .chain(wake_fds.iter().map(|&fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
                 revents: 0,
-            });
-        }
+            }))
+            .collect();
         #[cfg(test)]
         if super::FAIL_NEXT_POLL.with(|fail| fail.replace(false)) {
             return None;
@@ -230,10 +262,8 @@ mod sys {
         {
             return None;
         }
-        if let Some(fd) = wake_fd
-            && polls.last().is_some_and(|poll| poll.revents != 0)
-        {
-            crate::scheduler::signal::drain(fd);
+        for poll in polls[watched.len()..].iter().filter(|poll| poll.revents != 0) {
+            crate::scheduler::signal::drain(poll.fd);
         }
         Some(
             polls[..watched.len()]
@@ -293,7 +323,7 @@ mod sys {
     pub(super) fn wait(
         watched: &[(i32, u32)],
         _timeout: Option<Duration>,
-        _wake_fd: Option<i32>,
+        _wake_fds: &[i32],
     ) -> Option<Vec<bool>> {
         Some(vec![true; watched.len()])
     }
@@ -305,16 +335,23 @@ impl Scheduler {
     /// conditions in `value`; PENDING with the task registered and parked;
     /// ERROR for a closed or negative descriptor or an interest outside
     /// `IO_READABLE | IO_WRITABLE`; a parked wait a failed poll ends answers
-    /// ERROR too.
+    /// ERROR too; PENDING, woken at once and not registered, for a withdrawn
+    /// key.
     pub(super) fn handle_io_wait(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         let fd = i32::try_from(request.value).unwrap_or(-1);
         let interest = u32::try_from(request.token).unwrap_or(0);
         if fd < 0
             || Some(fd) == self.signals.wake_fd()
+            || self.wakes.owns(fd)
             || interest == 0
             || interest & !INTEREST != 0
         {
             request.status = RESPONSE_ERROR;
+            let _ = self.wake_front(owner);
+            return;
+        }
+        if request.channel != 0 && self.reactor.is_withdrawn(request.channel) {
+            request.status = RESPONSE_PENDING;
             let _ = self.wake_front(owner);
             return;
         }
@@ -330,6 +367,8 @@ impl Scheduler {
             }
             Check::Waiting => {
                 let id = self.reactor.register(owner, fd, interest, request.channel);
+                // Carrier 0 will poll descriptors (5b-6).
+                self.wake_carrier(super::ready::Carrier(0));
                 self.tasks.get_mut(&owner).expect("waiting task").io_wait = Some(id);
                 request.status = RESPONSE_PENDING;
             }
@@ -337,12 +376,14 @@ impl Scheduler {
     }
 
     /// Serves an IO withdraw: wakes every task waiting on the resource key in
-    /// `channel` (nonzero), so each reissues its wait. Ensures: OK, with the
+    /// `channel` (nonzero), so each reissues its wait, and makes the
+    /// withdraw sticky for that key and older ones of its slot. Ensures: OK, with the
     /// number of tasks woken in `value`; ERROR for key 0. Never parks.
     pub(super) fn handle_io_withdraw(&mut self, owner: TaskId, request: &mut SchedulerRequest) {
         if request.channel == 0 {
             request.status = RESPONSE_ERROR;
         } else {
+            self.reactor.record_withdraw(request.channel);
             let waiting = self.reactor.waiting_on(request.channel);
             let children = self.take_child_waits_on(request.channel);
             request.value = i64::try_from(waiting.len() + children.len()).unwrap_or(i64::MAX);
@@ -423,7 +464,7 @@ impl Scheduler {
             ids,
             watched,
             timeout,
-            wake_fd: self.signals.wake_fd(),
+            wake_fds: self.idle_wake_fds(),
         }
     }
 
@@ -472,14 +513,15 @@ pub(super) struct IoWaitPlan {
     ids: Vec<IoWaitId>,
     watched: Vec<(i32, u32)>,
     timeout: Option<Duration>,
-    wake_fd: Option<i32>,
+    /// The signal pipe and the waiting carrier's wake pipe.
+    wake_fds: super::wake::WakeFds,
 }
 
 impl IoWaitPlan {
     /// Blocks in poll(2) without the kernel. Returns which watched
     /// descriptors are ready, or None when poll(2) failed.
     pub(super) fn block(&self) -> Option<Vec<bool>> {
-        sys::wait(&self.watched, self.timeout, self.wake_fd)
+        sys::wait(&self.watched, self.timeout, self.wake_fds.as_slice())
     }
 }
 

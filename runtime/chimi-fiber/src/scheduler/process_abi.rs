@@ -17,6 +17,7 @@ use super::{
     SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
 use super::carrier::{KernelAccess, Locked};
+use super::ready::Carrier;
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
@@ -682,7 +683,7 @@ impl Scheduler {
     }
 
     /// What the root's run does after the carrier went idle with `idle`.
-    fn root_step(
+    pub(super) fn root_step(
         &mut self,
         root: TaskId,
         idle: Idle,
@@ -708,9 +709,12 @@ impl Scheduler {
                 }
             }
             Idle::Stalled(_) if root_live(self) && self.stall_waits_for_signal() => {
-                return RootStep::WaitForSignal(self.signal_wake_fd());
+                return RootStep::WaitForSignal(self.idle_wake_fds());
             }
-            Idle::Stalled(_) if root_live(self) => return RootStep::Parked,
+            Idle::Stalled(_) if root_live(self) => {
+                self.stop_carriers(super::carrier::RunEnd::Parked);
+                return RootStep::Parked;
+            }
             Idle::Stalled(_) | Idle::Quiescent => {}
         }
         let root_done = matches!(
@@ -721,11 +725,19 @@ impl Scheduler {
             return RootStep::Continue;
         }
         self.shutdown_processes();
-        if !self.has_blocked_plans() && self.ready.is_empty() {
-            RootStep::Finished
-        } else {
-            RootStep::Continue
+        if !self.ready.is_empty() || !self.jobs.is_empty() {
+            return RootStep::Continue;
         }
+        // A process left with a timer pending (a shutdown deadline) is
+        // given it. With none, every carrier is idle and nothing can move a
+        // process but forcing it, so the run forces what is left and ends
+        // once nothing is, or forcing moves nothing.
+        let left = !self.kernel.incarnations.is_empty() || self.has_blocked_plans();
+        if left && (self.timers.earliest().is_some() || self.force_survivors()) {
+            return RootStep::Continue;
+        }
+        self.stop_carriers(super::carrier::RunEnd::Finished);
+        RootStep::Finished
     }
 
     /// The finished root's outcome, its value handed to the caller.
@@ -743,10 +755,11 @@ impl Scheduler {
 }
 
 /// What a root's run does next once its carrier is idle.
-enum RootStep {
+pub(super) enum RootStep {
     Continue,
-    /// Wait, without the kernel, until the signal pipe is readable.
-    WaitForSignal(Option<i32>),
+    /// Wait, without the kernel, until the signal pipe or the carrier's wake
+    /// pipe is readable.
+    WaitForSignal(super::wake::WakeFds),
     /// The root waits on the host; the run returns with it parked.
     Parked,
     Finished,
@@ -761,14 +774,14 @@ enum RootStep {
 /// driven to completion.
 fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) -> RootRun {
     let mut deadlock = Vec::new();
-    kernel.with(|kernel| kernel.set_signal_root(root));
+    kernel.with(|kernel| kernel.begin_run(root));
     loop {
         let idle = super::carrier::run_until_idle(kernel);
         match kernel.with(|kernel| kernel.root_step(root, idle, deadlock_code, &mut deadlock)) {
             RootStep::Continue => {}
-            RootStep::WaitForSignal(fd) => {
-                if let Some(fd) = fd {
-                    super::signal::wait_readable(fd, None);
+            RootStep::WaitForSignal(fds) => {
+                if !fds.as_slice().is_empty() {
+                    super::signal::wait_readable(fds.as_slice(), None);
                 }
             }
             RootStep::Parked => {
@@ -782,6 +795,77 @@ fn run_root(kernel: &mut impl KernelAccess, root: TaskId, deadlock_code: i64) ->
     }
     let outcome = kernel.with(|kernel| kernel.root_outcome(root));
     RootRun { outcome, deadlock }
+}
+
+/// Runs `root` as `Scheduler::run_root` does, with each carrier on its own
+/// thread: carrier 0 on this one, which runs the root's loop, and carriers
+/// 1 and up on scoped threads spawned for the run and joined before it
+/// returns, so no carrier reaches the kernel between the run's end and its
+/// exit (parallel-scheduler.md, "5c-5 as landed"). The kernel is shared
+/// behind its lock for the run and handed back after it. Test-only until the
+/// runner flag (step 3 PR 5d).
+///
+/// Requires, with several carriers: every root other than `root` is
+/// started on carrier 0 or ends within the run, since a finished run's
+/// other carriers must hold no fiber (`Scheduler::retire_carrier`). Panics
+/// if the run parks: its fibers would stay homed on threads it joined,
+/// where nothing can resume or destroy them. A panic on any carrier aborts
+/// the process, as one in `chimi_scheduler_run` does, since the other
+/// carriers would wait for it forever.
+#[cfg(test)]
+pub(super) fn run_root_on_threads(
+    scheduler: &mut Scheduler,
+    root: TaskId,
+    deadlock_code: i64,
+) -> RootRun {
+    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
+    let kernel = Mutex::new(std::mem::replace(scheduler, placeholder));
+    let carriers = {
+        let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
+        // Before any carrier starts, so none sees the last run's end.
+        held.begin_run(root);
+        // Work the caller queued through the kernel directly marked the
+        // carriers it is for without waking them. Every carrier of the run
+        // drives before it first waits, so it finds that work anyway; the
+        // marks are only cleared, as `Locked` expects none left.
+        drop(held.take_wakes());
+        held.ready.carriers()
+    };
+    let run = std::thread::scope(|scope| {
+        for index in 1..carriers {
+            let kernel = &kernel;
+            let spawned = std::thread::Builder::new()
+                .name(format!("carrier {index}"))
+                .spawn_scoped(scope, move || {
+                    abort_on_panic(|| {
+                        super::carrier::run_carrier(&mut Locked::new(kernel, Carrier(index)));
+                    });
+                });
+            if spawned.is_err() {
+                abort_on_panic(|| panic!("carrier {index} got no thread"));
+            }
+        }
+        abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
+    });
+    drop(std::mem::replace(
+        scheduler,
+        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
+    ));
+    assert!(
+        carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,
+        "a run on several carrier threads parked, leaving fibers on joined threads"
+    );
+    run
+}
+
+/// Runs `body`, aborting the process if it panics (the panic hook has
+/// printed the message by then).
+#[cfg(test)]
+fn abort_on_panic<R>(body: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        eprintln!("a carrier panicked; the others would wait for it forever");
+        std::process::abort()
+    })
 }
 
 fn parked_outcome() -> SchedulerOutcome {
@@ -896,7 +980,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     // The carrier loop runs against the kernel behind its lock, as each of
     // several carriers will, so the performance gates measure the lock.
     let kernel = Mutex::new(scheduler);
-    let run = run_root(&mut Locked(&kernel), root, DEADLOCK_DEFECT_CODE);
+    let run = run_root(&mut Locked::new(&kernel, Carrier::default()), root, DEADLOCK_DEFECT_CODE);
     let scheduler = kernel.into_inner().unwrap_or_else(PoisonError::into_inner);
     LAST_RUN_MEMBERSHIPS.store(scheduler.process_metrics().memberships, Ordering::Relaxed);
     LAST_RUN_PEAK_TASKS.store(scheduler.peak_tasks(), Ordering::Relaxed);

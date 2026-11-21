@@ -211,9 +211,8 @@ step 3 must keep true.
 Native handles are counted in the same table (2026-11-20), and a handle
 whose count reaches zero is closed at once, on the carrier that dropped it,
 without a scheduler request. The binding handle table (`binding_handles`)
-has no lock yet. Step 3 must add one before a second real carrier runs,
-because a close on one carrier can race a binding call or a new handle on
-another.
+is behind `binding_handle_lock`, and one binding call at a time runs on a
+handle (step 3 PR 5c-1), so a binding's own state needs no lock.
 
 Two tests check this step:
 - `tests/runtime_state.rs` `the_handle_table_counts_across_threads` hands
@@ -492,11 +491,341 @@ four keep one carrier.
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one
      thread, which also kills the ready-queue mutant PR 2 left.
-   - 5c, real threads behind a test-only API: a `Send` wrapper for the
-     kernel and unstarted fibers, spawning and joining, each carrier
-     destroying its own fibers before it exits, and placement.
+     Split into six PRs (advisor review, 2026-11-21), each merging with
+     one carrier and behavior unchanged:
+     - 5b-1: `Locked` carries its carrier and enters it on every lock;
+       every ready push goes through one `enqueue`; a resume asserts it is
+       on the task's home carrier. A test-only two-carrier kernel, driven
+       from one thread, kills the ready-queue mutant.
+       - As landed: `Locked::new(kernel, carrier)`, `Scheduler::enter_carrier`,
+         `Scheduler::with_carriers` (tests only). `enqueue(task, front)`
+         reads the home from the task's record, so no caller picks a
+         carrier. Debug assertions check that a resume (`prepare_run`) and
+         the two inline resumes run on the task's home; 5b-3 relaxes the
+         inline one for a task that never ran. Tests cover a wake, a root
+         start and a child start across two carriers, and the lock
+         entering its carrier. Mutants in `carrier_routing_mutations.py`,
+         all six killed. The verifier measured PG01 and PG04 within noise.
+     - 5b-2: the sticky withdraw. The reactor keeps, per binding slot, the
+       last generation withdrawn (`channel` is slot << 32 | generation, as
+       `binding_resource_key` builds it). An IO or child wait on that
+       generation or an older one is answered as a withdrawn parked wait
+       (pending, woken at once) without registering, so C's loop sees the
+       handle closed. One table entry per slot ever withdrawn. The request
+       layout is unchanged, and the key's form becomes part of the
+       contract, which the native runtime, the only host, already follows,
+       so the fiber ABI stays 28.
+       - As landed: `Reactor.withdrawn` maps a slot to its newest
+         withdrawn generation; `handle_io_wait` and `handle_child_wait`
+         consult it for a nonzero key. With one carrier it changes nothing
+         a program can see: the native runtime checks a handle open with no
+         park before its wait, so no close lands in between. Mutants in
+         `sticky_withdraw_mutations.py`, all eight killed.
+     - 5b-3: jobs for `begin_terminal`'s inline resume. The inline path
+       stays when the target's home is the current carrier or the target
+       never ran (an unstarted fiber given Cancel returns without running,
+       so nothing is pinned). A target running on another carrier records
+       a pending end, applied by its own `complete_run`. Otherwise the part
+       up to `CancellationRequested` runs where the cancel was decided, and
+       a job on the home carrier runs the cleanup resume without the lock,
+       then the rest of `begin_terminal` under it. While a job is pending,
+       `finish_draining` does not publish the task's terminal.
+       - As landed: `scheduler/jobs.rs` holds a FIFO of jobs per carrier
+         (`Job::Unwind { task, forced }`) and `PendingEnd`. A carrier runs
+         its jobs before its ready tasks; `drive` resumes a job's fiber
+         without the lock like any other, and `Scheduler::complete`
+         dispatches on `RunKind`. `begin_terminal` keeps its order up to
+         `CancellationRequested`; its tail is now `end_after_unwind` (the
+         unwind's result decides a defect, overflow or park) and
+         `end_drained` (drop the fiber, cancel children and supervisors,
+         publish), shared by the inline path and the job. A pending end
+         applies in `complete_run` as if decided just after the step: the
+         step's park and request are served first, as one carrier always
+         serves them (a scope exit or a transfer completion must not be
+         dropped), and then, if the task is still live, it is cancelled
+         (`cancel_task`), or forced (`force_terminal`) when the end was.
+         An end the step already reached is not overridden, as a cancel
+         after the end is ignored with one carrier. With one carrier no job or pending end is ever
+         made, so the inline path is the old code. A process shutdown off
+         its home carrier (`await_incarnation`, `force`) is 5b-4's. Mutants in `unwind_jobs_mutations.py`,
+         all seventeen killed.
+     - 5b-4: `await_incarnation` off home. It runs the body inline only
+       on its home carrier; otherwise the body stays queued there and the
+       caller takes the "not yet" path it already has. A forced body arms
+       no new deadline (the old one is spent, and re-arming it would fire
+       at once forever). Process teardown, which must finish
+       synchronously, enters the home carrier in 5b; 5c must run it on
+       each carrier before the carriers exit.
+       - As landed: `Scheduler::may_resume_here(task, command)` says
+         whether a fiber may run on the current carrier (its home; never
+         ran and given Cancel; or teardown). `await_incarnation` runs the
+         body inline only then; otherwise the body waits on its home queue
+         and the caller takes its "not yet" path. A forced body left
+         waiting on its home arms no new deadline; a forced body that is
+         already draining still arms one, even at once, since its firing
+         forces the descendants still in their releases (the review found
+         that a zero deadline otherwise deadlocked such a child). `Drop` sets `any_carrier`, runs every carrier's queued
+         jobs, then tears processes down as before, all on the dropping
+         thread; 5c replaces this with each carrier draining its own
+         before it exits. Tests stop a supervisor homed on carrier 1 from
+         carrier 0 (the transcript matches one carrier's), fire a shutdown
+         deadline on carrier 0, and drop a kernel whose processes live on
+         carrier 1, and drop a kernel with a job queued on another carrier.
+         Mutants in `process_off_home_mutations.py`, all six killed (one by
+         a timeout: the teardown otherwise spins).
+       - Left for 5b-5 and 5b-6 (review): a queued job must wake its home
+         carrier, and the idle check must count every carrier's jobs, or a
+         home carrier asleep in its idle wait leaves the task draining with
+         its fiber, and carrier 0 could report a deadlock. Left for 5c: each
+         carrier must run its own jobs before it exits (5b-4's `Drop` runs
+         them all on the dropping thread, which only a one-thread kernel
+         may do).
+     - 5b-5: wake descriptors. One non-blocking pipe per carrier, none with
+       one carrier. The kernel marks carriers under the lock (work queued
+       for another carrier; a reactor, child or signal wait registered off
+       carrier 0; a new earliest timer; stop), and `Locked` writes the
+       bytes after it unlocks.
+       - As landed: `scheduler/wake.rs` holds the pipes (opened with
+         `pipe2` on Linux, so a fork cannot inherit them) and the marks.
+         `wake_carrier` marks a carrier other than the current one; it is
+         called by `enqueue` (every ready push), by the job push, by a
+         descriptor, child or signal wait registered off carrier 0, and by
+         `insert_timer` (every timer) when the timer is the new earliest.
+         `Locked::with` takes the marks under the lock and writes them
+         after the guard drops; a test-only assertion checks that no wake
+         is written while the lock is held, and a debug assertion that no
+         mark is left from an access that bypassed `Locked`. The idle
+         sleep, the descriptor wait and the stalled root's signal wait
+         watch the carrier's own pipe and empty every pipe that woke them;
+         only carrier 0 also watches the signal pipe. A task may not wait
+         on a wake pipe. With one carrier no pipe exists, and the wait
+         descriptors are held in a fixed array, so nothing allocates.
+         The carrier loop's idle step is `carrier::wait_idle`, so a test
+         can run one. Tests in `scheduler.rs` cover each mark, the write
+         after unlock, each wait (the loop's sleep, a descriptor wait, a
+         stalled root's) ending at its carrier's byte, and a wait emptying
+         both the signal and the wake pipe. Mutants in
+         `wake_pipe_mutations.py`, all 24 killed; the last five came from
+         the verifier's own run against the whole suite.
+       - Left for 5b-6 (review): `idle_step` still lets any carrier build a
+         descriptor wait or a timed sleep; 5b-6 restricts both to carrier
+         0, which the marks already assume. Left for 5c: the stop mark, and
+         turning a failed pipe (for example EMFILE) into a scheduler error
+         instead of a panic, since only tests open pipes today.
+     - 5b-6: global idle. Every idle carrier fires due timers first. A
+       carrier other than 0 with nothing to do parks on its descriptor;
+       carrier 0 decides quiescence, deadlock or a virtual-time jump only
+       when every other carrier is parked and every ready and job queue is
+       empty. The last carrier to park wakes carrier 0. Tested with a
+       round-robin driver on one thread that fails if every carrier parks
+       with no descriptor readable and no verdict.
+       - As landed: `idle_step` on a carrier other than 0 is `park_step`:
+         fire due timers, run again if that gave the carrier work, else
+         set its `parked` flag and park on its wake pipe (new
+         `IdleStep::Park`), or under the real clock sleep only until the
+         earliest timer, so a busy carrier 0 cannot hold that timer up.
+         The last carrier to park wakes carrier 0. Carrier 0 keeps its old
+         path, with one new check after the descriptor wait: unless
+         `others_quiet` (every other carrier parked, no ready task or job
+         on any carrier) it fires due timers and sleeps until the earliest
+         timer (real clock) or parks, with no time jump and no verdict
+         (`wait_for_others`). A carrier's flag clears only when it takes
+         the kernel; work handed to it while parked is seen in its queues.
+         With one carrier `others_quiet` is always true, so nothing
+         changes. A root finishes only with no job queued. The test-only
+         `carrier::round_robin` runs each carrier in turn and fails on a
+         lost wake; the 5b-4 tests that needed several carriers to settle
+         use it. Tests in `idle_tests.rs`; mutants in
+         `global_idle_mutations.py`, all 19 killed; the last five came
+         from the verifier's own run against the whole suite.
+       - Left for 5c (review): when carrier 0 returns a verdict or the
+         root's run ends, every parked carrier must be woken (the stop
+         mark), or its thread waits forever. `Idle::AwaitingHost` is still
+         decided before `others_quiet`, so carrier 0 returns to the host
+         while other carriers may have work; `end_host_operation` should
+         then wake carrier 0. The round-robin driver checks lost wakes only
+         for `Park`; a carrier 0 sleep or descriptor wait it skips is not
+         checked.
+   - 5c, real threads behind a test-only API: sharing the kernel between
+     carrier threads, spawning and joining, each carrier destroying its
+     own fibers before it exits, and placement.
+     Split into six PRs (advisor review, 2026-11-21), each merging with
+     one carrier and behavior unchanged. 5c-1 and 5c-2 may land in any
+     order, but before 5c-6; 5c-3 to 5c-6 land in order.
+     - 5c-1: one binding call per handle at a time. A per-slot lock in
+       the binding handle table, held while binding code runs and
+       released across `chimi_binding_wait`, skipped with one carrier.
+       Tested under gcc's ThreadSanitizer with two threads on one handle.
+     - 5c-2: placement. `create_task` takes an explicit home: the root is
+       on carrier 0, `Task.start` on its parent's carrier, and a process
+       incarnation on its membership id modulo the carrier count, kept
+       across restarts.
+     - 5c-3: fallible carrier setup. A crate-private constructor builds a
+       kernel with several carriers and reports a wake pipe that cannot be
+       opened as `SchedulerError::CarrierSetupFailed`, instead of a panic.
+     - 5c-4: the stop. `root_step` sets `stopping` in the same lock hold
+       that ends the run and marks every carrier; a parked carrier sees it
+       and exits its loop (`IdleStep::Exit`, `carrier::run_carrier`).
+       `Idle::AwaitingHost` waits for the other carriers too, and
+       `end_host_operation` wakes carrier 0.
+     - 5c-5: per-carrier teardown. Carrier 0 shuts the processes down and
+       keeps running until no incarnation or blocked plan is left; then
+       each carrier runs its own jobs and destroys its own fibers
+       (`retire_carrier`) before it exits. `Drop`'s `any_carrier` path
+       stays for one-thread kernels only.
+     - 5c-6: threads. A test-only `run_root_on_threads` shares the kernel
+       behind its mutex with scoped threads, built and dropped on the main
+       thread. `Mutex<Scheduler>` is `Sync` only if `Scheduler` is `Send`,
+       which its raw pointers (hook contexts, the signal words, request
+       pointers) and `Rc` process records prevent, so this needs an
+       `unsafe impl Send` with a written argument: every pointer is reached
+       only under the lock, and a started fiber is resumed only on its home
+       (`Rc` becomes `Arc`). It spawns carriers 1 to N and joins them; an
+       unstarted fiber needs no wrapper, since its first resume claims its
+       home. Stress loops under a watchdog, with fixtures that check a
+       fiber never changes thread.
+     Also found for later (advisor): a C-runtime fiber cannot run on a
+     carrier thread until the runtime exports a way to bind one (5d); the
+     host hooks run on whichever carrier holds the lock, which the header
+     should say (5d); `list_slice`'s in-place compaction of a shared
+     constant (5d-1); `park_step` may park with this carrier's host releases
+     undrained (to check in 5c-4).
+     - 5c-3 as landed: `Scheduler::with_options_carriers(options, n)` and
+       `install_carriers`, which opens the pipes before changing anything,
+       so a failure leaves the kernel as it was and closes every pipe
+       already opened. The test-only `with_carriers` and `set_carriers`
+       use it. Tests inject a failure at the nth pipe and check that every
+       pipe opened before it was closed and the kernel left as it was.
+     - 5c-1 as landed: each handle slot names the call running on it
+       (`runner`). A call takes all of its handles at once when it starts,
+       waiting on the condition variable `binding_handle_free` while any of
+       them is taken, so calls sharing handles in either order cannot
+       deadlock. It lets them go around every scheduler request it makes,
+       waits and immediate requests alike (`binding_request`), since a
+       forced process body is abandoned at any park and on one carrier
+       another task may run first; a call ends only with its handles taken
+       back. It is not skipped with one carrier: the table lock is taken
+       there already, and the wait never happens. Tested under gcc's
+       ThreadSanitizer with four threads on two handles, alone, in pairs
+       in both orders and named twice, and with a descriptor wait and a
+       child wait that must let their handle go; and end to end with a
+       forced process body whose binding asks the scheduler once more on
+       its way out.
+     - 5c-2 as landed: `create_task` takes the home from its caller.
+       `start` homes a child on its parent's carrier and a root on the
+       current carrier, which is carrier 0 wherever the runner starts one.
+       `spawn` homes an incarnation on `membership_home`, its membership id
+       modulo the carrier count, so a restart stays where its predecessor
+       ran; a member's restart is decided on that same carrier, since it
+       ends there. A restarted nested supervisor rebuilds its members under
+       new memberships, so they may move. Tested with a three-carrier
+       supervisor whose crashed member's next incarnation id would land
+       elsewhere.
+     - 5c-4 as landed: `root_step` calls `stop_carriers` in the hold where
+       it returns Finished or Parked, never while work is left, and
+       `begin_run` clears it when `run_root` starts. A carrier other than
+       0 then leaves its loop (`IdleStep::Exit`, the test-only
+       `carrier::run_carrier`) instead of parking; it does not count as
+       parked afterwards, so a later run needs its carriers started again,
+       which 5c-6 does by spawning and joining them per run. A host
+       operation returns `AwaitingHost` only once the others are quiet,
+       carrier 0 meanwhile waiting for them (its own timers still fire),
+       and `end_host_operation` wakes carrier 0. Only tests begin host
+       operations today; a fiber on another carrier that spun until one
+       ended would hold carrier 0 from the host. Both idle waits now fire
+       due timers and drain the carrier's host releases first
+       (`refill_before_waiting`).
+     - 5c-5 as landed: the run, not `Drop`, ends the processes. Once the
+       root is terminal and no carrier has work, `root_step` gives a
+       process still left its pending shutdown deadline, if a timer is
+       queued; with none, nothing but forcing can move it, so
+       `force_survivors` makes one pass and the run continues, ending
+       (`RunEnd::Finished`) once nothing is left or a pass moved nothing.
+       The pass forces the bodies stop plans wait on and resumes plans
+       whose blocker is gone; only if that moved nothing does it shut
+       down and force every incarnation left, cancelling the deadline
+       `force` leaves queued. It never loops, since a body on another
+       carrier ends only when its home runs it. No program reaches the
+       pass today (a full suite run found no process left at the old end
+       of a run): every incarnation left after `shutdown_processes` has a
+       deadline. `stopping` became `run_end: Option<RunEnd>`. A carrier
+       other than 0 leaving a finished run asserts it owes no job and
+       that no task homed on it still holds its fiber (`retire_carrier`),
+       which holds because everything on such a carrier belongs to a
+       process body, so `Drop` on carrier 0's thread never touches one of
+       its fibers. Destroying such fibers on their carrier was tried and
+       dropped in review: taking a live task's fiber leaves a task that can
+       never end. A parked run keeps its fibers on their carriers, so a
+       parked kernel may be dropped or cancelled into only on one thread;
+       5c-6 must keep that rule or retire a parked kernel's carriers, and
+       must join carriers 1 and up before `run_root` returns, since the
+       check assumes nothing reaches the kernel between the run's end and
+       their exit. Found
+       in review and left as before: `force` clears a deadline without
+       cancelling its timer, and `Drop` destroys a parked fiber without
+       setting a terminal resume context.
+     - 5c-6 as landed: the test-only `process_abi::run_root_on_threads`
+       moves the kernel into its mutex for one run, clears the last run's
+       end before any carrier starts, runs carrier 0's `run_root` on the
+       caller's thread and carriers 1 and up on scoped threads, joins them,
+       and hands the kernel back. `Scheduler` is `Send` by the argument at
+       its `unsafe impl`: what it holds is reached under the lock, a parked
+       request (a pointer into a fiber's stack) is cleared in `prepare_run`
+       before the fiber resumes, and a started fiber runs and is destroyed
+       only on its home thread. The `Rc` process records stay `Rc`, since
+       only kernel code clones them. A panic on any carrier aborts, since
+       the others would wait for it forever, and a run that parks on
+       several threads panics, since its fibers would stay homed on joined
+       threads. Tests loop runs of hopping fibers on one, three and four
+       threads, virtual and real clock, two runs per kernel, under a
+       watchdog, checking one thread per carrier and that no fiber moves or
+       runs holding the kernel, and a supervisor whose members on three
+       carrier threads are stopped at home with the one-carrier transcript.
+       Stress (from the review): hundreds of loops in debug and release,
+       on all cores and pinned to one or two, with no failure. Left for 5d
+       (review): carrier threads must enter the C runtime
+       (`carrier_thread_enter`) before running a C fiber; host hooks run on
+       whichever thread holds the lock, so test hooks that record into
+       thread-locals miss events from carrier threads; carriers persist
+       across runs (or a parked run is refused) so a parked kernel stays
+       resumable; a new earliest timer's wake to carrier 0 is masked in
+       these tests by the last parker's wake.
    - 5d, the runner flag and its config field (fiber ABI 29), and exit 64
-     with `--clock=virtual`.
+     with `--clock=virtual`. Split in four (advisor):
+     - 5d-1: shared constants. A module constant lives in the static area
+       and every carrier may read it, so `list_slice` must not compact one
+       in place while carriers run on threads: it copies the window
+       instead. C only, no ABI change. Tested under ThreadSanitizer.
+     - 5d-2: the threaded runner becomes production code
+       (`run_on_carriers`), and `chimi_scheduler_run` uses it. A parked run
+       is allowed there, because the ABI path forgets the kernel; a failed
+       spawn ends the run as a scheduler defect.
+     - 5d-3: fiber ABI 29. The config gains the carrier count (0 or 1 is
+       one) and a hook to bind a carrier thread to the C runtime, appended
+       after `take_release`. More than one carrier with the virtual clock
+       is a defect. The header says which thread runs each hook.
+     - 5d-4: `--carriers=<n>` in the C runner, exit 64 for a bad value or
+       for more than one with `--clock=virtual`. The default stays 1.
+     Also for later: non-atomic close-on-exec off Linux gets its own small
+     PR before 5e; `exit()` from a carrier, blocking binding releases under
+     the lock, and `strerror` go to 5e.
+     - 5d-1 as landed: `list_shared_across_threads` is true for a list in
+       the static area when there is more than one carrier, outside the
+       simulation build (whose carriers share one thread). `list_slice`
+       then copies the window into the slicing carrier's heap, so nothing
+       rewrites a constant or appends to the static area while carriers
+       run. One carrier compacts a constant as before, so the memory
+       report of a one-carrier run is unchanged. The stress fixture slices
+       one constant from four threads and checks that the windows are
+       copies, the constant keeps its vector, a long window of a whole
+       constant shares its vector, and each carrier's own list still
+       compacts; without the fix ThreadSanitizer reports the race. The
+       review found the case latent: `decode_constant` builds every list
+       constant whole, and a whole list is never compacted, so only a
+       constant built as a window (the fixture's) reaches it. The guard
+       stays so a later constant form cannot bring the race back. The
+       fixture runs five carriers, so exactly two is untested here; 5d-4's
+       flag tests and 5e cover it.
    - 5e, the looped stress programs at 2 to 8 carriers.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.

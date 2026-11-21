@@ -1,0 +1,10 @@
+# mutation run at 6be7fb3738ba2da6733da7079091d0598d763e0a
+# placement_mutations.py: 5 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- members_spread_over_the_carriers_and_a_restart_stays_put] (17s)
+BASELINE ok  [lib -- a_child_is_homed_on_its_parents_carrier] (0s)
+KILLED       an incarnation runs where it was started [lib -- members_spread_over_the_carriers_and_a_restart_stays_put] (4s)
+KILLED       every incarnation runs on carrier 0 [lib -- members_spread_over_the_carriers_and_a_restart_stays_put] (4s)
+KILLED       placement is off by one [lib -- members_spread_over_the_carriers_and_a_restart_stays_put] (4s)
+KILLED       a child is homed where it is started [lib -- a_child_is_homed_on_its_parents_carrier] (4s)
+KILLED       an incarnation is homed on its incarnation id [lib -- members_spread_over_the_carriers_and_a_restart_stays_put] (4s)
+# result: every mutant killed

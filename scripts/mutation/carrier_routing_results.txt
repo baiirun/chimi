@@ -1,0 +1,12 @@
+# mutation run at f3af67481529e65ee19f3a1a2f0e84516fce72a3
+# carrier_routing_mutations.py: 6 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- a_woken_task_waits_on_its_home_carrier] (14s)
+BASELINE ok  [lib -- a_child_is_homed_on_its_parents_carrier] (0s)
+BASELINE ok  [lib -- the_kernel_lock_enters_its_carrier] (0s)
+KILLED       ready work goes to the current carrier [lib -- a_woken_task_waits_on_its_home_carrier] (4s)
+KILLED       a carrier pops carrier 0's queue [lib -- a_woken_task_waits_on_its_home_carrier] (4s)
+KILLED       a root task is homed on carrier 0 [lib -- a_woken_task_waits_on_its_home_carrier] (4s)
+KILLED       a child is homed on carrier 0 [lib -- a_child_is_homed_on_its_parents_carrier] (4s)
+KILLED       a child is homed on the current carrier [lib -- a_child_is_homed_on_its_parents_carrier] (4s)
+KILLED       the lock does not enter its carrier [lib -- the_kernel_lock_enters_its_carrier] (5s)
+# result: every mutant killed

@@ -6,6 +6,7 @@
 //! then the native runtime's handle table.
 
 use super::reactor::IoWaitPlan;
+use super::ready::Carrier;
 use super::{ChimiFiberCommand, Idle, Scheduler, TaskId, clock, resume_fiber};
 use crate::ChimiFiber;
 use std::ptr::NonNull;
@@ -20,21 +21,47 @@ pub(crate) trait KernelAccess {
 
 impl KernelAccess for Scheduler {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        operation(self)
+        let result = operation(self);
+        self.take_wakes().write();
+        result
     }
 }
 
-/// The kernel behind its lock. Access cannot fail: a panic while the lock
-/// is held aborts in `chimi_scheduler_run` (an `extern "C"` function), so a
-/// poisoned lock is only taken over, never reported.
-pub(crate) struct Locked<'kernel>(pub(crate) &'kernel Mutex<Scheduler>);
+/// The kernel behind its lock, as one carrier reaches it. Each access tells
+/// the kernel which carrier holds it, so ready work and wakes are routed by
+/// carrier rather than by whoever ran last, and wakes the carriers it handed
+/// work to once the lock is released. Access cannot fail: a panic
+/// while the lock is held aborts in `chimi_scheduler_run` (an `extern "C"`
+/// function), so a poisoned lock is only taken over, never reported.
+pub(crate) struct Locked<'kernel> {
+    kernel: &'kernel Mutex<Scheduler>,
+    carrier: Carrier,
+}
+
+impl<'kernel> Locked<'kernel> {
+    /// Requires: `carrier` is one of the kernel's carriers, and no other
+    /// thread reaches the kernel as `carrier`.
+    pub(crate) fn new(kernel: &'kernel Mutex<Scheduler>, carrier: Carrier) -> Self {
+        Self { kernel, carrier }
+    }
+}
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        let mut kernel = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        #[cfg(test)]
-        let _held = HeldMark::set();
-        operation(&mut kernel)
+        let (result, wakes) = {
+            let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            let _held = HeldMark::set();
+            debug_assert!(
+                !kernel.wakes.any_marked(),
+                "every access that marks a carrier writes its wake on unlock"
+            );
+            kernel.enter_carrier(self.carrier);
+            let result = operation(&mut kernel);
+            (result, kernel.take_wakes())
+        };
+        wakes.write();
+        result
     }
 }
 
@@ -75,6 +102,16 @@ pub(super) struct Runnable {
     pub(super) task: TaskId,
     pub(super) fiber: NonNull<ChimiFiber>,
     pub(super) command: ChimiFiberCommand,
+    pub(super) kind: RunKind,
+}
+
+/// Why the carrier resumes a fiber, which decides how its return applies.
+#[derive(Clone, Copy)]
+pub(super) enum RunKind {
+    /// A ready task's next step (`Scheduler::complete_run`).
+    Step,
+    /// A job: the cancellation unwind of a task another carrier ended.
+    Unwind { forced: bool },
 }
 
 /// What an idle carrier does once `drive` found nothing runnable.
@@ -83,10 +120,37 @@ pub(super) enum IdleStep {
     /// Wait on descriptors without the kernel, then apply what was found.
     Io(IoWaitPlan),
     /// Sleep on the real clock without the kernel (or until the signal pipe
-    /// is readable), then fire due timers.
-    Sleep(Duration, Option<i32>),
-    /// The virtual clock moved under the kernel; look again.
+    /// or the carrier's wake pipe is readable), then fire due timers.
+    Sleep(Duration, super::wake::WakeFds),
+    /// Block on the carrier's wake pipe (and, on carrier 0, the signal
+    /// pipe) until another carrier wakes it; then look again.
+    Park(super::wake::WakeFds),
+    /// The virtual clock moved under the kernel, or a due timer gave this
+    /// carrier work; look again.
     Continue,
+    /// The run has ended: a carrier other than 0 leaves its loop.
+    Exit,
+}
+
+/// How a run ended for the carriers (`Scheduler::stop_carriers`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RunEnd {
+    /// The root finished and no process is left: no carrier but 0 holds a
+    /// fiber any more (`Scheduler::retire_carrier` checks it).
+    Finished,
+    /// The root waits on the host: the fibers stay for the next run.
+    Parked,
+}
+
+/// What a carrier does after one idle step.
+#[derive(Debug, PartialEq)]
+pub(super) enum Waited {
+    /// It waited, or has work; drive again.
+    Again,
+    /// Carrier 0's verdict.
+    Idle(Idle),
+    /// The run has ended for this carrier.
+    Exit,
 }
 
 /// Runs ready tasks until this carrier's ready queue is empty and no queued
@@ -101,7 +165,7 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
     while let Some(runnable) = next {
         let event = resume_fiber(runnable.fiber, runnable.command);
         next = kernel.with(|kernel| {
-            kernel.complete_run(runnable.task, event);
+            kernel.complete(runnable, event);
             kernel.after_resume(&mut resumes);
             kernel.next_runnable(&mut resumes)
         });
@@ -115,17 +179,112 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
 pub(super) fn run_until_idle(kernel: &mut impl KernelAccess) -> Idle {
     loop {
         drive(kernel);
-        match kernel.with(Scheduler::idle_step) {
-            IdleStep::Done(idle) => return idle,
-            IdleStep::Io(plan) => {
-                let ready = plan.block();
-                kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
-            }
-            IdleStep::Sleep(wait, wake_fd) => {
-                clock::block_real(wait, wake_fd);
-                kernel.with(Scheduler::fire_due_timers);
-            }
-            IdleStep::Continue => {}
+        match wait_idle(kernel) {
+            Waited::Again => {}
+            Waited::Idle(idle) => return idle,
+            Waited::Exit => unreachable!("only a carrier other than 0 exits, in run_carrier"),
         }
     }
+}
+
+/// The loop of a carrier other than 0: drives its tasks and parks when it
+/// has none, until the run ends. Test-only until the carriers get threads
+/// (step 3 PR 5c-6).
+#[cfg(test)]
+pub(super) fn run_carrier(kernel: &mut impl KernelAccess) {
+    loop {
+        drive(kernel);
+        match wait_idle(kernel) {
+            Waited::Again => {}
+            Waited::Exit => return,
+            Waited::Idle(_) => unreachable!("only carrier 0 gives a verdict"),
+        }
+    }
+}
+
+/// What a carrier `drive` left with nothing runnable does: gives carrier
+/// 0's verdict, leaves once the run has ended, or waits (for descriptors,
+/// a timer, its wake pipe, or a virtual-time jump) and drives again.
+pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
+    match kernel.with(Scheduler::idle_step) {
+        IdleStep::Done(idle) => return Waited::Idle(idle),
+        IdleStep::Exit => return Waited::Exit,
+        IdleStep::Io(plan) => {
+            let ready = plan.block();
+            kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
+        }
+        IdleStep::Sleep(wait, wake_fds) => {
+            clock::block_real(wait, wake_fds.as_slice());
+            kernel.with(Scheduler::fire_due_timers);
+        }
+        IdleStep::Park(wake_fds) => {
+            assert!(
+                !wake_fds.as_slice().is_empty(),
+                "only a carrier with a wake pipe parks"
+            );
+            super::signal::wait_readable(wake_fds.as_slice(), None);
+        }
+        IdleStep::Continue => {}
+    }
+    Waited::Again
+}
+
+/// Runs every carrier of a kernel in turn on this thread, as a test stands
+/// in for their threads, until carrier 0 gives a verdict. A carrier that
+/// parked runs again only once one of its pipes is readable (the driver
+/// empties it). A wait carrier 0 would block in while another carrier still
+/// has turns to take is skipped, since those turns would have run alongside
+/// it. Panics if every carrier is parked with no pipe readable and no
+/// verdict: a wake was lost.
+#[cfg(test)]
+pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
+    let carriers = kernel.ready.carriers();
+    let mut parked: Vec<Option<super::wake::WakeFds>> = vec![None; carriers as usize];
+    loop {
+        let mut ran = false;
+        for index in 0..carriers {
+            if let Some(fds) = parked[index as usize] {
+                if !fds.as_slice().iter().any(|&fd| test_readable(fd)) {
+                    continue;
+                }
+                for &fd in fds.as_slice() {
+                    super::signal::drain(fd);
+                }
+                parked[index as usize] = None;
+            }
+            ran = true;
+            kernel.enter_carrier(Carrier(index));
+            drive(kernel);
+            let others_parked = parked
+                .iter()
+                .enumerate()
+                .all(|(other, fds)| other == index as usize || fds.is_some());
+            match kernel.with(Scheduler::idle_step) {
+                IdleStep::Done(idle) => return idle,
+                IdleStep::Park(fds) => parked[index as usize] = Some(fds),
+                IdleStep::Exit => panic!("carrier {index} left a run that gave no verdict"),
+                IdleStep::Io(plan) if others_parked => {
+                    let ready = plan.block();
+                    kernel.with(|kernel| kernel.finish_io_wait(plan, ready));
+                }
+                IdleStep::Sleep(wait, fds) if others_parked => {
+                    clock::block_real(wait, fds.as_slice());
+                    kernel.with(Scheduler::fire_due_timers);
+                }
+                IdleStep::Io(_) | IdleStep::Sleep(..) | IdleStep::Continue => {}
+            }
+        }
+        assert!(ran, "every carrier parked with no wake pending and no verdict");
+    }
+}
+
+#[cfg(test)]
+fn test_readable(fd: i32) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the duration of the call.
+    unsafe { libc::poll(&mut poll, 1, 0) > 0 }
 }

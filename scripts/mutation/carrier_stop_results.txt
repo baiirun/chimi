@@ -1,0 +1,20 @@
+# mutation run at 4c3fdfe2edaf91d49a7c9d459ccbb85c92ceca49
+# carrier_stop_mutations.py: 16 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- idle_tests] (20s)
+KILLED       a carrier parks after the run ended [lib -- idle_tests] (6s)
+KILLED       the stop sets nothing [lib -- idle_tests] (5s)
+KILLED       the stop wakes no carrier [lib -- idle_tests] (6s)
+KILLED       the stop skips carrier 1 [lib -- idle_tests] (4s)
+KILLED       a new run keeps the old stop [lib -- idle_tests] (5s)
+KILLED       a finished root leaves the carriers running [lib -- idle_tests] (6s)
+KILLED       a parked root leaves the carriers running [lib -- idle_tests] (4s)
+KILLED       the host is served while others run [lib -- idle_tests] (6s)
+KILLED       an ended host operation wakes nobody [lib -- idle_tests] (6s)
+KILLED       no carrier drains before it waits [lib -- idle_tests] (5s)
+KILLED       carrier 0 waiting for others skips the drain [lib -- idle_tests] (5s)
+KILLED       a carrier about to park skips the drain [lib -- idle_tests] (4s)
+KILLED       a leaving carrier skips its last drive [lib -- idle_tests] (6s)
+KILLED       the run ends whenever the root is terminal [lib -- idle_tests] (5s)
+KILLED       the host is served once the others are parked, work queued or not [lib -- idle_tests] (5s)
+KILLED       carrier 0 waiting on the host parks with its own due timer [lib -- idle_tests] (6s)
+# result: every mutant killed
