@@ -925,9 +925,10 @@ four keep one carrier.
        Left as known: a binding handle's release runs under the kernel
        lock, so a slow release (a socket close that lingers, a database
        close that writes) stalls every carrier for its length; PR 6's
-       measurements say whether it matters. `strerror` is thread-safe for
-       known codes on glibc 2.32 and later and on macOS; its message for an
-       unknown code can be overwritten by another thread.
+       measurements say whether it matters. `strerror` is MT-Safe from
+       glibc 2.32, which gives each thread its own buffer (strerror(3) and
+       the 2.32 release notes); macOS's has not been checked, and an
+       unknown code's message there may share one buffer.
    Design points: one wake descriptor per carrier, written after unlock
    when another carrier queues work for it or a new earliest timer is set.
    Only carrier 0 polls descriptors, children and the signal pipe, since
