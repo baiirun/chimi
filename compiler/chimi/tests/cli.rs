@@ -4898,6 +4898,61 @@ fn native_trace_reports_a_released_channel() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards the carrier's drain before it idles: a child's last copy of a channel
+// dies as the child returns, with no request left to carry its release, and that
+// channel's queued message holds another channel's only endpoints, so the second
+// count reaches zero inside the scheduler's release hook. Both releases must be
+// done while the root sleeps, before the clock moves, not at its next request.
+#[test]
+fn native_releases_no_request_carries_are_done_before_the_carrier_idles() {
+    let scratch = scratch_directory("native-idle-release-drain");
+    let executable = build_native(
+        &scratch,
+        "idle-drain",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             let child = Task.start(fn() -> Int {{\n    \
+             let outer = Channel.bounded(1)\n    \
+             let nested = Channel.bounded(1)\n    \
+             Channel.send(nested.sender, 5)\n    \
+             Channel.send(outer.sender, nested)\n    \
+             1\n  }})\n  \
+             Clock.sleep(Duration.seconds(1))\n  \
+             Task.result(child)\n}}\n"
+        ),
+    );
+    let execution =
+        execute_native_with(&executable, &scratch, "idle-drain", "full", &["--clock=virtual"]);
+    assert!(
+        execution.process.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&execution.process.stderr),
+        execution.outcome
+    );
+    let events: Vec<&str> = execution
+        .telemetry
+        .lines()
+        .filter(|line| {
+            line.contains("\"event\":\"channel_released\"")
+                || line.contains("\"event\":\"clock_advanced\"")
+        })
+        .collect();
+    let advanced = events
+        .iter()
+        .position(|line| line.contains("clock_advanced"))
+        .unwrap_or_else(|| panic!("the sleep advances the clock\n{}", execution.telemetry));
+    assert_eq!(
+        events[..advanced]
+            .iter()
+            .filter(|line| line.contains("channel_released"))
+            .count(),
+        2,
+        "both channels are released before the clock moves\n{}",
+        execution.telemetry
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Guards the release rule against releasing too early: copies of a channel's
 // endpoints that children captured keep it alive after the creator's loop pass
 // reclaims its own, so the children still send and receive on it. An early release

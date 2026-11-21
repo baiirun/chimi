@@ -148,6 +148,7 @@ fn execute_once(entry: ChimiFiberEntry, through: Entry) -> (SchedulerOutcome, Lo
                 user_signals: std::ptr::null_mut(),
                 injected_user_signals: std::ptr::null(),
                 injected_user_signal_count: 0,
+                take_release: None,
             };
             unsafe { process_abi::chimi_scheduler_run(&config) }
         }
@@ -783,4 +784,129 @@ fn the_execute_config_matches_its_c_layout() {
         REQUEST_CHANNEL_RELEASE as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
+}
+
+// ----- Releases no fiber's request carries ---------------------------------
+
+thread_local! {
+    /// Channels the host has queued for release with no task running, as the
+    /// native runtime's carrier queue does when a count reaches zero inside a
+    /// release hook.
+    static HOST_RELEASES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// The message whose release frees the last endpoint of `NESTED`.
+    static HOLDS_NESTED: Cell<i64> = const { Cell::new(0) };
+    static NESTED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A channel release hook in which releasing `HOLDS_NESTED` drops the last
+/// endpoint of `NESTED`, so that channel's release is queued on the host.
+unsafe extern "C" fn release_channel_dropping_nested(_context: *mut c_void, value: i64) {
+    LOG.with(|log| log.borrow_mut().channels.push(value));
+    if value == HOLDS_NESTED.get() {
+        HOST_RELEASES.with(|queue| queue.borrow_mut().push(NESTED.get()));
+    }
+}
+
+unsafe extern "C" fn take_host_release(
+    _context: *mut c_void,
+    kind: *mut u32,
+    id: *mut u64,
+) -> bool {
+    let Some(channel) = HOST_RELEASES.with(|queue| queue.borrow_mut().pop()) else {
+        return false;
+    };
+    unsafe {
+        *kind = REQUEST_CHANNEL_RELEASE;
+        *id = channel;
+    }
+    true
+}
+
+fn now() -> i64 {
+    let mut request = blank(REQUEST_TIMER_NOW);
+    call(&mut request);
+    request.value
+}
+
+/// The outer channel's queued message holds the nested channel's only
+/// endpoints, and the nested channel buffers 992. Releasing the outer one
+/// queues the nested release on the host, and the root then sleeps, so no
+/// fiber makes a request that could carry it.
+unsafe extern "C" fn releases_a_channel_whose_message_holds_another(
+    _context: *mut c_void,
+) -> ChimiFiberResult {
+    let nested = bounded(1);
+    send(nested, 992);
+    NESTED.set(nested.channel);
+    let outer = bounded(1);
+    send(outer, 991);
+    HOLDS_NESTED.set(991);
+    release(outer);
+    let mut sleep = blank(REQUEST_TIMER_SLEEP_UNTIL);
+    sleep.value = now() + 1_000_000;
+    call(&mut sleep);
+    checkpoint("after sleeping");
+    succeeded(0)
+}
+
+fn run_with_take_release(entry: ChimiFiberEntry, take: Option<ReleaseTake>) -> Log {
+    LOG.with(|log| *log.borrow_mut() = Log::default());
+    HOST_RELEASES.with(|queue| queue.borrow_mut().clear());
+    let config = ChimiSchedulerConfig {
+        entry: Some(entry),
+        context: ptr::null_mut(),
+        stack_bytes: STACK,
+        trace_mode: 0,
+        clock_mode: process_abi::CLOCK_REAL,
+        trace_sink: None,
+        trace_context: ptr::null_mut(),
+        release_message: None,
+        release_spec_context: None,
+        release_context: ptr::null_mut(),
+        deadlock_report: None,
+        deadlock_context: ptr::null_mut(),
+        release_task_value: Some(release_task),
+        release_channel_value: Some(release_channel_dropping_nested),
+        release_task_context: Some(release_context),
+        capability_violation_report: None,
+        capability_violation_context: ptr::null_mut(),
+        process_defect_report: None,
+        process_defect_context: ptr::null_mut(),
+        signal: ptr::null_mut(),
+        signal_fd: -1,
+        injected_signal: 0,
+        injected_signal_at: 0,
+        copy_channel_value: None,
+        user_signals: std::ptr::null_mut(),
+        injected_user_signals: std::ptr::null(),
+        injected_user_signal_count: 0,
+        take_release: take,
+    };
+    let outcome = unsafe { process_abi::chimi_scheduler_run(&config) };
+    assert_eq!(
+        (outcome.state, outcome.value),
+        (ChimiFiberState::Succeeded as u32, 0)
+    );
+    LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+#[test]
+fn a_release_queued_in_a_release_hook_is_applied_before_the_carrier_idles() {
+    let log = run_with_take_release(
+        releases_a_channel_whose_message_holds_another,
+        Some(take_host_release),
+    );
+    // 991 goes with the outer release, and 992 with the nested release the
+    // hook queued, drained while the root slept.
+    assert_eq!(log.channels, vec![991, 992]);
+    assert_eq!(log.checkpoints, vec![("after sleeping", 0, 2, 0)]);
+    assert!(HOST_RELEASES.with(|queue| queue.borrow().is_empty()));
+}
+
+#[test]
+fn without_a_drain_hook_a_release_queued_in_a_release_hook_waits() {
+    let log = run_with_take_release(releases_a_channel_whose_message_holds_another, None);
+    // The nested channel stays live until teardown releases 992.
+    assert_eq!(log.checkpoints, vec![("after sleeping", 0, 1, 0)]);
+    assert_eq!(log.channels, vec![991, 992]);
 }

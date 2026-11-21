@@ -178,12 +178,14 @@ idles and when it stops. Otherwise a zero reached in a release hook, on a
 carrier where no fiber makes another request, strands the release. The
 simulation build showed this: before its flush drained every carrier's queue,
 a dropped channel's buffered messages outlived it and a fragment-peak test
-failed. Today a flush drains the running carrier's queue first and then any
-other carrier's, in place of that loop. That stand-in
-(`carrier_with_releases`) reads another carrier's queue without a lock, so
-step 3 must replace it, not keep it: two threads popping one queue could lose
-a release or issue it twice. It also hides a missing per-carrier drain, so
-the simulation cannot catch that gap; step 3 needs its own test for it.
+failed. Until PR 3b a flush drained the running carrier's queue first and
+then any other carrier's, in place of that loop. That stand-in
+(`carrier_with_releases`) read another carrier's queue without a lock: two
+threads popping one queue could lose a release or issue it twice. PR 3b
+replaced it with the scheduler's `take_release` drain, and only the
+single-threaded simulation still lets a fiber drain another carrier's queue.
+That hides a missing per-carrier drain from the simulation, so the drain has
+its own tests.
 The unlocked `handles_live()` read also assumes that moving a value to
 another carrier synchronises (the hand-off is a scheduler request), which
 step 3 must keep true.
@@ -284,7 +286,7 @@ keeps its observable meaning through a different mechanism.
    - make the select commit atomic ("Ordering rules under several
      carriers");
    - have each carrier loop drain its own release queue, replacing
-     `carrier_with_releases`;
+     `carrier_with_releases` (landed in PR 3b);
    - turn `carrier` into the accessor.
 
    Epochs are already process-wide and atomic, and the shared values are
@@ -340,6 +342,20 @@ four keep one carrier.
      at startup.
    - A per-carrier drain hook issues queued releases before the carrier
      idles and when it stops. It replaces `carrier_with_releases`.
+     As landed (PR 3b, fiber ABI 28): `ChimiSchedulerConfig.take_release`
+     hands over one queued release at a time, and `Scheduler::drive` calls
+     it whenever the carrier's ready queue is empty, applying each release
+     with no task attributed (a trace event with no cause). It runs only
+     between resumes, never inside a channel transition. A fiber's flush
+     drains only its own carrier's queue. At stop nothing is drained: the
+     scheduler's teardown releases every value it holds, and the next run
+     clears the queues. The simulation build runs both carriers' loops as
+     one loop that is never idle while a fiber runs, so there a fiber also
+     drains the carrier it left, standing for that carrier's idle loop;
+     without that, a fragment-peak test grows. The drain itself is tested
+     outside the simulation: a release queued inside a release hook while
+     the root sleeps is done before the clock moves (a scheduler test and
+     a native test).
    - The host stack limit is stored per carrier (landed in PR 3a). Only the
      main thread computes it today; PR 5's carrier threads must run
      `carrier_bind` and then `guard_host_stack` before their first fiber,
