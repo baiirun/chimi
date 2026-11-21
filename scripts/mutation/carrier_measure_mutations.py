@@ -57,7 +57,7 @@ MUTATIONS = [
         "                    .filter(|count| *count >= 1)",
         filter="malformed_arguments"),
     lab("--carriers without performance is accepted", BIN,
-        "    if options.carriers > 1 && !measures_gates {",
+        "    if carriers_given && !measures_gates {",
         "    if false {",
         filter="without_performance"),
     epoch("a carrier never takes a block",
