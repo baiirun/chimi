@@ -44,6 +44,7 @@ const SHARED: &[&str] = &[
     "binding_handle_count",
     "binding_handle_capacity",
     "binding_free_slot",
+    "binding_handle_lock",
     "fs_files",
     "fs_file_count",
     "fs_file_lock",
@@ -64,12 +65,17 @@ const SHARED: &[&str] = &[
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
     "profile_rows",
-    // Standard input and signals, owned by the first carrier.
+    // Standard input, behind its lock.
     "standard_input",
     "standard_input_bytes",
-    // Console output queues (CHI-266), owned by the first carrier.
+    "standard_input_lock",
+    // Console output queues (CHI-266), behind one lock, and whether this
+    // thread holds it (a thread-local).
     "console_queues",
     "console_streams",
+    "console_lock",
+    "console_lock_held",
+    // Signals: the handlers' fields, and the installers' once flags.
     "received_signal",
     "signal_pipe",
     "signal_runtime",

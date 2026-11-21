@@ -36,6 +36,9 @@ const FIRST_RECHECK: Duration = Duration::from_millis(10);
 struct ChildWaiter {
     task: TaskId,
     pid: i32,
+    /// The host resource the child belongs to (the request's `channel`), or
+    /// 0: `REQUEST_IO_WITHDRAW` of that key wakes the waiter too.
+    resource: u64,
 }
 
 #[derive(Default)]
@@ -84,11 +87,29 @@ impl Scheduler {
                 let _ = self.wake_front(owner);
             }
             Check::Running => {
-                self.children.waiters.push(ChildWaiter { task: owner, pid });
+                self.children.waiters.push(ChildWaiter {
+                    task: owner,
+                    pid,
+                    resource: request.channel,
+                });
                 self.children.recheck = FIRST_RECHECK;
                 request.status = RESPONSE_PENDING;
             }
         }
+    }
+
+    /// Removes and returns, oldest first, the waiters whose wait names
+    /// `resource` (nonzero), for `REQUEST_IO_WITHDRAW`.
+    pub(super) fn take_child_waits_on(&mut self, resource: u64) -> Vec<TaskId> {
+        let mut taken = Vec::new();
+        self.children.waiters.retain(|waiter| {
+            let named = waiter.resource == resource;
+            if named {
+                taken.push(waiter.task);
+            }
+            !named
+        });
+        taken
     }
 
     /// Removes the task's child wait, if it has one.
