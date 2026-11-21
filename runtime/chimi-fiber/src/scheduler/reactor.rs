@@ -344,9 +344,13 @@ impl Scheduler {
             request.status = RESPONSE_ERROR;
         } else {
             let waiting = self.reactor.waiting_on(request.channel);
-            request.value = i64::try_from(waiting.len()).unwrap_or(i64::MAX);
+            let children = self.take_child_waits_on(request.channel);
+            request.value = i64::try_from(waiting.len() + children.len()).unwrap_or(i64::MAX);
             for task in waiting {
                 self.clear_io_wait(task);
+                let _ = self.wake(task);
+            }
+            for task in children {
                 let _ = self.wake(task);
             }
             request.status = RESPONSE_OK;

@@ -1,0 +1,17 @@
+# mutation run at 602a1b96565b0c7c7ce3b9da9a1e0f63140a2783
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (93s)
+KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
+KILLED       a close ignores the holders [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
+KILLED       the last holder does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (42s)
+EQUIVALENT   a closed handle reads as open while held (survived; removed from the list: the close bumps the generation, so lookups already miss)
+KILLED       handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (40s)
+KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (42s)
+KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (40s)
+KILLED       a console line is written without the lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# mutation run at 602a1b96565b0c7c7ce3b9da9a1e0f63140a2783
+BASELINE ok  [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (16s)
+KILLED       a withdraw wakes no child wait [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (35s)
+KILLED       a child wait keeps no resource [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (34s)
+# result: every mutant killed
+# 9 of 9 non-equivalent mutants killed across both sets.

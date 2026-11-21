@@ -110,7 +110,10 @@ function-local static, so new state gets an owner when it is added.
     release queue is carrier state (`released_handles`).
   - Tables whose ids travel inside values, each behind its own lock: open
     files (`fs_file_lock`), test logs (`test_log_lock`), process defects
-    (`process_defect_lock`), and binding handles (PR 5a-2). A read or write
+    (`process_defect_lock`), and binding handles (`binding_handle_lock`). A
+    binding call holds each open handle among its arguments for its whole
+    length, so a close by any task only marks the handle closed and the
+    last holder releases its state. A read or write
     takes a file's descriptor for the length of its system call, and a close
     during one leaves the descriptor to the last user to close, so the
     number is never reused under the system call. A read or write that
@@ -123,8 +126,11 @@ function-local static, so new state gets an owner when it is added.
     deterministic only on one carrier.
   - Telemetry: `trace_lock` is held for each whole event, so sequence numbers
     follow file order; span ids come from one atomic counter.
-  - Standard input and every signal field. Signal handlers write these, so
-    they must never sit behind a carrier or thread-local pointer.
+  - Standard input (`standard_input_lock`, held while a reader takes one
+    line's bytes) and the console queues (`console_lock`, held by a writer
+    except while it parks). Every signal field: signal handlers write these,
+    so they must never sit behind a carrier or thread-local pointer, and the
+    handler installers run once through `pthread_once`.
 
 Rules for the steps that run more than one carrier:
 
@@ -455,14 +461,33 @@ four keep one carrier.
        also runs the host stack check, which only a program without the
        scheduler arms, so a carrier thread's is off as the main thread's
        is under the scheduler.
-     - Left for 5a-2, before 5c starts real threads: binding handles, and
-       the console queues, standard input and the signal installers
-       (`console_queues`, `console_streams`, `standard_input`,
-       `install_user_signals`, `chimi_binding_prepare_children`), which
-       are filed as carrier 0's but which a fiber on any carrier reaches,
-       since process incarnations are placed on every carrier. Each needs
-       a lock that is never held across a park, or its work sent to
-       carrier 0.
+     - As landed (5a-2): binding handles, the console, standard input
+       and the signal installers, as listed under "Runtime state by
+       owner". The stress fixture now also opens, uses and closes binding
+       handles from four threads (a release while a call uses the state
+       fails it), reads standard input from a pipe, and writes console
+       lines. Queued console output needs the scheduler, so the fixture
+       covers only direct writes; 5e's stress programs cover the queue.
+       With one carrier the console takes no lock: a print-only program
+       measured about 25 ns a line slower with it.
+     - Left for 5b: `chimi_binding_wait` checks that its handle is open
+       and then registers the wait. With several carriers a close on
+       another carrier can land between the two, and its withdraw then
+       misses the wait, which parks until the descriptor is ready. The
+       kernel should keep, per slot, the last generation withdrawn, and
+       answer a wait on that generation or an older one as withdrawn.
+     - Left for 5c: holding a handle keeps its state alive but does not
+       serialize calls on it, so two carriers may run calls on one handle
+       at once (a TLS session read on one and written on another, an exec
+       command built on one while another starts it). Before real threads
+       run, each binding type's state needs its own lock, or the runtime
+       runs one call per handle at a time. The binding sources
+       (`bindings/`) are not scanned by `runtime_state.rs`.
+     - A close also wakes a child wait on the handle (its key is now in
+       `CHILD_WAIT`'s `channel`), since a close while another task waits
+       no longer kills the child until that wait's call returns. At
+       program end every handle is released, including ones an
+       abandoned call still counts as holding.
    - 5b, kernel pieces on one thread: the carrier id passed through
      `Locked`, jobs for the inline resumes, the wake descriptors and the
      global idle check. Tested on a two-carrier kernel driven from one

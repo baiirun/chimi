@@ -206,9 +206,9 @@ enum {
      scope, 42 and 43 are the task combinators', and 44 withdraws IO
      waits. */
   CHIMI_REQUEST_IO_WAIT = 48,
-  /* ChimiSchedulerRequest: wakes every task whose IO wait names the
-     resource key in `channel` (nonzero), so each reissues its wait; issue
-     it before closing that resource's descriptors. OK with the number woken
+  /* ChimiSchedulerRequest: wakes every task whose IO wait or child wait
+     names the resource key in `channel` (nonzero), so each reissues its
+     wait; issue it before closing that resource's descriptors. OK with the number woken
      in `value`; ERROR for key 0. Never parks, and not a cancellation point. */
   CHIMI_REQUEST_IO_WITHDRAW = 44,
   /* ChimiSchedulerRequest: waits for a std/signal signal. `value` holds up to
@@ -229,7 +229,9 @@ enum {
      idle scheduler still rechecks, from every 10 milliseconds backing off
      to every second. Like an IO wait it is a host operation in flight, so
      it holds virtual time. A cancellation point, withdrawn by a
-     cancellation. */
+     cancellation. `channel` is 0 or the key of the host resource the child
+     belongs to, which CHIMI_REQUEST_IO_WITHDRAW names to wake the waiter
+     when that resource closes. */
   CHIMI_REQUEST_CHILD_WAIT = 47,
   /* ChimiSchedulerRequest: no value names task `task` any more, so nothing
      can read its outcome again. Once the task is terminal, now or later, the
