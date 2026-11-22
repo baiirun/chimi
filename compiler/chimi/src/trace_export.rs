@@ -130,7 +130,8 @@ fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
             execution.start_span(event, &record, span_id, time);
         } else if let Some(&span) = execution.span_index.get(&span_id) {
             let span = &mut execution.spans[span];
-            span.end = Some(time);
+            // A span never ends before it starts, even in an edited trace.
+            span.end = Some(time.max(span.start));
             span.completed = true;
             span.outcome = record.attribute_text("outcome").map(str::to_owned);
         }

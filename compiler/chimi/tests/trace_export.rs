@@ -376,3 +376,54 @@ fn open_spans_end_with_their_last_child() {
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+// An expected failure is an error span, a parent missing from the file is
+// left out rather than pointing nowhere, and an end written before its start
+// is moved to the start. Rejects a failed outcome shown as fine, a dangling
+// parentSpanId, and a span that ends before it begins.
+#[test]
+fn hand_written_traces_export_as_valid_spans() {
+    let directory = scratch("hand-written");
+    let trace = directory.join("trace.jsonl");
+    let text = [
+        event(
+            "computation_started",
+            0,
+            1,
+            "null",
+            "computation",
+            "\"time_ns\":0,\"start_unix_ns\":100",
+        ),
+        event("operation_started", 1, 2, "1", "call", "\"time_ns\":50"),
+        event(
+            "operation_completed",
+            2,
+            2,
+            "1",
+            "call",
+            "\"outcome\":\"expected_failure\",\"time_ns\":10",
+        ),
+        event("operation_started", 3, 3, "99", "sleep", "\"time_ns\":60"),
+        event(
+            "operation_completed",
+            4,
+            3,
+            "99",
+            "sleep",
+            "\"outcome\":\"success\",\"time_ns\":70",
+        ),
+    ]
+    .concat();
+    std::fs::write(&trace, text).unwrap();
+    let spans = spans(&export(&[trace.to_str().unwrap()]));
+    let by_name = |name: &str| spans.iter().find(|span| span.name == name).unwrap();
+    let call = by_name("call");
+    assert_eq!((call.start, call.end), (150, 150));
+    assert!(
+        call.status.as_deref().is_some_and(|status| status.starts_with("\"status\":{\"code\":2")),
+        "{}",
+        call.text
+    );
+    let sleep = by_name("sleep");
+    assert_eq!((sleep.parent.as_deref(), sleep.status.as_deref()), (None, None));
+}
