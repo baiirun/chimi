@@ -229,12 +229,10 @@ pub unsafe extern "C" fn chimi_fiber_create(
     let capture_backtraces = config.capture_backtraces != 0;
     let fiber = Coroutine::with_stack(stack, move |yielder, command| {
         debug_assert_eq!(command, ChimiFiberCommand::Resume);
-        ACTIVE_YIELDER.with(|slot| slot.set(yielder));
-        CAPTURE_BACKTRACE.with(|slot| slot.set(capture_backtraces));
+        set_park_context(yielder, capture_backtraces);
         // SAFETY: create requires a generated entry with the declared C ABI.
         let result = unsafe { entry(context) };
-        ACTIVE_YIELDER.with(|slot| slot.set(ptr::null()));
-        CAPTURE_BACKTRACE.with(|slot| slot.set(false));
+        set_park_context(ptr::null(), false);
         result
     });
     Box::into_raw(Box::new(ChimiFiber {
@@ -288,7 +286,8 @@ pub unsafe extern "C" fn chimi_fiber_resume(
 /// fiber. `roots` and its linked frames and slots must remain valid and
 /// writable until the function returns.
 pub unsafe extern "C" fn chimi_fiber_park(roots: *const ChimiRootFrame) -> ChimiFiberCommand {
-    unsafe { chimi_fiber_request(ptr::null_mut(), roots) }
+    // Not a tail call, so a parked backtrace keeps this frame.
+    std::hint::black_box(unsafe { chimi_fiber_request(ptr::null_mut(), roots) })
 }
 
 #[unsafe(no_mangle)]
@@ -302,33 +301,46 @@ pub unsafe extern "C" fn chimi_fiber_request(
     request: *mut c_void,
     roots: *const ChimiRootFrame,
 ) -> ChimiFiberCommand {
-    ACTIVE_YIELDER.with(|slot| {
-        let yielder = slot.get();
-        assert!(
-            !yielder.is_null(),
-            "park called outside an active Chimi fiber"
-        );
-        let capture_backtraces = CAPTURE_BACKTRACE.with(Cell::get);
-        let backtrace = if capture_backtraces {
-            format!("{:?}", Backtrace::new())
-        } else {
-            String::new()
-        };
-        // SAFETY: the yielder is installed for exactly the active fiber call.
-        let command = unsafe {
-            (&*yielder).suspend(ParkSignal {
-                roots,
-                request,
-                backtrace,
-            })
-        };
-        // Another fiber may have run while this one was suspended and replaced
-        // the thread-local execution context. Restore this fiber's context
-        // before generated code can park again.
-        slot.set(yielder);
-        CAPTURE_BACKTRACE.with(|enabled| enabled.set(capture_backtraces));
-        command
-    })
+    let (yielder, capture_backtraces) = park_context();
+    assert!(
+        !yielder.is_null(),
+        "park called outside an active Chimi fiber"
+    );
+    let backtrace = if capture_backtraces {
+        format!("{:?}", Backtrace::new())
+    } else {
+        String::new()
+    };
+    // SAFETY: the yielder is installed for exactly the active fiber call.
+    let command = unsafe {
+        (&*yielder).suspend(ParkSignal {
+            roots,
+            request,
+            backtrace,
+        })
+    };
+    // Another fiber may have run while this one was suspended and replaced
+    // the thread-local execution context, and the fiber may now run on
+    // another thread. Restore this fiber's context on the thread it resumed
+    // on before generated code can park again.
+    set_park_context(yielder, capture_backtraces);
+    command
+}
+
+// The park context is read and written only through these two functions,
+// never inlined, so each call finds the thread-locals of the thread it runs
+// on. A fiber may suspend on one thread and resume on another, and a
+// compiler may keep a thread-local's address from before a call that
+// suspends (parallel-scheduler.md, "Runtime state by owner").
+#[inline(never)]
+fn park_context() -> (*const Yielder<ChimiFiberCommand, ParkSignal>, bool) {
+    (ACTIVE_YIELDER.with(Cell::get), CAPTURE_BACKTRACE.with(Cell::get))
+}
+
+#[inline(never)]
+fn set_park_context(yielder: *const Yielder<ChimiFiberCommand, ParkSignal>, capture_backtraces: bool) {
+    ACTIVE_YIELDER.with(|slot| slot.set(yielder));
+    CAPTURE_BACKTRACE.with(|slot| slot.set(capture_backtraces));
 }
 
 #[unsafe(no_mangle)]
@@ -520,6 +532,67 @@ mod tests {
             assert_eq!(overflow.defect_code, 0);
             assert!(overflow.roots.is_null());
             chimi_fiber_destroy(fiber);
+        }
+    }
+
+    /// Parks three times, then succeeds with 7.
+    unsafe extern "C" fn parks_three_times(_context: *mut c_void) -> ChimiFiberResult {
+        for _ in 0..3 {
+            unsafe { chimi_fiber_request(ptr::null_mut(), ptr::null()) };
+        }
+        ChimiFiberResult {
+            state: ChimiFiberState::Succeeded as u32,
+            value: 7,
+            defect_code: 0,
+        }
+    }
+
+    struct SendFiber(*mut ChimiFiber);
+    // SAFETY: the test hands the fiber to one thread at a time and joins it
+    // before the next resume, as the kernel does between carriers.
+    unsafe impl Send for SendFiber {}
+
+    /// A thread that resumes each fiber it is handed and sends back its
+    /// state. Two of them live at once, so their thread-locals are distinct.
+    fn resumer() -> (
+        std::sync::mpsc::Sender<SendFiber>,
+        std::sync::mpsc::Receiver<(SendFiber, u32)>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (hand, take) = std::sync::mpsc::channel::<SendFiber>();
+        let (answer, answers) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            for fiber in take {
+                let event = unsafe { chimi_fiber_resume(fiber.0, ChimiFiberCommand::Resume as u32) };
+                answer.send((fiber, event.state)).expect("answer");
+            }
+        });
+        (hand, answers, thread)
+    }
+
+    /// A parked fiber resumed on another live thread parks again and
+    /// finishes there: what a carrier that steals a parked task relies on
+    /// (parallel-scheduler.md, step 4 PR 4b).
+    #[test]
+    fn a_parked_fiber_moves_between_threads() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let threads = [resumer(), resumer()];
+        let mut fiber = SendFiber(unsafe {
+            chimi_fiber_create(Some(parks_three_times), ptr::null_mut(), config(false))
+        });
+        assert!(!fiber.0.is_null());
+        let expected = [ChimiFiberState::Parked; 3].into_iter().chain([ChimiFiberState::Succeeded]);
+        for (resume, expected) in expected.enumerate() {
+            let (hand, answers, _) = &threads[resume % 2];
+            hand.send(fiber).expect("hand the fiber over");
+            let (moved, state) = answers.recv().expect("resumed");
+            fiber = moved;
+            assert_eq!(state, expected as u32, "resume {resume}, on thread {}", resume % 2);
+        }
+        unsafe { chimi_fiber_destroy(fiber.0) };
+        for (hand, _, thread) in threads {
+            drop(hand);
+            thread.join().expect("resumer");
         }
     }
 

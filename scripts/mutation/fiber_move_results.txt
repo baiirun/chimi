@@ -1,0 +1,9 @@
+# mutation run at 49abed6a64335dbd1007545efda7c41a42afcf4a
+# fiber_move_mutations.py: 4 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- moves_between_threads] (25s)
+BASELINE ok  [lib -- moved_to_another_carrier] (0s)
+KILLED       a resumed fiber does not restore its park context [lib -- moves_between_threads] (5s)
+KILLED       a moved fiber keeps its old thread [lib -- moved_to_another_carrier] (7s)
+KILLED       a moved task keeps its old carrier [lib -- moved_to_another_carrier] (7s)
+KILLED       releasing a home keeps it [lib -- moved_to_another_carrier] (10s)
+# result: every mutant killed

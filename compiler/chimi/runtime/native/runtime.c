@@ -638,6 +638,10 @@ typedef struct {
      carrier 0. */
   pthread_t thread;
   bool bound;
+  /* This carrier's thread holds console_lock. A Carrier field rather than a
+     thread-local of its own: a writer parks between leaving and entering the
+     lock, and may resume on another thread (`carrier` is read afresh). */
+  bool console_lock_held;
 } Carrier;
 
 /* Carrier 0 is the main thread's and runs every fiber until more carriers are
@@ -681,10 +685,15 @@ static void carrier_migrate(Carrier *parked) {
   carrier = to;
 }
 #else
-/* The carrier the calling thread runs. A fiber never leaves the thread of its
-   first resume (the scheduler's PinnedFiber), so a thread-local's address a
-   compiler keeps across a scheduler request inside one function still names
-   the right carrier; the read itself is one thread-pointer-relative load. */
+/* The carrier the calling thread runs. A parked fiber may resume on another
+   thread (parallel-scheduler.md, step 4 PR 4b), and a compiler may keep a
+   thread-local's address, or the thread pointer it comes from, from before a
+   call that parks. So `carrier` reads the thread pointer afresh at every use:
+   on Linux with one volatile instruction plus the variable's offset from it,
+   which is the same on every thread for an initial-exec variable; elsewhere
+   through a call the compiler cannot merge or move. Leaf code that never
+   parks reads it once (`Carrier *const here = carrier;`), since a read now
+   costs more than a plain load. */
 #if defined(__APPLE__)
 #define CARRIER_TLS_MODEL
 #else
@@ -693,7 +702,30 @@ static void carrier_migrate(Carrier *parked) {
 /* Every thread starts on carrier 0, which is what the main thread and the C
    test fixtures that include this file use. */
 static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_first;
-#define carrier carrier_this_thread
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+/* Set before main, on the main thread, and read on every thread. */
+static intptr_t carrier_tls_offset;
+static inline char *carrier_thread_pointer(void) {
+  char *pointer;
+#if defined(__x86_64__)
+  __asm__ volatile("movq %%fs:0, %0" : "=r"(pointer));
+#else
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(pointer));
+#endif
+  return pointer;
+}
+__attribute__((constructor)) static void carrier_tls_offset_init(void) {
+  carrier_tls_offset = (char *)&carrier_this_thread - carrier_thread_pointer();
+}
+static inline Carrier *carrier_current(void) {
+  return *(Carrier **)(carrier_thread_pointer() + carrier_tls_offset);
+}
+#else
+__attribute__((noinline)) static Carrier *carrier_current(void) {
+  return *(Carrier *volatile const *)&carrier_this_thread;
+}
+#endif
+#define carrier (carrier_current())
 static Carrier *carrier_others;
 static size_t carrier_count = 1;
 
@@ -752,14 +784,15 @@ static HeapTotals heap_totals_sum(void) {
 
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
+  Carrier *const here = carrier;
   size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
   if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
     size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    SmallBlock *block = carrier->small_blocks[class];
+    SmallBlock *block = here->small_blocks[class];
     if (block) {
-      carrier->small_blocks[class] = block->next;
-      --carrier->small_block_counts[class];
-      carrier->heap_totals.cached_bytes -= rounded;
+      here->small_blocks[class] = block->next;
+      --here->small_block_counts[class];
+      here->heap_totals.cached_bytes -= rounded;
       memset(block, 0, rounded);
       return block;
     }
@@ -770,15 +803,16 @@ static void *small_block_take(size_t bytes) {
 }
 
 static void small_block_give(void *pointer, size_t bytes) {
+  Carrier *const here = carrier;
   size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
   if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
     size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    if (carrier->small_block_counts[class] < SMALL_BLOCK_CACHE) {
+    if (here->small_block_counts[class] < SMALL_BLOCK_CACHE) {
       SmallBlock *block = pointer;
-      block->next = carrier->small_blocks[class];
-      carrier->small_blocks[class] = block;
-      ++carrier->small_block_counts[class];
-      carrier->heap_totals.cached_bytes += rounded;
+      block->next = here->small_blocks[class];
+      here->small_blocks[class] = block;
+      ++here->small_block_counts[class];
+      here->heap_totals.cached_bytes += rounded;
       return;
     }
   }
@@ -786,8 +820,9 @@ static void small_block_give(void *pointer, size_t bytes) {
 }
 
 static AllocationArea *current_area(void) {
-  if (carrier->fiber.target) return carrier->fiber.target;
-  return carrier->fiber.heap->innermost ? &carrier->fiber.heap->innermost->young : &carrier->fiber.heap->base;
+  Carrier *const here = carrier;
+  if (here->fiber.target) return here->fiber.target;
+  return here->fiber.heap->innermost ? &here->fiber.heap->innermost->young : &here->fiber.heap->base;
 }
 
 
@@ -812,7 +847,8 @@ static int64_t fragment_footprint_now(void) {
 }
 #else
 static int64_t footprint_now(void) {
-  return carrier->heap_totals.footprint_bytes + carrier->pending_footprint_bytes;
+  Carrier *const here = carrier;
+  return here->heap_totals.footprint_bytes + here->pending_footprint_bytes;
 }
 
 static int64_t fragment_footprint_now(void) { return carrier->heap_totals.fragment_footprint_bytes; }
@@ -885,9 +921,10 @@ static void footprint_seed_process(void) {
 #endif
 
 static inline void footprint_record_peak(void) {
+  Carrier *const here = carrier;
   int64_t footprint = footprint_now();
-  if (footprint > carrier->heap_totals.peak_footprint_bytes) carrier->heap_totals.peak_footprint_bytes = footprint;
-  footprint_fold(footprint, &carrier->folded_footprint_bytes, &process_footprint_bytes, &process_peak_footprint_bytes);
+  if (footprint > here->heap_totals.peak_footprint_bytes) here->heap_totals.peak_footprint_bytes = footprint;
+  footprint_fold(footprint, &here->folded_footprint_bytes, &process_footprint_bytes, &process_peak_footprint_bytes);
 }
 
 static void footprint_add(size_t bytes) {
@@ -899,9 +936,10 @@ static void footprint_add(size_t bytes) {
    pending_footprint_bytes peak just before it), and the fall is folded after
    it, so a carrier that only frees still brings the process count down. */
 static inline void footprint_sub(size_t bytes) {
+  Carrier *const here = carrier;
   footprint_record_peak();
-  carrier->heap_totals.footprint_bytes -= (int64_t)bytes;
-  footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,
+  here->heap_totals.footprint_bytes -= (int64_t)bytes;
+  footprint_fold(footprint_now(), &here->folded_footprint_bytes, &process_footprint_bytes,
                  &process_peak_footprint_bytes);
 }
 
@@ -911,10 +949,11 @@ static void fragment_footprint_fold(void) {
 }
 
 static void fragment_footprint_add(size_t bytes) {
-  carrier->heap_totals.fragment_footprint_bytes += (int64_t)bytes;
+  Carrier *const here = carrier;
+  here->heap_totals.fragment_footprint_bytes += (int64_t)bytes;
   int64_t footprint = fragment_footprint_now();
-  if (footprint > carrier->heap_totals.peak_fragment_footprint_bytes)
-    carrier->heap_totals.peak_fragment_footprint_bytes = footprint;
+  if (footprint > here->heap_totals.peak_fragment_footprint_bytes)
+    here->heap_totals.peak_fragment_footprint_bytes = footprint;
   fragment_footprint_fold();
 }
 
@@ -943,10 +982,11 @@ static void area_link(AllocationArea *area, AllocationHeader *header) {
 
 
 static YoungChunk *young_chunk_take(void) {
-  YoungChunk *chunk = carrier->young_chunk_cache;
+  Carrier *const here = carrier;
+  YoungChunk *chunk = here->young_chunk_cache;
   if (chunk) {
-    carrier->young_chunk_cache = chunk->next;
-    --carrier->young_chunk_cache_count;
+    here->young_chunk_cache = chunk->next;
+    --here->young_chunk_cache_count;
   } else {
     chunk = calloc(1, YOUNG_CHUNK_BYTES);
     if (!chunk) exhausted_memory();
@@ -962,16 +1002,17 @@ static YoungChunk *young_chunk_take(void) {
 /* Requires: `chunk->used` marks the end of its allocations. Cached chunks are
    zero, so a bump needs no zeroing of its own. */
 static void young_chunk_give(YoungChunk *chunk) {
+  Carrier *const here = carrier;
 #ifdef CHIMI_POISON_YOUNG_CHUNKS
   memset(chunk->data, 0xdb, YOUNG_CHUNK_CAPACITY);
   free(chunk);
   return;
 #endif
-  if (carrier->young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
+  if (here->young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
     memset(chunk->data, 0, (size_t)(chunk->used - chunk->data));
-    chunk->next = carrier->young_chunk_cache;
-    carrier->young_chunk_cache = chunk;
-    ++carrier->young_chunk_cache_count;
+    chunk->next = here->young_chunk_cache;
+    here->young_chunk_cache = chunk;
+    ++here->young_chunk_cache_count;
     return;
   }
   free(chunk);
@@ -983,6 +1024,7 @@ static void young_chunk_give(YoungChunk *chunk) {
    those peaks the same. The global footprint can fall mid-pass, so its peak
    counts the deferred bytes through pending_footprint_bytes. */
 static void flush_young_counts(AllocationScope *scope) {
+  Carrier *const here = carrier;
   size_t bytes = scope->pending_bytes, count = scope->pending_count;
   if (count == 0) return;
   scope->pending_bytes = 0;
@@ -993,8 +1035,8 @@ static void flush_young_counts(AllocationScope *scope) {
   scope_add_live(scope, bytes);
   scope->total_allocated_bytes += bytes;
   scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
-  carrier->heap_totals.live_allocations += count;
-  carrier->pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
+  here->heap_totals.live_allocations += count;
+  here->pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
   footprint_add(count * sizeof(AllocationHeader) + bytes);
 }
 
@@ -1027,13 +1069,14 @@ static size_t young_rounded(size_t bytes) {
 }
 
 static void *allocate(size_t count, size_t size) {
+  Carrier *const here = carrier;
   if (count == 0) count = 1;
   size_t bytes;
   if (__builtin_mul_overflow(count, size, &bytes) ||
       bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
     fputs("Chimi runtime allocation overflow\n", stderr); runtime_exit(70);
   }
-  AllocationScope *innermost = carrier->fiber.target ? NULL : carrier->fiber.heap->innermost;
+  AllocationScope *innermost = here->fiber.target ? NULL : here->fiber.heap->innermost;
   if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
     size_t rounded = young_rounded(bytes);
     AllocationHeader *header = young_bump(innermost, rounded);
@@ -1042,9 +1085,9 @@ static void *allocate(size_t count, size_t size) {
     header->in_chunk = true;
     innermost->pending_bytes += bytes;
     ++innermost->pending_count;
-    carrier->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
-    if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
-      ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
+    here->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
+    if (profile_rows && here->fiber.heap->profiled_node_plus_one) {
+      ProfileRow *row = &profile_rows[here->fiber.heap->profiled_node_plus_one - 1];
       profile_count(&row->allocations, 1);
       profile_count(&row->allocated_bytes, bytes);
     }
@@ -1061,15 +1104,15 @@ static void *allocate(size_t count, size_t size) {
     scope->total_allocated_bytes += bytes;
     scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
   } else if (area->role != AREA_FRAGMENT) {
-    carrier->unscoped_allocated_bytes += bytes;
+    here->unscoped_allocated_bytes += bytes;
   }
-  if (profile_rows && carrier->fiber.heap->profiled_node_plus_one) {
-    ProfileRow *row = &profile_rows[carrier->fiber.heap->profiled_node_plus_one - 1];
+  if (profile_rows && here->fiber.heap->profiled_node_plus_one) {
+    ProfileRow *row = &profile_rows[here->fiber.heap->profiled_node_plus_one - 1];
     profile_count(&row->allocations, 1);
     profile_count(&row->allocated_bytes, bytes);
   }
   if (area->role != AREA_STATIC) {
-    ++carrier->heap_totals.live_allocations;
+    ++here->heap_totals.live_allocations;
     footprint_add(sizeof(*header) + bytes);
     if (area->role == AREA_FRAGMENT) fragment_footprint_add(sizeof(*header) + bytes);
   }
@@ -1746,13 +1789,14 @@ static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
    `area`, or in the current area when `area` is NULL. */
 static ListVector list_copy_window(const ChimiValue *list, uint32_t from, uint32_t length,
                                    AllocationArea *area) {
+  Carrier *const here = carrier;
   ChimiValue **values = malloc((size_t)length * sizeof(*values));
   if (!values) exhausted_memory();
   for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-  AllocationArea *previous = carrier->fiber.target;
-  if (area) carrier->fiber.target = area;
+  AllocationArea *previous = here->fiber.target;
+  if (area) here->fiber.target = area;
   ListVector copy = vector_from_values(values, length);
-  carrier->fiber.target = previous;
+  here->fiber.target = previous;
   free(values);
   return copy;
 }
@@ -1823,19 +1867,20 @@ static void pointer_stack_push(PointerStack *stack, void *pointer) {
 
 
 static void mark_push(void *pointer, AllocationKind kind) {
+  Carrier *const here = carrier;
   if (!pointer) return;
   AllocationHeader *header = allocation_header(pointer);
   if (header->kind != kind) allocation_graph_inconsistent();
   AllocationArea *area = header->area;
-  if (area->scope != carrier->collecting_scope) {
-    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;
+  if (area->scope != here->collecting_scope) {
+    if (area->heap != here->collecting_scope->heap && area->role != AREA_STATIC) here->collecting_foreign = true;
     return;
   }
-  if (area->role == AREA_SURVIVOR && !carrier->collecting_full) return;
-  if (header->mark_epoch == carrier->collecting_epoch) return;
-  header->mark_epoch = carrier->collecting_epoch;
-  ++carrier->collecting_scope->scanned_allocations;
-  pointer_stack_push(&carrier->mark_stack, pointer);
+  if (area->role == AREA_SURVIVOR && !here->collecting_full) return;
+  if (header->mark_epoch == here->collecting_epoch) return;
+  header->mark_epoch = here->collecting_epoch;
+  ++here->collecting_scope->scanned_allocations;
+  pointer_stack_push(&here->mark_stack, pointer);
 }
 
 static void mark_children(void *pointer) {
@@ -1940,19 +1985,20 @@ static void mark_children(void *pointer) {
    or in a list, and nothing older points into a chunk. */
 
 static void *forward_young(void *pointer) {
+  Carrier *const here = carrier;
   if (!pointer) return NULL;
   AllocationHeader *header = allocation_header(pointer);
-  if (!header->in_chunk || header->area->scope != carrier->collecting_scope) return pointer;
+  if (!header->in_chunk || header->area->scope != here->collecting_scope) return pointer;
   if (header->next) return header->next + 1;
-  if (header->mark_epoch != carrier->collecting_epoch) allocation_graph_inconsistent();
+  if (header->mark_epoch != here->collecting_epoch) allocation_graph_inconsistent();
   size_t total = sizeof(*header) + header->bytes;
   AllocationHeader *copy = small_block_take(total);
   memcpy(copy, header, total);
   copy->in_chunk = false;
-  area_link(&carrier->collecting_scope->survivors, copy);
-  carrier->collecting_scope->promoted_bytes += copy->bytes;
+  area_link(&here->collecting_scope->survivors, copy);
+  here->collecting_scope->promoted_bytes += copy->bytes;
   header->next = copy;
-  pointer_stack_push(&carrier->copy_stack, copy + 1);
+  pointer_stack_push(&here->copy_stack, copy + 1);
   return copy + 1;
 }
 
@@ -2044,12 +2090,13 @@ static bool young_chunks_used(const AllocationScope *scope) {
 
 /* Moves what the roots reach out of `scope`'s chunks and updates the roots. */
 static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiControl **control) {
+  Carrier *const here = carrier;
   if (!young_chunks_used(scope)) return;
   if (value) *value = forward_young(*value);
   if (control) *control = forward_young(*control);
   forward_marked_list(&scope->young);
   for (AllocationArea *area = scope->adopted; area; area = area->next) forward_marked_list(area);
-  while (carrier->copy_stack.length) forward_children(carrier->copy_stack.items[--carrier->copy_stack.length]);
+  while (here->copy_stack.length) forward_children(here->copy_stack.items[--here->copy_stack.length]);
 }
 
 /* Releases the chunk allocations of this pass that were not moved, and empties the
@@ -2155,28 +2202,30 @@ static void sweep_survivors(AllocationScope *scope) {
    value in another heap or in a fragment. */
 /* A mark epoch no pass on any carrier has used. */
 static uint64_t take_mark_epoch(void) {
-  if (carrier->next_epoch == carrier->end_epoch) {
+  Carrier *const here = carrier;
+  if (here->next_epoch == here->end_epoch) {
     uint64_t start = atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);
     if (start > UINT64_MAX - MARK_EPOCH_BLOCK) {
       fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
     }
-    carrier->next_epoch = start;
-    carrier->end_epoch = start + MARK_EPOCH_BLOCK;
+    here->next_epoch = start;
+    here->end_epoch = start + MARK_EPOCH_BLOCK;
   }
-  return carrier->next_epoch++;
+  return here->next_epoch++;
 }
 
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
-  carrier->collecting_epoch = take_mark_epoch();
+  Carrier *const here = carrier;
+  here->collecting_epoch = take_mark_epoch();
   flush_young_counts(scope);
-  carrier->collecting_scope = scope;
-  carrier->collecting_full = full;
-  carrier->collecting_foreign = false;
+  here->collecting_scope = scope;
+  here->collecting_full = full;
+  here->collecting_foreign = false;
   mark_push(value ? *value : NULL, ALLOCATION_VALUE);
   mark_push(control ? *control : NULL, ALLOCATION_CONTROL);
-  while (carrier->mark_stack.length) mark_children(carrier->mark_stack.items[--carrier->mark_stack.length]);
-  bool foreign = carrier->collecting_foreign;
+  while (here->mark_stack.length) mark_children(here->mark_stack.items[--here->mark_stack.length]);
+  bool foreign = here->collecting_foreign;
   size_t young_bytes = scope->young.bytes, promoted_before = scope->promoted_bytes;
   forward_survivors(scope, value, control);
   reset_young_chunks(scope, !ending);
@@ -2192,7 +2241,7 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
     sweep_survivors(scope);
     ++scope->full_collections;
   }
-  carrier->collecting_scope = NULL;
+  here->collecting_scope = NULL;
   ++scope->collections;
   return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }
@@ -2310,6 +2359,7 @@ static bool copy_owns(const FragmentCopy *copy, const AllocationArea *area) {
 
 /* The copy of `pointer`, made on first sight and queued for copy_scan. */
 static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind) {
+  Carrier *const here = carrier;
   if (!pointer) return NULL;
   AllocationHeader *header = allocation_header(pointer);
   if (header->kind != kind) allocation_graph_inconsistent();
@@ -2322,26 +2372,27 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
   }
   void *existing = copy_table_find(copy, pointer);
   if (existing) return existing;
-  AllocationArea *previous = carrier->fiber.target;
-  carrier->fiber.target = copy->target;
+  AllocationArea *previous = here->fiber.target;
+  here->fiber.target = copy->target;
   void *duplicate = allocate(header->bytes, 1);
-  carrier->fiber.target = previous;
+  here->fiber.target = previous;
   allocation_kind(duplicate, kind);
   memcpy(duplicate, pointer, header->bytes);
-  if (carrier->copy_counting) {
-    carrier->copied_bytes += header->bytes;
-    if (kind == ALLOCATION_VALUE) ++carrier->copied_values;
+  if (here->copy_counting) {
+    here->copied_bytes += header->bytes;
+    if (kind == ALLOCATION_VALUE) ++here->copied_values;
   }
   if (kind == ALLOCATION_VALUE) {
     uint64_t key = counted_handle_key(duplicate);
     if (key) channel_endpoint_retain(key);
   }
   copy_table_insert(copy, pointer, duplicate);
-  pointer_stack_push(&carrier->copy_pending, duplicate);
+  pointer_stack_push(&here->copy_pending, duplicate);
   return duplicate;
 }
 
 static void copy_list_window(FragmentCopy *copy, ChimiValue *list) {
+  Carrier *const here = carrier;
   ListVector source = list->as.list.vector;
   AllocationHeader *root = allocation_header(source.root), *tail = allocation_header(source.tail);
   if ((root && root->area->role != AREA_STATIC && !copy_owns(copy, root->area)) ||
@@ -2356,10 +2407,10 @@ static void copy_list_window(FragmentCopy *copy, ChimiValue *list) {
   if (!values) exhausted_memory();
   for (uint32_t index = 0; index < length; ++index)
     values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);
-  AllocationArea *previous = carrier->fiber.target;
-  carrier->fiber.target = copy->target;
+  AllocationArea *previous = here->fiber.target;
+  here->fiber.target = copy->target;
   list->as.list.vector = vector_from_values(values, length);
-  carrier->fiber.target = previous;
+  here->fiber.target = previous;
   list->as.list.start = 0;
   free(values);
 }
@@ -2468,13 +2519,14 @@ static void copy_scan(FragmentCopy *copy, void *duplicate) {
 /* Copies the graphs under `roots` into `target`, writing the copied roots to `out`. */
 static HeapStatus copy_graph(FragmentCopy *copy, void *const *roots, const AllocationKind *kinds,
                              uint32_t count, void **out) {
+  Carrier *const here = carrier;
   memset(copy->inline_keys, 0, sizeof(copy->inline_keys));
   copy->keys = copy->inline_keys;
   copy->copies = copy->inline_copies;
   copy->capacity = COPY_INLINE_SLOTS;
   for (uint32_t index = 0; index < count; ++index)
     out[index] = copy_forward(copy, roots[index], kinds[index]);
-  while (carrier->copy_pending.length) copy_scan(copy, carrier->copy_pending.items[--carrier->copy_pending.length]);
+  while (here->copy_pending.length) copy_scan(copy, here->copy_pending.items[--here->copy_pending.length]);
   if (copy->keys != copy->inline_keys) {
     free(copy->keys);
     free(copy->copies);
@@ -2492,20 +2544,21 @@ static size_t fragment_footprint(const RuntimeFragment *fragment) {
    Returns HEAP_FOREIGN_POINTER, and no fragment, if the graph leaves the heap. */
 static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds, uint32_t count,
                                 RuntimeFragment **out) {
+  Carrier *const here = carrier;
   if (count > FRAGMENT_ROOTS) abort();
   RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
   fragment->area.role = AREA_FRAGMENT;
   fragment->root_count = count;
-  ++carrier->heap_totals.live_fragments;
+  ++here->heap_totals.live_fragments;
   footprint_add(sizeof(*fragment));
   fragment_footprint_add(sizeof(*fragment));
-  FragmentCopy copy = {.source_heap = carrier->fiber.heap, .target = &fragment->area};
+  FragmentCopy copy = {.source_heap = here->fiber.heap, .target = &fragment->area};
   HeapStatus status = copy_graph(&copy, roots, kinds, count, fragment->roots);
   if (status != HEAP_OK) {
-    carrier->fragment_copy_foreign_owner = copy.foreign_owner;
+    here->fragment_copy_foreign_owner = copy.foreign_owner;
     fragment_footprint_sub(fragment_footprint(fragment));
     area_release_all(&fragment->area);
-    --carrier->heap_totals.live_fragments;
+    --here->heap_totals.live_fragments;
     area_free(&fragment->area);
     *out = NULL;
     return status;
@@ -2517,11 +2570,12 @@ static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds,
 /* Hands the fragment's allocations to the current heap's innermost region (or its
    base area) in O(1), without copying, and writes its roots to `roots`. Consumes it. */
 static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
+  Carrier *const here = carrier;
   for (uint32_t index = 0; index < fragment->root_count; ++index) roots[index] = fragment->roots[index];
   fragment_footprint_sub(fragment_footprint(fragment));
-  --carrier->heap_totals.live_fragments;
+  --here->heap_totals.live_fragments;
   AllocationArea *area = &fragment->area;
-  RuntimeHeap *heap = carrier->fiber.heap;
+  RuntimeHeap *heap = here->fiber.heap;
   AllocationScope *scope = heap->innermost;
   area->heap = heap;
   heap_add_live(heap, area->bytes);
@@ -2535,7 +2589,7 @@ static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
     area->role = AREA_BASE;
     area->next = heap->adopted;
     heap->adopted = area;
-    carrier->unscoped_allocated_bytes += area->bytes;
+    here->unscoped_allocated_bytes += area->bytes;
   }
 }
 
@@ -2744,12 +2798,13 @@ static ChimiValue *range_value(int64_t start, int64_t end) {
    window rather than compacting it there. */
 static ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
+  Carrier *const here = carrier;
   if (!shared_values[index]) {
-    AllocationArea *previous = carrier->fiber.target;
-    carrier->fiber.target = &static_area;
+    AllocationArea *previous = here->fiber.target;
+    here->fiber.target = &static_area;
     ChimiValue *value = new_value(index == 0 ? VALUE_VOID : VALUE_BOOLEAN);
     if (index == 2) value->as.boolean = true;
-    carrier->fiber.target = previous;
+    here->fiber.target = previous;
     shared_values[index] = value;
   }
   return shared_values[index];
@@ -6865,9 +6920,8 @@ static ConsoleStream console_streams[CONSOLE_STREAM_COUNT] = {
 /* Guards both streams and queues, since a task on any carrier writes lines.
    A writer holds it except while it parks. console_drain_all runs at exit,
    which may start inside a writer that holds it (exhausted_memory), so the
-   holder is noted per thread. */
+   holder is noted per carrier (Carrier.console_lock_held). */
 static pthread_mutex_t console_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local bool console_lock_held;
 
 /* With one carrier there is no other writer, so a line takes no lock: the
    lock measured about 25 ns a line on a program that only prints.
@@ -6875,11 +6929,11 @@ static _Thread_local bool console_lock_held;
 static void console_enter(void) {
   if (carrier_count == 1) return;
   pthread_mutex_lock(&console_lock);
-  console_lock_held = true;
+  carrier->console_lock_held = true;
 }
 static void console_leave(void) {
   if (carrier_count == 1) return;
-  console_lock_held = false;
+  carrier->console_lock_held = false;
   pthread_mutex_unlock(&console_lock);
 }
 
@@ -6974,7 +7028,7 @@ static void console_drain_blocking(const ConsoleStream *stream) {
 }
 
 static void console_drain_all(void) {
-  bool entered = !console_lock_held;
+  bool entered = !carrier->console_lock_held;
   if (entered) console_enter();
   for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
     if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
