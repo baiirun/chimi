@@ -10,6 +10,7 @@ mod clock;
 mod idle_tests;
 #[cfg(test)]
 mod steal_tests;
+mod homed;
 mod id_map;
 mod jobs;
 mod process;
@@ -672,9 +673,6 @@ struct Task {
     /// The outcome of a cancellation that waits for the task's releases
     /// (`Scheduler::cancel_task`).
     terminating: Option<TaskOutcome>,
-    /// The carrier whose ready queue holds this task, and whose thread its
-    /// fiber runs on: its parent's, or the current one for a root.
-    carrier: ready::Carrier,
     /// An end decided on another carrier while this task's fiber ran there
     /// (`TaskPhase::Running`); its own carrier applies it when the resume
     /// returns (`complete_run`).
@@ -807,7 +805,7 @@ impl TaskValue {
 }
 
 pub struct Scheduler {
-    tasks: id_map::IdMap<TaskId, Task>,
+    tasks: homed::Homed<TaskId, Task>,
     /// Each carrier's ready queue, jobs (work it must do on its own thread
     /// for another carrier's decision, run before its ready tasks), and
     /// parked flag. A carrier parks on its wake pipe with nothing to do
@@ -988,7 +986,7 @@ impl Scheduler {
             release_spec_context.map(|release| (release, release_context)),
         );
         Self {
-            tasks: id_map::IdMap::default(),
+            tasks: homed::Homed::default(),
             shards: shard::Shards::new(1),
             current: ready::Carrier::default(),
             any_carrier: false,
@@ -1244,9 +1242,9 @@ impl Scheduler {
         assert!(self.shards.jobs_empty_for(current), "a finished run left a job on carrier {}", current.0);
         let held = self
             .tasks
-            .iter()
-            .filter(|(_, record)| record.carrier == current && record.fiber.is_some())
-            .map(|(task, _)| *task)
+            .iter_homed()
+            .filter(|(_, home, record)| *home == current && record.fiber.is_some())
+            .map(|(task, _, _)| *task)
             .min();
         assert!(
             held.is_none(),
@@ -1645,10 +1643,10 @@ impl Scheduler {
     fn enqueue(&mut self, task: TaskId, front: bool) {
         #[cfg(test)]
         if self.rotating.contains(&task) {
-            let next = ready::Carrier((self.tasks[&task].carrier.0 + 1) % self.shards.carriers());
+            let next = ready::Carrier((self.tasks.home(&task).expect("a live task").0 + 1) % self.shards.carriers());
             self.rehome(task, next);
         }
-        let carrier = self.tasks[&task].carrier;
+        let carrier = self.tasks.home(&task).expect("a live task");
         if front {
             self.shards.push_ready_front(carrier, task);
         } else {
@@ -1686,10 +1684,10 @@ impl Scheduler {
             !matches!(record.phase, TaskPhase::Running | TaskPhase::Draining(_)),
             "only a task that neither runs nor drains moves"
         );
-        record.carrier = to;
         if let Some(fiber) = record.fiber.as_mut() {
             fiber.release_home();
         }
+        self.tasks.set_home(&task, to);
     }
 
     pub fn wake(&mut self, task: TaskId) -> Result<(), SchedulerError> {
@@ -2167,7 +2165,7 @@ impl Scheduler {
         entry: ChimiFiberEntry,
         context: *mut c_void,
     ) -> Result<TaskId, SchedulerError> {
-        let home = parent.map_or(self.current, |parent| self.tasks[&parent].carrier);
+        let home = parent.map_or(self.current, |parent| self.tasks.home(&parent).expect("a live parent"));
         self.create_task(parent, home, entry, context, None)
     }
 
@@ -2201,8 +2199,11 @@ impl Scheduler {
             .next_task
             .checked_add(1)
             .expect("task identity space exhausted");
+        // The task's home: the carrier whose ready queue holds it and whose
+        // thread its fiber runs on.
         self.tasks.insert(
             id,
+            carrier,
             Task {
                 parent,
                 children: BTreeSet::new(),
@@ -2227,7 +2228,6 @@ impl Scheduler {
                 io_wait: None,
                 started_at,
                 terminating: None,
-                carrier,
                 pending_end: None,
             },
         );
@@ -2262,17 +2262,17 @@ impl Scheduler {
     /// Marks a runnable `task` running and enters its fiber; None if it is no
     /// longer runnable.
     fn prepare_run(&mut self, task: TaskId) -> Option<carrier::Runnable> {
-        let record = self
+        let (home, record) = self
             .tasks
-            .get_mut(&task)
-            .filter(|record| record.phase == TaskPhase::Runnable)?;
+            .get_mut_homed(&task)
+            .filter(|(_, record)| record.phase == TaskPhase::Runnable)?;
         // A fiber that never ran may start here (`may_resume_here`): its
         // first resume makes this carrier its home, as `Home` records.
         if !record.ran {
-            record.carrier = self.current;
+            *home = self.current;
         }
         debug_assert!(
-            self.any_carrier || record.carrier == self.current,
+            self.any_carrier || *home == self.current,
             "a task resumed off its home carrier"
         );
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
@@ -2313,7 +2313,7 @@ impl Scheduler {
     fn may_resume_here(&self, task: TaskId, command: ChimiFiberCommand) -> bool {
         let record = &self.tasks[&task];
         self.any_carrier
-            || record.carrier == self.current
+            || self.tasks.home(&task) == Some(self.current)
             || (!record.ran && command == ChimiFiberCommand::Cancel)
     }
 
@@ -2334,11 +2334,11 @@ impl Scheduler {
         match job {
             jobs::Job::Unwind { task, forced } => {
                 let clock = self.clock.reading();
-                let record = self.tasks.get_mut(&task)?;
                 debug_assert!(
-                    self.any_carrier || record.carrier == self.current,
+                    self.any_carrier || self.tasks.home(&task).is_none_or(|home| home == self.current),
                     "a job run off its home carrier"
                 );
+                let record = self.tasks.get_mut(&task)?;
                 debug_assert!(matches!(record.phase, TaskPhase::Draining(_)), "an unwind job's task drains");
                 let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL, clock);
                 Some(carrier::Runnable {
@@ -2892,7 +2892,7 @@ impl Scheduler {
             // A started fiber unwinds only on its home carrier's thread: a
             // job there resumes it, then ends the task.
             let forced = self.forcing > 0;
-            let carrier = self.tasks[&task].carrier;
+            let carrier = self.tasks.home(&task).expect("a live task");
             self.shards.push_job(carrier, jobs::Job::Unwind { task, forced });
             self.wake_carrier(carrier);
             return;
@@ -2912,8 +2912,8 @@ impl Scheduler {
     /// as for `terminating`: a defect over any other outcome.
     fn record_pending_end(&mut self, task: TaskId, outcome: TaskOutcome) {
         let forced = self.forcing > 0;
+        debug_assert_ne!(self.tasks.home(&task), Some(self.current), "a running task ends on its own carrier");
         let record = self.tasks.get_mut(&task).expect("running task");
-        debug_assert_ne!(record.carrier, self.current, "a running task ends on its own carrier");
         record.pending_end = Some(match record.pending_end {
             Some(recorded) if recorded.outcome.is_defect() || !outcome.is_defect() => jobs::PendingEnd {
                 outcome: recorded.outcome,
@@ -3710,7 +3710,7 @@ mod tests {
         let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
         scheduler.enter_carrier(one);
         let task = start_parked(&mut scheduler);
-        assert_eq!(scheduler.tasks[&task].carrier, one);
+        assert_eq!(scheduler.tasks.home(&task), Some(one));
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked);
 
         scheduler.enter_carrier(zero);
@@ -4175,7 +4175,7 @@ mod tests {
         let child = scheduler
             .start_child(parent, chimi_fixture_generated_many_parks)
             .expect("child");
-        assert_eq!(scheduler.tasks[&child].carrier, one);
+        assert_eq!(scheduler.tasks.home(&child), Some(one));
         scheduler.drive();
         assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Runnable, "carrier 0 does not run it");
         scheduler.enter_carrier(one);
@@ -4190,7 +4190,7 @@ mod tests {
     fn the_kernel_lock_enters_its_carrier() {
         use carrier::{KernelAccess, Locked};
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
-        let kernel = std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2));
+        let kernel = carrier::Kernel::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2));
         let (mut zero, mut one) = (
             Locked::new(&kernel, ready::Carrier(0)),
             Locked::new(&kernel, ready::Carrier(1)),
@@ -4199,11 +4199,11 @@ mod tests {
             .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
             .expect("task");
         carrier::drive(&mut zero);
-        let phase = |kernel: &std::sync::Mutex<Scheduler>| kernel.lock().expect("kernel").tasks[&task].phase;
+        let phase = |kernel: &carrier::Kernel| kernel.lock_all().tasks[&task].phase;
         assert_eq!(phase(&kernel), TaskPhase::Runnable, "carrier 0 does not run it");
         carrier::drive(&mut one);
         assert_eq!(phase(&kernel), TaskPhase::Parked);
-        assert_eq!(kernel.lock().expect("kernel").tasks[&task].carrier, ready::Carrier(1));
+        assert_eq!(kernel.lock_all().tasks.home(&task), Some(ready::Carrier(1)));
     }
 
     /// True when `fd` has a byte to read, without consuming it.
@@ -4217,13 +4217,13 @@ mod tests {
         unsafe { libc::poll(&mut poll, 1, 0) > 0 }
     }
 
-    fn wake_fd(kernel: &std::sync::Mutex<Scheduler>, carrier: u32) -> i32 {
-        let kernel = kernel.lock().expect("kernel");
+    fn wake_fd(kernel: &carrier::Kernel, carrier: u32) -> i32 {
+        let kernel = kernel.lock_all();
         kernel.wakes.read_fd(ready::Carrier(carrier)).expect("a wake pipe")
     }
 
-    fn two_carriers() -> std::sync::Mutex<Scheduler> {
-        std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
+    fn two_carriers() -> carrier::Kernel {
+        carrier::Kernel::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
     }
 
     /// A kernel whose wake pipe fails to open is an error, not a panic, and
@@ -4295,7 +4295,7 @@ mod tests {
             .expect("task");
         carrier::drive(&mut one);
         zero.with(|kernel| kernel.cancel(None, task)).expect("cancel");
-        assert!(!kernel.lock().expect("kernel").shards.no_jobs(), "the unwind is a job");
+        assert!(!kernel.lock_all().shards.no_jobs(), "the unwind is a job");
         assert!(readable(wake_fd(&kernel, 1)));
     }
 

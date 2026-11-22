@@ -1258,6 +1258,20 @@ the gates measure, so it goes first.
          three vectors indexed by carrier (`ReadyQueues`, `Jobs`,
          `parked`). The wake marks stay in `Wakes` beside the pipes they
          write. No behaviour change.
+       - 4d-6b, tasks: measured and changed. A task table with one map per
+         carrier, each record filed under its home and looked up in the
+         current carrier's map first, cost 5.6% more instructions on pairs
+         with one carrier (callgrind, 2000 rounds: 659 to 696 million),
+         even with the fast path inlined: every lookup goes through one
+         more indirection and bounds check, and a step does dozens. That
+         breaks the plan's rule that a split costs nothing measurable on
+         one carrier. So the task table stays one map, and 4e protects it
+         by rule rather than by partition: inserting or removing a record
+         takes every lock (start and release already do), so the map's
+         structure is read-only under a shard lock, and a record is
+         written only under its home carrier's lock or every lock. The
+         same rule fits the incarnation and channel tables, so 4d-6c is
+         not needed either; 4e's guard types carry the rule.
 5. **4e: a lock per shard.** A request whose state is all in its own
    carrier's shard takes only that shard's lock: a send to a local
    mailbox, a receive, a channel operation on a local channel, a yield or
@@ -1272,12 +1286,56 @@ the gates measure, so it goes first.
      touches are in the carrier's shard, no select, IO, child or signal
      wait or scope deadline is involved, and no host hook would run.
      Anything else takes every lock and runs today's code. Steal takes the
-     victim's lock with `try_lock`.
+     victim's lock with `try_lock`. (4e-1 replaced the per-shard locks with
+     one reader-writer lock; see "4e-1 as built".)
      - 4e-1: the locks, every request on the all-locks path (cost of n
        locks measured); 4e-2: the local path for process send and
        receive, channel send and receive, wake and the run loop, with a
        per-shard count of escalations; 4e-3: widen it where the counts
        show it pays.
+     - The access model, after 4d-6b. Rust forbids two live `&mut
+       Scheduler`, even over disjoint fields, so the local path never makes
+       one:
+       - `Kernel` keeps the scheduler in an `UnsafeCell` beside the shard
+         locks. The all-locks guard hands out `&mut Scheduler`, as the one
+         lock does today. A shard guard hands out a `LocalKernel` view:
+         shared references to the config and to the tables' structure, and
+         mutable access only to its own shard and to records homed on it.
+       - Records that a local request writes (a task, an incarnation's
+         mailbox, a channel's queues) sit behind their own `UnsafeCell` in
+         the table, so a shared reference to the table and a written record
+         never alias. Inserting or removing a record, and changing a home,
+         take every lock.
+       - A test build checks the rule: each record carries its home, and a
+         local write of a record homed elsewhere panics.
+       - This is soundness work, so 4e-1 and 4e-2 get an Opus review with
+         a verifier, a TSan run (gcc, as for the C side) of the carrier
+         suites, and the simulation build.
+     - 4e-1 first build: `carrier::Kernel` held one cache-line-padded lock
+       per carrier and the scheduler in an `UnsafeCell`, and every access
+       took every lock in carrier order. Pairs (20,000 rounds, against main
+       at 062029f): one, two and four carriers within noise, eight carriers
+       690 to 853 ms, the cost of eight locks per hold.
+     - 4e-1 as built, the lock redesigned: one reader-writer lock instead
+       of a lock per carrier. Only one thread ever reaches the kernel as a
+       given carrier, so a carrier on the local path needs no lock of its
+       own to keep another carrier off its records: the rule "write only
+       what is homed on you" already does. The read side is the local
+       path; the write side is the one kernel lock of before, and costs one
+       acquisition however many carriers there are. Every access still
+       takes the write side, with the 4d-1 spin. Pairs, two alternating
+       rounds of five runs each against main at 062029f (medians): one
+       carrier 840 and 844 against 872 and 859 ms, two 780 and 735 against
+       784 and 807, four 741 and 688 against 843 and 761, eight 669 and
+       616 against 728 and 733: no slower anywhere, and a little faster
+       with several carriers (the lock now sits on its own cache line).
+       The access model above holds with "a shard lock" read as "the read
+       side, as the carrier named by `Locked`", and "every lock" as "the
+       write side".
+     - 4e-1 also files tasks in `scheduler/homed.rs`: each record in its
+       own `UnsafeCell`, its home beside the cell (`Task.carrier` moved
+       there). Until the local path exists every write goes through
+       `&mut Homed`, so it behaves as the map it wraps.
      - Risks: the C handle table's lock is taken by every Sender copy and
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
