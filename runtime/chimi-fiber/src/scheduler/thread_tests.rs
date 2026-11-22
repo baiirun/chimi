@@ -98,6 +98,42 @@ unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
     ended(ChimiFiberState::Succeeded, 0)
 }
 
+/// Sleeps one microsecond as many times as its context says and returns
+/// how many of its parks resumed on another thread than the park before,
+/// checking after every park that the carrier resumed it without the kernel.
+unsafe extern "C" fn wanders(context: *mut std::ffi::c_void) -> ChimiFiberResult {
+    let mut thread = this_thread();
+    let mut moves = 0;
+    let mut parked = |request: &mut SchedulerRequest| -> Option<bool> {
+        if !call(request) {
+            return None;
+        }
+        if this_thread() != thread {
+            thread = this_thread();
+            moves += 1;
+        }
+        Some(carrier::kernel_held())
+    };
+    for _ in 0..context as usize {
+        let mut now = request(REQUEST_TIMER_NOW, 0);
+        let Some(held) = parked(&mut now) else {
+            return ended(ChimiFiberState::Cancelled, 0);
+        };
+        let mut sleep = request(REQUEST_TIMER_SLEEP_UNTIL, now.value + 1_000);
+        let Some(held_too) = parked(&mut sleep) else {
+            return ended(ChimiFiberState::Cancelled, 0);
+        };
+        if held || held_too {
+            return ended(ChimiFiberState::Defected, HELD);
+        }
+    }
+    ChimiFiberResult {
+        state: ChimiFiberState::Succeeded as u32,
+        value: moves,
+        defect_code: 0,
+    }
+}
+
 /// Runs `test` on another thread and aborts the test binary if it has not
 /// finished within `limit`: a carrier that waits forever is a lost wake,
 /// and a hang would otherwise only time the whole suite out.
@@ -176,6 +212,50 @@ fn fibers_on_carrier_threads_under_the_real_clock() {
     under_watchdog(Duration::from_secs(60), || {
         for _ in 0..10 {
             run_hoppers(ClockMode::Real, 3, 2, 10);
+        }
+    });
+}
+
+/// A parked task the kernel moves to the next carrier each time it becomes
+/// ready resumes on that carrier's thread, parks, and moves again: every
+/// wanderer changes thread at every park, under both clocks, and ends.
+/// (parallel-scheduler.md, step 4 PR 4b.)
+#[test]
+fn a_parked_task_moved_to_another_carrier_resumes_on_its_thread() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    under_watchdog(Duration::from_secs(60), || {
+        for clock in [ClockMode::Virtual, ClockMode::Real] {
+            for _ in 0..10 {
+                let mut scheduler = Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, clock));
+                scheduler.set_carriers(3);
+                scheduler.enter_carrier(Carrier(0));
+                let parks = 20;
+                // The root outlives the wanderers: a run ends with its root,
+                // and what is left then finishes on carrier 0's thread.
+                let root = scheduler
+                    .start_root_with_context(hops, (4 * parks) as *mut std::ffi::c_void)
+                    .expect("root");
+                let wanderers: Vec<TaskId> = (0..6)
+                    .map(|_| {
+                        scheduler
+                            .start_root_with_context(wanders, parks as *mut std::ffi::c_void)
+                            .expect("wanderer")
+                    })
+                    .collect();
+                scheduler.rotating.extend(wanderers.iter().copied());
+                let run = run_root_on_threads(&mut scheduler, root, 1);
+                assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
+                for task in wanderers {
+                    assert!(
+                        matches!(
+                            scheduler.tasks[&task].phase,
+                            TaskPhase::Terminal(TaskOutcome::Succeeded(moves)) if moves == 2 * parks
+                        ),
+                        "task {task:?}: {:?}",
+                        scheduler.tasks[&task].phase
+                    );
+                }
+            }
         }
     });
 }

@@ -286,7 +286,8 @@ pub unsafe extern "C" fn chimi_fiber_resume(
 /// fiber. `roots` and its linked frames and slots must remain valid and
 /// writable until the function returns.
 pub unsafe extern "C" fn chimi_fiber_park(roots: *const ChimiRootFrame) -> ChimiFiberCommand {
-    unsafe { chimi_fiber_request(ptr::null_mut(), roots) }
+    // Not a tail call, so a parked backtrace keeps this frame.
+    std::hint::black_box(unsafe { chimi_fiber_request(ptr::null_mut(), roots) })
 }
 
 #[unsafe(no_mangle)]
