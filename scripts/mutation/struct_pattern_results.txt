@@ -9,3 +9,4 @@ KILLED       braces after a variant pattern are silent [language -- struct_patte
 KILLED       the coverage witness prints a struct positionally [language -- refutable_field] (31s)
 KILLED       a struct pattern's closing brace ends the line [language -- struct_pattern] (32s)
 KILLED       a short struct pattern is spread over lines [language -- struct_pattern] (6s)
+KILLED       a struct pattern's brace is written tight against a guard [language -- struct_pattern] (5s)
