@@ -270,6 +270,8 @@ enum Answer {
     Status(u16),
     /// Reads the push and never replies.
     Hang,
+    /// Replies 200, after this many milliseconds for the first push only.
+    SlowFirst(u64),
 }
 
 /// One push a test collector received.
@@ -329,6 +331,15 @@ impl Collector {
                             );
                         }
                         Answer::Hang => std::thread::sleep(std::time::Duration::from_secs(30)),
+                        Answer::SlowFirst(milliseconds) => {
+                            if recorded.lock().unwrap().len() == 1 {
+                                std::thread::sleep(std::time::Duration::from_millis(milliseconds));
+                            }
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                            );
+                        }
                     }
                 });
             }
@@ -608,7 +619,7 @@ pub fn main() -> Text needs {{ network: Network, clock: Clock, metrics: Metrics,
 fn logs_are_pushed_and_still_written() {
     let collector = Collector::start(Answer::Status(200));
     let scratch = Scratch::new("logs");
-    let body = r#"  Log.info("charged", [Log.int("order", 42), Log.float("seconds", 1.5), Log.text("who", "ann"), Log.bool("ok", True), Log.json("tags", Json.object(Map.from([("a", Json.text("b"))])))])
+    let body = r#"  Log.info("charged", [Log.int("order", 42), Log.float("seconds", 1.5), Log.text("who", "ann"), Log.bool("ok", True), Log.json("tags", Json.object(Map.from([("a", Json.text("b"))]))), Log.json("thousand", Json.decode("1e3"))])
   Log.debug("hidden", [])
   Clock.sleep(Duration.milliseconds(300))
   Log.warn("slow", [])
@@ -643,6 +654,7 @@ fn logs_are_pushed_and_still_written() {
         r#"{"key":"seconds","value":{"doubleValue":1.5}}"#,
         r#"{"key":"who","value":{"stringValue":"ann"}}"#,
         r#"{"key":"ok","value":{"boolValue":true}}"#,
+        r#"{"key":"thousand","value":{"intValue":"1000"}}"#,
         r#"{"key":"tags","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"b"}}]}}}"#,
     ] {
         assert!(first.contains(attribute), "{attribute} in {first}");
@@ -723,4 +735,90 @@ fn a_stopped_program_pushes_its_waiting_logs() {
         "{}",
         logs[0].body
     );
+}
+
+// Entries written while the logs process is busy on a slow push wait in
+// its mailbox and still go in the last push; the flush request does not
+// queue behind them. Rejects a flush lost to a full mailbox.
+#[test]
+fn entries_waiting_behind_a_slow_push_are_flushed() {
+    let collector = Collector::start(Answer::SlowFirst(600));
+    let scratch = Scratch::new("slow-first");
+    let body = r#"  Log.info("first", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.info("a", [])
+  Log.info("b", [])
+  Log.info("c", [])
+  "done""#;
+    let settings =
+        ", interval: Duration.milliseconds(100), flush_within: Duration.seconds(3), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(collector.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":1}"#),
+        "{metrics}"
+    );
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    let last = &logs.last().unwrap().body;
+    assert!(
+        last.contains(r#""stringValue":"a""#) && last.contains(r#""stringValue":"b""#),
+        "{last}"
+    );
+}
+
+// At most `log_buffer` entries wait between pushes, even when the logs
+// process is idle. Rejects a buffer that only bounds the mailbox.
+#[test]
+fn at_most_log_buffer_entries_wait() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("log-cap");
+    let body = r#"  Log.info("a", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("b", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("c", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("d", [])
+  "done""#;
+    let settings = ", interval: Duration.seconds(60), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(collector.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":2}"#),
+        "{metrics}"
+    );
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 1);
+    assert!(
+        logs[0].body.contains(r#""stringValue":"b""#)
+            && !logs[0].body.contains(r#""stringValue":"c""#),
+        "{}",
+        logs[0].body
+    );
+}
+
+// The last logs push and the last metrics push share one `flush_within`.
+// Rejects a release that spends it twice.
+#[test]
+fn the_last_pushes_share_flush_within() {
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("shared-flush");
+    let body = r#"  Log.info("bye", [])
+  "done""#;
+    let settings = ", interval: Duration.seconds(60), flush_within: Duration.seconds(1)";
+    let (output, _, took) = scratch.run_native_timed(&logging(slow.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(slow.pushes().len(), 2, "a logs push and a metrics push");
+    assert!(took >= std::time::Duration::from_secs(1), "{took:?}");
+    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
 }

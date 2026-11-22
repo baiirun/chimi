@@ -73,7 +73,11 @@ pub const defaults: Settings = {
 /// A running export, which `Otel.export` passes to its body.
 pub struct Exporter {
   settings: Settings,
-  logs: Address<LogMessage>,
+  logs: Address<LogRecord>,
+  // Set to ask the logs process to push what is waiting; it sets
+  // `flushed` when it has.
+  flushing: Watch.Publisher<Bool>,
+  flushed: Watch.Publisher<Bool>,
 }
 
 // 2. Failure types.
@@ -176,17 +180,24 @@ pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E need
   Resource.scoped(fn() {
     Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))
   }, Supervisor.stop, fn(running) {
-    let shipping = Process.spec(fn(inbox: Inbox<LogMessage>) {
-      ship_logs(inbox, settings)
+    let flushing = Watch.starting_with(False).publisher
+    let flushed = Watch.starting_with(False).publisher
+    let shipping = Process.spec(fn(inbox: Inbox<LogRecord>) {
+      ship_logs(inbox, settings, flushing, flushed)
     }, settings.log_buffer, settings.flush_within)
     let logs = Supervisor.address(Supervisor.start_process(running, shipping, Supervisor.Restart.Never))
-    let exporter = Exporter { settings: settings, logs: logs }
+    let exporter = Exporter {
+      settings: settings, logs: logs, flushing: flushing, flushed: flushed
+    }
     Resource.scoped(fn() {
       Task.start(fn() { push_every(settings) })
     }, fn(pushing) {
       Task.cancel(pushing)
-      flush_logs(exporter)
+      // Both last pushes share the one `flush_within`.
+      let logs = Task.start(fn() { flush_logs(exporter) })
       push_within(settings, settings.flush_within)
+      let _ = Result.capture(fn() { Task.result(logs) })
+      Void
     }, fn(_) { body(exporter) })
   })
 }
@@ -223,7 +234,7 @@ pub fn log(exporter: Exporter) -> { write: fn(Log.Entry) -> Void } needs {
         True -> {
           let unix_ns = Clock.unix_nanoseconds(Clock.timestamp()) using { clock: given_clock }
           case Result.capture(fn() {
-            Process.send(exporter.logs, LogMessage.Record(entry, unix_ns))
+            Process.send(exporter.logs, LogRecord { entry: entry, unix_ns: unix_ns })
           }) {
             Ok(_) -> Void
             _ -> Metrics.count("chimi.otel.dropped_logs", 1, []) using { metrics: given_metrics }
@@ -317,37 +328,60 @@ fn post<E>(settings: Settings, signal: Text, body: fn() -> Text errors E needs {
   }
 }
 
-// What the logs process receives: an entry with its Unix time, or a request
-// to push what is waiting and say so on `done`.
-enum LogMessage {
-  Record(entry: Log.Entry, unix_ns: Int)
-  Flush(done: Watch.Publisher<Bool>)
+// An entry the logs process receives, with the Unix time it was written.
+struct LogRecord {
+  entry: Log.Entry,
+  unix_ns: Int,
 }
 
-// The logs process: entries wait in the loop's state until the interval's
-// deadline or a flush, then go in one push.
-fn ship_logs(inbox: Inbox<LogMessage>, settings: Settings) -> Void needs {
+// What woke the logs process.
+enum Wake {
+  Record(record: LogRecord)
+  Flush
+  Tick
+  Nothing
+}
+
+// The logs process: entries wait in the loop's state, at most `log_buffer`
+// of them, until the interval's deadline or a flush, then go in one push.
+// The inbox comes first in the select, so a flush finds every entry sent
+// before it already waiting.
+fn ship_logs(inbox: Inbox<LogRecord>, settings: Settings, flushing: Watch.Publisher<Bool>, flushed: Watch.Publisher<Bool>) -> Void needs {
   network: Network,
   clock: Clock,
   metrics: Metrics
 } {
+  let requests = Watch.subscribe(flushing)
   loop state = ([], Clock.add(Clock.now(), settings.interval)) {
     let (waiting, deadline) = state
     let next = Select.first([
-      Select.inbox(inbox, fn(message) { Some(message) }),
-      Select.at(deadline, None),
+      Select.inbox(inbox, fn(record) { Wake.Record(record) }),
+      Select.watch(requests, fn(received) {
+        case received {
+          Receive.Received(True) -> Wake.Flush
+          _ -> Wake.Nothing
+        }
+      }),
+      Select.at(deadline, Wake.Tick),
     ])
     case next {
-      Some(LogMessage.Record(entry, unix_ns)) -> (List.push(waiting, (entry, unix_ns)), deadline)
-      Some(LogMessage.Flush(done)) -> {
+      Wake.Record(record) -> case List.length(waiting) < settings.log_buffer {
+        True -> (List.push(waiting, (record.entry, record.unix_ns)), deadline)
+        False -> {
+          Metrics.count("chimi.otel.dropped_logs", 1, [])
+          (waiting, deadline)
+        }
+      }
+      Wake.Flush -> {
         push_logs(settings, waiting, settings.flush_within)
-        let _ = Result.capture(fn() { Watch.publish(done, True) })
+        let _ = Result.capture(fn() { Watch.publish(flushed, True) })
         ([], deadline)
       }
-      None -> {
+      Wake.Tick -> {
         push_logs(settings, waiting, settings.timeout)
         ([], Clock.add(Clock.now(), settings.interval))
       }
+      Wake.Nothing -> (waiting, deadline)
     }
   }
 }
@@ -370,11 +404,10 @@ fn push_logs(settings: Settings, waiting: List<(Log.Entry, Int)>, limit: Duratio
 fn flush_logs(exporter: Exporter) -> Void needs {
   clock: Clock
 } {
-  let flag = Watch.starting_with(False)
-  let done = Watch.subscribe(flag.publisher)
+  let done = Watch.subscribe(exporter.flushed)
   let _ = Result.capture(fn() {
     Task.timeout(fn() {
-      Process.send(exporter.logs, LogMessage.Flush(flag.publisher))
+      Watch.publish(exporter.flushing, True)
       loop _waiting = True {
         let received = Watch.receive(done)
         case received {
@@ -404,9 +437,8 @@ fn any_value(value: Value) -> Value {
     Value.Boolean(flag) -> object([("boolValue", Json.boolean(flag))])
     Value.Text(text) -> object([("stringValue", Json.text(text))])
     Value.Number(number) -> {
-      let digits = spelling(number)
       case Result.capture(fn() { Json.number_to_int(number) }) {
-        Ok(_) -> object([("intValue", Json.text(digits))])
+        Ok(whole) -> object([("intValue", Json.text(Int.to_text(whole)))])
         _ -> object([("doubleValue", Value.Number(number))])
       }
     }

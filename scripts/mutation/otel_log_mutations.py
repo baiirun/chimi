@@ -27,8 +27,8 @@ MUTATIONS = [
         "            _ -> Void",
     )]),
     mutant("waiting logs are not pushed when the body ends", [(
-        "      flush_logs(exporter)\n",
-        "",
+        "Task.start(fn() { flush_logs(exporter) })",
+        "Task.start(fn() { Void })",
     )]),
     mutant("a flush does not push", [(
         "        push_logs(settings, waiting, settings.flush_within)\n",
@@ -42,9 +42,25 @@ MUTATIONS = [
         "        push_logs(settings, waiting, settings.timeout)\n        ([], Clock.add(",
         "        push_logs(settings, waiting, settings.timeout)\n        (waiting, Clock.add(",
     )]),
+    mutant("waiting entries are not capped", [(
+        "case List.length(waiting) < settings.log_buffer {",
+        "case True {",
+    )]),
+    mutant("the last pushes run one after the other", [(
+        "      let logs = Task.start(fn() { flush_logs(exporter) })\n      push_within(settings, settings.flush_within)\n",
+        "      flush_logs(exporter)\n      let logs = Task.start(fn() { Void })\n      push_within(settings, settings.flush_within)\n",
+    )]),
+    mutant("a dropped entry in the process is not counted", [(
+        "          Metrics.count(\"chimi.otel.dropped_logs\", 1, [])\n          (waiting, deadline)",
+        "          (waiting, deadline)",
+    )]),
+    mutant("a whole number is written as spelled", [(
+        "Ok(whole) -> object([(\"intValue\", Json.text(Int.to_text(whole)))])",
+        "Ok(whole) -> object([(\"intValue\", Json.text(spelling(number)))])",
+    )]),
     mutant("every number is a double", [(
-        "        Ok(_) -> object([(\"intValue\", Json.text(digits))])",
-        "        Ok(_) -> object([(\"doubleValue\", Value.Number(number))])",
+        "Ok(whole) -> object([(\"intValue\", Json.text(Int.to_text(whole)))])",
+        "Ok(whole) -> object([(\"doubleValue\", Value.Number(number))])",
     )]),
     mutant("warn has info's severity", [(
         "    Log.Level.Warn -> (13, \"WARN\")",
