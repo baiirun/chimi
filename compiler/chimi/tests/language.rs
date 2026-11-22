@@ -12690,6 +12690,7 @@ fn the_named_form_fix_brackets_a_case_subject() {
         assert_eq!(diagnostic.code(), "T4216", "{}", diagnostic.message());
         assert_eq!(diagnostic.fixes()[0].replacement(), replacement);
     }
+}
 
 const CHECKOUT_ERRORS: &str = concat!(
     "enum StockError {\n",
@@ -12748,7 +12749,7 @@ fn a_type_alias_may_be_used_above_its_declaration() {
             "  total(both)\n",
             "}\n",
             "\n",
-            "const both: Pair = { left: 4, right: Inner(6).value }\n",
+            "const both: Pair = { left: 4, right: Inner { value: 6 }.value }\n",
             "\n",
             "type Pair = { left: Int, right: Int }\n",
             "\n",
@@ -12882,8 +12883,8 @@ fn a_struct_between_ends_an_alias_chain() {
             "}\n",
             "\n",
             "pub fn main() -> Int {\n",
-            "  let leaf: Tree = { root: Node([], 2) }\n",
-            "  let tree: Tree = { root: Node([leaf], 1) }\n",
+            "  let leaf: Tree = { root: Node { children: [], value: 2 } }\n",
+            "  let tree: Tree = { root: Node { children: [leaf], value: 1 } }\n",
             "  tree.root.value + List.length(tree.root.children)\n",
             "}\n",
         ),
