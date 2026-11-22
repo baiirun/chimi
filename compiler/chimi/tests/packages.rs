@@ -643,6 +643,9 @@ fn an_update_rejects_an_unknown_name_before_fetching() {
         text(&output.stderr)
     );
     assert!(!cache.exists(), "nothing was fetched");
+}
+
+#[test]
 fn a_build_report_lists_each_package_with_its_source_and_commit() {
     let scratch = git_dependency_scratch("git-report", 1);
     let cache = scratch.path("cache");
