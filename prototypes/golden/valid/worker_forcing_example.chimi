@@ -40,13 +40,12 @@ fn retryable(error: JobError) -> Bool {
 
 fn process<R>(
   handle: fn(Job) -> Done errors JobError needs R,
-) -> fn(Job) -> Done errors JobError needs R + { clock: Clock } {
+) -> fn(Job) -> Done errors JobError needs R + {
+  clock: Clock
+} {
   handle
   |> Retry.with(
-    RetryPolicy(
-      3,
-      retryable,
-    ),
+    RetryPolicy { maximum_attempts: 3, retry_when: retryable },
     fn(_attempt) { Duration.seconds(1) },
   )
 }

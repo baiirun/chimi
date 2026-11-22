@@ -50,5 +50,5 @@ pub fn main() -> Handoff {
     Failure(_) -> 0
   }
   Supervisor.stop(root)
-  Handoff(removed, restarted)
+  Handoff { removed: removed, restarted: restarted }
 }

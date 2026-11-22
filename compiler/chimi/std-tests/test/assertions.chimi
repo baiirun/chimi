@@ -16,7 +16,7 @@ fn checked(amount: Int) -> Int {
 
 pub fn main() -> Void {
   Test.assert(checked(1) == 1, "one is one")
-  Test.assert_not_equal(Money(1), Money(2))
-  Test.assert_equal([Money(1)], [Money(1)])
-  Test.assert_equal([Money(checked(1))], [Money(2)])
+  Test.assert_not_equal(Money { cents: 1 }, Money { cents: 2 })
+  Test.assert_equal([Money { cents: 1 }], [Money { cents: 1 }])
+  Test.assert_equal([Money { cents: checked(1) }], [Money { cents: 2 }])
 }

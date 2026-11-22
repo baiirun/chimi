@@ -336,7 +336,12 @@ fn format_parse(parsed: &ParseResult) -> String {
                 }
                 TokenKind::RightBrace => {
                     writer.trim_space();
-                    writer.write(" }");
+                    // A struct without fields is written `Marker {}`.
+                    if writer.line().ends_with('{') {
+                        writer.write("}");
+                    } else {
+                        writer.write(" }");
+                    }
                     previous = Some(kind);
                     saw_newline = false;
                     continue;

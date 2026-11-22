@@ -80,15 +80,17 @@ enum Item<E> {
 ///
 /// Cost: O(1).
 pub fn reader<E>(next: fn() -> Option<Bytes> errors E, stop: fn() -> Void) -> Reader<E> {
-  Reader(fn(request) {
-    case request {
-      Pull.Next -> next_chunk(next)
-      Pull.Stop -> {
-        stop()
-        None
+  Reader {
+    pull: fn(request) {
+      case request {
+        Pull.Next -> next_chunk(next)
+        Pull.Stop -> {
+          stop()
+          None
+        }
       }
-    }
-  })
+    },
+  }
 }
 
 /// A writer that hands each chunk to `write` and finishes with `close`. For
@@ -96,12 +98,14 @@ pub fn reader<E>(next: fn() -> Option<Bytes> errors E, stop: fn() -> Void) -> Re
 ///
 /// Cost: O(1).
 pub fn writer<E>(write: fn(Bytes) -> Void errors E, close: fn() -> Void errors E) -> Writer<E> {
-  Writer(fn(request) {
-    case request {
-      Push.Chunk(bytes) -> write(bytes)
-      Push.Finish -> close()
-    }
-  })
+  Writer {
+    push: fn(request) {
+      case request {
+        Push.Chunk(bytes) -> write(bytes)
+        Push.Finish -> close()
+      }
+    },
+  }
 }
 
 /// A connected writer and reader, buffering at most `capacity` chunks between
@@ -118,10 +122,14 @@ pub fn pipe(capacity: Int) -> (Writer<StreamError>, Reader<StreamError>) {
   let receiver = made.receiver
   let completion = made.completion
   (
-    Writer(fn(request) {
-      push_chunk(sender, completion, request)
-    }),
-    Reader(fn(request) { pull_chunk(receiver, request) }),
+    Writer {
+      push: fn(request) {
+        push_chunk(sender, completion, request)
+      },
+    },
+    Reader {
+      pull: fn(request) { pull_chunk(receiver, request) }
+    },
   )
 }
 
@@ -139,9 +147,11 @@ pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors
   let sender = made.sender
   let receiver = made.receiver
   let completion = made.completion
-  let out = Writer(fn(request) {
-    push_item(sender, completion, request)
-  })
+  let out = Writer {
+    push: fn(request) {
+      push_item(sender, completion, request)
+    },
+  }
   let _producer = Task.start(fn() {
     case write_all(body, out) {
       Success(_) -> Void
@@ -151,7 +161,9 @@ pub fn produce<E, R>(capacity: Int, body: fn(Writer<StreamError>) -> Void errors
       }
     }
   })
-  Reader(fn(request) { pull_item(receiver, request) })
+  Reader {
+    pull: fn(request) { pull_item(receiver, request) }
+  }
 }
 
 /// A reader of `bytes` as one chunk. An empty `bytes` gives no chunk.

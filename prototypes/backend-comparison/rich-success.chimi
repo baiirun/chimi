@@ -16,25 +16,28 @@ fn classify(state: State) -> Int {
   }
 }
 
-fn read() -> Int needs { source: Source } {
+fn read() -> Int needs {
+  source: Source
+} {
   source.read()
 }
 
-const source = {
-  read: fn() -> Int { 40 },
-}
+const source = { read: fn() -> Int { 40 } }
 
 pub fn main() -> Answer {
   let increment = fn(value: Int) -> Int { value + 1 }
   let values = [classify(Ready())]
   let configured = read using { source: source }
   let negative = -(1)
-  let record = { value: configured() |> increment }
+  let record = {
+    value: configured()
+    |> increment
+  }
   let enabled = True
   case enabled {
     True -> case values {
-      _ -> Answer(record.value + negative + 2)
+      _ -> Answer { value: record.value + negative + 2 }
     }
-    False -> Answer(0)
+    False -> Answer { value: 0 }
   }
 }

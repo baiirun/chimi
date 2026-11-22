@@ -43,7 +43,9 @@ fn count_messages(inbox: Inbox<Message>) -> Void {
 
 pub process name worker: Message
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -68,9 +70,12 @@ fn unavailable(address: Address<Message>, message: Message) -> Int {
   }
 }
 
-pub fn main() -> Routed needs { clock: Clock } {
+pub fn main() -> Routed needs {
+  clock: Clock
+} {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(1, Duration.seconds(30))))
-  let spec = Process.spec(count_messages, 4, Duration.seconds(1)) |> Process.register(worker)
+  let spec = Process.spec(count_messages, 4, Duration.seconds(1))
+  |> Process.register(worker)
   let managed = Supervisor.start_process(root, spec, Supervisor.Restart.OnDefect)
   let old = Supervisor.address(managed)
   Process.send(old, Message.Add(1))
@@ -84,5 +89,5 @@ pub fn main() -> Routed needs { clock: Clock } {
   Process.send(fresh, Message.Add(1000))
   let total = ask(fresh)
   Supervisor.stop(root)
-  Routed(total, first + second)
+  Routed { total: total, stale: first + second }
 }

@@ -14,9 +14,9 @@ struct Percent {
 
 fn add_tax(rate: Percent) -> fn(Money) -> Money {
   fn(price) {
-    Money(
-      price.cents + (price.cents * rate.basis_points / 10_000),
-    )
+    Money {
+      cents: price.cents + (price.cents * rate.basis_points / 10_000),
+    }
   }
 }
 
@@ -24,5 +24,5 @@ fn transform<A, B>(value: A, operation: fn(A) -> B) -> B {
   operation(value)
 }
 
-const price_for_alabama = add_tax(Percent(400))
-const total = transform(Money(2_500), price_for_alabama)
+const price_for_alabama = add_tax(Percent { basis_points: 400 })
+const total = transform(Money { cents: 2_500 }, price_for_alabama)

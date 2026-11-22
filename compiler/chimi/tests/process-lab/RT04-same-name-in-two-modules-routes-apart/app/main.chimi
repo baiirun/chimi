@@ -16,15 +16,15 @@ pub struct Counts {
 
 pub fn main() -> Counts {
   let left = Process.spec(Left.count, 2, Duration.seconds(1))
-    |> Process.register(Left.counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(Left.counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let right = Process.spec(Right.count, 2, Duration.seconds(1))
-    |> Process.register(Right.counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(Right.counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([left, right], 2, Supervisor.restarts(0, Duration.seconds(30))))
   Process.send(Left.counter, Left.Message.Add(1))
   Process.send(Right.counter, Right.Message.Add(10))
-  let counts = Counts(Left.ask(), Right.ask())
+  let counts = Counts { left: Left.ask(), right: Right.ask() }
   Supervisor.stop(root)
   counts
 }

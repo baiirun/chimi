@@ -47,5 +47,5 @@ pub fn main() -> Admission {
   Supervisor.remove_process(root, first)
   let after = 1 - rejected(root)
   Supervisor.stop(root)
-  Admission(refused, after)
+  Admission { rejected: refused, started: after }
 }

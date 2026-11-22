@@ -126,9 +126,9 @@ external reference carries a stable module-qualified symbol identity even when
 an explicit member import permits an unqualified source spelling.
 
 Declarations are private unless prefixed with `pub`. Publishing a struct
-exposes its nominal type but does not expose its fields or implicit constructor.
+exposes its nominal type but does not expose its fields or its struct literal.
 External construction and field access therefore use public module functions.
-Calling the implicit constructor from another module is
+A struct literal of another module's struct is
 `E_PRIVATE_STRUCT_CONSTRUCTOR`, and reading a field there is
 `E_PRIVATE_STRUCT_FIELD`.
 Publishing an enum exposes its variants as constructors.
@@ -146,14 +146,43 @@ struct Money {
 }
 ```
 
-Fields have declared types. Construction is positional: `Money(2500)` MUST
-supply exactly one value per field, in declaration order, each compatible with
-its field's type. Call and construction arguments carry no labels; a labelled
-argument such as `Money(cents: 2500)` is a type error. Field order is therefore
-part of a struct's public shape: reordering fields is a breaking change for
-every construction site. Field names remain the identity for field access
-(`value.cents`). Struct representation is all-or-nothing; the kernel has no
-per-field visibility modifiers.
+Fields have declared types. A struct is built by field name, in braces:
+
+<!-- chimi: fragment -->
+```chimi
+Money { cents: 2500 }
+```
+
+A struct literal MUST name every field exactly once, in any order, each with a
+value compatible with the field's type. A missing field is `T4215`, a field
+the struct does not declare is `T4205`, and a field named twice is `T4211`.
+The values evaluate in source order, left to right, whatever the declaration
+order. Field names are the identity for construction as for access
+(`value.cents`), so reordering a struct's fields changes no construction site.
+`..base` inside a struct literal is `S1001`; a copy with some fields changed is
+a [record update](patterns-and-function-clauses.md#record-update),
+`{ ..base, cents: 0 }`. A struct without fields is built with empty braces,
+`Marker {}`.
+
+Positional construction such as `Money(2500)` is `T4216`, whose fix writes the
+struct literal (in parentheses when the call is a `case` subject), and so is a
+labelled call such as `Money(cents: 2500)`. A struct's constructor is not a function value: `let make = Money` and
+`value |> Money` are `T4216` too; write `fn(cents) { Money { cents: cents } }`.
+Braces with field names after anything that is not a struct of the module,
+such as an enum variant, a function, a field, or a local or parameter that
+shares a struct's name, are `T4217`. Another module's struct is
+`E_PRIVATE_STRUCT_CONSTRUCTOR`, since its fields are private to its module;
+a member import binds the struct's type but no constructor, so a bare
+imported name before braces does not resolve as a value. Function calls and enum variant
+constructors stay positional.
+
+A struct literal after a bare name or a qualified name is read as one wherever
+an expression is, except in a `case` subject, where `{` opens the arms and
+an arm may start with a typed binding `name: Type`. There it needs
+parentheses: `case (Money { cents: 0 }) == total { ... }`.
+
+Struct representation is all-or-nothing; the kernel has no per-field
+visibility modifiers.
 
 ### Enums
 
@@ -168,7 +197,7 @@ enum PaymentError {
 ```
 
 Each variant is a constructor. Construction is positional in the variant's
-declared field order, as for structs: `PaymentError.Declined("card")`. Payload
+declared field order: `PaymentError.Declined("card")`. Payload
 field order is part of the enum's public shape. Variant patterns MUST use the
 declared payload arity and match payload fields by the same position.
 
@@ -178,9 +207,10 @@ expressions and patterns: `PaymentError.GatewayUnavailable`, `None`,
 `PaymentError.GatewayUnavailable()` is accepted as the same value. The
 formatter keeps whichever form the source uses, because it works on syntax
 alone and cannot tell a fieldless variant from a zero-argument call; a linter
-MAY suggest the bare form. A struct or variant constructor with fields is
-a function of its fields, so `let make = Some` and `value |> Some` are valid
-and `make(value)` constructs as `Some(value)` does.
+MAY suggest the bare form. A variant constructor with fields is a function
+of its fields, so `let make = Some` and `value |> Some` are valid and
+`make(value)` constructs as `Some(value)` does. A struct's constructor is not;
+see [Structs](#structs).
 
 ### Anonymous records
 

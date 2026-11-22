@@ -17,8 +17,7 @@ uses in clause bodies are reported as ordinary type mismatches, not `T4281`.
 Tuple patterns, and irrefutable patterns in `let` and `loop` state positions,
 are implemented (`prog show ts-5be727`).
 
-The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
-positional construction. Examples that call standard-library modules beyond
+The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples that call standard-library modules beyond
 today's `std/io`, `std/json`, `std/map`, `std/task`, and `std/channel` use the
 names from the [standard library sketches](../plans/standard-library-sketches/).
 
@@ -40,8 +39,9 @@ This document depends on:
   order are the rules `case` already has.
 - Clauses dispatch on values. Chimi has no overloading by type or by arity: one
   name in a module is one function with one contract.
-- Patterns stay positional, like construction. The one place source names
-  fields is where fields are already named: access and update.
+- Patterns stay positional, like enum variant construction. Source names
+  fields where fields are already named: access, struct literals, and update.
+  Struct patterns by field name are planned (CHI-291).
 - Matching a list costs no more than indexing it. No pattern copies a list.
 
 ## Multi-clause functions
@@ -670,10 +670,10 @@ instead of a ten-argument construction.
 
 ### Why update names fields
 
-Construction is positional because a constructor call is a call, and Chimi
-calls have no labels. An update is not a call. It changes some fields and keeps
-the rest, so it must say which fields change. Field names are already the
-identity for access (`state.records`). Update uses that same identity.
+An update changes some fields and keeps the rest, so it must say which fields
+change. Field names are already the identity for access (`state.records`) and
+for building a struct (`Summary { records: 0, ... }`). Update uses that same
+identity.
 
 A positional update such as `Config(..base, jobs)`, which the CLI sketch
 wrote, would make the reader count declaration positions to find which field
@@ -681,8 +681,9 @@ changes. A reordered declaration would then silently change another field when
 the types agree. Naming the field turns that mistake into a type error.
 
 The rule is: parentheses are positional and braces are named. Anonymous
-records, `using` providers, and updates use `name: value` inside braces. Calls,
-construction, and patterns never use labels inside parentheses.
+records, `using` providers, struct literals, and updates use `name: value`
+inside braces. Calls, enum variant construction, and patterns never use labels
+inside parentheses.
 
 ### Rules
 

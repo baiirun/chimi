@@ -53,7 +53,9 @@ fn carry(inbox: Inbox<CourierMessage>) -> Void {
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -71,17 +73,22 @@ fn ask(address: Address<Message>) -> Int {
   reply_value(received)
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let carrying = Process.spec(carry, 1, Duration.seconds(1))
-    |> Process.register(courier)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(courier)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([carrying], 2, Supervisor.restarts(0, Duration.seconds(30))))
   let managed = Supervisor.start_process(
     root,
-    Process.spec(counter, 4, Duration.seconds(1)) |> Process.register(target),
+    Process.spec(counter, 4, Duration.seconds(1))
+    |> Process.register(target),
     Supervisor.Restart.Never,
   )
-  let route = Route(target, Supervisor.address(managed))
+  let route = Route {
+    named: target, direct: Supervisor.address(managed)
+  }
   Process.send(courier, CourierMessage.Deliver(route))
   settle()
   let total = ask(target)
