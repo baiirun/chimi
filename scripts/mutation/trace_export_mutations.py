@@ -21,9 +21,13 @@ MUTATIONS = [
         "            span.end = Some(time);\n            span.completed = true;",
         "            span.completed = true;",
     )]),
-    mutant("a dependency call has no length", [(
+    mutant("an unfinished operation does not take its children's end", [(
         "                parent.end = Some(parent.end.unwrap_or(parent.start).max(end));",
         "                parent.end = Some(parent.end.unwrap_or(parent.start));",
+    )]),
+    mutant("a second run under one execution id is merged", [(
+        "            Some(_) if event == \"computation_started\" => {",
+        "            Some(_) if false => {",
     )]),
     mutant("a parent is not written", [(
         "            let _ = write!(output, \",\\\"parentSpanId\\\":\\\"{parent:016x}\\\"\");",

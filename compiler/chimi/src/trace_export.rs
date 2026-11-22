@@ -3,9 +3,9 @@
 //! collector or tracing backend can show it.
 //!
 //! Each execution is one trace. The computation and every operation are a
-//! span, from its `*_started` event to its `*_completed` event, and a
-//! dependency call is a span from the call to the end of the provider's last
-//! operation inside it. Scheduler, task and process events are not spans and
+//! span, from its `*_started` event to its `*_completed` event. A dependency
+//! call has no completion event, and the provider's operations are its
+//! caller's children, so the call is a span with no length. Scheduler, task and process events are not spans and
 //! are left out. Times are `start_unix_ns` plus each event's `time_ns`
 //! (runtime-output-channels.md, "Event times").
 
@@ -47,7 +47,8 @@ struct Span {
     name: String,
     start: i64,
     end: Option<i64>,
-    /// A completion event ended it.
+    /// A completion event ended it, or it is a dependency call, which has
+    /// none and no length.
     completed: bool,
     operation: String,
     core_node_id: u64,
@@ -94,6 +95,11 @@ fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
         })?;
         let id = record.text("execution_id").unwrap_or("").to_owned();
         let slot = match by_id.get(&id) {
+            Some(_) if event == "computation_started" => {
+                return Err(error(format!(
+                    "execution `{id}` starts again; give each run its own --execution-id"
+                )));
+            }
             Some(&slot) => slot,
             None if event == "computation_started" => {
                 let start_unix_ns = record
@@ -158,8 +164,8 @@ impl Execution {
             parent: record.number("parent_span_id"),
             name,
             start: time,
-            end: None,
-            completed: false,
+            end: dependency.is_some().then_some(time),
+            completed: dependency.is_some(),
             operation,
             core_node_id: record.number("core_node_id").unwrap_or(0),
             file_id: record.number("file_id").unwrap_or(0),
@@ -172,8 +178,8 @@ impl Execution {
         });
     }
 
-    /// A span with no completion event (a dependency call, or an operation a
-    /// run never finished) ends with the last of its descendants. Children
+    /// An operation the run never finished ends with the last of its
+    /// descendants. Children
     /// start after their parent, so one pass from the newest span carries each
     /// end up to its parent.
     fn close_open_spans(&mut self) {

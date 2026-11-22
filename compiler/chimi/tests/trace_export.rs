@@ -171,7 +171,7 @@ fn exports_each_operation_as_a_span_with_its_times() {
         .iter()
         .find(|span| span.name == "dependency store.load")
         .expect("the store call");
-    assert_eq!(dependency.start, 5_000_000);
+    assert_eq!((dependency.start, dependency.end), (5_000_000, 5_000_000));
     assert!(
         dependency
             .text
@@ -301,9 +301,11 @@ fn event(
     )
 }
 
-// A dependency call lasts until the provider's last operation inside it
-// ends, and an operation the run never finished ends with its last child and
-// is an error. Rejects zero-length calls and unfinished work shown as fine.
+// A dependency call is a point in time, and an operation the run never
+// finished ends with its last child and is an error. As the runtimes write
+// it, the provider's operation is the calling operation's child. Rejects
+// unfinished work shown as fine, a call given its caller's length, and a
+// second run under one execution id.
 #[test]
 fn open_spans_end_with_their_last_child() {
     let directory = scratch("open-spans");
@@ -326,12 +328,12 @@ fn open_spans_end_with_their_last_child() {
             "dependency_call",
             "\"requirement\":\"store\",\"method\":\"load\",\"time_ns\":2",
         ),
-        event("operation_started", 3, 4, "3", "sleep", "\"time_ns\":2"),
+        event("operation_started", 3, 4, "2", "sleep", "\"time_ns\":2"),
         event(
             "operation_completed",
             4,
             4,
-            "3",
+            "2",
             "sleep",
             "\"outcome\":\"success\",\"time_ns\":7",
         ),
@@ -347,12 +349,30 @@ fn open_spans_end_with_their_last_child() {
             dependency.end,
             dependency.status.as_deref()
         ),
-        (102, 107, None)
+        (102, 102, None)
     );
     let call = by_name("call");
     assert_eq!((call.start, call.end), (101, 107));
     let unfinished = "\"status\":{\"code\":2,\"message\":\"did not complete\"";
     assert_eq!(call.status.as_deref(), Some(unfinished));
     assert_eq!(by_name("computation main").end, 107);
+
+    let mut again = std::fs::read_to_string(&trace).unwrap();
+    again.push_str(&event(
+        "computation_started",
+        0,
+        1,
+        "null",
+        "computation",
+        "\"time_ns\":0,\"start_unix_ns\":100",
+    ));
+    std::fs::write(&trace, again).unwrap();
+    let output = chimi(&["trace", "export", "--otlp", trace.to_str().unwrap()]);
+    assert!(!output.status.success() && output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("line 6: execution `x` starts again"),
+        "{stderr}"
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }

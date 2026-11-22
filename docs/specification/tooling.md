@@ -325,9 +325,17 @@ Rules:
   `dependency store.load`), has kind INTERNAL, and keeps its span id and
   parent. Its times are `start_unix_ns + time_ns` of its events.
 - An operation ends at its completion event. A dependency call has no
-  completion event, so it ends when the last span inside it ends. An
-  operation that never completed ends when the last span inside it ends, and
-  has status ERROR with the message `did not complete`.
+  completion event, and the provider's operations are children of the
+  calling operation, as in `chimi trace show`, so the call is a span with no
+  length that marks when the call happened. An operation that never
+  completed ends when the last span inside it ends, and has status ERROR
+  with the message `did not complete`.
+- A second `computation_started` for an execution id already seen MUST fail
+  naming its line, since two runs under one `--execution-id` would share
+  span ids.
+- An interpreter trace exports with every time at Unix 0, because the
+  interpreter has no clock. Its shape is right, but tracing tools place it
+  in 1970.
 - A span whose outcome is `expected_failure` or `defect` has status ERROR,
   with the outcome as its message. Other outcomes (success, break,
   cancellation) leave the status unset. Every span carries
