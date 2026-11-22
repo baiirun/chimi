@@ -749,7 +749,14 @@ there peels `greeter` off `R`, so `R` lacks `greeter`.
 - A call that binds a row parameter its callee takes a name off to a row
   with that name, or to another row parameter not known to lack it, is
   `T4226`. This covers a second argument that widens the row and a generic
-  caller that passes its own row through.
+  caller that passes its own row through. Using a generic function value at
+  a function type (`let b: fn(..) -> Text needs Q = both`) binds its rows
+  the same way and is checked the same way. A generic caller keeps the name
+  off its own row by writing it beside the row in a parameter's type, as
+  `k: fn() -> Text needs Q + { greeter: Greeter }`.
+- Every function type in a signature counts, however deep: a parameter that
+  is a callback returning a callback, or a returned function, takes off its
+  row what its own function types write beside it.
 - A function's result row (`needs R + { clock: Clock }` on `retry`) takes
   nothing off `R`: a callback that also needs `clock` shares the caller's
   provider with the function, as one need. When the result row writes a name

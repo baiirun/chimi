@@ -1,0 +1,11 @@
+# mutation run at b10ff8d (CHI-297): every mutant killed
+BASELINE ok  [language -- row] (100s)
+KILLED       using never checks the row [language -- row] (32s)
+KILLED       calls never check the lacks [language -- row] (38s)
+KILLED       a generic value's instantiation never checks the lacks [language -- row] (41s)
+KILLED       a returned function takes nothing off the row [language -- row] (40s)
+KILLED       a forwarded name is still lacked [language -- row] (39s)
+KILLED       a generic member's row lacks nothing [language -- row] (42s)
+KILLED       a provider may lack more than its member [language -- row] (24s)
+KILLED       a bound row parameter never clashes [language -- row] (23s)
+KILLED       peels are read from the parameter's own row only [language -- row] (40s)
