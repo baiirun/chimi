@@ -14092,3 +14092,49 @@ pub fn main() -> Bool needs { random: Random } {
     assert!(native_outcome(&scratch, &path).contains("\"outcome\":\"success\",\"value\":true"));
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// A provider made from a host-served need's value holds dependency callables
+// already, so one call through it is still one dependency call.
+#[test]
+fn a_need_passed_back_as_its_own_provider_traces_one_dependency_call() {
+    let source = r#"
+import std/io.{Console}
+
+fn f() -> Void needs { console: Console } {
+  let c = console
+  c.write_line("f")
+}
+
+pub fn main() -> Void needs { console: Console } { f() using { console: console } }
+"#;
+    let scratch = scratch_directory("host-need-one-call");
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("run the reference interpreter");
+    let calls = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.contains("\"event\":\"dependency_called\""))
+        .count();
+    assert_eq!(calls, 1, "interpreter");
+    native_outcome(&scratch, &path);
+    let telemetry = scratch.join("traced.jsonl");
+    Command::new(scratch.join("program"))
+        .arg("--chimi-runner")
+        .arg("--trace=boundaries")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", scratch.join("traced-outcome.jsonl").display()))
+        .arg("--")
+        .output()
+        .expect("run the native program");
+    let calls = std::fs::read_to_string(telemetry)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"event\":\"dependency_called\""))
+        .count();
+    assert_eq!(calls, 1, "native");
+    std::fs::remove_dir_all(scratch).unwrap();
+}

@@ -12215,6 +12215,10 @@ NODE_WRAPPER(dependency_method, "dependency_method", {
       result = defect("provider has no callable field", node_id); break;
     }
     inner = method->as.callable;
+    /* A provider built from another need's methods (`let c = console`, then
+       `using { console: c }`) already holds dependency callables; one call is
+       one dependency call, of the need this node reads. */
+    if (inner->kind == CALL_DEPENDENCY) inner = inner->inner;
   }
   ChimiCallable *callable = allocate(1, sizeof(*callable));
   allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DEPENDENCY;

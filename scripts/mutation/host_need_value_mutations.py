@@ -9,14 +9,25 @@ CRATE = "compiler/chimi"
 EXECUTABLE = "src/executable.rs"
 OPERATIONS = "src/operations.rs"
 
-FILTER = "a_host_served_need"
+FILTER = "need"
 
 
 def mutant(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["language"], filter=FILTER)
 
 
+RUNTIME = "runtime/native/runtime.c"
+EXECUTION = "src/execution.rs"
+
 MUTATIONS = [
+    mutant("the interpreter wraps a dependency callable again", EXECUTION, [(
+        "                        RuntimeCallable::Dependency { callable, .. } => (**callable).clone(),\n",
+        "",
+    )]),
+    mutant("native wraps a dependency callable again", RUNTIME, [(
+        "    if (inner->kind == CALL_DEPENDENCY) inner = inner->inner;\n",
+        "",
+    )]),
     mutant("the need is read as a plain reference", EXECUTABLE, [(
         "            _ => self\n                .host_capability_value(module_id, expression, symbol)\n                .unwrap_or_else(|| self.reference(symbol)),",
         "            _ => self.reference(symbol),",

@@ -1201,7 +1201,14 @@ impl<'core> Evaluator<'core> {
                             cause: None,
                         };
                     };
-                    callable.clone()
+                    // A provider built from another need's methods (`let c =
+                    // console`, then `using { console: c }`) already holds
+                    // dependency callables; one call is one dependency call, of
+                    // the need this node reads.
+                    match callable {
+                        RuntimeCallable::Dependency { callable, .. } => (**callable).clone(),
+                        callable => callable.clone(),
+                    }
                 } else if let Some(host) = self.host_function(interface, method) {
                     RuntimeCallable::Host(host)
                 } else {
