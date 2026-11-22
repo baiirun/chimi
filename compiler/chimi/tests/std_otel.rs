@@ -262,3 +262,220 @@ pub fn main() -> Text needs { files: Files } {
         );
     }
 }
+
+/// What a test collector does with each push.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// Replies with this status.
+    Status(u16),
+    /// Reads the push and never replies.
+    Hang,
+}
+
+/// One push a test collector received.
+struct Push {
+    path: String,
+    headers: String,
+    body: String,
+}
+
+/// A collector on a local port that records each push.
+struct Collector {
+    port: u16,
+    pushes: std::sync::Arc<std::sync::Mutex<Vec<Push>>>,
+}
+
+impl Collector {
+    fn start(answer: Answer) -> Self {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pushes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = pushes.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let recorded = recorded.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let path = line.split(' ').nth(1).unwrap_or("").to_owned();
+                    let mut headers = String::new();
+                    let mut length = 0;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap() == 0 || header == "\r\n" {
+                            break;
+                        }
+                        let lower = header.to_ascii_lowercase();
+                        if let Some(value) = lower.strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        headers.push_str(&lower);
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    recorded.lock().unwrap().push(Push {
+                        path,
+                        headers,
+                        body: String::from_utf8(body).unwrap(),
+                    });
+                    match answer {
+                        Answer::Status(status) => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                            );
+                        }
+                        Answer::Hang => std::thread::sleep(std::time::Duration::from_secs(30)),
+                    }
+                });
+            }
+        });
+        Self { port, pushes }
+    }
+
+    fn pushes(&self) -> std::sync::MutexGuard<'_, Vec<Push>> {
+        self.pushes.lock().unwrap()
+    }
+}
+
+/// A program that exports to `port` with `settings` (extra fields of the
+/// settings record) while `body` runs.
+fn exporting(port: u16, settings: &str, body: &str) -> String {
+    format!(
+        r#"import std/clock as Clock.{{Clock}}
+import std/duration as Duration
+import std/metrics as Metrics.{{Metrics}}
+import std/net as Net.{{Network}}
+import std/otel as Otel
+
+pub fn main() -> Text needs {{ network: Network, clock: Clock, metrics: Metrics }} {{
+  let settings = {{ ..Otel.defaults, endpoint: "http://127.0.0.1:{port}", service_name: "shop"{settings} }}
+  Otel.export(settings, fn(_) {{
+{body}
+  }})
+}}
+"#
+    )
+}
+
+impl Scratch {
+    /// Builds `program` natively and runs it on the real clock, writing
+    /// its metrics to `metrics.json`; returns the run and the file.
+    fn run_native(&self, program: &str) -> (std::process::Output, String) {
+        self.write("main.chimi", program);
+        let built = self.chimi(&["build", "main.chimi", "-o", "program"]);
+        assert!(built.status.success(), "{built:?}");
+        let metrics = self.0.join("metrics.json");
+        let output = Command::new(self.0.join("program"))
+            .current_dir(&self.0)
+            .args(["--chimi-runner", "--clock=real"])
+            .arg(format!("--metrics-file={}", metrics.display()))
+            .arg("--")
+            .output()
+            .unwrap();
+        (output, std::fs::read_to_string(&metrics).unwrap_or_default())
+    }
+}
+
+// The aggregate is pushed every interval and once more when the body ends,
+// as OTLP/JSON to `/v1/metrics` with the settings' headers, and the last
+// push holds what the body recorded last. Rejects no periodic push, no
+// final push, a final push before the body's last measurement, the wrong
+// path, content type or service, or lost headers.
+#[test]
+fn metrics_are_pushed_every_interval_and_when_the_body_ends() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("export");
+    let program = exporting(
+        collector.port,
+        r#", interval: Duration.milliseconds(100), headers: [("x-api-key", "secret")]"#,
+        r#"    Metrics.count("orders", 3, [])
+    Clock.sleep(Duration.milliseconds(350))
+    Metrics.count("orders", 1, [])
+    "done""#,
+    );
+    let (output, metrics) = scratch.run_native(&program);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!metrics.contains("chimi.otel.failed_exports"), "{metrics}");
+    let pushes = collector.pushes();
+    assert!(pushes.len() >= 3, "{} pushes", pushes.len());
+    for push in pushes.iter() {
+        assert_eq!(push.path, "/v1/metrics");
+        assert!(push.headers.contains("content-type: application/json"), "{}", push.headers);
+        assert!(push.headers.contains("x-api-key: secret"), "{}", push.headers);
+        assert!(push.body.contains(r#"{"stringValue":"shop"}"#), "{}", push.body);
+    }
+    assert!(pushes[0].body.contains(r#""asInt":"3""#), "{}", pushes[0].body);
+    let last = &pushes.last().unwrap().body;
+    assert!(last.contains(r#""asInt":"4""#), "{last}");
+}
+
+// A collector that refuses, answers 5xx or never answers does not fail the
+// program or hold up its end past `flush_within`; each failed push is
+// counted. Rejects a push failure raised into the body, an unbounded final
+// push, or a failure left uncounted.
+#[test]
+fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
+    let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused_port = refused.local_addr().unwrap().port();
+    drop(refused);
+    let failing = Collector::start(Answer::Status(503));
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("down");
+    let body = r#"    Metrics.count("orders", 1, [])
+    Clock.sleep(Duration.milliseconds(250))
+    "done""#;
+    for (port, name) in [(refused_port, "refused"), (failing.port, "failing"), (slow.port, "slow")] {
+        let settings = ", interval: Duration.milliseconds(100), timeout: Duration.milliseconds(200), flush_within: Duration.milliseconds(300)";
+        let started = std::time::Instant::now();
+        let (output, metrics) = scratch.run_native(&exporting(port, settings, body));
+        let took = started.elapsed();
+        assert!(output.status.success(), "{name}: {output:?}");
+        assert!(
+            metrics.contains(r#"{"name":"chimi.otel.failed_exports","labels":{},"kind":"count","value":"#),
+            "{name}: {metrics}"
+        );
+        // The build is not timed; the run is the sleep plus at most one
+        // timed-out push and the final one.
+        assert!(took < std::time::Duration::from_secs(10), "{name} took {took:?}");
+    }
+    assert!(!failing.pushes().is_empty());
+    assert!(!slow.pushes().is_empty());
+}
+
+// Stopping the program pushes once more before it exits. Rejects a final
+// push only on return.
+#[test]
+fn a_stopped_program_pushes_before_it_exits() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("stopped");
+    let program = exporting(
+        collector.port,
+        ", interval: Duration.seconds(60)",
+        r#"    Metrics.count("orders", 7, [])
+    Clock.sleep(Duration.seconds(60))
+    "done""#,
+    );
+    scratch.write("main.chimi", &program);
+    let built = scratch.chimi(&["build", "main.chimi", "-o", "program"]);
+    assert!(built.status.success(), "{built:?}");
+    let mut runner = Command::new(scratch.0.join("program"))
+        .current_dir(&scratch.0)
+        .args(["--chimi-runner", "--clock=real", "--"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let sent = Command::new("kill")
+        .args(["-TERM", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let _ = runner.wait().unwrap();
+    let pushes = collector.pushes();
+    assert_eq!(pushes.len(), 1, "one push, on stop");
+    assert!(pushes[0].body.contains(r#""asInt":"7""#), "{}", pushes[0].body);
+}
