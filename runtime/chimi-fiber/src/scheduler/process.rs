@@ -1455,7 +1455,7 @@ impl Scheduler {
             .incarnations
             .values()
             .map(|incarnation| {
-                (incarnation.membership.get(), self.tasks[&incarnation.task].carrier.0)
+                (incarnation.membership.get(), self.tasks.home(&incarnation.task).expect("a live task").0)
             })
             .collect();
         homes.sort_unstable();
@@ -1920,7 +1920,7 @@ impl Scheduler {
             if !self.may_resume_here(task, self.tasks[&task].command) {
                 break;
             }
-            let carrier = self.tasks[&task].carrier;
+            let carrier = self.tasks.home(&task).expect("a live task");
             self.shards.remove_ready(carrier, task);
             self.run(task);
         }
@@ -2157,7 +2157,7 @@ impl Scheduler {
         debug_assert!(
             terminated
                 || matches!(self.tasks[&task].phase, TaskPhase::Draining(_))
-                || self.tasks[&task].carrier != self.current,
+                || self.tasks.home(&task) != Some(self.current),
             "a forced body ends at once on its home carrier"
         );
     }

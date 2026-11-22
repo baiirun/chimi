@@ -4574,8 +4574,8 @@ fn a_body_that_never_ran_forced_from_another_carrier_moves_its_home_there() {
         Some(TerminalCause::Forced),
         "carrier 0 ends the body at once"
     );
-    if let Some(record) = lab.scheduler.tasks.get(&task) {
-        assert_eq!(record.carrier, ready::Carrier(0));
+    if let Some(home) = lab.scheduler.tasks.home(&task) {
+        assert_eq!(home, ready::Carrier(0));
     }
     lab.settle_carriers();
     assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
