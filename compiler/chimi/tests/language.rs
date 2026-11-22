@@ -6624,7 +6624,8 @@ fn a_combined_import_still_checks_its_members() {
 }
 
 // The formatter joins an alias import and a member import of one path, at the
-// first of the two lines, and leaves a commented line as written.
+// first of the two lines. A commented line, and a path with two aliases, stay
+// as written.
 #[test]
 fn the_formatter_joins_split_imports_of_one_path() {
     let source = concat!(
@@ -6633,6 +6634,9 @@ fn the_formatter_joins_split_imports_of_one_path() {
         "import std/map as Map\n",
         "import std/bytes.{Bytes}\n",
         "import std/bytes as Bytes // binary data\n",
+        "import std/set as Set\n",
+        "import std/set as Sets\n",
+        "import std/set.{Set}\n",
         "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) + Text.byte_length(\"a\") }\n",
         "fn none() -> Bytes { Bytes.empty() }\n",
         "pub fn main() -> Int { 0 }\n",
@@ -6645,6 +6649,9 @@ fn the_formatter_joins_split_imports_of_one_path() {
             "import std/text as Text\n",
             "import std/bytes.{Bytes}\n",
             "import std/bytes as Bytes // binary data\n",
+            "import std/set as Set\n",
+            "import std/set as Sets\n",
+            "import std/set.{Set}\n",
         )),
         "{}",
         formatted.text()
