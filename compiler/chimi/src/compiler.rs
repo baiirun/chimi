@@ -773,6 +773,24 @@ pub(crate) fn resolve_program_sources(sources: Vec<ProjectSource>) -> ResolvedPr
     resolve_project(lower_project_sources(sources).without_tests())
 }
 
+/// Each module of `sources`, the standard modules it imports included, by
+/// path, with the fingerprints a trace of it may record: its program build's
+/// and its test build's.
+pub(crate) fn trace_fingerprints(
+    sources: Vec<ProjectSource>,
+) -> std::collections::HashMap<String, [String; 2]> {
+    lower_project_sources(sources)
+        .modules
+        .iter()
+        .map(|module| {
+            (
+                module.path.clone(),
+                [module.program_fingerprint(), module.text_fingerprint()],
+            )
+        })
+        .collect()
+}
+
 fn lower_project_sources(mut sources: Vec<ProjectSource>) -> semantic::SemanticProject {
     crate::standard_tree::add_imported_modules(&mut sources);
     semantic::lower_project(

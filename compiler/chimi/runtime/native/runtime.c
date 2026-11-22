@@ -65,6 +65,9 @@ __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
 /* Without the fiber archive no time passes. */
 __attribute__((weak)) int64_t chimi_fiber_now(void) { return 0; }
+/* Program data from a build defines the trace's module list; C fixtures that
+   write their own program data need not. */
+__attribute__((weak)) const char *CHIMI_TRACE_MODULES = "";
 
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
@@ -2725,7 +2728,10 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
   bool started = strcmp(event, "computation_started") == 0;
   /* The computation starts at the clock's origin, before the scheduler runs. */
   fprintf(output, "\"time_ns\":%" PRId64, started ? INT64_C(0) : chimi_fiber_now());
-  if (started) fprintf(output, ",\"start_unix_ns\":%" PRId64, runtime->start_unix_ns);
+  if (started) {
+    fprintf(output, ",\"start_unix_ns\":%" PRId64, runtime->start_unix_ns);
+    fputs(CHIMI_TRACE_MODULES, output);
+  }
   fputs("}}\n", output);
   pthread_mutex_unlock(&trace_lock);
 }

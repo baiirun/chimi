@@ -314,6 +314,9 @@ pub enum ProgramExit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionReport {
     pub events: Vec<ExecutionEvent>,
+    /// The `"modules"` attribute text `computation_started` carries, or empty
+    /// when the build records none (`CoreProgram::trace_modules`).
+    pub trace_modules: String,
     pub outcome: ExecutionOutcome,
     /// The root outcome's cause tree (`Cause.to_text`), when it has context
     /// frames, a `caused_by` link, or suppressed causes.
@@ -392,6 +395,7 @@ impl ExecutionReport {
             output.push_str("\"time_ns\":0");
             if event.kind == EventKind::ComputationStarted {
                 output.push_str(",\"start_unix_ns\":0");
+                output.push_str(&self.trace_modules);
             }
             output.push_str("}}\n");
         }
@@ -1100,6 +1104,7 @@ impl<'core> Evaluator<'core> {
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
+            trace_modules: self.core.trace_modules.clone(),
             outcome,
             cause,
             failure_rendering,
@@ -3245,6 +3250,7 @@ pub(crate) fn execute_legacy(core: LegacyCoreProgram, config: ExecutionConfig) -
 
     ExecutionReport {
         failure_rendering: None,
+        trace_modules: String::new(),
         events: vec![
             event(0, EventKind::ComputationStarted),
             event(1, EventKind::ComputationCompleted),

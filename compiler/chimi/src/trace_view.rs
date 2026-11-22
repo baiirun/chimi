@@ -12,9 +12,129 @@ use std::fmt::Write;
 
 pub(crate) const SCHEMA: &str = "chimi.runtime.v1";
 
-/// Where a source range is, for the report: `path:line:column` when the
-/// trace's source is known, otherwise `None`.
-pub type Locate<'a> = &'a dyn Fn(u32, u32) -> Option<String>;
+/// A place a trace names: the file id the run used, the module that file id
+/// stands for, and a byte offset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Place<'a> {
+    pub module: PlaceModule<'a>,
+    pub file_id: u32,
+    pub offset: u32,
+}
+
+/// The module a place's file id stands for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaceModule<'a> {
+    /// The module at this path.
+    Path(&'a str),
+    /// The trace records no modules, so only the file id names the file.
+    Unrecorded,
+    /// The trace records modules, but none for this file id: no file is
+    /// this place's, since guessing by file id could pick the wrong one.
+    Missing,
+}
+
+/// Where a place is, for the report: `path:line:column` when the trace's
+/// source is known, otherwise `None`.
+pub type Locate<'a> = &'a dyn Fn(Place<'_>) -> Option<String>;
+
+/// A module a trace records for one of its file ids: its path and its
+/// source's fingerprint when the run was built.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TraceModule {
+    pub path: String,
+    pub fingerprint: String,
+}
+
+/// The modules a trace's executions record, and whether some execution
+/// records none (it was written before traces recorded their modules).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TraceModules {
+    pub modules: Vec<TraceModule>,
+    pub unrecorded: bool,
+}
+
+/// The modules `text` records, each once, in path order. Lines that are not
+/// records are left to `render_trace` to report.
+pub fn trace_modules(text: &str) -> TraceModules {
+    let mut found = TraceModules::default();
+    for line in text.lines() {
+        if !line.contains("\"computation_started\"") {
+            continue;
+        }
+        let Ok(JsonData::Object(fields)) = decode_json(line) else {
+            continue;
+        };
+        let record = Record(&fields);
+        if record.text("event") != Some("computation_started") {
+            continue;
+        }
+        match recorded_modules(&record) {
+            Some(modules) => found.modules.extend(modules.into_iter().flatten()),
+            None => found.unrecorded = true,
+        }
+    }
+    found.modules.sort();
+    found.modules.dedup();
+    found
+}
+
+/// A `computation_started` record's module per file id, or `None` when it
+/// records none. A file id the build had no module for is `None`.
+pub(crate) fn recorded_modules(record: &Record<'_>) -> Option<Vec<Option<TraceModule>>> {
+    let JsonData::Object(attributes) = record.get("attributes")? else {
+        return None;
+    };
+    let JsonData::Array(modules) = Record(attributes).get("modules")? else {
+        return None;
+    };
+    Some(
+        modules
+            .iter()
+            .map(|module| {
+                let JsonData::Object(fields) = module else {
+                    return None;
+                };
+                let module = Record(fields);
+                Some(TraceModule {
+                    path: module.text("path")?.to_owned(),
+                    fingerprint: module.text("fingerprint")?.to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Each file id's module path, as one execution's `computation_started`
+/// records them, or `None` for a trace that records none.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FileModules(Option<Vec<Option<String>>>);
+
+impl FileModules {
+    pub(crate) fn of(record: &Record<'_>) -> Self {
+        Self(recorded_modules(record).map(|modules| {
+            modules
+                .into_iter()
+                .map(|module| module.map(|module| module.path))
+                .collect()
+        }))
+    }
+
+    /// The place at `offset` in file `file_id`.
+    pub(crate) fn place(&self, file_id: u32, offset: u32) -> Place<'_> {
+        let module = match &self.0 {
+            None => PlaceModule::Unrecorded,
+            Some(modules) => match modules.get(file_id as usize) {
+                Some(Some(path)) => PlaceModule::Path(path),
+                _ => PlaceModule::Missing,
+            },
+        };
+        Place {
+            module,
+            file_id,
+            offset,
+        }
+    }
+}
 
 /// A trace that cannot be read: the one-based line and why.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +183,7 @@ struct Execution {
     processes: Vec<ProcessEnd>,
     outcome: Option<String>,
     events: usize,
+    modules: FileModules,
 }
 
 struct Span {
@@ -207,6 +328,9 @@ impl Execution {
     }
 
     fn start_span(&mut self, event: &str, record: &Record<'_>) {
+        if event == "computation_started" {
+            self.modules = FileModules::of(record);
+        }
         let operation = record.text("operation").unwrap_or("operation");
         let label = match event {
             "computation_started" => {
@@ -349,7 +473,8 @@ impl Execution {
         let span = &self.spans[index];
         let _ = write!(report, "{}{}", indent(depth), span.label);
         if let Some((file, start)) = span.location {
-            let location = locate(file, start).unwrap_or(format!("file {file} at {start}"));
+            let location = self.modules.place(file, start);
+            let location = locate(location).unwrap_or(format!("file {file} at {start}"));
             let _ = write!(report, "  {location}");
         }
         let failed_children: Vec<usize> = span
