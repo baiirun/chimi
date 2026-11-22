@@ -12214,3 +12214,301 @@ fn an_unannotated_provider_keeps_failures_from_functions_declared_below_it() {
         "\"outcome\":\"success\",\"value\":3"
     );
 }
+
+fn project_codes(modules: &[(&str, &str)]) -> Vec<String> {
+    let modules = modules
+        .iter()
+        .map(|(path, source)| {
+            ProjectSource::new(
+                *path,
+                SourceSnapshot::from_text(format!("{path}.chimi"), *source),
+            )
+            .expect("valid module path")
+        })
+        .collect();
+    Compiler::type_project(modules)
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect()
+}
+
+const CHECKOUT_ERRORS: &str = concat!(
+    "enum StockError {\n",
+    "  OutOfStock(sku: Text)\n",
+    "}\n",
+    "\n",
+    "enum PaymentError {\n",
+    "  Declined\n",
+    "}\n",
+    "\n",
+    "enum ShippingError {\n",
+    "  NoCarrier\n",
+    "}\n",
+    "\n",
+    "type CheckoutError = StockError | PaymentError\n",
+    "\n",
+);
+
+#[test]
+fn a_type_alias_is_the_same_type_as_the_record_it_names() {
+    let outcome = run_both(
+        "alias-record",
+        concat!(
+            "pub type Settings = { retries: Int, label: Text }\n",
+            "\n",
+            "const defaults: Settings = { retries: 3, label: \"default\" }\n",
+            "\n",
+            "fn tries(settings: Settings) -> Int {\n",
+            "  settings.retries\n",
+            "}\n",
+            "\n",
+            "fn spelled(settings: { label: Text, retries: Int }) -> Settings {\n",
+            "  settings\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let custom = tries({ ..defaults, retries: 5 })\n",
+            "  let written = tries({ retries: 30, label: \"literal\" })\n",
+            "  custom + written + tries(spelled(defaults)) * 100\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":335");
+}
+
+#[test]
+fn a_type_alias_may_be_used_above_its_declaration() {
+    let outcome = run_both(
+        "alias-order",
+        concat!(
+            "fn total(pair: Pair) -> Int {\n",
+            "  pair.left + pair.right\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  total(both)\n",
+            "}\n",
+            "\n",
+            "const both: Pair = { left: 4, right: Inner(6).value }\n",
+            "\n",
+            "type Pair = { left: Int, right: Int }\n",
+            "\n",
+            "struct Inner {\n",
+            "  value: Int\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":10");
+}
+
+#[test]
+fn a_type_alias_names_a_failure_set_in_value_and_errors_positions() {
+    let source = format!(
+        "{CHECKOUT_ERRORS}{}",
+        concat!(
+            "type Step = fn() -> Int errors CheckoutError\n",
+            "\n",
+            "fn declined() -> Int {\n",
+            "  Failure(PaymentError.Declined)\n",
+            "}\n",
+            "\n",
+            "fn describe(error: CheckoutError) -> Text {\n",
+            "  case error {\n",
+            "    StockError.OutOfStock(sku) -> sku\n",
+            "    PaymentError.Declined -> \"declined\"\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "fn attempt(step: Step) -> Text {\n",
+            "  case Result.capture(step) {\n",
+            "    Ok(value) -> \"ok\"\n",
+            "    Err(error) -> describe(error)\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Text {\n",
+            "  attempt(declined)\n",
+            "}\n",
+        )
+    );
+    let source = format!("import std/result as Result\nimport std/result.{{Ok, Err}}\n\n{source}");
+    let outcome = run_both("alias-failure-set", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"declined\"");
+}
+
+#[test]
+fn a_failure_set_alias_admits_only_its_members() {
+    let incomplete = format!(
+        "{CHECKOUT_ERRORS}{}",
+        concat!(
+            "fn describe(error: CheckoutError) -> Text {\n",
+            "  case error {\n",
+            "    StockError.OutOfStock(sku) -> sku\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Text {\n",
+            "  describe(PaymentError.Declined)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&incomplete), ["T4231"]);
+    let outsider = format!(
+        "{CHECKOUT_ERRORS}{}",
+        concat!(
+            "type Step = fn() -> Int errors CheckoutError\n",
+            "\n",
+            "fn run(step: Step) -> Int {\n",
+            "  1\n",
+            "}\n",
+            "\n",
+            "fn lost() -> Int {\n",
+            "  Failure(ShippingError.NoCarrier)\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  run(lost)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&outsider), ["T4203"]);
+}
+
+#[test]
+fn an_alias_of_a_non_failure_type_is_not_a_failure_row() {
+    let codes = check_codes(concat!(
+        "type Count = Int\n",
+        "\n",
+        "type Step = fn() -> Int errors Count\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4102"]);
+}
+
+#[test]
+fn a_type_alias_cannot_name_itself() {
+    let codes = check_codes(concat!(
+        "type Direct = Direct\n",
+        "\n",
+        "type Wrapped = Option<Wrapped>\n",
+        "\n",
+        "type First = { next: Second }\n",
+        "\n",
+        "type Second = List<First>\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4361", "T4361", "T4361", "T4361"]);
+}
+
+#[test]
+fn a_struct_between_ends_an_alias_chain() {
+    let outcome = run_both(
+        "alias-through-struct",
+        concat!(
+            "import std/list as List\n",
+            "\n",
+            "type Tree = { root: Node }\n",
+            "\n",
+            "struct Node {\n",
+            "  children: List<Tree>\n",
+            "  value: Int\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let leaf: Tree = { root: Node([], 2) }\n",
+            "  let tree: Tree = { root: Node([leaf], 1) }\n",
+            "  tree.root.value + List.length(tree.root.children)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":2");
+}
+
+#[test]
+fn a_type_alias_takes_no_type_parameters() {
+    let codes = check_codes(concat!(
+        "type Pair<T> = (T, T)\n",
+        "\n",
+        "fn first(pair: Pair) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["L2130"]);
+}
+
+#[test]
+fn a_public_type_alias_is_imported_like_a_type() {
+    let library = concat!(
+        "pub type Settings = { retries: Int }\n",
+        "\n",
+        "type Hidden = { secret: Int }\n",
+        "\n",
+        "pub const defaults: Settings = { retries: 2 }\n",
+        "\n",
+        "pub fn tries(settings: Settings) -> Int {\n",
+        "  settings.retries\n",
+        "}\n",
+    );
+    let user = concat!(
+        "import lib/shop as Shop\n",
+        "import lib/shop.{Settings}\n",
+        "\n",
+        "fn local(settings: Settings, other: Shop.Settings) -> Int {\n",
+        "  settings.retries + Shop.tries(other)\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  local(Shop.defaults, { retries: 7 })\n",
+        "}\n",
+    );
+    assert_eq!(
+        project_codes(&[("lib/shop", library), ("app/main", user)]),
+        Vec::<String>::new()
+    );
+    let private = concat!(
+        "import lib/shop as Shop\n",
+        "\n",
+        "fn read(hidden: Shop.Hidden) -> Int {\n",
+        "  hidden.secret\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    );
+    assert_eq!(
+        project_codes(&[("lib/shop", library), ("app/main", private)]),
+        ["E_PRIVATE_SYMBOL"]
+    );
+}
+
+#[test]
+fn a_type_alias_reports_the_errors_of_its_type_once() {
+    let codes = check_codes(concat!(
+        "type Twice = { x: Int, x: Int }\n",
+        "\n",
+        "fn first(value: Twice) -> Int {\n",
+        "  1\n",
+        "}\n",
+        "\n",
+        "fn second(value: Twice) -> Int {\n",
+        "  2\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4211"]);
+}

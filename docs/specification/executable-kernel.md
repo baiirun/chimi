@@ -25,7 +25,8 @@ production runtime architecture or the complete future Chimi language.
 The kernel specifies:
 
 - files, modules, imports, visibility, and name identity;
-- nominal structs, closed enums, anonymous records, and core value types;
+- nominal structs, closed enums, anonymous records, type aliases, and core
+  value types;
 - functions, generics, expressions, blocks, pipelines, and pattern matching;
 - success, expected-failure, and dependency-needs channels;
 - structural dependency interfaces and provision with `using`;
@@ -33,7 +34,7 @@ The kernel specifies:
 - lossless parsing, semantic lowering, diagnostics, formatting, inspection, and
   frontend performance obligations.
 
-It does not specify aliases, newtypes, nullability, exceptions, standalone
+It does not specify newtypes, nullability, exceptions, standalone
 conditionals, macros, mutation, resource ownership, structured concurrency,
 supervision, durability, a permanent backend, an artifact format, package
 management, deployment, or interoperability.
@@ -67,7 +68,7 @@ The parser MUST consume the entire file even when the source is malformed.
 Each source file defines one module. Its workspace-relative path is its stable
 module identity. Source files MUST NOT contain module headers.
 
-A module's items are imports, `struct`, `enum`, `interface`, and `fn`
+A module's items are imports, `struct`, `enum`, `interface`, `type`, and `fn`
 declarations, and `const` and `pub const` declarations. A module-level `let`
 is rejected with `L2101`, whose edit replaces `let` with `const`; see
 [standard modules and constants](standard-modules-and-constants.md). An expression at file scope is not a module
@@ -195,7 +196,48 @@ also that type's only value, written `Void`, as
 [core data](core-data-and-operators.md#void) specifies. An empty block is
 invalid and MUST NOT stand in for completion.
 
-Aliases and newtype-like declarations are not part of the first kernel.
+### Type aliases
+
+`type` gives an existing type another name:
+
+<!-- chimi: check -->
+```chimi
+pub type Settings = { max_headers: Int, max_body_bytes: Int }
+
+enum StockError {
+  OutOfStock
+}
+
+enum PaymentError {
+  Declined
+}
+
+type CheckoutError = StockError | PaymentError
+```
+
+An alias is the same type as what it names, not a new nominal type: a
+`Settings` parameter accepts any record with exactly those fields, and a value
+of type `Settings` is a `{ max_headers: Int, max_body_bytes: Int }`. An alias
+of a failure set is that set wherever the set may be written, in an ordinary
+type position and after `errors` in a function type alike, so
+`fn() -> Int errors CheckoutError` is `fn() -> Int errors StockError |
+PaymentError`. An alias of any other type after `errors` is `T4102`.
+
+- An alias may be used anywhere in its module, above its declaration
+  included, and `pub type` publishes it like any other type: through the
+  module alias (`Http.Settings`) or a member import. Using a private alias
+  from another module is `E_PRIVATE_SYMBOL`.
+- An alias MUST NOT reach itself through aliases alone (`T4361`), as in
+  `type Wrapped = Option<Wrapped>`: an alias names a type that already
+  exists, so a recursive type is a struct or enum. A struct or enum in
+  between ends the chain, so `type Tree = { root: Node }` with a `Node` field
+  of type `List<Tree>` is valid.
+- An alias takes no type parameters (`L2130`). Declare a generic struct or
+  enum instead.
+- `chimi doc` shows a signature with the alias names it was written with.
+  Diagnostics and hover show the type the alias names.
+
+Newtype-like declarations are not part of the first kernel.
 
 ## Generics
 

@@ -319,3 +319,26 @@ fn html_for_one_std_module_is_a_usage_error() {
     );
     assert!(!site.exists());
 }
+
+#[test]
+fn a_signature_keeps_the_type_alias_it_was_written_with() {
+    let path = scratch_file(
+        "alias",
+        "/// What a run may change.\n\
+         pub type Settings = { retries: Int, label: Text }\n\
+         \n\
+         pub fn tries(settings: Settings, extra) -> Settings {\n  { ..settings, retries: settings.retries + extra }\n}\n",
+    );
+    let output = chimi(&["doc", &path]);
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(
+        text.contains("\npub type Settings = { retries: Int, label: Text }\n    What a run may change.\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\npub fn tries(settings: Settings, extra: Int) -> Settings\n"),
+        "{text}"
+    );
+}
