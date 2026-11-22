@@ -5328,7 +5328,17 @@ impl ProjectTypeChecker {
                             bindings,
                         );
                     }
-                    return MatchPattern::Wildcard;
+                    // The rejected pattern covers its whole constructor, as a
+                    // pattern with the wrong field count does, so the rejection
+                    // causes no coverage follow-ons.
+                    let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+                        return MatchPattern::Wildcard;
+                    };
+                    let arity = self.fields.get(&constructor).map_or(0, Vec::len);
+                    return MatchPattern::Constructor {
+                        tag: MatchTag::EnumVariant(constructor),
+                        fields: vec![MatchPattern::Wildcard; arity],
+                    };
                 }
                 if *form == CallForm::Positional {
                     self.reject_positional_struct_pattern(module_id, pattern, arguments, *range);
