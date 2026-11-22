@@ -33,8 +33,8 @@ MUTATIONS = [
         "            let interface = self.lower_value_type(module_id, interface, &no_generics);",
     )]),
     mutant("group entries do not count as written", T, [(
-        "                if symbol.kind == ProjectSymbolKind::NeedsGroup {\n                return crate::resolution",
-        "                if false {\n                return crate::resolution",
+        "            if symbol.kind == ProjectSymbolKind::NeedsGroup {\n                return crate::resolution",
+        "            if false {\n                return crate::resolution",
     )]),
     mutant("a shared need is bound twice", R, [(
         "        if !bound {\n            self.define_local(",
