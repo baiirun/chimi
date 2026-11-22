@@ -1,9 +1,7 @@
 // A failing predicate stops Set.filter at the first item it rejects in
 // ascending order: 5 and 8 would both fail, and 5 escapes.
-import std/set as Set
-import std/set.{Set}
-import std/result as Result
-import std/result.{Err}
+import std/set as Set.{Set}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Rejected {

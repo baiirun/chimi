@@ -32,13 +32,10 @@
 /// connection's streams, so a TLS connection waits wherever its inner
 /// connection waits, and a fake from `Net.pair` works the same as a socket.
 
-import std/bytes as Bytes
-import std/bytes.{Bytes}
-import std/net as Net
-import std/net.{Connection, Listener, NetError}
+import std/bytes as Bytes.{Bytes}
+import std/net as Net.{Connection, Listener, NetError}
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err, Ok, Result}
+import std/result as Result.{Err, Ok, Result}
 import std/stream as Stream
 import std/watch as Watch
 import std/channel.{Receive}

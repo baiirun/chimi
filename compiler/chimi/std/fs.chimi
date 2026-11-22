@@ -15,17 +15,13 @@
 /// which `Stream.copy` and `Stream.read_all` work with. Every failure names
 /// the path it happened on.
 
-import std/bytes as Bytes
-import std/bytes.{Bytes}
-import std/clock as Clock
-import std/clock.{Timestamp}
+import std/bytes as Bytes.{Bytes}
+import std/clock as Clock.{Timestamp}
 import std/list as List
-import std/path as Path
-import std/path.{Path}
+import std/path as Path.{Path}
 import std/resource as Resource
 import std/result as Result
-import std/stream as Stream
-import std/stream.{Reader, Writer}
+import std/stream as Stream.{Reader, Writer}
 import std/text as Text
 
 // 1. Public types.

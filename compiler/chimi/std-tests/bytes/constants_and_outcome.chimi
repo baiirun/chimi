@@ -1,7 +1,6 @@
 // A Bytes constant, including bytes that are not UTF-8 and a zero byte, and a
 // Bytes value as the outcome of main.
-import std/bytes as Bytes
-import std/bytes.{Bytes}
+import std/bytes as Bytes.{Bytes}
 
 const magic = Bytes.concat([Bytes.from([0x89, 0x00]), Bytes.from_text("PNG")])
 

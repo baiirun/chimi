@@ -1,7 +1,5 @@
-import std/json as Json
-import std/json.{Value}
-import std/map as Map
-import std/map.{Map}
+import std/json as Json.{Value}
+import std/map as Map.{Map}
 
 fn increment(counts: Map<Text, Int>, key: Text) {
   Map.update(counts, key, fn(current) {

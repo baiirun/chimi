@@ -100,6 +100,22 @@ import billing/money.{Money, NegativeAmount}
 Member imports MUST NOT bind functions. Bare module imports and wildcard member
 imports are invalid.
 
+One import line MAY bind the alias and members together, with the member list
+after the alias:
+
+<!-- chimi: fragment -->
+```chimi
+import billing/money as BillingMoney.{Money, NegativeAmount}
+```
+
+It means exactly the two lines `import billing/money as BillingMoney` and
+`import billing/money.{Money, NegativeAmount}`: the alias stays required and
+written, and the members follow the member-import rules above. An unknown
+module on such a line is reported once. The formatter joins a module's
+alias-only import and its member-only imports into this form, at the first of
+those lines, unless one of them carries a comment or shares its line with
+other code (decisions.md, 2026-11-22).
+
 Imports MUST NOT form a cycle. The project loader rejects a cycle while reading
 modules from disk, and the compiler rejects one among sources it is given with
 `E_IMPORT_CYCLE` at the import that closes it, listing the path, as in
@@ -561,6 +577,19 @@ fn checkout(cart: Cart) needs {
 Each need has a lexical name and an interface type. Composition unions
 compatible needs. Reusing one name with incompatible interface types is a
 diagnostic.
+
+A function with no `needs` clause has its needs inferred from its body. A
+written clause is complete (decisions.md, 2026-11-22): every need the body
+reaches, directly or through the functions it calls, MUST be listed, and so
+MUST a runner-closed need such as `clock: Clock` or `console: Console`. A need
+the clause leaves out is `T4204` at the function's name, naming the entry to
+add. A name the body reaches with two interfaces, including a written entry
+whose interface differs from the reached one, is `T4103` there instead. On
+`main`, only a runner-closed need is `T4204`; any other unclosed need is the
+root check's `E5002`, since listing it would not supply it. A need a `using` in the body supplies is not reached, and a row parameter
+the clause writes (`needs R + { clock: Clock }`) covers whatever binds it. The
+clause MAY list a need the body does not reach; the contract then still
+carries it.
 
 An `interface` is a structural record of function contracts:
 

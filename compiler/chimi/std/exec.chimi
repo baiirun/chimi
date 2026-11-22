@@ -33,24 +33,16 @@
 /// child runs in real time.
 
 import std/debug as Debug
-import std/duration as Duration
-import std/duration.{Duration}
+import std/duration as Duration.{Duration}
 import std/list as List
-import std/map as Map
-import std/map.{Map}
-import std/option as Option
-import std/option.{None, Option, Some}
-import std/path as Path
-import std/path.{Path}
-import std/bytes as Bytes
-import std/bytes.{Bytes}
+import std/map as Map.{Map}
+import std/option as Option.{None, Option, Some}
+import std/path as Path.{Path}
+import std/bytes as Bytes.{Bytes}
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err, Ok, Result}
-import std/stream as Stream
-import std/stream.{Reader, StreamError, Writer}
-import std/task as Task
-import std/task.{Task}
+import std/result as Result.{Err, Ok, Result}
+import std/stream as Stream.{Reader, StreamError, Writer}
+import std/task as Task.{Task}
 
 // 1. Public types.
 

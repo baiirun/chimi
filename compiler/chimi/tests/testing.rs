@@ -1099,9 +1099,9 @@ fn main_gets_a_random_source_only_under_the_name_random() {
     let source = concat!(
         "import std/debug as Debug\n",
         "import std/io.{Console}\n",
-        "import std/random as Random\n",
+        "import std/random as Random.{Random}\n",
         "\n",
-        "pub fn main() -> Int needs { console: Console } {\n",
+        "pub fn main() -> Int needs { console: Console, random: Random } {\n",
         "  let roll = Random.int(1..=6)\n",
         "  console.write_line(Debug.render(roll >= 1 and roll <= 6))\n",
         "  0\n",
@@ -1119,8 +1119,8 @@ fn main_gets_a_random_source_only_under_the_name_random() {
     assert_eq!(String::from_utf8_lossy(&program.stdout), "True\n");
     std::fs::remove_dir_all(scratch).unwrap();
     let renamed = source.replace(
-        "pub fn main() -> Int needs { console: Console } {\n",
-        "import std/random.{Random}\n\nfn roll() -> Int needs { dice: Random } {\n  dice.next_int()\n}\n\npub fn main() -> Int needs { console: Console } {\n  let rolled = roll()\n",
+        "pub fn main() -> Int needs { console: Console, random: Random } {\n",
+        "fn roll() -> Int needs { dice: Random } {\n  dice.next_int()\n}\n\npub fn main() -> Int {\n  let rolled = roll()\n",
     );
     let run = chimi("random-main-renamed", &renamed, &["build", "cases.chimi", "-o", "program"]);
     assert_eq!(run.status, Some(1), "{}", run.stdout);

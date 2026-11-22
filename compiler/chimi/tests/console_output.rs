@@ -176,14 +176,15 @@ fn a_line_whose_writer_timed_out_is_still_written_whole() {
     let executable = build_native(
         &scratch,
         "timed",
-        r#"import std/debug as Debug
+        r#"import std/clock.{Clock}
+import std/debug as Debug
 import std/duration as Duration
 import std/io.{Console}
 import std/result as Result
 import std/task as Task
 import std/text as Text
 
-pub fn main() -> Int needs { console: Console } {
+pub fn main() -> Int needs { console: Console, clock: Clock } {
   let line = Text.repeat("x", 300000)
   let outcome = Result.capture(fn() {
     Task.timeout(fn() { console.write_line(line) }, Duration.milliseconds(100))

@@ -1096,7 +1096,7 @@ pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
         .child_nodes()
         .into_iter()
         .filter(|node| node.kind() == NodeKind::ImportDeclaration)
-        .map(|node| lowerer.lower_import(&node))
+        .flat_map(|node| lowerer.lower_import(&node))
         .collect()
 }
 
@@ -1173,7 +1173,7 @@ impl ProjectLowerer {
             }
             let node = node.clone();
             match node.kind() {
-                NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
+                NodeKind::ImportDeclaration => imports.extend(lowerer.lower_import(&node)),
                 NodeKind::StructDeclaration
                 | NodeKind::EnumDeclaration
                 | NodeKind::InterfaceDeclaration
@@ -1246,7 +1246,10 @@ impl ProjectLowerer {
         }
     }
 
-    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> ModuleImport {
+    /// One import line lowers to one binding per form it writes: the combined
+    /// `import std/clock as Clock.{Clock, Instant}` gives an alias and a member
+    /// binding with the same path and range, exactly as the two-line form does.
+    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> Vec<ModuleImport> {
         let path = node
             .child_tokens()
             .into_iter()
@@ -1254,10 +1257,11 @@ impl ProjectLowerer {
             .map(|token| token.text().to_owned())
             .collect::<Vec<_>>()
             .join("/");
-        let binding = node
+        let range = significant_range(node);
+        let bindings: Vec<ImportBinding> = node
             .child_nodes()
             .into_iter()
-            .find_map(|child| match child.kind() {
+            .filter_map(|child| match child.kind() {
                 NodeKind::ImportAlias => direct_identifier(&child).map(ImportBinding::Alias),
                 NodeKind::ImportMembers => Some(ImportBinding::Members(
                     child
@@ -1269,12 +1273,20 @@ impl ProjectLowerer {
                 )),
                 _ => None,
             })
-            .unwrap_or(ImportBinding::Missing);
-        ModuleImport {
-            path,
-            binding,
-            range: significant_range(node),
-        }
+            .collect();
+        let bindings = if bindings.is_empty() {
+            vec![ImportBinding::Missing]
+        } else {
+            bindings
+        };
+        bindings
+            .into_iter()
+            .map(|binding| ModuleImport {
+                path: path.clone(),
+                binding,
+                range,
+            })
+            .collect()
     }
 
     fn lower_module_declaration(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {

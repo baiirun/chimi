@@ -5,8 +5,7 @@
 
 import std/debug as Debug
 import std/list as List
-import std/order as Order
-import std/order.{Ordering}
+import std/order as Order.{Ordering}
 
 // 4. Building.
 

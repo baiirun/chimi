@@ -1,5 +1,4 @@
-import std/channel as Channel
-import std/channel.{Receiver, Sender, SendError}
+import std/channel as Channel.{Receiver, Sender, SendError}
 
 fn recover_as_text(
   sender: Sender<Receiver<Int>>,

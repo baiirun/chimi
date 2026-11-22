@@ -897,6 +897,135 @@ impl TypedProject {
         }
     }
 
+    /// A written `needs` clause is complete (decisions.md, 2026-11-22): every
+    /// need a function's body reaches, through calls too and runner-closed ones
+    /// included, must be listed. A function with no clause keeps its needs
+    /// inferred. One `T4204` per unlisted need, at the function's name, and one
+    /// `T4103` for a name the body reaches with two interfaces. `main` is not
+    /// told to list a need the runner does not close: E5002 reports that.
+    fn validate_written_needs(&mut self, body_modules: &HashSet<ModuleId>) {
+        let mut findings = Vec::new();
+        for module_id in body_modules {
+            let module = &self.resolved.semantic.modules[module_id.raw() as usize];
+            for declaration in &module.declarations {
+                let Some(signature) = &declaration.function else {
+                    continue;
+                };
+                if declaration.kind != ModuleDeclarationKind::Function
+                    || declaration.body.is_none()
+                    || signature.requirements.terms.is_empty()
+                {
+                    continue;
+                }
+                let Some(symbol) = self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module.id)
+                        && symbol.semantic_id == Some(declaration.semantic_id)
+                        && symbol.kind == ProjectSymbolKind::Function
+                }) else {
+                    continue;
+                };
+                let Some(contract) = self.contracts.get(&symbol.id) else {
+                    continue;
+                };
+                let written: Vec<&str> = signature
+                    .requirements
+                    .terms
+                    .iter()
+                    .map(|term| match term {
+                        RequirementTermUse::Field { name, .. }
+                        | RequirementTermUse::Variable { name, .. } => name.text.as_str(),
+                    })
+                    .collect();
+                let row = &self.needs_rows[contract.needs.raw() as usize];
+                // `main`'s root check (E5002) already reports a need the runner
+                // does not close, which listing it would not fix.
+                let is_main = declaration.public && declaration.name.text == "main";
+                let mut conflicted: Vec<&str> = Vec::new();
+                for need in &row.entries {
+                    // Rows keep one entry per name and interface, so two entries
+                    // under one name are a conflict to report, not two to add.
+                    let others: Vec<&Need> = row
+                        .entries
+                        .iter()
+                        .filter(|other| {
+                            other.lexical_name == need.lexical_name
+                                && other.interface != need.interface
+                        })
+                        .collect();
+                    if !others.is_empty() {
+                        if !conflicted.contains(&need.lexical_name.as_str()) {
+                            conflicted.push(&need.lexical_name);
+                            let interfaces = std::iter::once(need)
+                                .chain(others)
+                                .map(|entry| format!("`{}`", self.format_type(entry.interface)))
+                                .collect::<Vec<_>>()
+                                .join(" and ");
+                            findings.push((
+                                module.source.file_id(),
+                                declaration.name.range,
+                                "T4103",
+                                format!(
+                                    "{} reaches the need `{}` as {interfaces}; one name needs \
+                                     one interface",
+                                    declaration.name.text, need.lexical_name
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
+                    if need.explained
+                        || written.contains(&need.lexical_name.as_str())
+                        || (is_main && !self.runner_closes(need))
+                        || matches!(
+                            self.types[self.resolve_type_id(need.interface).raw() as usize],
+                            CanonicalType::Poison
+                        )
+                    {
+                        continue;
+                    }
+                    findings.push((
+                        module.source.file_id(),
+                        declaration.name.range,
+                        "T4204",
+                        format!(
+                            "{} writes its needs, so the list must be complete: add `{}: {}`, \
+                             which its body reaches",
+                            declaration.name.text,
+                            need.lexical_name,
+                            self.format_type(need.interface)
+                        ),
+                    ));
+                }
+                for parameter in &row.parameters {
+                    let parameter = self.resolved.symbol(*parameter);
+                    let owned = parameter.module_id == Some(module.id)
+                        && parameter.semantic_id == Some(declaration.semantic_id);
+                    if owned && !written.contains(&parameter.name.as_str()) {
+                        findings.push((
+                            module.source.file_id(),
+                            declaration.name.range,
+                            "T4204",
+                            format!(
+                                "{} writes its needs, so the list must be complete: add the \
+                                 row `{}`, which its body reaches",
+                                declaration.name.text, parameter.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for (file_id, range, code, message) in findings {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Type,
+                code,
+                file_id,
+                range,
+                message,
+            ));
+        }
+    }
+
     /// Checks each `test` item's inferred contract against the test root: its
     /// success type is `Void` (or `Never`, `T4402`), and the test provider plan
     /// closes every need its body leaves open (`T4400`). The failure row is
@@ -2930,6 +3059,7 @@ impl ProjectTypeChecker {
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
         typed.validate_closed_roots();
+        typed.validate_written_needs(body_modules);
         typed.validate_test_roots();
         typed.diagnostics.sort_by_key(|diagnostic| {
             (

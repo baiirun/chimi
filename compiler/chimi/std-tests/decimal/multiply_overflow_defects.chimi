@@ -1,7 +1,6 @@
 // `*` adds the scales, so a product past scale 38 defects like Int overflow,
 // even though its coefficient is small.
-import std/decimal as Decimal
-import std/decimal.{Decimal}
+import std/decimal as Decimal.{Decimal}
 import std/test as Test
 
 fn run() -> Decimal {

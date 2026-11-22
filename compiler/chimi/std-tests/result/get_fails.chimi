@@ -1,7 +1,6 @@
 // Result.get on an Err fails with the stored error, which joins the caller's
 // failure row like any other failure.
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Lookup {

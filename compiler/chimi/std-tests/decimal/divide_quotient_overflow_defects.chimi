@@ -1,6 +1,5 @@
 // A quotient that needs more than 38 digits at its scale defects.
-import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal as Decimal.{Decimal, Rounding}
 import std/test as Test
 
 fn run() -> Decimal {

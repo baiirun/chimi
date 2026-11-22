@@ -2,8 +2,7 @@
 // rounded through Float: equal numbers spelled differently render identically,
 // tiny and huge exponents keep their digits, and integers past 2^53 stay exact.
 import std/debug as Debug
-import std/json as Json
-import std/json.{Value}
+import std/json as Json.{Value}
 import std/test as Test
 
 fn rendered(text: Text) -> Text {
