@@ -57,7 +57,7 @@ struct Run {
 
 const IMPORTS: &str = "import std/bytes as Bytes
 import std/text as Text
-import std/clock as Clock
+import std/clock as Clock.{Clock}
 import std/debug as Debug
 import std/duration as Duration
 import std/net as Net
@@ -279,7 +279,7 @@ fn closing_wakes_a_waiting_task_with_closed() {
     let run = run_tests(
         "closing",
         r#"
-fn accept_then_close() -> Text needs { network: Network } {
+fn accept_then_close() -> Text needs { network: Network, clock: Clock } {
   let listener = Net.listen("127.0.0.1", 0)
   let waiting = Task.start(fn() { attempt(fn() { Net.accept(listener) }) })
   Clock.sleep(Duration.milliseconds(20))
@@ -289,7 +289,7 @@ fn accept_then_close() -> Text needs { network: Network } {
   "${woke} ${attempt(fn() { Net.accept(listener) })}"
 }
 
-fn read_then_close() -> Text needs { network: Network } {
+fn read_then_close() -> Text needs { network: Network, clock: Clock } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
     let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
@@ -353,7 +353,7 @@ fn write_to_gone_peer() -> Text needs { network: Network } {
 }
 
 // A task parked in a read wakes when another task stops the reader.
-fn stop_while_parked() -> Text needs { network: Network } {
+fn stop_while_parked() -> Text needs { network: Network, clock: Clock } {
   Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
     let port = Net.port(Net.listener_address(listener))
     let client = Net.connect("127.0.0.1", port)
@@ -443,7 +443,7 @@ enum Message {
 // Opens a connection whose server end is accepted inside a task that hands it
 // to the case `name` and then ends, so no copy stays with the caller; then
 // reports what the client end reads.
-fn peer_sees(name: Text) -> Text needs { network: Network } {
+fn peer_sees(name: Text) -> Text needs { network: Network, clock: Clock } {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))
   let read = Resource.scoped(fn() { Net.listen("127.0.0.1", 0) }, Net.close_listener, fn(listener) {
     let port = Net.port(Net.listener_address(listener))
