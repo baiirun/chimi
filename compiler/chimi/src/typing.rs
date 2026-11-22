@@ -3227,7 +3227,7 @@ impl ProjectTypeChecker {
                     "make the member generic instead, as `run: fn<{row}>(..) -> T needs {row}`",
                     row = name.text
                 ),
-                _ => "write the needs in the field's function type instead".to_owned(),
+                _ => "write the needs the field's function has in its type, as `run: fn() -> T needs { name: I }`".to_owned(),
             };
             self.type_error_range(
                 module_id,
@@ -3244,17 +3244,37 @@ impl ProjectTypeChecker {
         if rejected.needs.is_empty() {
             return;
         }
-        // The members drop the rejected row, so their uses report what they
-        // need rather than a row no caller declared.
-        let fields = self.fields[&declaration_symbol].clone();
-        let fields = fields
-            .into_iter()
-            .map(|field| FieldShape {
-                type_id: self.substitute_call_type(field.type_id, &mut rejected),
-                ..field
-            })
-            .collect();
-        self.fields.insert(declaration_symbol, fields);
+        // The members and variant fields drop the rejected row, so their uses
+        // report what they need rather than a row no caller declared.
+        let mut shapes = vec![declaration_symbol];
+        shapes.extend(declaration.variants.iter().filter_map(|variant| {
+            self.find_symbol(
+                module_id,
+                Some(variant.semantic_id),
+                ProjectSymbolKind::EnumConstructor,
+                &variant.name.text,
+            )
+        }));
+        for shape in shapes {
+            let Some(fields) = self.fields.get(&shape).cloned() else {
+                continue;
+            };
+            let fields = fields
+                .into_iter()
+                .map(|field| FieldShape {
+                    type_id: self.substitute_call_type(field.type_id, &mut rejected),
+                    ..field
+                })
+                .collect::<Vec<_>>();
+            if shape != declaration_symbol
+                && let Some(mut contract) = self.contracts.get(&shape).cloned()
+            {
+                contract.inputs = fields.iter().map(|field| field.type_id).collect();
+                self.intern_type(CanonicalType::Function(contract.clone()));
+                self.contracts.insert(shape, contract);
+            }
+            self.fields.insert(shape, fields);
+        }
     }
 
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {

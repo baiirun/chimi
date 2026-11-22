@@ -24,4 +24,8 @@ MUTATIONS = [
         "        if rejected.needs.is_empty() {\n            return;\n        }",
         "        if true {\n            return;\n        }",
     )]),
+    mutant("variant fields keep the rejected row", [(
+        "        let mut shapes = vec![declaration_symbol];\n        shapes.extend(",
+        "        let mut shapes = vec![declaration_symbol];\n        let _ = (",
+    )]),
 ]

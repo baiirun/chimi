@@ -14162,7 +14162,35 @@ pub fn main() -> Text {
   job.run()
 }
 "#;
-    for source in [interface.as_str(), structure] {
+    // After T4227 the rejected row is gone from members and variant fields,
+    // so a caller's `using` reports no row it never declared.
+    let called = row_program(
+        r#"
+interface Runner<R> {
+  run: fn() -> Text needs R
+}
+fn go() -> Text needs { runner: Runner<{ greeter: Greeter }> } { runner.run() }
+fn top() -> Text needs { greeter: Greeter } { go() using { runner: { run: fn() { "r" } } } }
+pub fn main() -> Text { top() using { greeter: g("a") } }
+"#,
+    );
+    let variant = row_program(
+        r#"
+enum Job<R> {
+  Run(f: fn() -> Text needs R)
+  Idle
+}
+fn runit(j: Job<{ greeter: Greeter }>) -> Text {
+  case j {
+    Job.Run(f) -> f()
+    Job.Idle -> "idle"
+  }
+}
+fn top() -> Text needs { greeter: Greeter } { runit(Job.Idle) }
+pub fn main() -> Text { top() using { greeter: g("a") } }
+"#,
+    );
+    for source in [interface.as_str(), structure, called.as_str(), variant.as_str()] {
         let diagnostics = diagnostics_of(source);
         let codes: Vec<&str> = diagnostics.iter().map(|(code, _)| code.as_str()).collect();
         assert_eq!(codes, ["T4227"], "{source}");
