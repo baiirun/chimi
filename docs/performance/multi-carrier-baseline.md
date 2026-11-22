@@ -142,9 +142,9 @@ kernel. It gets slower with every carrier: 2.8 times slower on four than on
 one.
 
 - **Parallel messaging is bound by the kernel lock.** Stack samples of the
-  four-carrier run (gdb, 25 samples of every thread, one run) found 61 of
-  about 100 thread samples waiting for the kernel lock. Most of the others
-  were in kernel code (about 20) or running a fiber (about 15). Every
+  four-carrier run (gdb, 25 samples of each of the four threads, one run)
+  found 58 of 100 thread samples waiting for the kernel lock, 26 in kernel
+  code or other runtime code, and 16 running a fiber. Every
   request a fiber makes takes the lock: a send, a receive and a reply are
   each one. So the pairs' requests run one at a time, and they also cost
   more. Four carriers spend 13 µs per round trip (2,133 ms over 160,000),
