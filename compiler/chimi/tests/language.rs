@@ -6747,6 +6747,25 @@ fn a_complete_needs_clause_counts_using_rows_and_extra_entries() {
     assert_eq!(diagnostics_of(&source), []);
 }
 
+// A function's own row parameter that its body reaches must be written too.
+#[test]
+fn a_written_needs_clause_must_list_a_reached_row_parameter() {
+    let source = concat!(
+        "import std/io.{Console}\n",
+        "fn g<R>(f: fn() -> Void needs R) -> Void needs { console: Console } {\n  f()\n}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    assert_eq!(
+        diagnostics_of(source),
+        [(
+            "T4204".to_owned(),
+            "g writes its needs, so the list must be complete: add the row `R`, which its body \
+             reaches"
+                .to_owned()
+        )]
+    );
+}
+
 // `main` follows the rule too, so a written clause can no longer hide a
 // runner-closed need (CHI-285).
 #[test]

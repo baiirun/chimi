@@ -30,8 +30,12 @@ MUTATIONS = [
         "                    findings.push((\n                        module.source.file_id(),\n                        declaration.name.range,\n                        format!(\n                            \"{} writes its needs, so the list must be complete: add `{}: {}`, \\\n",
         "                    if findings.iter().any(|f: &(_, _, String)| f.0 == module.source.file_id()) { continue; }\n                    findings.push((\n                        module.source.file_id(),\n                        declaration.name.range,\n                        format!(\n                            \"{} writes its needs, so the list must be complete: add `{}: {}`, \\\n",
     )], filter="written_needs_clause_must"),
-    mutant("an unwritten row variable is ignored", [(
+    mutant("any written entry excuses every need", [(
         "                    || written.contains(&need.lexical_name.as_str())\n",
         "                    || !written.is_empty()\n",
     )], filter="written_needs_clause_must"),
+    mutant("an unwritten row parameter is ignored", [(
+        "                    if owned && !written.contains(&parameter.name.as_str()) {",
+        "                    if false && owned {",
+    )], filter="reached_row_parameter"),
 ]
