@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod packages;
-use packages::PackageGraph;
+use packages::{Discovered, PackageGraph};
 pub use packages::PackageError;
 
 #[derive(Debug)]
@@ -250,7 +250,10 @@ impl LoadedProject {
         let entry_module = entry_module.into();
         validate_module_path(entry_module.clone())?;
         let mut loader = Loader {
-            packages: PackageGraph::discover(&root)?,
+            packages: match PackageGraph::discover(&root, false)? {
+                Discovered::Plain => None,
+                Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
+            },
             root,
             reader,
             states: HashMap::new(),
@@ -299,19 +302,28 @@ impl LoadedProject {
         if !root.is_dir() {
             return Err(ProjectLoadError::RootNotDirectory { path: root });
         }
-        let packages = PackageGraph::discover(&root)?;
-        let mut module_paths = module_paths_under(&root, |name| {
-            !name.starts_with('.') && name != "target"
-        })
-        .map_err(|(path, source)| ProjectLoadError::ReadDirectory { path, source })?;
-        if let Some(graph) = &packages {
-            let package = graph.entry().name.to_string();
-            module_paths = module_paths
-                .into_iter()
-                .filter(|path| nested_manifest(&root, &root.join(path)).is_none())
-                .map(|path| format!("{package}/{path}"))
-                .collect();
-        }
+        let packages = match PackageGraph::discover(&root, true)? {
+            Discovered::Plain => None,
+            Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
+        };
+        let module_paths = match &packages {
+            None => own_module_paths(&root)?,
+            Some(graph) => {
+                let mut paths = Vec::new();
+                for package in graph.own() {
+                    let name = package.name.as_str();
+                    paths.extend(
+                        own_module_paths(&package.root)?
+                            .into_iter()
+                            .filter(|path| {
+                                nested_manifest(&package.root, &package.root.join(path)).is_none()
+                            })
+                            .map(|path| format!("{name}/{path}")),
+                    );
+                }
+                paths
+            }
+        };
         if module_paths.is_empty() {
             return Err(ProjectLoadError::NoModules {
                 path: requested_root.to_owned(),
@@ -971,6 +983,25 @@ pub fn package_root_of(path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The directory whose `target/` holds the build artifacts of the project at
+/// `root`: the workspace root for a package or a workspace (packages.md,
+/// "Workspaces"), and `None` for a plain project or a file, whose artifacts
+/// stay under the current directory.
+pub fn workspace_root_of(root: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    match crate::manifest::Manifest::read(&root.join(crate::manifest::MANIFEST_FILE)).ok()? {
+        crate::manifest::Manifest::Workspace(_) => Some(root),
+        crate::manifest::Manifest::Package(_) => packages::workspace_root(&root).ok(),
+    }
+}
+
+/// The path of each `.chimi` file under `root` that `chimi test <directory>`
+/// loads, skipping hidden entries and `target`.
+fn own_module_paths(root: &Path) -> Result<Vec<String>, ProjectLoadError> {
+    module_paths_under(root, |name| !name.starts_with('.') && name != "target")
+        .map_err(|(path, source)| ProjectLoadError::ReadDirectory { path, source })
+}
+
 /// Where a module's file is: a path relative to a directory it must stay in.
 struct Located {
     root: PathBuf,
@@ -994,14 +1025,22 @@ impl Loader<'_> {
             });
         };
         let (first, rest) = module_path.split_once('/').unwrap_or((module_path, ""));
-        let entry = graph.entry();
         let Some(importer) = importer else {
-            if first != entry.name.as_str() || rest.is_empty() {
+            let Some(entry) = graph
+                .own()
+                .find(|package| package.name.as_str() == first)
+                .filter(|_| !rest.is_empty())
+            else {
                 return Err(ProjectLoadError::NotInEntryPackage {
                     module: module_path.to_owned(),
-                    package: entry.name.to_string(),
+                    package: graph
+                        .own()
+                        .next()
+                        .expect("a package build has an own package")
+                        .name
+                        .to_string(),
                 });
-            }
+            };
             return Ok(Located {
                 root: entry.root.clone(),
                 relative: PathBuf::from(rest),
@@ -1012,7 +1051,7 @@ impl Loader<'_> {
         Ok(Located {
             root: target.root.clone(),
             relative: PathBuf::from(rest),
-            origin: if target.name == entry.name {
+            origin: if target.own {
                 ModuleOrigin::Own
             } else {
                 ModuleOrigin::Dependency
@@ -1551,6 +1590,63 @@ mod tests {
         fixture.write("app/main.chimi", "pub fn main() -> Int { 0 }");
         let error = load_app(&fixture).expect_err("unlisted member").to_string();
         assert!(error.contains("but not one of its members"), "{error}");
+    }
+
+    #[test]
+    fn a_workspace_directory_loads_every_members_modules_as_its_own() {
+        let fixture = workspace(&[
+            ("app", APP, &[("main.chimi", "import money/amount as Amount\npub fn main() -> Int { Amount.value() }")]),
+            ("money", MONEY, &[("amount.chimi", "pub fn value() -> Int { 1 }")]),
+        ]);
+        let origins = |project: &LoadedProject| {
+            let mut modules: Vec<_> = project
+                .sources()
+                .iter()
+                .map(|source| (source.module_path().to_owned(), source.origin()))
+                .collect();
+            modules.sort_by(|left, right| left.0.cmp(&right.0));
+            modules
+        };
+        let whole = LoadedProject::load_directory(fixture.path(), &StandardTree::embedded()).unwrap();
+        assert_eq!(
+            origins(&whole),
+            [
+                ("app/main".to_owned(), ModuleOrigin::Own),
+                ("money/amount".to_owned(), ModuleOrigin::Own),
+            ]
+        );
+        let app = LoadedProject::load_directory(fixture.path().join("app"), &StandardTree::embedded())
+            .unwrap();
+        assert_eq!(origins(&app)[1], ("money/amount".to_owned(), ModuleOrigin::Dependency));
+    }
+
+    #[test]
+    fn a_workspace_rejects_bad_members() {
+        type Files<'a> = &'a [(&'a str, &'a str)];
+        let cases: [(&str, Files<'_>, &str); 3] = [
+            ("[workspace]\nmembers = [\"gone\"]\n", &[], "member "),
+            (
+                "[workspace]\nmembers = [\"plain\"]\n",
+                &[("plain/main.chimi", "pub fn main() -> Int { 0 }")],
+                "has no chimi.toml with a [package]",
+            ),
+            (
+                "[workspace]\nmembers = [\"one\", \"two\"]\n",
+                &[("one/chimi.toml", MONEY), ("two/chimi.toml", MONEY)],
+                "are both named `money`",
+            ),
+        ];
+        for (manifest, files, message) in cases {
+            let fixture = TestDirectory::new();
+            fixture.write("chimi.toml", manifest);
+            for (path, text) in files {
+                fixture.write(path, text);
+            }
+            let error = LoadedProject::load_directory(fixture.path(), &StandardTree::embedded())
+                .expect_err(message)
+                .to_string();
+            assert!(error.contains(message), "{message}: {error}");
+        }
     }
 
     #[test]

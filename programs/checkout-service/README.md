@@ -1,32 +1,41 @@
 # Checkout service
 
-This forcing program (CHI-207) is the Phase 3 service: a checkout service
+This forcing program (CHI-207) is the Phase 3 service, and since T5
+(CHI-290) also the multi-package workspace of Phase 9: a checkout service
 that uses failure-set types, `std/result`, causes, retry, timeouts and
 deadlines, `Task.all`, `Task.results`, `Task.race`, `Select.first`, a
 broadcast, and a watch together. What it showed about choice syntax and
 error propagation is written up in
 [the evidence note](../../docs/research/phase-3-forcing-program-evidence.md).
 
-- `app/checkout.chimi`: one checkout. Stock and fraud checks at once, a
+- `checkout/order.chimi`: one checkout. Stock and fraud checks at once, a
   charge with a per-attempt timeout and backoff, a race between two
   carriers, notifications whose failures are counted rather than raised, and
   a deadline over the whole checkout, stored as a `Result`.
-- `app/worker.chimi`: a worker that selects on the shared order queue, the
+- `service/worker.chimi`: a worker that selects on the shared order queue, the
   settings watch, and a heartbeat timer, and reports on a broadcast.
-- `app/fakes.chimi`: deterministic stand-ins for the services a checkout
+- `checkout/fakes.chimi`: deterministic stand-ins for the services a checkout
   calls. They wait on the clock like network calls and fail by rule.
-- `app/main.chimi`: starts two workers and an audit task, submits seven
+- `service/main.chimi`: starts two workers and an audit task, submits seven
   orders, pauses and resumes the workers, and prints the report.
-- `app/checkout_test.chimi`: `chimi test` cases that pin the timing of
+- `checkout/order_test.chimi`: `chimi test` cases that pin the timing of
   retries, timeouts and the deadline under the virtual clock.
+
+It is a workspace of two packages (`chimi.toml` at the root lists them).
+`checkout` holds the checkout, its fakes and its tests, and depends on
+nothing. `service` runs workers over it and depends on `checkout` by path.
+Every import names its package first: `service/main.chimi` imports
+`checkout/order` and its own `service/worker`.
 
 The program runs natively only, like the rest of the channel runtime. From
 the repository root:
 
 ```sh
-cargo run -p chimi -- build --root programs/checkout-service app/main -o target/checkout-service
+cargo run -p chimi -- build --root programs/checkout-service/service service/main -o target/checkout-service
 target/checkout-service --chimi-runner --clock=virtual --outcome-file=target/checkout-outcome.jsonl --
-cargo run -p chimi -- test --root programs/checkout-service app/checkout_test
+cargo run -p chimi -- test programs/checkout-service
+cargo run -p chimi -- lint programs/checkout-service
+cargo run -p chimi -- doc --html target/checkout-docs programs/checkout-service
 ```
 
 The run prints `expected.stdout` exactly, and its outcome record is

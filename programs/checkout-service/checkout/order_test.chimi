@@ -1,6 +1,6 @@
-import app/checkout as Checkout
-import app/checkout.{FraudError, PaymentError, ShippingError}
-import app/fakes as Fakes
+import checkout/order as Checkout
+import checkout/order.{FraudError, PaymentError, ShippingError}
+import checkout/fakes as Fakes
 import std/clock as Clock
 import std/clock.{Clock, Instant}
 import std/duration as Duration

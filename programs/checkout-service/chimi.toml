@@ -1,0 +1,4 @@
+# The checkout service as two packages: the checkout itself, with the fakes
+# its tests and the service use, and the service that runs workers over it.
+[workspace]
+members = ["checkout", "service"]

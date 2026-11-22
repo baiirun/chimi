@@ -1,5 +1,5 @@
-import app/checkout as Checkout
-import app/checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
+import checkout/order as Checkout
+import checkout/order.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
 import std/broadcast as Broadcast
 import std/channel as Channel
 import std/channel.{Receive, Receiver, Sender}

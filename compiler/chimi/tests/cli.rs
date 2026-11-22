@@ -2100,8 +2100,8 @@ fn native_checkout_service_forces_the_phase_3_surface() {
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
         .args(["build", "--root"])
-        .arg(&root)
-        .args(["app/main", "-o"])
+        .arg(root.join("service"))
+        .args(["service/main", "-o"])
         .arg(&executable)
         .output()
         .expect("build the checkout-service forcing program");
@@ -2146,11 +2146,12 @@ fn native_checkout_service_forces_the_phase_3_surface() {
         );
     }
 
+    // The whole workspace: both packages' tests, of which only `checkout`
+    // has any.
     let tests = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
-        .args(["test", "--root"])
+        .arg("test")
         .arg(&root)
-        .arg("app/checkout_test")
         .output()
         .expect("run the checkout-service tests");
     let report = String::from_utf8_lossy(&tests.stdout);
@@ -3158,7 +3159,7 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi: check and run received unexpected arguments\n",
             "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
             "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
-            "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
+            "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
             "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
             "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | ",
             "chimi inspect <path> <byte-offset> | ",
@@ -3168,7 +3169,7 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>] [--target <triple>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+            "[-o <executable>] [--target <triple>] | chimi test [<path> | <directory> | --root <project-dir> <module>] [--filter=<text>] ",
             "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
             "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
             "[--trace=off|boundaries|full] | ",
