@@ -981,7 +981,7 @@ pub(super) fn run_root_on_threads(
     root: TaskId,
     deadlock_code: i64,
 ) -> RootRun {
-    let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
+    let placeholder = Scheduler::new(scheduler.config.stack_bytes, scheduler.config.trace_mode);
     let carriers = scheduler.ready.carriers();
     let (run, kernel) =
         run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code, None);

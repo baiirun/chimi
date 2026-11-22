@@ -238,7 +238,7 @@ impl Scheduler {
     }
 
     fn emit_select(&mut self, task: TaskId, kind: super::ClockEventKind, index: usize) {
-        if self.trace_mode == super::TraceMode::Off {
+        if self.config.trace_mode == super::TraceMode::Off {
             return;
         }
         let now = self.clock.now();

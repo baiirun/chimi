@@ -1232,6 +1232,13 @@ the gates measure, so it goes first.
          hangups for three waiters, and a terminate that drains a program
          sleeping on several carriers, on four carriers.
      - 4d-4: immutable configuration into a `KernelConfig`.
+       - As landed: `Scheduler.config` holds the stack size, trace mode,
+         trace sink and its context, the host's release, copy-free take
+         and violation-report hooks. Field moves only: no behaviour
+         change, so no mutants and no measurement. The trace sink is set
+         once after construction (`set_trace_sink`), before any carrier
+         runs. Channel config (`observe_*`, the copy hook) stays inside
+         `ChannelRegistry` until 4d-5.
      - 4d-5: a channel operation moves into its task's record, so channel
        state is per channel and per task.
      - 4d-6, in parts: a `Shard` per carrier holding its ready queue, jobs,
