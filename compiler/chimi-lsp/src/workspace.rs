@@ -10,11 +10,11 @@
 
 use chimi::diagnostic::{Diagnostic, DiagnosticStage, Severity};
 use chimi::line_index::{LineIndex, LinePosition, PositionEncoding};
-use chimi::project::{LoadedProject, SourceReader, StandardTree};
+use chimi::project::{GitCache, LoadedProject, Network, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
-    Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
+    ModuleOrigin, Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -711,17 +711,22 @@ impl Workspace {
     ) -> bool {
         let project = &self.projects[index];
         let reader = OpenBuffers(&self.documents);
+        // The editor never fetches: a git package a build has not fetched
+        // yet is reported, not downloaded while the user types.
+        let cache = GitCache::from_environment(Network::Offline);
         let loaded = match &project.entry_module {
             Some(entry) => LoadedProject::load_with(
                 &project.root,
                 entry.clone(),
                 &reader,
                 &StandardTree::embedded(),
+                &cache,
             ),
             None => LoadedProject::load_directory_with(
                 &project.root,
                 &reader,
                 &StandardTree::embedded(),
+                &cache,
             ),
         };
         let analysis = self
@@ -750,6 +755,19 @@ impl Workspace {
             let document = DocumentPath(module.source_path().to_owned());
             let open = self.documents.get(&document);
             let lines = analyzed_lines(open, module.source_text());
+            // A dependency's file is published only by its own package's
+            // analysis, which lints it; publishing it from here too would
+            // make its warnings come and go with whichever package ran last.
+            if module.origin() != ModuleOrigin::Own {
+                modules.insert(
+                    document,
+                    AnalyzedModule {
+                        module_path: module.module_path().to_owned(),
+                        lines,
+                    },
+                );
+                continue;
+            }
             let findings = lint.get(module.source_path()).into_iter().flatten();
             let diagnostics = module
                 .diagnostics()
@@ -1029,7 +1047,10 @@ mod tests {
     #[test]
     fn a_file_in_a_package_is_analyzed_with_its_package() {
         let fixture = Fixture::new("package");
-        fixture.write("chimi.toml", "[workspace]\nmembers = [\"app\", \"money\"]\n");
+        fixture.write(
+            "chimi.toml",
+            "[workspace]\nmembers = [\"app\", \"money\"]\n",
+        );
         fixture.write(
             "app/chimi.toml",
             "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n",
@@ -1049,11 +1070,22 @@ mod tests {
         let sets = workspace.analyze(&app);
         let published = |path: &DocumentPath| sets.iter().find(|set| set.path == *path);
         assert_eq!(published(&app).expect("app published").diagnostics, []);
-        assert!(published(&other).is_some(), "every module of the package is analyzed");
         assert!(
-            published(&money).is_none_or(|set| set.diagnostics.is_empty()),
-            "a dependency is not linted: {sets:?}"
+            published(&other).is_some(),
+            "every module of the package is analyzed"
         );
+        assert!(
+            published(&money).is_none(),
+            "a dependency's file is left to its own package: {sets:?}"
+        );
+
+        // Its own package lints it, and the app's next analysis leaves those
+        // warnings alone instead of clearing them.
+        let sets = workspace.analyze(&money);
+        let money_set = sets.iter().find(|set| set.path == money).expect("money published");
+        assert_eq!(money_set.diagnostics.len(), 1, "{sets:?}");
+        let sets = workspace.analyze(&app);
+        assert!(sets.iter().all(|set| set.path != money), "{sets:?}");
 
         // A package nested in `app` is its own project, not a single file.
         fixture.write(
@@ -1065,9 +1097,15 @@ mod tests {
             "app/tools/run.chimi",
             "import tools/helper as Helper\n/// Doc.\npub fn value() -> Int { Helper.value() }\n",
         );
-        fixture.write("app/tools/helper.chimi", "/// Doc.\npub fn value() -> Int { 3 }\n");
+        fixture.write(
+            "app/tools/helper.chimi",
+            "/// Doc.\npub fn value() -> Int { 3 }\n",
+        );
         let sets = workspace.analyze(&tool);
-        let tool_set = sets.iter().find(|set| set.path == tool).expect("tool published");
+        let tool_set = sets
+            .iter()
+            .find(|set| set.path == tool)
+            .expect("tool published");
         assert_eq!(tool_set.diagnostics, [], "{sets:?}");
     }
 

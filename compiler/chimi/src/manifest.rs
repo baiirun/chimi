@@ -3,7 +3,10 @@
 //! or key outside that shape is an error naming it, so a typo never drops a
 //! dependency silently.
 
+mod lock;
 mod toml;
+
+pub(crate) use lock::{LOCK_FILE, LockedGit, Lockfile};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -20,7 +23,9 @@ pub struct PackageName(String);
 impl PackageName {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         let mut characters = text.chars();
-        let valid = characters.next().is_some_and(|first| first.is_ascii_lowercase())
+        let valid = characters
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
             && characters.all(|character| {
                 character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
             })
@@ -62,12 +67,18 @@ pub(crate) struct Dependency {
 pub(crate) enum DependencySource {
     /// Relative to the manifest's directory, as written.
     Path(PathBuf),
-    Git {
-        url: String,
-        rev: String,
-        /// The package's directory inside the repository.
-        directory: Option<String>,
-    },
+    Git(GitSource),
+}
+
+/// Where a git package comes from, as a manifest writes it and a lockfile
+/// records it beside the commit `rev` resolved to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitSource {
+    pub(crate) url: String,
+    /// A tag, a branch or a commit.
+    pub(crate) rev: String,
+    /// The package's directory inside the repository.
+    pub(crate) directory: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -88,7 +99,12 @@ pub struct ManifestError {
 impl fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.line {
-            Some(line) => write!(formatter, "{}:{line}: {}", self.path.display(), self.message),
+            Some(line) => write!(
+                formatter,
+                "{}:{line}: {}",
+                self.path.display(),
+                self.message
+            ),
             None => write!(formatter, "{}: {}", self.path.display(), self.message),
         }
     }
@@ -117,15 +133,22 @@ impl Manifest {
             return Err(unknown_key(entry, None));
         }
         if let Some(table) = document.tables.iter().find(|table| table.array_element) {
-            return Err((Some(table.line), format!("unknown table [[{}]]", table.name)));
+            return Err((
+                Some(table.line),
+                format!("unknown table [[{}]]", table.name),
+            ));
         }
         let table = |name: &str| document.tables.iter().find(|table| table.name == name);
-        if let Some(unknown) = document
-            .tables
-            .iter()
-            .find(|table| !matches!(table.name.as_str(), "package" | "dependencies" | "workspace"))
-        {
-            return Err((Some(unknown.line), format!("unknown table [{}]", unknown.name)));
+        if let Some(unknown) = document.tables.iter().find(|table| {
+            !matches!(
+                table.name.as_str(),
+                "package" | "dependencies" | "workspace"
+            )
+        }) {
+            return Err((
+                Some(unknown.line),
+                format!("unknown table [{}]", unknown.name),
+            ));
         }
         match (table("package"), table("workspace")) {
             (Some(package), None) => {
@@ -145,7 +168,10 @@ impl Manifest {
                 Some(workspace.line),
                 "a manifest is either a [package] or a [workspace], not both".to_owned(),
             )),
-            (None, None) => Err((None, "expected a [package] or a [workspace] table".to_owned())),
+            (None, None) => Err((
+                None,
+                "expected a [package] or a [workspace] table".to_owned(),
+            )),
         }
     }
 }
@@ -191,9 +217,7 @@ fn dependency(entry: &Entry) -> Result<Dependency, (Option<usize>, String)> {
     let Value::InlineTable(fields) = &entry.value else {
         return Err((
             line,
-            format!(
-                "dependency `{name}` must be an inline table, as `{{ path = \"../{name}\" }}`"
-            ),
+            format!("dependency `{name}` must be an inline table, as `{{ path = \"../{name}\" }}`"),
         ));
     };
     let field = |key: &str| {
@@ -206,11 +230,17 @@ fn dependency(entry: &Entry) -> Result<Dependency, (Option<usize>, String)> {
         .iter()
         .find(|(key, _)| !matches!(key.as_str(), "path" | "git" | "rev" | "directory"))
     {
-        return Err((line, format!("unknown key `{unknown}` in dependency `{name}`")));
+        return Err((
+            line,
+            format!("unknown key `{unknown}` in dependency `{name}`"),
+        ));
     }
     let source = match (field("path"), field("git")) {
         (Some(path), None) => {
-            if let Some(extra) = ["rev", "directory"].into_iter().find(|key| field(key).is_some()) {
+            if let Some(extra) = ["rev", "directory"]
+                .into_iter()
+                .find(|key| field(key).is_some())
+            {
                 return Err((
                     line,
                     format!("dependency `{name}` has `path`, so it takes no `{extra}`"),
@@ -225,11 +255,19 @@ fn dependency(entry: &Entry) -> Result<Dependency, (Option<usize>, String)> {
                     format!("git dependency `{name}` needs a `rev`: a tag, a branch or a commit"),
                 )
             })?;
-            DependencySource::Git {
+            // Both are passed to `git` as arguments, which a leading `-`
+            // would turn into options.
+            if let Some(option) = [&url, &rev].into_iter().find(|text| text.starts_with('-')) {
+                return Err((
+                    line,
+                    format!("git dependency `{name}`: `{option}` must not start with `-`"),
+                ));
+            }
+            DependencySource::Git(GitSource {
                 url,
                 rev,
                 directory: field("directory"),
-            }
+            })
         }
         (Some(_), Some(_)) => {
             return Err((
@@ -255,7 +293,10 @@ fn workspace_manifest(workspace: &Table) -> Result<WorkspaceManifest, (Option<us
                 let Value::Array(items) = &entry.value else {
                     return Err((
                         Some(entry.line),
-                        format!("`members` must be an array of strings, not {}", entry.value.kind()),
+                        format!(
+                            "`members` must be an array of strings, not {}",
+                            entry.value.kind()
+                        ),
                     ));
                 };
                 members = Some(items.iter().map(PathBuf::from).collect());
@@ -263,8 +304,10 @@ fn workspace_manifest(workspace: &Table) -> Result<WorkspaceManifest, (Option<us
             _ => return Err(unknown_key(entry, Some("workspace"))),
         }
     }
-    let members =
-        members.ok_or((Some(workspace.line), "[workspace] needs `members`".to_owned()))?;
+    let members = members.ok_or((
+        Some(workspace.line),
+        "[workspace] needs `members`".to_owned(),
+    ))?;
     Ok(WorkspaceManifest { members })
 }
 
@@ -279,13 +322,19 @@ fn string(entry: &Entry) -> Result<&str, (Option<usize>, String)> {
 }
 
 fn unknown_key(entry: &Entry, table: Option<&str>) -> (Option<usize>, String) {
-    let place = table.map_or_else(|| "outside any table".to_owned(), |table| format!("in [{table}]"));
-    (Some(entry.line), format!("unknown key `{}` {place}", entry.key))
+    let place = table.map_or_else(
+        || "outside any table".to_owned(),
+        |table| format!("in [{table}]"),
+    );
+    (
+        Some(entry.line),
+        format!("unknown key `{}` {place}", entry.key),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DependencySource, Manifest, PackageName};
+    use super::{DependencySource, GitSource, Manifest, PackageName};
     use std::path::PathBuf;
 
     #[test]
@@ -308,17 +357,18 @@ mod tests {
         );
         assert_eq!(
             package.dependencies[1].source,
-            DependencySource::Git {
+            DependencySource::Git(GitSource {
                 url: "https://example.com/json".into(),
                 rev: "v1".into(),
                 directory: Some("pkg".into()),
-            }
+            })
         );
     }
 
     #[test]
     fn reads_a_workspace() {
-        let manifest = Manifest::parse("[workspace]\nmembers = [\"app\", \"lib/money\"]\n").unwrap();
+        let manifest =
+            Manifest::parse("[workspace]\nmembers = [\"app\", \"lib/money\"]\n").unwrap();
         assert_eq!(
             manifest,
             Manifest::Workspace(super::WorkspaceManifest {
@@ -330,10 +380,22 @@ mod tests {
     #[test]
     fn rejects_anything_outside_the_shape_naming_it() {
         let cases = [
-            ("[package]\nnmae = \"a\"\n", "2: unknown key `nmae` in [package]"),
-            ("[package]\nname = \"a\"\n[dependency]\n", "3: unknown table [dependency]"),
-            ("[package]\nname = \"Shop\"\n", "2: package name `Shop` must be"),
-            ("[package]\nname = \"std\"\n", "2: package name `std` must be"),
+            (
+                "[package]\nnmae = \"a\"\n",
+                "2: unknown key `nmae` in [package]",
+            ),
+            (
+                "[package]\nname = \"a\"\n[dependency]\n",
+                "3: unknown table [dependency]",
+            ),
+            (
+                "[package]\nname = \"Shop\"\n",
+                "2: package name `Shop` must be",
+            ),
+            (
+                "[package]\nname = \"std\"\n",
+                "2: package name `std` must be",
+            ),
             ("[package]\nname = \"9a\"\n", "2: package name `9a` must be"),
             ("[package]\n", "1: [package] needs a `name`"),
             ("", "expected a [package] or a [workspace] table"),
@@ -351,6 +413,10 @@ mod tests {
                 "4: git dependency `b` needs a `rev`",
             ),
             (
+                "[package]\nname = \"a\"\n[dependencies]\nb = { git = \"u\", rev = \"--upload-pack=x\" }\n",
+                "4: git dependency `b`: `--upload-pack=x` must not start with `-`",
+            ),
+            (
                 "[package]\nname = \"a\"\n[dependencies]\nb = { path = \"p\", git = \"u\" }\n",
                 "4: dependency `b` has both `path` and `git`",
             ),
@@ -366,13 +432,19 @@ mod tests {
                 "[package]\nname = \"a\"\n[workspace]\nmembers = []\n",
                 "3: a manifest is either a [package] or a [workspace]",
             ),
-            ("[workspace]\nmembers = \"app\"\n", "2: `members` must be an array of strings"),
+            (
+                "[workspace]\nmembers = \"app\"\n",
+                "2: `members` must be an array of strings",
+            ),
             ("[workspace]\n", "1: [workspace] needs `members`"),
             (
                 "[workspace]\nmembers = []\n[dependencies]\n",
                 "3: a workspace manifest has no [dependencies]",
             ),
-            ("[[package]]\nname = \"a\"\n", "1: unknown table [[package]]"),
+            (
+                "[[package]]\nname = \"a\"\n",
+                "1: unknown table [[package]]",
+            ),
         ];
         for (text, expected) in cases {
             let (line, message) = Manifest::parse(text).expect_err(text);

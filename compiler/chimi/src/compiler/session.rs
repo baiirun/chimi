@@ -68,7 +68,11 @@ impl IncrementalTypeReport {
     /// The symbol whose name is at `offset` in `module_path`, with its
     /// declaration and every reference in the project (find references and
     /// rename), from this report's retained snapshot.
-    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+    pub fn occurrences(
+        &self,
+        module_path: &str,
+        offset: usize,
+    ) -> Option<crate::SymbolOccurrences> {
         crate::occurrences::occurrences_at(&self.types.typed, module_path, offset)
     }
 
@@ -111,7 +115,9 @@ impl IncrementalTypeReport {
             .iter()
             .map(|module| (module.source.file_id(), module.source.path()))
             .collect();
-        for finding in crate::lint::lint(resolved, |origin| origin == crate::compiler::ModuleOrigin::Own) {
+        for finding in crate::lint::lint(resolved, |origin| {
+            origin == crate::compiler::ModuleOrigin::Own
+        }) {
             if let Some(path) = paths.get(&finding.file_id()) {
                 findings.entry(*path).or_default().push(finding);
             }
@@ -136,6 +142,7 @@ impl IncrementalTypeReport {
                 let file_id = module.source.file_id();
                 ModuleDiagnostics {
                     module_path: &module.path,
+                    origin: module.origin,
                     source_path: module.source.path(),
                     source_text: module.source.text(),
                     diagnostics: diagnostics
@@ -154,6 +161,7 @@ impl IncrementalTypeReport {
 #[derive(Debug)]
 pub struct ModuleDiagnostics<'report> {
     module_path: &'report str,
+    origin: crate::compiler::ModuleOrigin,
     source_path: &'report Path,
     source_text: &'report str,
     diagnostics: Vec<&'report Diagnostic>,
@@ -166,6 +174,12 @@ impl<'report> ModuleDiagnostics<'report> {
 
     pub const fn source_path(&self) -> &'report Path {
         self.source_path
+    }
+
+    /// Whose module this is: an editor publishes a file's diagnostics only
+    /// from the analysis of the package it belongs to.
+    pub const fn origin(&self) -> crate::compiler::ModuleOrigin {
+        self.origin
     }
 
     /// The analyzed text that diagnostic byte ranges index into.
@@ -644,6 +658,33 @@ mod tests {
                 .expect("clean inspection");
             assert_eq!(incremental.render_json(), clean.render_json(), "{needle}");
         }
+    }
+
+    /// A cached module is reused only for the same origin: once its package
+    /// is a dependency, its lint findings no longer count.
+    #[test]
+    fn a_module_whose_origin_changes_is_lowered_again() {
+        let source = || {
+            module(
+                "money/amount",
+                "pub fn value() -> Int { 1 }\nfn never_used() -> Int { 2 }\n",
+            )
+        };
+        let mut session = CompilerSession::new();
+        let own = session.analyze_project(vec![source()]);
+        assert!(own.lint_by_source().values().flatten().count() > 0);
+        let dependency = session.analyze_project(vec![
+            source().with_origin(crate::compiler::ModuleOrigin::Dependency),
+        ]);
+        assert_eq!(
+            dependency.lint_by_source().values().flatten().count(),
+            0,
+            "a dependency's module is not linted, even when cached as its own"
+        );
+        assert_eq!(
+            dependency.diagnostics_by_module()[0].origin(),
+            crate::compiler::ModuleOrigin::Dependency
+        );
     }
 
     /// Guards stale-diagnostic clearing: a module that became clean must still

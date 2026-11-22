@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 55
+#define CHIMI_RUNTIME_ABI_VERSION 56
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -305,6 +305,9 @@ enum {
   /* std/signal's host core. */
   CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL,
   CHIMI_INTRINSIC_SIGNAL_HOST_WAIT,
+  /* std/log's host core. */
+  CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL,
+  CHIMI_INTRINSIC_LOG_HOST_WRITE,
 };
 
 enum {

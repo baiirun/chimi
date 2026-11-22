@@ -563,7 +563,8 @@ fn should_join_line(previous: Option<TokenKind>, next: Option<SyntaxToken<'_>>) 
     let Some(next) = next else {
         return false;
     };
-    next.kind() == TokenKind::Needs
+    // A signature's `needs` continues its line; a needs group item starts its own.
+    next.kind() == TokenKind::Needs && next.parent().kind() != NodeKind::NeedsGroupDeclaration
         || next.kind() == TokenKind::LeftBrace
             && matches!(
                 previous,

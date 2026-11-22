@@ -1,5 +1,6 @@
 //! The part of TOML that `chimi.toml` and `chimi.lock` use: `#` comments,
-//! `[table]` and `[[array]]` headers, bare keys, and values that are basic
+//! `[table]`, dotted `[table.name]` and `[[array]]` headers, bare keys, and
+//! values that are basic
 //! strings, arrays of strings (which may span lines), or inline tables of
 //! strings. Anything else is an error with its line, so a file the compiler
 //! cannot read fully is never read in part.
@@ -60,7 +61,11 @@ impl fmt::Display for SyntaxError {
 
 pub(crate) fn parse(text: &str) -> Result<Document, SyntaxError> {
     let mut parser = Parser {
-        characters: text.strip_prefix('\u{feff}').unwrap_or(text).chars().collect(),
+        characters: text
+            .strip_prefix('\u{feff}')
+            .unwrap_or(text)
+            .chars()
+            .collect(),
         position: 0,
         line: 1,
     };
@@ -87,18 +92,23 @@ impl Parser {
             let Some(character) = self.peek() else { break };
             if character == '[' {
                 let table = self.header()?;
-                let repeated = tables
-                    .iter()
-                    .any(|prior| prior.name == table.name && !(prior.array_element && table.array_element));
+                let repeated = tables.iter().any(|prior| {
+                    prior.name == table.name && !(prior.array_element && table.array_element)
+                });
                 if repeated {
-                    return Err(self.error_at(table.line, format!("table [{}] is defined twice", table.name)));
+                    return Err(self.error_at(
+                        table.line,
+                        format!("table [{}] is defined twice", table.name),
+                    ));
                 }
                 tables.push(table);
             } else {
                 let entry = self.entry()?;
                 let table = tables.last_mut().unwrap_or(&mut root);
                 if table.entries.iter().any(|prior| prior.key == entry.key) {
-                    return Err(self.error_at(entry.line, format!("key `{}` is defined twice", entry.key)));
+                    return Err(
+                        self.error_at(entry.line, format!("key `{}` is defined twice", entry.key))
+                    );
                 }
                 table.entries.push(entry);
             }
@@ -112,7 +122,12 @@ impl Parser {
         self.expect('[')?;
         let array_element = self.eat('[');
         self.skip_spaces();
-        let name = self.bare_key()?;
+        // A dotted name, as `[git.json_tools]`, is kept whole.
+        let mut name = self.bare_key()?;
+        while self.eat('.') {
+            name.push('.');
+            name.push_str(&self.bare_key()?);
+        }
         self.skip_spaces();
         self.expect(']')?;
         if array_element {
@@ -186,10 +201,9 @@ impl Parser {
 
     fn bare_key(&mut self) -> Result<String, SyntaxError> {
         let start = self.position;
-        while self
-            .peek()
-            .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
-        {
+        while self.peek().is_some_and(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        }) {
             self.position += 1;
         }
         if start == self.position {
@@ -282,7 +296,10 @@ impl Parser {
 
     fn skip_comment(&mut self) {
         if self.peek() == Some('#') {
-            while self.peek().is_some_and(|character| character != '\n' && character != '\r') {
+            while self
+                .peek()
+                .is_some_and(|character| character != '\n' && character != '\r')
+            {
                 self.position += 1;
             }
         }
@@ -345,11 +362,19 @@ mod tests {
             "money = { path = \"../money\" }\n",
             "list = [\n  \"a\",\n  \"b\\u00e9\", # comment\n]\n",
             "[[git]]\nname = \"x\"\n[[git]]\nname = \"y\"\n",
+            "[git.json_tools]\nurl = \"u\"\n",
         ))
         .unwrap();
         assert_eq!(document.root.entries[0].value, Value::String("1".into()));
-        let names: Vec<_> = document.tables.iter().map(|table| table.name.as_str()).collect();
-        assert_eq!(names, ["package", "dependencies", "git", "git"]);
+        let names: Vec<_> = document
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["package", "dependencies", "git", "git", "git.json_tools"]
+        );
         assert_eq!(
             document.tables[1].entries[0].value,
             Value::InlineTable(vec![("path".into(), "../money".into())])
@@ -365,18 +390,42 @@ mod tests {
     #[test]
     fn rejects_what_it_cannot_read_with_the_line() {
         let cases = [
-            ("name = shop\n", 1, "expected a string, an array or an inline table"),
-            ("[package]\nname = \"a\"\nname = \"b\"\n", 3, "key `name` is defined twice"),
-            ("[package]\n[package]\n", 2, "table [package] is defined twice"),
+            (
+                "name = shop\n",
+                1,
+                "expected a string, an array or an inline table",
+            ),
+            (
+                "[package]\nname = \"a\"\nname = \"b\"\n",
+                3,
+                "key `name` is defined twice",
+            ),
+            (
+                "[package]\n[package]\n",
+                2,
+                "table [package] is defined twice",
+            ),
             ("name = \"a\" extra\n", 1, "expected the end of the line"),
             ("name = \"a\n", 1, "unterminated string"),
-            ("x = 1\n", 1, "expected a string, an array or an inline table"),
-            ("x = { a = \"1\", a = \"2\" }\n", 1, "key `a` is defined twice"),
+            (
+                "x = 1\n",
+                1,
+                "expected a string, an array or an inline table",
+            ),
+            (
+                "x = { a = \"1\", a = \"2\" }\n",
+                1,
+                "key `a` is defined twice",
+            ),
             ("x = \"\\q\"\n", 1, "unknown escape in a string"),
         ];
         for (text, line, message) in cases {
             let error = parse(text).expect_err(text);
-            assert_eq!((error.line, error.message.as_str()), (line, message), "{text}");
+            assert_eq!(
+                (error.line, error.message.as_str()),
+                (line, message),
+                "{text}"
+            );
         }
     }
 

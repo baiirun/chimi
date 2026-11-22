@@ -1,0 +1,201 @@
+/// Structured logging. Writing an entry needs the `log: Log` capability,
+/// which the runner supplies to `main` and a test supplies with `using`, so a
+/// function's signature says when it logs and a test can record what it logs.
+///
+/// ```text
+/// pub fn main() -> Void needs { log: Log } {
+///   Log.info("started", [])
+///   Log.warn("slow charge", [Log.int("order", 42), Log.float("seconds", 1.5)])
+/// }
+/// ```
+///
+/// The runner's provider writes one JSON line per entry to standard error,
+/// or to the file named by the runner option `--log-file`, and leaves out
+/// entries below `--log-level` (`info` unless set):
+///
+/// ```text
+/// {"time":"2026-11-22T06:00:00.000Z","level":"warn","message":"slow charge","fields":{"order":42,"seconds":1.5}}
+/// ```
+
+import std/float as Float
+import std/json as Json
+import std/list as List
+import std/map as Map
+
+// 1. Public types.
+
+/// How severe an entry is, from least to most.
+pub enum Level {
+  Debug
+  Info
+  Warn
+  Error
+}
+
+/// One named value an entry carries. Built with `Log.text`, `Log.int`,
+/// `Log.float`, `Log.bool` or `Log.json`.
+pub struct Field {
+  key: Text,
+  value: Json.Value,
+}
+
+/// One log entry: its level, message and fields, in the order written.
+pub struct Entry {
+  level: Level,
+  message: Text,
+  fields: List<Field>,
+}
+
+/// The capability to log. The runner's provider writes JSON lines; a test's
+/// fake is a record with this one function, such as one that keeps entries
+/// in a `std/test` recorder.
+pub interface Log {
+  /// Writes `entry`, or leaves it out when its level is filtered.
+  write: fn(Entry) -> Void
+}
+
+// 4. Constructors.
+
+/// A field holding the text `value`.
+///
+/// Cost: O(1).
+pub fn text(key: Text, value: Text) -> Field {
+  Field(key, Json.text(value))
+}
+
+/// A field holding the integer `value`.
+///
+/// Cost: O(1).
+pub fn int(key: Text, value: Int) -> Field {
+  Field(key, Json.int(value))
+}
+
+/// A field holding the number `value`, written as `Float.to_text` spells it.
+///
+/// Cost: O(1).
+pub fn float(key: Text, value: Float) -> Field {
+  let number = case Json.decode(Float.to_text(value)) {
+    Success(number) -> number
+    Failure(_) -> Json.text(Float.to_text(value))
+  }
+  Field(key, number)
+}
+
+/// A field holding the boolean `value`.
+///
+/// Cost: O(1).
+pub fn bool(key: Text, value: Bool) -> Field {
+  Field(key, Json.boolean(value))
+}
+
+/// A field holding any JSON `value`, such as an array or an object.
+///
+/// Cost: O(1).
+pub fn json(key: Text, value: Json.Value) -> Field {
+  Field(key, value)
+}
+
+// 5. Queries.
+
+/// The entry's level.
+///
+/// Cost: O(1).
+pub fn level(entry: Entry) -> Level {
+  entry.level
+}
+
+/// The entry's message.
+///
+/// Cost: O(1).
+pub fn message(entry: Entry) -> Text {
+  entry.message
+}
+
+/// The entry's fields as key and value pairs, in the order written.
+///
+/// Cost: O(n) in the number of fields.
+pub fn fields(entry: Entry) -> List<(Text, Json.Value)> {
+  List.map(entry.fields, fn(field) { (field.key, field.value) })
+}
+
+/// The entry's fields as one JSON object. A key written twice keeps its last
+/// value.
+///
+/// Cost: O(n log n) in the number of fields.
+pub fn fields_object(entry: Entry) -> Json.Value {
+  Json.object(Map.from(fields(entry)))
+}
+
+// 6. Writing.
+
+/// Writes a `Debug` entry.
+///
+/// Cost: whatever the provider's `write` costs.
+pub fn debug(message: Text, fields: List<Field>) -> Void needs {
+  log: Log
+} {
+  log.write(Entry(Level.Debug, message, fields))
+}
+
+/// Writes an `Info` entry.
+///
+/// Cost: whatever the provider's `write` costs.
+pub fn info(message: Text, fields: List<Field>) -> Void needs {
+  log: Log
+} {
+  log.write(Entry(Level.Info, message, fields))
+}
+
+/// Writes a `Warn` entry.
+///
+/// Cost: whatever the provider's `write` costs.
+pub fn warn(message: Text, fields: List<Field>) -> Void needs {
+  log: Log
+} {
+  log.write(Entry(Level.Warn, message, fields))
+}
+
+/// Writes an `Error` entry.
+///
+/// Cost: whatever the provider's `write` costs.
+pub fn error(message: Text, fields: List<Field>) -> Void needs {
+  log: Log
+} {
+  log.write(Entry(Level.Error, message, fields))
+}
+
+// 8. Private helpers, the runner provider, and the native core.
+
+fn rank(level: Level) -> Int {
+  case level {
+    Level.Debug -> 0
+    Level.Info -> 1
+    Level.Warn -> 2
+    Level.Error -> 3
+  }
+}
+
+// The provider the runner binds to `main`'s `log` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need. The level filter is read once, when `main`
+// starts; the runner adds the time and writes the line whole.
+fn host() {
+  let minimum = host_minimum_level()
+  {
+    write: fn(entry: Entry) {
+      let level = rank(entry.level)
+      case level >= minimum {
+        True -> host_write(
+          level,
+          Json.encode(Json.text(entry.message)),
+          Json.encode(fields_object(entry)),
+        )
+        False -> Void
+      }
+    }
+  }
+}
+
+native fn host_minimum_level() -> Int
+
+native fn host_write(level: Int, message: Text, fields: Text) -> Void
