@@ -163,6 +163,10 @@ fn exports_each_operation_as_a_span_with_its_times() {
         assert_eq!(span.status, None, "nothing failed: {span:?}");
         assert!(span.text.contains("\"kind\":1,"));
     }
+    assert!(
+        spans.iter().skip(1).all(|span| span.parent.is_some()),
+        "every span but the computation has a parent: {spans:?}"
+    );
     let dependency = spans
         .iter()
         .find(|span| span.name == "dependency store.load")
@@ -276,5 +280,79 @@ fn a_trace_without_event_times_is_refused() {
         stderr.contains("line 1: computation_started has no time_ns"),
         "{stderr}"
     );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// One hand-written semantic event.
+fn event(
+    event: &str,
+    sequence: u32,
+    span: u32,
+    parent: &str,
+    operation: &str,
+    attributes: &str,
+) -> String {
+    format!(
+        "{{\"schema\":\"chimi.runtime.v1\",\"event\":\"{event}\",\"sequence\":{sequence},\
+         \"computation\":\"main\",\"execution_id\":\"x\",\"span_id\":{span},\
+         \"parent_span_id\":{parent},\"core_node_id\":0,\"origin_id\":0,\"semantic_id\":0,\
+         \"file_id\":0,\"source_start\":0,\"source_end\":0,\"operation\":\"{operation}\",\
+         \"attributes\":{{{attributes}}}}}\n"
+    )
+}
+
+// A dependency call lasts until the provider's last operation inside it
+// ends, and an operation the run never finished ends with its last child and
+// is an error. Rejects zero-length calls and unfinished work shown as fine.
+#[test]
+fn open_spans_end_with_their_last_child() {
+    let directory = scratch("open-spans");
+    let trace = directory.join("trace.jsonl");
+    let text = [
+        event(
+            "computation_started",
+            0,
+            1,
+            "null",
+            "computation",
+            "\"time_ns\":0,\"start_unix_ns\":100",
+        ),
+        event("operation_started", 1, 2, "1", "call", "\"time_ns\":1"),
+        event(
+            "dependency_called",
+            2,
+            3,
+            "2",
+            "dependency_call",
+            "\"requirement\":\"store\",\"method\":\"load\",\"time_ns\":2",
+        ),
+        event("operation_started", 3, 4, "3", "sleep", "\"time_ns\":2"),
+        event(
+            "operation_completed",
+            4,
+            4,
+            "3",
+            "sleep",
+            "\"outcome\":\"success\",\"time_ns\":7",
+        ),
+    ]
+    .concat();
+    std::fs::write(&trace, text).unwrap();
+    let spans = spans(&export(&[trace.to_str().unwrap()]));
+    let by_name = |name: &str| spans.iter().find(|span| span.name == name).unwrap();
+    let dependency = by_name("dependency store.load");
+    assert_eq!(
+        (
+            dependency.start,
+            dependency.end,
+            dependency.status.as_deref()
+        ),
+        (102, 107, None)
+    );
+    let call = by_name("call");
+    assert_eq!((call.start, call.end), (101, 107));
+    let unfinished = "\"status\":{\"code\":2,\"message\":\"did not complete\"";
+    assert_eq!(call.status.as_deref(), Some(unfinished));
+    assert_eq!(by_name("computation main").end, 107);
     std::fs::remove_dir_all(directory).unwrap();
 }
