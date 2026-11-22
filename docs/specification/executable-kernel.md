@@ -322,6 +322,14 @@ is instantiated only with a failure-set value: an enum, a variant, or a set of
 them. The full rules are in
 [time and outcomes](time-and-outcomes.md#projection-into-type-arguments).
 
+A data or interface declaration's parameters stand for value types and failure
+sets only. One used in a `needs` position, as `R` in `interface Runner<R> {
+run: fn(fn() -> Text needs R) -> Text needs R }`, is `T4227`: no type argument
+writes a needs row (`Runner<{ greeter: Greeter }>` names a record type), so the
+member would keep the bare row (CHI-300). An interface makes the member generic
+instead (`run: fn<R>(fn() -> Text needs R) -> Text needs R`), and a struct
+writes the needs in the field's function type.
+
 A call instantiates each generic parameter of its callee. When no argument,
 result context, or later use ever constrains an instantiation, as in
 `is_none(nothing())` with `fn nothing<T>() -> Option<T> { None }` or an unused
