@@ -542,11 +542,12 @@ impl TaskPhase {
     }
 }
 
-/// The carrier thread a fiber belongs to: the one that first resumed it. A
-/// started fiber's stack holds that thread's host frames and C runtime
-/// state, so it must be resumed and destroyed there and nowhere else
-/// (parallel-scheduler.md, "Step 3 plan"). An unstarted fiber has no home
-/// yet and may be handed to another carrier.
+/// The carrier thread a fiber runs on: the one that last resumed it, until
+/// the kernel moves it (`Scheduler::rehome`) while it is not running. A
+/// fiber keeps no thread's state across a park (parallel-scheduler.md,
+/// "Runtime state by owner", rules), so a moved fiber may resume on any
+/// thread, once; the check catches a carrier that resumes a fiber the
+/// kernel did not hand it.
 #[derive(Debug, Default)]
 struct Home(Option<std::thread::ThreadId>);
 
@@ -558,9 +559,16 @@ impl Home {
         *self.0.get_or_insert(here) == here
     }
 
-    /// True when the fiber never ran or runs on the current thread.
+    /// True when the fiber never ran, was moved, or runs on the current
+    /// thread.
     fn is_here(&self) -> bool {
         self.0.is_none_or(|home| home == std::thread::current().id())
+    }
+
+    /// Lets the next resume claim whichever thread it runs on.
+    #[cfg(test)]
+    fn release(&mut self) {
+        self.0 = None;
     }
 }
 
@@ -592,6 +600,13 @@ impl PinnedFiber {
         assert!(self.home.enter(), "a fiber resumed off its home carrier");
         scope::set_resume_context(context);
         self.fiber
+    }
+
+    /// Requires: the fiber is not running. Only tests move fibers until
+    /// stealing (step 4 PR 4c).
+    #[cfg(test)]
+    fn release_home(&mut self) {
+        self.home.release();
     }
 }
 
@@ -799,6 +814,10 @@ pub struct Scheduler {
     /// Set while the scheduler is torn down on one thread: every fiber is
     /// then resumed where the teardown runs, whatever its home carrier.
     any_carrier: bool,
+    /// A test's way to move these tasks to the next carrier each time they
+    /// become ready, as the C runtime's simulation build moves every fiber.
+    #[cfg(test)]
+    rotating: BTreeSet<TaskId>,
     /// The carriers' wake pipes, and which to wake once the lock is
     /// released.
     wakes: wake::Wakes,
@@ -965,6 +984,8 @@ impl Scheduler {
             jobs: jobs::Jobs::new(1),
             current: ready::Carrier::default(),
             any_carrier: false,
+            #[cfg(test)]
+            rotating: BTreeSet::new(),
             wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
             parked: vec![false],
             run_end: None,
@@ -1567,6 +1588,11 @@ impl Scheduler {
     /// Queues `task` on its home carrier: the one way work becomes ready,
     /// so a carrier other than the current one can be told about it.
     fn enqueue(&mut self, task: TaskId, front: bool) {
+        #[cfg(test)]
+        if self.rotating.contains(&task) {
+            let next = ready::Carrier((self.tasks[&task].carrier.0 + 1) % self.ready.carriers());
+            self.rehome(task, next);
+        }
         let carrier = self.tasks[&task].carrier;
         if front {
             self.ready.push_front(carrier, task);
@@ -1574,6 +1600,22 @@ impl Scheduler {
             self.ready.push_back(carrier, task);
         }
         self.wake_carrier(carrier);
+    }
+
+    /// Makes `to` the home of `task`, which is not running, has no job
+    /// queued and is not in a ready queue: its next resume runs on `to`'s
+    /// thread (step 4 PR 4b of parallel-scheduler.md).
+    #[cfg(test)]
+    fn rehome(&mut self, task: TaskId, to: ready::Carrier) {
+        let record = self.tasks.get_mut(&task).expect("a live task");
+        debug_assert!(
+            !matches!(record.phase, TaskPhase::Running | TaskPhase::Draining(_)),
+            "only a task that neither runs nor drains moves"
+        );
+        record.carrier = to;
+        if let Some(fiber) = record.fiber.as_mut() {
+            fiber.release_home();
+        }
     }
 
     pub fn wake(&mut self, task: TaskId) -> Result<(), SchedulerError> {

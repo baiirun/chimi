@@ -1,0 +1,6 @@
+# mutation run at 49abed6a64335dbd1007545efda7c41a42afcf4a
+# carrier_accessor_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- across_carrier_threads] (120s)
+KILLED       the offset is never taken [runtime_state -- across_carrier_threads] (50s)
+KILLED       every thread reads the main thread's carrier [runtime_state -- across_carrier_threads] (50s)
+# result: every mutant killed
