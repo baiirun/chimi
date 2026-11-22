@@ -15,7 +15,7 @@ use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
     ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
 };
-use crate::syntax::{SyntaxNode, is_comment_or_text_at};
+use crate::syntax::{NodeKind, SyntaxNode, TokenKind, is_comment_or_text_at};
 use crate::typing::TypedProject;
 
 /// The public surface of one module.
@@ -205,6 +205,7 @@ pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: us
             | ProjectSymbolKind::Enum
             | ProjectSymbolKind::Interface
             | ProjectSymbolKind::NativeType
+            | ProjectSymbolKind::TypeAlias
             | ProjectSymbolKind::Function
             | ProjectSymbolKind::Constant
             | ProjectSymbolKind::ProcessName
@@ -228,7 +229,7 @@ pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
         ModuleDeclarationKind::Interface => "interface",
         ModuleDeclarationKind::Function => "fn",
         ModuleDeclarationKind::Constant => "const",
-        ModuleDeclarationKind::NativeType => "type",
+        ModuleDeclarationKind::NativeType | ModuleDeclarationKind::TypeAlias => "type",
         ModuleDeclarationKind::ProcessName => "process name",
         ModuleDeclarationKind::NeedsGroup => "needs",
     }
@@ -265,22 +266,38 @@ fn signature(typed: &TypedProject, nodes: &ItemNodes<'_>, declaration: &ModuleDe
             .and_then(|contract| {
                 let header = header_before_parameters(declared)?;
                 let parameters = declaration.function.as_ref()?.parameters.iter();
+                let written = nodes
+                    .node(declaration)
+                    .map(|node| WrittenTypes::of(&node, text))
+                    .unwrap_or_default();
                 let inputs = parameters
                     .zip(&contract.inputs)
-                    .map(|(parameter, input)| {
+                    .enumerate()
+                    .map(|(index, (parameter, input))| {
                         // A clause group's parameters are patterns, not names.
                         if is_generated_name(&parameter.name.text) {
                             typed.format_type(*input)
                         } else {
-                            format!("{}: {}", parameter.name.text, typed.format_type(*input))
+                            // A written type keeps the name it was written with,
+                            // so a parameter of type `Settings` is not spelled out.
+                            let shown = written
+                                .parameters
+                                .get(index)
+                                .cloned()
+                                .flatten()
+                                .unwrap_or_else(|| typed.format_type(*input));
+                            format!("{}: {shown}", parameter.name.text)
                         }
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                Some(format!(
-                    "{header}({inputs}) -> {}",
-                    typed.format_contract_result(contract)
-                ))
+                let result = match &written.success {
+                    Some(success) => {
+                        format!("{success}{}", typed.format_contract_rows(contract))
+                    }
+                    None => typed.format_contract_result(contract),
+                };
+                Some(format!("{header}({inputs}) -> {result}"))
             })
             .unwrap_or_else(|| body_removed(declared).to_owned()),
         ModuleDeclarationKind::Constant => match declared.split_once('\n') {
@@ -349,6 +366,70 @@ impl<'tree> ItemNodes<'tree> {
 
 /// `pub fn name<T>` from a function declaration: everything before the
 /// parameter list's `(`.
+/// The types a function declaration writes, as written: one entry per
+/// parameter, `None` where the parameter has no type, and the success type
+/// after `->`. Whitespace runs collapse to one space.
+#[derive(Default)]
+struct WrittenTypes {
+    parameters: Vec<Option<String>>,
+    success: Option<String>,
+}
+
+impl WrittenTypes {
+    fn of(function: &SyntaxNode<'_>, text: &str) -> Self {
+        // A comment inside a written type cannot be kept on one line; such a
+        // type is shown as the checker formats it.
+        let written = |node: &SyntaxNode<'_>| {
+            if node
+                .descendant_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Comment)
+            {
+                return None;
+            }
+            let range = node.range();
+            text[range.start() as usize..range.end() as usize]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into()
+        };
+        let type_of = |node: &SyntaxNode<'_>| {
+            node.child_nodes()
+                .into_iter()
+                .find(|child| child.kind() == NodeKind::Type)
+                .and_then(|child| written(&child))
+        };
+        let children = function.child_nodes();
+        let parameters = children
+            .iter()
+            .find(|child| child.kind() == NodeKind::ValueParameters)
+            .map(|parameters| {
+                parameters
+                    .child_nodes()
+                    .into_iter()
+                    .filter(|parameter| parameter.kind() == NodeKind::ValueParameter)
+                    .map(|parameter| type_of(&parameter))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let success = children
+            .iter()
+            .find(|child| child.kind() == NodeKind::ImplementationContract)
+            .filter(|contract| {
+                contract
+                    .child_tokens()
+                    .iter()
+                    .any(|token| token.kind() == TokenKind::Arrow)
+            })
+            .and_then(type_of);
+        Self {
+            parameters,
+            success,
+        }
+    }
+}
+
 fn header_before_parameters(declared: &str) -> Option<&str> {
     let open = declared.find('(')?;
     Some(declared[..open].trim_end())

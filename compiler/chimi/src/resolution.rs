@@ -155,6 +155,8 @@ pub(crate) enum ProjectSymbolKind {
     Interface,
     /// A `native type`: opaque, with the runtime identity of a registry type.
     NativeType,
+    /// A `type` alias: another name for the type it declares.
+    TypeAlias,
     Function,
     Constant,
     /// A `process name` declaration: a module-level `Process.Address<M>`.
@@ -181,6 +183,7 @@ impl ProjectSymbolKind {
             Self::EnumConstructor => "enum constructor",
             Self::Interface => "interface",
             Self::NativeType => "native type",
+            Self::TypeAlias => "type alias",
             Self::Function => "function",
             Self::Constant => "constant",
             Self::ProcessName => "process name",
@@ -1236,6 +1239,7 @@ impl ProjectResolver {
             ModuleDeclarationKind::Enum => (Namespace::Type, ProjectSymbolKind::Enum),
             ModuleDeclarationKind::Interface => (Namespace::Type, ProjectSymbolKind::Interface),
             ModuleDeclarationKind::NativeType => (Namespace::Type, ProjectSymbolKind::NativeType),
+            ModuleDeclarationKind::TypeAlias => (Namespace::Type, ProjectSymbolKind::TypeAlias),
             ModuleDeclarationKind::Function => (Namespace::Value, ProjectSymbolKind::Function),
             ModuleDeclarationKind::Constant => (Namespace::Value, ProjectSymbolKind::Constant),
             ModuleDeclarationKind::ProcessName => {
