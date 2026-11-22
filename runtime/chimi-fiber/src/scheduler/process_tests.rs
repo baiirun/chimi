@@ -4508,9 +4508,10 @@ fn a_supervisor_stopped_from_another_carrier_stops_its_members_at_home_in_revers
 
 /// A shutdown deadline fired on another carrier forces the body without
 /// re-arming the spent deadline (which would fire again at once, forever):
-/// the idle carrier returns, and the body's home ends it as forced.
+/// the idle carrier returns, and, since the body's home is parked asleep,
+/// takes the forced body and ends it itself.
 #[test]
-fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
+fn a_deadline_fired_on_another_carrier_forces_a_body_whose_home_sleeps() {
     let second = Duration::from_secs(1);
     let mut stubborn = spec_with(&STUBBORN, Some(COUNTER), 64);
     stubborn.shutdown_within = second;
@@ -4535,7 +4536,7 @@ fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
     lab.scheduler.drive();
     assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Continue));
     lab.scheduler.drive();
-    assert!(lab.terminations().is_empty(), "the force waits for the body's home");
+    assert!(!lab.terminations().is_empty(), "carrier 0 took the body from its sleeping home");
     lab.settle_carriers();
     assert_eq!(
         timed_terminations(&lab).last(),

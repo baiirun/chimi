@@ -74,6 +74,13 @@ impl Wakes {
         }
     }
 
+    /// Withdraws a mark not yet written: the work it announced was taken.
+    pub(super) fn unmark(&mut self, carrier: Carrier) {
+        if let Some(marked) = self.marked.get_mut(carrier.0 as usize) {
+            *marked = false;
+        }
+    }
+
     /// The marked carriers' write ends, clearing the marks. A carrier marked
     /// more than once since the last take is written once.
     pub(super) fn take(&mut self) -> Marked {
@@ -96,6 +103,12 @@ impl Wakes {
         self.pending
             .get(carrier.0 as usize)
             .map(|pending| (std::ptr::from_ref(pending), self.spin))
+    }
+
+    /// True when `carrier` is marked and not yet written.
+    #[cfg(test)]
+    pub(super) fn is_marked(&self, carrier: Carrier) -> bool {
+        self.marked.get(carrier.0 as usize).copied().unwrap_or(false)
     }
 
     /// True when some carrier is marked and not yet written.

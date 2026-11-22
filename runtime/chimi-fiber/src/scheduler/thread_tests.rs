@@ -23,8 +23,7 @@ unsafe extern "C" {
     fn chimi_fixture_waits_on_a_member_main(context: *mut std::ffi::c_void) -> ChimiFiberResult;
 }
 
-/// A fiber that finds itself on another thread, or holding the kernel.
-const MOVED: i64 = 77;
+/// A fiber that finds itself holding the kernel.
 const HELD: i64 = 78;
 
 /// Every thread a fiber has run on, across a test.
@@ -73,12 +72,12 @@ fn ended(state: ChimiFiberState, defect_code: i64) -> ChimiFiberResult {
     }
 }
 
-/// Sleeps one microsecond as many times as its context says, checking
-/// after every park that it is on the thread it started on and that the
-/// carrier resumed it without the kernel.
+/// Sleeps one microsecond as many times as its context says, recording
+/// the thread it started on and checking after every park that the carrier
+/// resumed it without the kernel. An idle carrier may take it from its
+/// sleeping home after a park, so it may end on another thread.
 unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
-    let home = this_thread();
-    THREADS.lock().expect("threads").insert(home);
+    THREADS.lock().expect("threads").insert(this_thread());
     for _ in 0..context as usize {
         let mut now = request(REQUEST_TIMER_NOW, 0);
         let mut sleep = request(REQUEST_TIMER_SLEEP_UNTIL, 0);
@@ -87,9 +86,6 @@ unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
             !call(&mut sleep)
         } {
             return ended(ChimiFiberState::Cancelled, 0);
-        }
-        if this_thread() != home {
-            return ended(ChimiFiberState::Defected, MOVED);
         }
         if carrier::kernel_held() {
             return ended(ChimiFiberState::Defected, HELD);
