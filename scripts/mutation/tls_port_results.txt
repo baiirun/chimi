@@ -1,0 +1,6 @@
+# mutation run at 081eb52bdd32ac3bc22aa4d6d18aa1edb75e8d71
+# tls_port_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [tls -- openssl] (138s)
+KILLED       a server that exited counts as listening [tls -- openssl] (11s)
+KILLED       only the first port is tried [tls -- openssl] (11s)
+# result: every mutant killed
