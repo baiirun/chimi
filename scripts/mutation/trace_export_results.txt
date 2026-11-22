@@ -1,0 +1,6 @@
+chimi trace export --otlp (Phase 7c step 7, PR 2), 2026-11-22.
+
+trace_export_mutations.py: 10 mutants, all KILLED. Two survived the first run
+(a dependency call has no length; a parent is not written) and were killed after
+open_spans_end_with_their_last_child and the every-span-has-a-parent check were
+added.
