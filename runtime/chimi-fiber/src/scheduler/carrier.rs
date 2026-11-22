@@ -352,7 +352,27 @@ mod lock_tests {
         assert_eq!(*lock.lock().expect("lock"), 1);
     }
 
-    /// A lock a panic poisoned is taken over, during the spin and after it.
+    /// A holder that panics after the waiter stopped spinning poisons the
+    /// lock under the waiter's blocking take, which takes it over too.
+    #[test]
+    fn a_lock_poisoned_while_waiting_is_taken_over() {
+        let lock = Mutex::new(7);
+        let (held, holding) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let lock = &lock;
+            let holder = scope.spawn(move || {
+                let _held = lock.lock().expect("lock");
+                held.send(()).expect("send");
+                std::thread::sleep(LOCK_SPIN * 100);
+                panic!("poison it");
+            });
+            holding.recv().expect("held");
+            assert_eq!(*lock_spinning(lock), 7);
+            assert!(holder.join().is_err());
+        });
+    }
+
+    /// A lock a panic already poisoned is taken over at once.
     #[test]
     fn a_poisoned_lock_is_taken_over() {
         let lock = Mutex::new(7);
