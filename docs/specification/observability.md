@@ -282,6 +282,9 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text
 pub fn logs_request(entries: List<(Log.Entry, Int)>, service_name: Text) -> Text
 ```
 
+`programs/otel-worker` is a worked example, with a guide to setting the
+exporter up in its README.
+
 ### Pushing metrics
 
 ```text
@@ -413,3 +416,4 @@ Otel.export(settings, fn(exporter) {
 | Entries waiting behind a slow push are flushed; the flush is not lost to a full mailbox | `tests/std_otel.rs` `entries_waiting_behind_a_slow_push_are_flushed` |
 | At most `log_buffer` entries wait while the process is idle | `tests/std_otel.rs` `at_most_log_buffer_entries_wait` |
 | The last logs and metrics pushes share `flush_within` | `tests/std_otel.rs` `the_last_pushes_share_flush_within` |
+| The `programs/otel-worker` example pushes its jobs' metrics and logs | `tests/std_otel.rs` `the_otel_worker_example_pushes_its_jobs` |

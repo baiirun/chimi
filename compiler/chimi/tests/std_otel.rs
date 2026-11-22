@@ -822,3 +822,76 @@ fn the_last_pushes_share_flush_within() {
     assert!(took >= std::time::Duration::from_secs(1), "{took:?}");
     assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
 }
+
+// The example program `programs/otel-worker` runs its jobs, writes each log
+// line to standard error, and pushes its metrics and its `Info` and `Warn`
+// logs to the collector `--collector` names. Rejects an example that no
+// longer builds, loses a job's count or log, or pushes a `Debug` entry.
+#[test]
+fn the_otel_worker_example_pushes_its_jobs() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("example");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs/otel-worker");
+    let built = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch.0)
+        .arg("build")
+        .arg("--root")
+        .arg(&root)
+        .args(["app/main", "-o", "program"])
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{built:?}");
+    let output = Command::new(scratch.0.join("program"))
+        .current_dir(&scratch.0)
+        .args(["--chimi-runner", "--clock=real", "--", "--collector"])
+        .arg(format!("http://127.0.0.1:{}", collector.port))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches(r#""message":"job done""#).count(),
+        4,
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches(r#""message":"job failed""#).count(),
+        2,
+        "{stderr}"
+    );
+    let pushes = collector.pushes();
+    let logs: String = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .map(|push| push.body.as_str())
+        .collect();
+    assert_eq!(
+        logs.matches(r#"{"stringValue":"job done"}"#).count(),
+        4,
+        "{logs}"
+    );
+    assert_eq!(
+        logs.matches(r#"{"stringValue":"job failed"}"#).count(),
+        2,
+        "{logs}"
+    );
+    assert!(!logs.contains("starting"), "{logs}");
+    // Each push is answered on its own thread, so the last to arrive may
+    // be a periodic one; the final push is the one that holds every job.
+    let series = [
+        r#"{"asInt":"4","attributes":[{"key":"outcome","value":{"stringValue":"done"}}]"#,
+        r#"{"asInt":"2","attributes":[{"key":"outcome","value":{"stringValue":"failed"}}]"#,
+        r#"{"stringValue":"otel-worker"}"#,
+    ];
+    let metrics: Vec<&str> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/metrics")
+        .map(|push| push.body.as_str())
+        .collect();
+    assert!(
+        metrics
+            .iter()
+            .any(|body| series.iter().all(|one| body.contains(one))),
+        "no metrics push holds every job: {metrics:?}"
+    );
+}
