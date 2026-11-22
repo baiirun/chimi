@@ -1,7 +1,6 @@
 // Decimal.divide_checked returns None only for a zero divisor or an
 // oversized quotient; a scale outside 0..=38 is a broken precondition.
-import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal as Decimal.{Decimal, Rounding}
 import std/test as Test
 
 fn run() -> Option<Decimal> {

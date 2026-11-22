@@ -1,0 +1,12 @@
+# mutation run at 37f3794314bb7c140ee0577fed92f2bcef8e888c
+# combined_import_mutations.py: 9 mutants against compiler/chimi
+KILLED       the parser ignores members after an alias [language lint -- combined] (39s)
+KILLED       lowering keeps only the first binding [language lint -- combined] (40s)
+KILLED       an unknown combined import is reported twice [language lint -- combined] (40s)
+KILLED       the formatter never joins [language lint -- the_formatter_joins] (42s)
+KILLED       the formatter joins across a comment between the lines [language lint -- the_formatter_joins] (44s)
+KILLED       the formatter joins a line with a trailing comment [language lint -- the_formatter_joins] (37s)
+KILLED       the formatter joins a repeated member [language lint -- the_formatter_keeps] (35s)
+KILLED       the formatter keeps the removed line [language lint -- the_formatter_joins] (36s)
+KILLED       the formatter joins two aliases [language lint -- the_formatter_joins] (38s)
+# result: every mutant killed

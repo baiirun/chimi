@@ -1,6 +1,5 @@
 // N27: division by zero is a broken precondition, whatever the zero's scale.
-import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal as Decimal.{Decimal, Rounding}
 import std/test as Test
 
 fn run() -> Decimal {

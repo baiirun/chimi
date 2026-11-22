@@ -1,5 +1,4 @@
-import std/channel as Channel
-import std/channel.{Completion, Receiver, Receive, Sender}
+import std/channel as Channel.{Completion, Receiver, Receive, Sender}
 import std/task as Task
 
 interface Transform {

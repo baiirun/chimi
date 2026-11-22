@@ -2,8 +2,7 @@
 // Result.get turns them back into a value or a live failure. Captures with
 // different failure sets join in one list as their union.
 import std/debug as Debug
-import std/result as Result
-import std/result.{Result, Ok, Err}
+import std/result as Result.{Result, Ok, Err}
 import std/test as Test
 
 enum UserError {

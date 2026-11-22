@@ -1322,6 +1322,7 @@ impl ProjectResolver {
     fn bind_imports(&mut self) {
         for module_index in 0..self.semantic.modules.len() {
             let imports = self.semantic.modules[module_index].imports.clone();
+            let mut unresolved_ranges = Vec::new();
             for import in imports {
                 if let Some(&target) = self.module_paths.get(&import.path) {
                     match import.binding {
@@ -1358,7 +1359,10 @@ impl ProjectResolver {
                     }
                     continue;
                 }
-                {
+                // A combined `as Alias.{...}` line lowers to two imports with one
+                // range; report its unknown module once.
+                if !unresolved_ranges.contains(&import.range) {
+                    unresolved_ranges.push(import.range);
                     let module = &self.semantic.modules[module_index];
                     self.diagnostics.push(name_error(
                         module,

@@ -1,10 +1,7 @@
 // A decode failure that main lets propagate reaches the outcome as
 // `DecodeError.InvalidJson` with its message and byte offset.
-import std/json as Json
-import std/json.{Value}
-import std/json.{DecodeError}
-import std/result as Result
-import std/result.{Err}
+import std/json as Json.{Value, DecodeError}
+import std/result as Result.{Err}
 import std/test as Test
 
 fn run() -> Value {

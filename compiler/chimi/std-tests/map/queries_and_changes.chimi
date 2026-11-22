@@ -2,8 +2,7 @@
 // so that enumeration shows the ascending key order, and maps built in
 // different insertion orders compare equal.
 import std/debug as Debug
-import std/map as Map
-import std/map.{Map}
+import std/map as Map.{Map}
 import std/test as Test
 
 const limits = Map.from([("burst", 10), ("rate", 2)])

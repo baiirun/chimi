@@ -1,8 +1,7 @@
 // The runner closes `main`'s `environment` need with the host provider. The
 // variables differ between machines, so this checks what holds on every one;
 // tests/host_modules.rs sets variables and compares values.
-import std/env as Env
-import std/env.{Environment}
+import std/env as Env.{Environment}
 import std/map as Map
 import std/path as Path
 

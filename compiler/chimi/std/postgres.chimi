@@ -48,32 +48,23 @@
 /// state unknown, so the connection fails every later call with
 /// `SqlError.ConnectionLost` and the pool closes it.
 
-import std/bytes as Bytes
-import std/bytes.{Bytes, IntLayout}
+import std/bytes as Bytes.{Bytes, IntLayout}
 import std/channel.{Receive}
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/debug as Debug
 import std/decimal as Decimal
-import std/duration as Duration
-import std/duration.{Duration}
+import std/duration as Duration.{Duration}
 import std/float as Float
 import std/int as Int
 import std/list as List
-import std/net as Net
-import std/net.{NetError, Network}
+import std/net as Net.{NetError, Network}
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err, Ok, Result}
-import std/sql as Sql
-import std/sql.{Connection, Driver, SqlError, Value}
-import std/stream as Stream
-import std/stream.{Reader, Writer}
-import std/task as Task
-import std/task.{Timeout}
+import std/result as Result.{Err, Ok, Result}
+import std/sql as Sql.{Connection, Driver, SqlError, Value}
+import std/stream as Stream.{Reader, Writer}
+import std/task as Task.{Timeout}
 import std/text as Text
-import std/tls as Tls
-import std/tls.{Roots, TlsError}
+import std/tls as Tls.{Roots, TlsError}
 import std/watch as Watch
 
 // 1. The driver.
