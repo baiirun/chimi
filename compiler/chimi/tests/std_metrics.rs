@@ -438,6 +438,15 @@ fn the_document_carries_the_runs_start_and_end() {
         ),
         "{written}"
     );
+    let export = scratch.chimi(&["metrics", "export", "--otlp", "metrics.json"]);
+    assert_eq!(export.status, Some(0), "{}", export.stderr);
+    assert!(
+        export
+            .stdout
+            .contains(r#""startTimeUnixNano":"1794303000000000000","timeUnixNano":"1794303002000000000""#),
+        "{}",
+        export.stdout
+    );
     let output = runner(&program, &["--clock=real", &option]);
     assert_eq!(output.status, Some(0), "{}", output.stderr);
     let written = std::fs::read_to_string(&file).unwrap();
@@ -457,6 +466,7 @@ fn the_document_carries_the_runs_start_and_end() {
         .unwrap()
         .as_nanos() as i64;
     assert!(end <= wall && wall - end < 120_000_000_000, "{written}");
+    assert!(wall - start < 120_000_000_000, "{written}");
 }
 
 // `chimi metrics export --otlp` turns the document into OTLP/JSON metrics:
@@ -524,6 +534,11 @@ fn a_metrics_document_without_times_is_refused() {
     let old = scratch.chimi(&["metrics", "export", "--otlp", "old.json"]);
     assert_eq!((old.status, old.stdout.as_str()), (Some(1), ""));
     assert!(old.stderr.contains("the document has no start_unix_ns"), "{}", old.stderr);
+    let before_1970 = format!("{AFTER_ONE}\n").replace(r#""start_unix_ns":0"#, r#""start_unix_ns":-5"#);
+    std::fs::write(scratch.0.join("early.json"), before_1970).unwrap();
+    let early = scratch.chimi(&["metrics", "export", "--otlp", "early.json"]);
+    assert_eq!((early.status, early.stdout.as_str()), (Some(1), ""));
+    assert!(early.stderr.contains("start_unix_ns is before 1970"), "{}", early.stderr);
     std::fs::write(scratch.0.join("trace.json"), "{\"schema\":\"chimi.runtime.v1\"}\n").unwrap();
     let other = scratch.chimi(&["metrics", "export", "--otlp", "trace.json"]);
     assert_eq!((other.status, other.stdout.as_str()), (Some(1), ""));

@@ -39,8 +39,12 @@ pub fn export_metrics_otlp(text: &str, service_name: Option<&str>) -> Result<Str
     if document.text("schema") != Some(SCHEMA) {
         return Err(error("not a chimi.metrics.v1 document"));
     }
+    // OTLP times are unsigned nanoseconds since 1970.
     let time = |key: &str| match document.get(key) {
         Some(JsonData::Number(number)) if number.parse::<u64>().is_ok() => Ok(number.as_str()),
+        Some(JsonData::Number(number)) if number.starts_with('-') => Err(MetricsError(format!(
+            "the document's {key} is before 1970, which OpenTelemetry cannot carry"
+        ))),
         _ => Err(MetricsError(format!(
             "the document has no {key}; it was written by a runtime without run times"
         ))),
