@@ -413,7 +413,16 @@ struct Running {
 
 impl Running {
     fn start(executable: &Path) -> Self {
-        let mut child = Command::new(executable)
+        Self::start_with(executable, &[])
+    }
+
+    /// Starts the program with runner options, such as `--carriers=4`.
+    fn start_with(executable: &Path, runner: &[&str]) -> Self {
+        let mut command = Command::new(executable);
+        if !runner.is_empty() {
+            command.arg("--chimi-runner").args(runner).arg("--");
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -494,6 +503,64 @@ fn a_service_reloads_on_each_hangup() {
     let (rest, status) = running.finish();
     assert_eq!(rest, ["hangup"]);
     assert_eq!(status.code(), Some(0), "{status}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// On several carriers signals are carrier 0's (parallel-scheduler.md, step 4
+// PR 4d-3): waiters started from main, a hangup for each while carrier 0 is
+// parked, and a terminate that drains a program sleeping on every carrier.
+#[test]
+fn signals_reach_a_program_on_four_carriers() {
+    let scratch = scratch_directory("carriers");
+    let executable = build_native(
+        &scratch,
+        "fn waiter(label: Text) -> Text needs { signals: Signals } {
+  let got = waited([Signal.Hangup])
+  Text.concat([label, \":\", got])
+}
+
+pub fn main() -> Void needs { signals: Signals, console: Console } {
+  let a = Task.start(fn() { waiter(\"a\") })
+  let b = Task.start(fn() { waiter(\"b\") })
+  let c = Task.start(fn() { waiter(\"c\") })
+  console.write_line(\"ready\")
+  console.write_line(Task.result(a))
+  console.write_line(Task.result(b))
+  console.write_line(Task.result(c))
+}
+",
+    );
+    let mut running = Running::start_with(&executable, &["--carriers=4"]);
+    assert_eq!(running.next_line(), "ready");
+    running.signal(SIGHUP);
+    assert_eq!(running.next_line(), "a:hangup");
+    running.signal(SIGHUP);
+    assert_eq!(running.next_line(), "b:hangup");
+    running.signal(SIGHUP);
+    let (rest, status) = running.finish();
+    assert_eq!(rest, ["c:hangup"]);
+    assert_eq!(status.code(), Some(0), "{status}");
+
+    let executable = build_native(
+        &scratch,
+        "fn nap() -> Void needs { clock: Clock } {
+  Clock.sleep(Duration.seconds(60))
+}
+
+pub fn main() -> Void needs { signals: Signals, clock: Clock, console: Console } {
+  let a = Task.start(fn() { nap() })
+  let b = Task.start(fn() { nap() })
+  console.write_line(\"ready\")
+  Clock.sleep(Duration.seconds(60))
+}
+",
+    );
+    let mut running = Running::start_with(&executable, &["--carriers=4"]);
+    assert_eq!(running.next_line(), "ready");
+    running.signal(SIGTERM);
+    let (rest, status) = running.finish();
+    assert!(rest.is_empty(), "{rest:?}");
+    assert_eq!(status.signal(), Some(SIGTERM), "{status}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
