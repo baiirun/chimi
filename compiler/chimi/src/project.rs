@@ -439,6 +439,31 @@ impl LoadedProject {
             .map(ProjectSource::origin)
     }
 
+    /// The packages this project read, the command's own first, for the
+    /// build report; empty without a manifest.
+    pub fn built_packages(&self) -> Vec<BuiltPackage> {
+        let Some(graph) = &self.packages else {
+            return Vec::new();
+        };
+        let mut packages: Vec<BuiltPackage> = graph
+            .packages()
+            .map(|package| BuiltPackage {
+                name: package.name.to_string(),
+                own: package.own,
+                source: match &package.git {
+                    Some(locked) => BuiltSource::Git {
+                        url: locked.source.url.clone(),
+                        rev: locked.source.rev.clone(),
+                        commit: locked.commit.clone(),
+                    },
+                    None => BuiltSource::Path(package.root.clone()),
+                },
+            })
+            .collect();
+        packages.sort_by(|left, right| (!left.own, &left.name).cmp(&(!right.own, &right.name)));
+        packages
+    }
+
     pub fn sources(&self) -> Vec<ProjectSource> {
         self.modules.clone()
     }
@@ -981,6 +1006,28 @@ impl Loader<'_> {
         self.modules.push(module);
         Ok(())
     }
+}
+
+/// A package in a build report (packages.md, "Interfaces").
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltPackage {
+    pub name: String,
+    /// The package the command named, or a member of the workspace it named.
+    pub own: bool,
+    pub source: BuiltSource,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuiltSource {
+    /// A package of the workspace, or a path package inside a fetched one,
+    /// by its directory.
+    Path(PathBuf),
+    /// A fetched package at the commit the lockfile pins.
+    Git {
+        url: String,
+        rev: String,
+        commit: String,
+    },
 }
 
 /// One package's pin as `chimi deps update` moved it.

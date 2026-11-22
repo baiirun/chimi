@@ -1251,7 +1251,13 @@ fn build(
             return ExitCode::FAILURE;
         }
     };
-    match build_application(&program, standard, &output, &artifact_directory) {
+    match build_application(
+        &program,
+        standard,
+        &output,
+        &artifact_directory,
+        project.built_packages(),
+    ) {
         Ok(report) => {
             print!("{}", report.render_json());
             ExitCode::SUCCESS

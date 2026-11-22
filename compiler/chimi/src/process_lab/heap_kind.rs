@@ -118,6 +118,7 @@ fn defined_symbols(directory: &Path, source: &str) -> Result<Vec<String>, String
         &StandardTree::embedded(),
         &executable,
         &directory.join("artifacts"),
+        Vec::new(),
     )
     .map_err(|error| format!("native build failed: {error}"))?;
     let output = Command::new("nm")
