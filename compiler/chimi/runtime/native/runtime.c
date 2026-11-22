@@ -813,10 +813,12 @@ static int64_t fragment_footprint_now(void) { return carrier->heap_totals.fragme
 /* Process-wide footprints and their peaks with several carrier threads
    (step 3 PR 6b). Each carrier folds its change into them once it has moved
    FOOTPRINT_FOLD_BYTES from what it last folded, so the counters are within
-   carrier_count * FOOTPRINT_FOLD_BYTES of the true sum and a peak is the
-   largest folded sum. One atomic add per 64 KiB of change, instead of one per
-   allocation, keeps the carriers off one cache line (as take_mark_epoch). */
-enum { FOOTPRINT_FOLD_BYTES = 64 * 1024 };
+   carrier_count * FOOTPRINT_FOLD_SLACK of the true sum and a peak is the
+   largest folded sum. Young allocations are checked once per chunk
+   (young_bump), not per allocation, hence the chunk in the slack. One
+   atomic add per 64 KiB of change, instead of one per allocation, keeps the
+   carriers off one cache line (as take_mark_epoch). */
+enum { FOOTPRINT_FOLD_BYTES = 64 * 1024, FOOTPRINT_FOLD_SLACK = FOOTPRINT_FOLD_BYTES + YOUNG_CHUNK_BYTES };
 static _Atomic int64_t process_footprint_bytes;
 static _Atomic int64_t process_peak_footprint_bytes;
 static _Atomic int64_t process_fragment_footprint_bytes;
@@ -831,19 +833,29 @@ static void atomic_raise(_Atomic int64_t *peak, int64_t value) {
 }
 #endif
 
+#ifndef CHIMI_CARRIER_SIMULATION
+/* Out of line, so the allocator's inlined check stays one compare. */
+__attribute__((noinline, cold)) static void footprint_fold_now(int64_t now, int64_t *folded,
+                                                               _Atomic int64_t *process,
+                                                               _Atomic int64_t *peak) {
+  int64_t change = now - *folded;
+  *folded = now;
+  atomic_raise(peak, atomic_fetch_add_explicit(process, change, memory_order_relaxed) + change);
+}
+#endif
+
 /* Folds this carrier's change since its last fold into a process-wide
    footprint once it reaches FOOTPRINT_FOLD_BYTES either way, and raises the
    peak to the new sum. Nothing with one carrier, or in the simulation, whose
    own peaks are already the process's. */
-static void footprint_fold(int64_t now, int64_t *folded, _Atomic int64_t *process, _Atomic int64_t *peak) {
+static inline void footprint_fold(int64_t now, int64_t *folded, _Atomic int64_t *process, _Atomic int64_t *peak) {
 #ifdef CHIMI_CARRIER_SIMULATION
   (void)now, (void)folded, (void)process, (void)peak;
 #else
   if (carrier_count == 1) return;
   int64_t change = now - *folded;
   if (change < FOOTPRINT_FOLD_BYTES && change > -FOOTPRINT_FOLD_BYTES) return;
-  *folded = now;
-  atomic_raise(peak, atomic_fetch_add_explicit(process, change, memory_order_relaxed) + change);
+  footprint_fold_now(now, folded, process, peak);
 #endif
 }
 
@@ -864,7 +876,7 @@ static void footprint_seed_process(void) {
 }
 #endif
 
-static void footprint_record_peak(void) {
+static inline void footprint_record_peak(void) {
   int64_t footprint = footprint_now();
   if (footprint > carrier->heap_totals.peak_footprint_bytes) carrier->heap_totals.peak_footprint_bytes = footprint;
   footprint_fold(footprint, &carrier->folded_footprint_bytes, &process_footprint_bytes, &process_peak_footprint_bytes);
@@ -878,7 +890,7 @@ static void footprint_add(size_t bytes) {
 /* The peak is recorded before the fall (the young bytes deferred in
    pending_footprint_bytes peak just before it), and the fall is folded after
    it, so a carrier that only frees still brings the process count down. */
-static void footprint_sub(size_t bytes) {
+static inline void footprint_sub(size_t bytes) {
   footprint_record_peak();
   carrier->heap_totals.footprint_bytes -= (int64_t)bytes;
   footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,
@@ -992,6 +1004,10 @@ static AllocationHeader *young_bump(AllocationScope *scope, size_t rounded) {
     scope->last_chunk = chunk;
     scope->bump = chunk->data;
     scope->bump_end = chunk->data + YOUNG_CHUNK_CAPACITY;
+    /* The deferred young bytes count toward the process footprint here,
+       once per chunk, so a long pass cannot hide them from its peak. */
+    footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,
+                   &process_peak_footprint_bytes);
   }
   AllocationHeader *header = (AllocationHeader *)scope->bump;
   scope->bump += rounded;
@@ -12312,7 +12328,7 @@ static bool write_profile(const char *path) {
 /* With several carrier threads, replaces the summed totals' peaks (each one
    carrier's) with the process-wide peaks footprint_fold kept, raised to the
    exact sum now, which the report reads once no fiber runs. They are then
-   within carrier_count * FOOTPRINT_FOLD_BYTES of the true peak. */
+   within carrier_count * FOOTPRINT_FOLD_SLACK of the true peak. */
 static void report_process_peaks(HeapTotals *totals) {
 #ifdef CHIMI_CARRIER_SIMULATION
   (void)totals;

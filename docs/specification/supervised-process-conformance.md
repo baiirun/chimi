@@ -782,7 +782,8 @@ take their size from `main(arguments)`. As built in `runtime.c` (U5):
   is `peak_fragment_footprint_bytes`.
 - With one carrier both peaks are exact. With n carriers on threads
   (`--carriers=n`) each carrier adds its change to a process-wide count once
-  it has moved 64 KiB, so both peaks are within n × 64 KiB of the true peak
+  it has moved 64 KiB (young allocations are checked once per 16 KiB chunk),
+  so both peaks are within n × 80 KiB of the true peak
   and never below the footprint at exit. The exact-count scenarios run on
   one carrier.
 - `process_heap_peak_value_bytes` is the largest peak of live payload bytes

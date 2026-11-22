@@ -520,7 +520,7 @@ static void a_peak_counts_the_whole_process(void) {
         "carrier 1's own count did not drift");
   HeapTotals end = heap_totals_sum();
   report_process_peaks(&end);
-  int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_BYTES;
+  int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
   int64_t peak = start.peak_footprint_bytes > live + BYTES ? start.peak_footprint_bytes : live + BYTES;
   int64_t fragment_peak = start.peak_fragment_footprint_bytes > fragments + BYTES
                             ? start.peak_fragment_footprint_bytes : fragments + BYTES;
@@ -530,6 +530,64 @@ static void a_peak_counts_the_whole_process(void) {
   CHECK(end.peak_fragment_footprint_bytes >= fragment_peak - slack &&
           end.peak_fragment_footprint_bytes <= fragment_peak + slack,
         "process fragment peak %" PRId64 ", true peak %" PRId64, end.peak_fragment_footprint_bytes, fragment_peak);
+}
+
+/* Every count the process-wide ones should hold, within the fold slack. */
+static void the_process_counts_follow_the_carriers(void) {
+  HeapTotals sum = heap_totals_sum();
+  int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
+  int64_t process = atomic_load(&process_footprint_bytes);
+  int64_t fragments = atomic_load(&process_fragment_footprint_bytes);
+  CHECK(process >= sum.footprint_bytes - slack && process <= sum.footprint_bytes + slack,
+        "process footprint %" PRId64 ", carriers' sum %" PRId64, process, sum.footprint_bytes);
+  CHECK(fragments >= sum.fragment_footprint_bytes - slack && fragments <= sum.fragment_footprint_bytes + slack,
+        "process fragment footprint %" PRId64 ", carriers' sum %" PRId64, fragments, sum.fragment_footprint_bytes);
+}
+
+/* The report's peak counts young bytes a long pass has not flushed yet, and
+   a fall on a carrier that then only waits. Carrier 1 holds a pass of young
+   values while carrier 2 rises and falls, so the true peak is both at once;
+   then carrier 2 frees a block alone and carrier 1 allocates as much. */
+static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
+  enum { YOUNG_VALUES = 4096, RISE = 8 * 1024 * 1024, LONE = 2 * RISE };
+  int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
+  HeapTotals start = heap_totals_sum();
+  report_process_peaks(&start);
+  carrier_bind(carrier_at(1));
+  RuntimeHeap *heap = heap_create();
+  RuntimeHeap *previous = carrier->fiber.heap;
+  carrier->fiber.heap = heap;
+  AllocationScope pass;
+  allocation_scope_begin(&pass);
+  int64_t before_young = heap_totals_sum().footprint_bytes;
+  for (uint32_t index = 0; index < YOUNG_VALUES; ++index) (void)integer_value(index);
+  CHECK(carrier->pending_footprint_bytes > 0, "the pass's young bytes were flushed");
+  int64_t with_young = heap_totals_sum().footprint_bytes;
+  carrier_bind(carrier_at(2));
+  footprint_add(RISE);
+  int64_t true_peak = heap_totals_sum().footprint_bytes;
+  footprint_sub(RISE);
+  carrier_bind(carrier_at(1));
+  allocation_scope_end(&pass, NULL, NULL);
+  carrier->fiber.heap = previous;
+  heap_destroy(heap);
+  CHECK(with_young - before_young > 4 * FOOTPRINT_FOLD_SLACK, "the young pass holds only %" PRId64 " bytes",
+        with_young - before_young);
+  /* Carrier 2 frees a block it never allocated and then waits; carrier 1
+     allocates as much. The program never holds both. */
+  int64_t lone = heap_totals_sum().footprint_bytes;
+  carrier_bind(carrier_at(2));
+  footprint_sub(LONE);
+  carrier_bind(carrier_at(1));
+  footprint_add(LONE);
+  CHECK(true_peak > start.peak_footprint_bytes + slack && true_peak > lone + slack,
+        "the overlap is not the program's peak");
+  carrier_bind(&carrier_first);
+  HeapTotals end = heap_totals_sum();
+  report_process_peaks(&end);
+  CHECK(end.peak_footprint_bytes >= true_peak - slack && end.peak_footprint_bytes <= true_peak + slack,
+        "process peak %" PRId64 ", true peak %" PRId64, end.peak_footprint_bytes, true_peak);
+  the_process_counts_follow_the_carriers();
 }
 
 /* One carrier sees the epochs and span ids a single shared counter would
@@ -662,6 +720,7 @@ int main(void) {
   carriers_create(THREADS + 1);
   CHECK(carrier_count == THREADS + 1, "%zu carriers", carrier_count);
   a_peak_counts_the_whole_process();
+  a_peak_counts_unflushed_young_bytes_and_lone_falls();
   a_fiber_on_an_unbound_thread_aborts(start_a_task_unbound, "task");
 
   runtime.telemetry = tmpfile();
@@ -707,6 +766,7 @@ int main(void) {
   CHECK(after.live_fragments == before.live_fragments && after.fragment_footprint_bytes == before.fragment_footprint_bytes,
         "fragments leaked");
   CHECK(after.live_heaps == before.live_heaps, "heaps leaked");
+  the_process_counts_follow_the_carriers();
   /* Each thread recorded ROUNDS fragments, which carrier 0 freed above, and
      each producer copied ROUNDS more, which its consumer took. */
   for (size_t index = 0; index < THREADS; ++index) {

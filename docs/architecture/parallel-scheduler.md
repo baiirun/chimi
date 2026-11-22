@@ -95,7 +95,7 @@ function-local static, so new state gets an owner when it is added.
   `process_heap_peak_value_bytes`, `scope_totals`). The counters are signed
   per-carrier deltas, since an allocation made on one carrier can be freed on
   another; the report sums them (PR 5a), and with several carrier threads its
-  peaks are process-wide ones kept within 64 KiB per carrier (PR 6b).
+  peaks are process-wide ones kept within 80 KiB per carrier (PR 6b).
   Carrier 0 (`carrier_first`) is a static, and `carriers_create` allocates
   the others before any carrier thread starts. `carrier` is each thread's
   initial-exec thread-local pointer, set by `carrier_thread_enter`.
@@ -1024,15 +1024,18 @@ four keep one carrier.
      too. Each carrier folds its change into process-wide atomic counters
      once it has moved 64 KiB either way since its last fold
      (`footprint_fold`), and a fold raises the process peak with a
-     compare-and-swap. The report takes that peak, raised to the exact sum
-     at exit, so on n carriers it is within n × 64 KiB of the true peak;
+     compare-and-swap. Young allocations, whose counts wait for their
+     pass's end, are checked once per 16 KiB chunk. The report takes that
+     peak, raised to the exact sum at exit, so on n carriers it is within
+     n × 80 KiB of the true peak;
      one carrier and the simulation build still record it exactly, as
      before. A per-carrier peak would drift without bound, since an
      allocation made on one carrier can be freed on another. The other
      peaks (a scope's, an incarnation heap's, a task's) have one owner each
      and were already well defined. `fixtures/carrier-threads-stress.c`
-     allocates on one carrier and frees on another 1,000 times and checks
-     the process peaks against the true one.
+     allocates on one carrier and frees on another 1,000 times, overlaps a
+     pass's unflushed young values on one carrier with a rise on another,
+     and checks the process peaks against the true one.
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.

@@ -37,3 +37,9 @@ MUTATIONS = [
       "  totals->peak_footprint_bytes = peak > totals->footprint_bytes ? peak : totals->footprint_bytes;",
       "  totals->peak_footprint_bytes = peak;"),
 ]
+
+MUTATIONS += [
+    m("a new young chunk never folds",
+      "    footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,\n                   &process_peak_footprint_bytes);\n  }",
+      "  }"),
+]
