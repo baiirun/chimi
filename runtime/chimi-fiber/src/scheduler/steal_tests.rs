@@ -40,7 +40,7 @@ fn park(scheduler: &mut Scheduler, carrier: u32) {
 /// Forgets the wakes marked or written so far.
 fn clear_wakes(scheduler: &mut Scheduler) {
     drop(scheduler.take_wakes());
-    for carrier in 0..scheduler.ready.carriers() {
+    for carrier in 0..scheduler.shards.carriers() {
         signal::drain(wake_fd(scheduler, carrier));
     }
 }
@@ -78,7 +78,7 @@ fn an_idle_carrier_takes_a_started_task_from_a_sleeping_carrier() {
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(0), "carrier 0 is its home now");
     assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked, "it ran here and parked again");
-    assert!(scheduler.ready.is_empty_for(Carrier(2)));
+    assert!(scheduler.shards.ready_is_empty_for(Carrier(2)));
     assert!(!woken(&scheduler, 2), "carrier 2 sleeps on");
     scheduler.cancel(None, task).expect("cancel");
     assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled), "its unwind ran at its new home");
@@ -101,7 +101,7 @@ fn a_steal_that_leaves_work_behind_keeps_the_wake() {
         .expect("child");
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(0), "the started task was taken");
-    assert_eq!(scheduler.ready.front(Carrier(2)), Some(child), "the new child waits at home");
+    assert_eq!(scheduler.shards.front_ready(Carrier(2)), Some(child), "the new child waits at home");
     assert!(woken(&scheduler, 2), "carrier 2 is woken for it");
     scheduler.enter_carrier(Carrier(2));
     scheduler.drive();
@@ -118,7 +118,7 @@ fn a_carrier_that_is_awake_keeps_its_ready_task() {
     scheduler.wake(task).expect("wake");
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(1));
-    assert_eq!(scheduler.ready.front(Carrier(1)), Some(task));
+    assert_eq!(scheduler.shards.front_ready(Carrier(1)), Some(task));
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
     scheduler.cancel(None, task).expect("cancel");
@@ -137,7 +137,7 @@ fn a_task_that_never_ran_waits_for_its_own_carrier() {
     scheduler.enter_carrier(Carrier(0));
     scheduler.drive();
     assert!(!scheduler.tasks[&task].ran);
-    assert_eq!(scheduler.ready.front(Carrier(1)), Some(task));
+    assert_eq!(scheduler.shards.front_ready(Carrier(1)), Some(task));
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(1), "it started at home");
@@ -158,7 +158,7 @@ fn no_carrier_takes_carrier_zeros_work() {
     scheduler.wake(task).expect("wake");
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(0));
-    assert_eq!(scheduler.ready.front(Carrier(0)), Some(task));
+    assert_eq!(scheduler.shards.front_ready(Carrier(0)), Some(task));
     scheduler.enter_carrier(Carrier(0));
     scheduler.drive();
     scheduler.cancel(None, task).expect("cancel");
@@ -181,8 +181,8 @@ fn a_cancelled_entry_is_not_moved_and_its_unwind_waits_for_its_home() {
     scheduler.cancel(None, task).expect("cancel");
     scheduler.drive();
     assert_eq!(scheduler.tasks[&task].carrier, Carrier(1));
-    assert!(scheduler.ready.is_empty_for(Carrier(1)), "the stale entry was dropped");
-    assert!(!scheduler.jobs.is_empty_for(Carrier(1)), "carrier 1 owes the unwind");
+    assert!(scheduler.shards.ready_is_empty_for(Carrier(1)), "the stale entry was dropped");
+    assert!(!scheduler.shards.jobs_empty_for(Carrier(1)), "carrier 1 owes the unwind");
     assert!(woken(&scheduler, 1), "and is woken for it");
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();

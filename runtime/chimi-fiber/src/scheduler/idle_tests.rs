@@ -158,7 +158,7 @@ fn carrier_zero_waits_for_a_carrier_running_a_fiber() {
     let sleeper = start_sleeper(&mut scheduler, 1, 5 * SECOND);
     let mut resumes = 0;
     let runnable = scheduler.next_runnable(&mut resumes).expect("the sleeper's first step");
-    assert!(scheduler.ready.is_empty() && scheduler.jobs.is_empty());
+    assert!(scheduler.shards.no_ready() && scheduler.shards.no_jobs());
     scheduler.enter_carrier(Carrier(0));
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 runs a fiber");
     scheduler.enter_carrier(Carrier(1));
@@ -209,7 +209,7 @@ fn carrier_zero_waits_while_another_carrier_has_work() {
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, parked).expect("cancel");
-    assert!(!scheduler.jobs.is_empty(), "the unwind waits for carrier 1");
+    assert!(!scheduler.shards.no_jobs(), "the unwind waits for carrier 1");
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "a job on carrier 1");
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
     assert_eq!(
@@ -446,7 +446,7 @@ fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
         scheduler.enter_carrier(Carrier(carrier));
         run_carrier(&mut scheduler);
         assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
-        assert!(!scheduler.parked[carrier as usize], "it left without parking");
+        assert!(!scheduler.shards.is_parked(Carrier(carrier)), "it left without parking");
     }
     assert!(succeeded(&scheduler, late), "a carrier runs what it has before it leaves");
     scheduler.enter_carrier(Carrier(0));
@@ -547,14 +547,14 @@ fn a_carrier_leaving_a_finished_run_checks_it_owes_no_job() {
     let ended = start_parked(&mut scheduler, 1);
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, ended).expect("cancel");
-    assert!(!scheduler.jobs.is_empty_for(Carrier(1)), "carrier 1 owes the unwind");
+    assert!(!scheduler.shards.jobs_empty_for(Carrier(1)), "carrier 1 owes the unwind");
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
     scheduler.enter_carrier(Carrier(1));
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.idle_step()));
     let message = caught.err().and_then(|panic| panic.downcast::<String>().ok());
     assert!(message.is_some_and(|message| message.contains("left a job on carrier 1")));
     scheduler.drive();
-    assert!(scheduler.jobs.is_empty() && !holds_fiber(&scheduler, ended));
+    assert!(scheduler.shards.no_jobs() && !holds_fiber(&scheduler, ended));
 }
 
 /// A carrier leaving a parked run keeps its fibers: the root waits on the

@@ -5,9 +5,6 @@
 //! carrier applies when the fiber is running there. With one carrier every
 //! decision is made at home, so neither is ever used.
 
-use std::collections::VecDeque;
-
-use super::ready::Carrier;
 use super::{TaskId, TaskOutcome};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,38 +22,4 @@ pub(super) enum Job {
 pub(super) struct PendingEnd {
     pub(super) outcome: TaskOutcome,
     pub(super) forced: bool,
-}
-
-/// One FIFO of jobs per carrier; a carrier runs its jobs before its ready
-/// tasks.
-#[derive(Debug)]
-pub(super) struct Jobs {
-    queues: Vec<VecDeque<Job>>,
-}
-
-impl Jobs {
-    /// Requires: `carriers` is at least 1.
-    pub(super) fn new(carriers: u32) -> Self {
-        assert!(carriers >= 1, "a scheduler has at least one carrier");
-        Self {
-            queues: (0..carriers).map(|_| VecDeque::new()).collect(),
-        }
-    }
-
-    pub(super) fn push_back(&mut self, carrier: Carrier, job: Job) {
-        self.queues[carrier.0 as usize].push_back(job);
-    }
-
-    pub(super) fn pop_front(&mut self, carrier: Carrier) -> Option<Job> {
-        self.queues[carrier.0 as usize].pop_front()
-    }
-
-    pub(super) fn is_empty_for(&self, carrier: Carrier) -> bool {
-        self.queues[carrier.0 as usize].is_empty()
-    }
-
-    /// True when no carrier has a job waiting.
-    pub(super) fn is_empty(&self) -> bool {
-        self.queues.iter().all(VecDeque::is_empty)
-    }
 }
