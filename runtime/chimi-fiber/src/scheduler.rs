@@ -1506,10 +1506,15 @@ impl Scheduler {
     }
 
     /// Housekeeping `drive` does before its first resume and after each one.
+    /// Signals are carrier 0's: the root is homed there and its idle wait
+    /// watches the signal pipe, so the other carriers never read the
+    /// signal words (step 4 PR 4d-3).
     fn between_resumes(&mut self) {
         self.remove_released_terminal();
-        self.collect_user_signals();
-        self.deliver_signal();
+        if self.current == ready::Carrier(0) {
+            self.collect_user_signals();
+            self.deliver_signal();
+        }
     }
 
     /// After one resume (`resumes` counts them): polls IO and rechecks
@@ -4499,6 +4504,31 @@ mod tests {
                 libc::close(fd);
             }
         }
+    }
+
+    /// Signals are carrier 0's: another carrier's housekeeping leaves the
+    /// signal words alone, and carrier 0's takes them.
+    #[test]
+    fn only_carrier_zero_takes_signals() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
+        let (signal_read, _signal_write) = test_pipe();
+        let mut signal_word = 0_i32;
+        let mut user_word = 0_u32;
+        scheduler.set_signal_source(&raw mut signal_word, signal_read);
+        scheduler.set_user_signal_source(&raw mut user_word);
+        let root = start_parked(&mut scheduler);
+        scheduler.set_signal_root(root);
+        user_word = 1;
+        signal_word = 15;
+        scheduler.enter_carrier(ready::Carrier(1));
+        scheduler.between_resumes();
+        assert_eq!(user_word, 1, "carrier 1 left the user signal");
+        assert_eq!(scheduler.tasks[&root].phase, TaskPhase::Parked, "carrier 1 delivered no signal");
+        scheduler.enter_carrier(ready::Carrier(0));
+        scheduler.between_resumes();
+        assert_eq!(user_word, 0, "carrier 0 took the user signal");
+        assert_ne!(scheduler.tasks[&root].phase, TaskPhase::Parked, "carrier 0 cancelled the root");
     }
 
     /// A root stalled until a signal also wakes for work another carrier
