@@ -10,7 +10,7 @@
 //! (runtime-output-channels.md, "Event times").
 
 use crate::json::{JsonData, decode_json, write_json_string};
-use crate::trace_view::{Locate, Record, SCHEMA, TraceError};
+use crate::trace_view::{FileModules, Locate, Record, SCHEMA, TraceError};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -39,6 +39,7 @@ struct Execution {
     start_unix_ns: i64,
     spans: Vec<Span>,
     span_index: HashMap<u64, usize>,
+    modules: FileModules,
 }
 
 struct Span {
@@ -111,6 +112,7 @@ fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
                     start_unix_ns,
                     spans: Vec::new(),
                     span_index: HashMap::new(),
+                    modules: FileModules::of(&record),
                 });
                 by_id.insert(id, executions.len() - 1);
                 executions.len() - 1
@@ -251,7 +253,10 @@ impl Execution {
             output.push(',');
             int_attribute(output, key, value);
         }
-        if let Some(place) = locate(span.file_id as u32, span.source.0 as u32) {
+        let place = self
+            .modules
+            .place(span.file_id as u32, span.source.0 as u32);
+        if let Some(place) = locate(place) {
             output.push(',');
             string_attribute(output, "chimi.source", &place);
         }

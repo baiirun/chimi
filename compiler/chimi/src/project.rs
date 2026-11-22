@@ -4,6 +4,7 @@ use crate::ids::{FileId, TextRange};
 use crate::json::write_json_string;
 use crate::semantic::{self, ImportBinding};
 use crate::source::SourceSnapshot;
+use crate::trace_view::{Place, PlaceModule, TraceModule};
 use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::io;
@@ -16,6 +17,24 @@ pub(crate) use git::is_commit_id;
 pub use git::{GitCache, GitError, Network};
 pub use packages::PackageError;
 use packages::{Discovered, PackageGraph};
+
+/// The modules of a trace that a project does not match, by module path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TraceMismatch {
+    pub missing: Vec<String>,
+    pub changed: Vec<String>,
+}
+
+/// Each module path a trace records, mapped to the project module it stands
+/// for.
+#[derive(Clone, Debug, Default)]
+pub struct TraceSource(HashMap<String, String>);
+
+impl TraceMismatch {
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.changed.is_empty()
+    }
+}
 
 #[derive(Debug)]
 pub struct LoadedProject {
@@ -489,22 +508,36 @@ impl LoadedProject {
         output
     }
 
-    /// A lookup of `path:line:column` for an offset in the module with a
-    /// file id, the id a diagnostic or a runtime trace event of this project
-    /// carries. Each module's line index is built once.
-    pub fn source_locator(&self) -> impl Fn(u32, u32) -> Option<String> + use<> {
+    /// A lookup of `path:line:column` for a place a runtime trace of this
+    /// project names. A place with a module path is found through
+    /// `modules` (from [`Self::match_trace`]); one from a trace that records
+    /// no modules, by its file id. Each module's line index is built
+    /// once.
+    pub fn source_locator(
+        &self,
+        modules: TraceSource,
+    ) -> impl Fn(Place<'_>) -> Option<String> + use<> {
         use crate::line_index::{LineIndex, PositionEncoding};
+        let mut by_path = HashMap::new();
         let sources: Vec<(String, Arc<str>, LineIndex)> = self
             .diagnostic_sources()
             .into_iter()
-            .map(|(_, source)| {
+            .enumerate()
+            .map(|(file_id, (module_path, source))| {
+                by_path.insert(module_path, file_id);
                 let text = Arc::<str>::from(source.text());
                 let index = LineIndex::new(Arc::clone(&text));
                 (source.path().display().to_string(), text, index)
             })
             .collect();
-        move |file_id, offset| {
-            let (path, text, index) = sources.get(file_id as usize)?;
+        move |place| {
+            let file_id = match place.module {
+                PlaceModule::Path(module) => *by_path.get(modules.0.get(module)?)?,
+                PlaceModule::Unrecorded => place.file_id as usize,
+                PlaceModule::Missing => return None,
+            };
+            let (path, text, index) = sources.get(file_id)?;
+            let offset = place.offset;
             if offset as usize > text.len() || !text.is_char_boundary(offset as usize) {
                 return None;
             }
@@ -514,6 +547,55 @@ impl LoadedProject {
                 position.line + 1,
                 position.character + 1
             ))
+        }
+    }
+
+    /// This project's module for each module a trace records, or the ones
+    /// it cannot match: paths it has no module for, and paths whose source
+    /// is not the run's. A recorded module is matched by its path, or, when
+    /// the project has no module of that path, by being the only module with
+    /// its fingerprint: a file built alone is `main`, the same file in a
+    /// directory is named after the file.
+    pub fn match_trace(&self, recorded: &[TraceModule]) -> Result<TraceSource, TraceMismatch> {
+        let fingerprints = crate::compiler::trace_fingerprints(self.sources());
+        let mut matched = HashMap::new();
+        let mut mismatch = TraceMismatch::default();
+        for module in recorded {
+            let found = match fingerprints.get(module.path.as_str()) {
+                Some(accepted) if accepted.contains(&module.fingerprint) => {
+                    Some(module.path.clone())
+                }
+                Some(_) => {
+                    mismatch.changed.push(module.path.clone());
+                    continue;
+                }
+                None => {
+                    let mut same = fingerprints
+                        .iter()
+                        .filter(|(path, accepted)| {
+                            !recorded.iter().any(|other| &other.path == *path)
+                                && accepted.contains(&module.fingerprint)
+                        })
+                        .map(|(path, _)| path.clone());
+                    match (same.next(), same.next()) {
+                        (Some(path), None) => Some(path),
+                        _ => None,
+                    }
+                }
+            };
+            match found {
+                Some(path) => {
+                    matched.insert(module.path.clone(), path);
+                }
+                None => mismatch.missing.push(module.path.clone()),
+            }
+        }
+        mismatch.missing.dedup();
+        mismatch.changed.dedup();
+        if mismatch.is_empty() {
+            Ok(TraceSource(matched))
+        } else {
+            Err(mismatch)
         }
     }
 

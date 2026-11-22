@@ -267,12 +267,23 @@ Rules:
   the run was built from; a directory for `chimi test <directory>` traces),
   a location is `path:line:column`; without it, `file <id> at <offset>`.
   The source is loaded only to name places, so it need not type-check.
-  When a place in the trace is not in the given source, the report still
-  prints and a warning on standard error says the source is likely not the
-  one the run was built from, since its other locations may be wrong too.
-  This catches a missing module or an offset past a file's end, not a
-  different program whose modules happen to cover the same places: the
-  trace carries no fingerprint of its source.
+- A trace records each file id's module path and fingerprint
+  (runtime-output-channels.md, "Source modules"), and a place is found by
+  its module path, so a directory or workspace that loads more modules than
+  the build still names the right file. A file built alone is the module
+  `main`; shown with its directory, where it is named after the file, it is
+  matched by its fingerprint.
+- When the given source has no module the trace records, or a module's
+  source changed since the run, the viewer MUST print nothing and fail,
+  naming those modules: its places would point at the wrong text. Tests
+  appended to a module since a program run are not a change, since a
+  program build leaves test items out.
+- A trace written before traces recorded their modules is read by file id,
+  with a warning on standard error that this is right only for the source
+  the run was built from.
+- When a place is still not in the given source, the report prints and a
+  warning on standard error says the source is likely not the one the run
+  was built from.
 - After the tree come the process incarnations that ended other than by
   returning, with their cause and defect message, and the tasks that never
   ended, with the channel a parked task waits on (from the
@@ -286,8 +297,9 @@ merge), and a browsable or interactive view. Chimi has no REPL
 (decisions.md, 2026-11-17): exploration happens in tests and runnable doc
 examples.
 
-Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
-`LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
+Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`,
+`trace_modules`), `LoadedProject::source_locator` and
+`LoadedProject::match_trace`. Tests: `compiler/chimi/tests/trace_show.rs`.
 
 ## OpenTelemetry traces: `chimi trace export --otlp`
 
@@ -343,7 +355,9 @@ Rules:
   `chimi.source_start`, `chimi.source_end`, and `chimi.outcome` when it
   completed. A dependency call also carries `chimi.requirement` and
   `chimi.method`. With the program's source, `chimi.source` is
-  `path:line:column`.
+  `path:line:column`, found and checked against the trace's recorded
+  modules as for `chimi trace show`: a source that lacks a recorded module
+  or has a changed one MUST fail the same way.
 - Scheduler, task, channel, clock and process events are not exported.
 
 Implementation: `compiler/chimi/src/trace_export.rs` (`export_trace_otlp`).

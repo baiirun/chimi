@@ -18,7 +18,7 @@ MUTATIONS = [
         "    u64::try_from(time).unwrap_or(start as u64 * 0)",
     )]),
     mutant("a completion does not end its span", [(
-        "            span.end = Some(time);\n            span.completed = true;",
+        "            span.end = Some(time.max(span.start));\n            span.completed = true;",
         "            span.completed = true;",
     )]),
     mutant("an unfinished operation does not take its children's end", [(
@@ -50,7 +50,7 @@ MUTATIONS = [
         "        let time = record.attribute_number(\"time_ns\").or(Some(0)).ok_or_else(|| {",
     )]),
     mutant("the source is not named", [(
-        "        if let Some(place) = locate(span.file_id as u32, span.source.0 as u32) {",
+        "        if let Some(place) = locate(place) {",
         "        if let Some(place) = None::<String> {",
     )]),
     mutant("each span gets its own trace id", [(

@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 57
+#define CHIMI_RUNTIME_ABI_VERSION 58
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -550,6 +550,8 @@ typedef struct {
 } ChimiPattern;
 
 extern const char *CHIMI_COMPUTATION;
+/* The `"modules"` attribute text of `computation_started`, or empty. */
+extern const char *CHIMI_TRACE_MODULES;
 extern const uint32_t CHIMI_REQUIRES_SCHEDULER;
 extern const char *CHIMI_STRINGS[];
 /* The byte length of each string, which a Text string may need: it can hold U+0000. */

@@ -1073,6 +1073,42 @@ pub(crate) struct SemanticModule {
     pub(crate) origin: ModuleOrigin,
 }
 
+impl SemanticModule {
+    /// The fingerprint a trace records for this module. A test build still
+    /// has its test items, and its places may be in any of the text, so it
+    /// is the whole text's. A program build has none, so it is
+    /// [`Self::program_fingerprint`].
+    pub(crate) fn trace_fingerprint(&self) -> String {
+        if self.declarations.iter().any(|declaration| declaration.test) {
+            self.text_fingerprint()
+        } else {
+            self.program_fingerprint()
+        }
+    }
+
+    pub(crate) fn text_fingerprint(&self) -> String {
+        let text = self.source.text();
+        crate::source::source_fingerprint(text, text.len(), &[])
+    }
+
+    /// The text as a program build's places see it: each test item counts as
+    /// spaces of its length and the text after the last other item is left
+    /// out, so appending tests to a module leaves this fingerprint, like the
+    /// executable, unchanged.
+    pub(crate) fn program_fingerprint(&self) -> String {
+        let mut tests = Vec::new();
+        let mut end = 0;
+        for node in self.syntax.root().child_nodes() {
+            if node.kind() == NodeKind::TestDeclaration {
+                tests.push(node.range());
+            } else {
+                end = node.range().end() as usize;
+            }
+        }
+        crate::source::source_fingerprint(self.source.text(), end, &tests)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SemanticProject {
     pub(crate) modules: Vec<Arc<SemanticModule>>,
