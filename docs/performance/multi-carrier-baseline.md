@@ -187,6 +187,30 @@ PG01 1,093 ns per message, PG03 9.1 µs per restart, PG04 18.4 µs per start
 and 12.4 µs per stop, PG09 1.5 ms. This host is not the baseline's, so these
 are not compared with its numbers.
 
+## One carrier after 4b
+
+Step 4 PR 4b makes `runtime.c` read the carrier afresh at every use, so a
+fiber may move threads. Its cost on one carrier, against main at
+`2e38736` built in its own target directory, on the same host:
+
+- Instructions (callgrind, one run each at 640 messages): PG06's list
+  payload 686.5 M to 705.3 M (+2.7%), the DAG payload 27.4 M to 28.4 M
+  (+3.8%), and the text payload at 6,400 messages 126.8 M to 129.3 M
+  (+1.9%). The added instructions are the thread-pointer reads in
+  `allocate`, `release_allocation` and the code inlined into them, and a
+  footprint fold the compiler no longer inlines.
+- Wall time: the lab's PG01, PG03 and PG06, five alternating rounds each,
+  had medians from 0.87 to 1.31 times main's, with the two builds' ranges
+  overlapping on every gate except PG06's text payload. Twelve alternating
+  runs of the text payload alone (256,000 messages) had medians of 0.402 s
+  (main) and 0.427 s (+6%), with ranges of 0.34 to 0.54 s and 0.31 to
+  0.58 s. On this host that is within the noise; the instruction counts are
+  the steadier measure.
+- A first version that read the carrier through a plain function call cost
+  30% on the list payload. Reading it once in leaf code that never parks
+  (`Carrier *const here = carrier;`) and an inline thread-pointer read on
+  Linux brought it to the numbers above.
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08
