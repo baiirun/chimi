@@ -122,6 +122,32 @@ fn a_deadlock_is_reported_only_once_every_carrier_is_idle() {
     assert!(succeeded(&scheduler, sleeper));
 }
 
+/// The deadlock report and its trace events list the parked tasks by id,
+/// whatever order the task table keeps them in.
+#[test]
+fn a_deadlock_lists_its_parked_tasks_by_id() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(1);
+    let stuck: Vec<TaskId> = (0..12)
+        .map(|_| {
+            scheduler
+                .start_root(chimi_fixture_generated_many_parks)
+                .expect("task")
+        })
+        .collect();
+    let Idle::Deadlock(parked) = round_robin(&mut scheduler) else {
+        panic!("the parked tasks can never wake");
+    };
+    assert_eq!(parked.iter().map(|parked| parked.task).collect::<Vec<_>>(), stuck);
+    let waiters: Vec<TaskId> = scheduler
+        .clock_events()
+        .iter()
+        .filter(|event| event.kind == ClockEventKind::DeadlockWaiter)
+        .filter_map(|event| event.task)
+        .collect();
+    assert_eq!(waiters, stuck);
+}
+
 /// Carrier 0 neither moves time nor gives a verdict while another carrier
 /// runs a fiber, even with every queue empty: it parks, until that carrier
 /// parks too.

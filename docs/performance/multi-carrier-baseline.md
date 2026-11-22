@@ -287,6 +287,39 @@ so compare the two columns, not these with earlier rows.
   carriers about 1.5 s of sleeping and waking in the kernel per run became
   under 0.1 s, while total CPU stayed about the same.
 
+## A hash map for the task table (step 4 PR 4d-2)
+
+The same pairs program with 20,000 rounds and the same method as the
+section above: the base (4d-1, PR 188) and the change built from separate
+target directories, run alternately ten times each at each carrier count.
+The host was noisy, so compare the two columns, not these with earlier
+rows, and read the instruction counts below as the measured gain.
+
+| Carriers | Base, median ms (range) | Hash map, median ms (range) |
+| --- | --- | --- |
+| 1 | 1136 (947 to 1206) | 900 (792 to 932) |
+| 2 | 872 (820 to 936) | 872 (816 to 1014) |
+| 4 | 938 (883 to 1012) | 835 (747 to 896) |
+| 8 | 890 (783 to 990) | 789 (687 to 833) |
+
+- At one carrier the runs do not overlap, but the drop (21%) is larger
+  than the 12% fewer instructions, so part of it is the host. At two to
+  eight carriers the difference is within the runs' spread.
+- Instructions are steadier than times. Under callgrind, pairs with 2000
+  rounds on one carrier ran 750 million instructions before and 661
+  million after (12% fewer). The inclusive cost of `Scheduler::complete`,
+  the kernel's work after each resume, fell from 209 to 141 million (a
+  third), and `next_runnable` from 49 to 29 million. That work runs under
+  the kernel lock, so holds should be shorter on any carrier count; only
+  one carrier was profiled.
+- B-tree searches fell from 86 to 14 million instructions (other maps
+  remain B-trees), and the hash map's lookups cost about 46 million. Most
+  of the task table's searches were inside `apply_step`, `prepare_run` and
+  `wake_at`, which look the same task up many times.
+- What remains of the program's time is mostly outside the kernel: the
+  runtime's allocator and its `memset` of new allocations (about 160
+  million instructions between them).
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08

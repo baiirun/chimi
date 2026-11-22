@@ -1,0 +1,12 @@
+# mutation run at 00e563c60db555e38a8b252642f29f422a77303a
+# id_map_mutations.py: 8 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (24s)
+KILLED       every id hashes to zero [lib] (6s)
+KILLED       an even constant drops the low bit [lib] (6s)
+KILLED       the id is not multiplied [lib] (6s)
+KILLED       bytes are ignored [lib] (6s)
+KILLED       bytes are not chained [lib] (6s)
+KILLED       the deadlock report keeps the table's order [lib] (10s)
+SURVIVED     program roots are forced in the table's order [lib] (11s)
+KILLED       unrun contexts are released in the table's order [lib] (11s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

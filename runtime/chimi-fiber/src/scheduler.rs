@@ -10,6 +10,7 @@ mod clock;
 mod idle_tests;
 #[cfg(test)]
 mod steal_tests;
+mod id_map;
 mod jobs;
 mod process;
 mod process_abi;
@@ -425,7 +426,7 @@ impl ChimiCapabilityViolation {
 pub type CapabilityViolationReport =
     unsafe extern "C" fn(*mut c_void, *const ChimiCapabilityViolation);
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TaskId(u64);
 
 impl TaskId {
@@ -805,7 +806,7 @@ impl TaskValue {
 }
 
 pub struct Scheduler {
-    tasks: BTreeMap<TaskId, Task>,
+    tasks: id_map::IdMap<TaskId, Task>,
     ready: ready::ReadyQueues,
     /// Work a carrier must do on its own thread for another carrier's
     /// decision, run before its ready tasks.
@@ -980,7 +981,7 @@ impl Scheduler {
             release_spec_context.map(|release| (release, release_context)),
         );
         Self {
-            tasks: BTreeMap::new(),
+            tasks: id_map::IdMap::default(),
             ready: ready::ReadyQueues::new(1),
             jobs: jobs::Jobs::new(1),
             current: ready::Carrier::default(),
@@ -1237,11 +1238,13 @@ impl Scheduler {
         let held = self
             .tasks
             .iter()
-            .find(|(_, record)| record.carrier == current && record.fiber.is_some());
+            .filter(|(_, record)| record.carrier == current && record.fiber.is_some())
+            .map(|(task, _)| *task)
+            .min();
         assert!(
             held.is_none(),
             "a finished run left task {:?} holding its fiber on carrier {}",
-            held.map(|(task, _)| *task),
+            held,
             current.0
         );
     }
@@ -1263,7 +1266,7 @@ impl Scheduler {
     /// Why a carrier with nothing runnable, no host operation, no IO wait
     /// and no timer is idle: quiescent, or stuck with parked tasks.
     fn idle_outcome(&mut self) -> Idle {
-        let parked: Vec<_> = self
+        let mut parked: Vec<_> = self
             .tasks
             .iter()
             .filter(|(_, record)| record.phase == TaskPhase::Parked)
@@ -1277,6 +1280,8 @@ impl Scheduler {
                 },
             })
             .collect();
+        // The task table is unordered; the deadlock report lists by id.
+        parked.sort_by_key(|parked| parked.task);
         let stuck = parked
             .iter()
             .any(|parked| self.tasks[&parked.task].process.is_none());
@@ -2055,6 +2060,7 @@ impl Scheduler {
         self.constructed_events
     }
 
+    /// In no particular order.
     pub fn unobserved_terminal_tasks(&self) -> impl Iterator<Item = TaskId> + '_ {
         self.tasks.iter().filter_map(|(task, record)| {
             matches!(record.phase, TaskPhase::Terminal(_))
@@ -2121,12 +2127,15 @@ impl Scheduler {
     /// channel, and the context of every task whose entry never ran. Runs
     /// once, when the scheduler is dropped.
     fn release_held_values(&mut self) {
-        let unrun_contexts: Vec<_> = self
+        let mut unrun_contexts: Vec<_> = self
             .tasks
-            .values_mut()
-            .map(|record| std::mem::replace(&mut record.entry_context, std::ptr::null_mut()))
+            .iter_mut()
+            .map(|(task, record)| {
+                (*task, std::mem::replace(&mut record.entry_context, std::ptr::null_mut()))
+            })
             .collect();
-        for task_context in unrun_contexts {
+        unrun_contexts.sort_unstable_by_key(|(task, _)| *task);
+        for (_, task_context) in unrun_contexts {
             self.release_task_context(task_context);
         }
         for value in self.channels.drain_held_values() {
