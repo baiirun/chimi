@@ -65,4 +65,12 @@ MUTATIONS = [
         "    written = console_write_line(runtime, &console_streams[1], line, length);",
         "    written = console_write_line(runtime, &console_streams[0], line, length);",
     )]),
+    mutant("a respelled report path is accepted as the log file", C, [(
+        "          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {",
+        "          log_status.st_ino == report_status.st_ino && false) {",
+    )]),
+    mutant("the log file goes to stderr", C, [(
+        "  ConsoleStream *stream = &console_streams[runtime->log_file ? 2 : 1];",
+        "  ConsoleStream *stream = &console_streams[1];",
+    )]),
 ]
