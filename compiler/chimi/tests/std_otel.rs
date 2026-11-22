@@ -876,17 +876,22 @@ fn the_otel_worker_example_pushes_its_jobs() {
         "{logs}"
     );
     assert!(!logs.contains("starting"), "{logs}");
-    let last_metrics = &pushes
-        .iter()
-        .filter(|push| push.path == "/v1/metrics")
-        .last()
-        .expect("a metrics push")
-        .body;
-    for series in [
+    // Each push is answered on its own thread, so the last to arrive may
+    // be a periodic one; the final push is the one that holds every job.
+    let series = [
         r#"{"asInt":"4","attributes":[{"key":"outcome","value":{"stringValue":"done"}}]"#,
         r#"{"asInt":"2","attributes":[{"key":"outcome","value":{"stringValue":"failed"}}]"#,
         r#"{"stringValue":"otel-worker"}"#,
-    ] {
-        assert!(last_metrics.contains(series), "{series} in {last_metrics}");
-    }
+    ];
+    let metrics: Vec<&str> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/metrics")
+        .map(|push| push.body.as_str())
+        .collect();
+    assert!(
+        metrics
+            .iter()
+            .any(|body| series.iter().all(|one| body.contains(one))),
+        "no metrics push holds every job: {metrics:?}"
+    );
 }

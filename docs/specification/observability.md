@@ -417,4 +417,3 @@ Otel.export(settings, fn(exporter) {
 | At most `log_buffer` entries wait while the process is idle | `tests/std_otel.rs` `at_most_log_buffer_entries_wait` |
 | The last logs and metrics pushes share `flush_within` | `tests/std_otel.rs` `the_last_pushes_share_flush_within` |
 | The `programs/otel-worker` example pushes its jobs' metrics and logs | `tests/std_otel.rs` `the_otel_worker_example_pushes_its_jobs` |
-| The `programs/otel-worker` example pushes its jobs' metrics and logs | `tests/std_otel.rs` `the_otel_worker_example_pushes_its_jobs` |

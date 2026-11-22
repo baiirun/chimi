@@ -20,7 +20,7 @@ const collector = Cli.option("collector", "c", "The collector's OTLP/HTTP addres
 const jobs = Cli.option("jobs", "n", "How many jobs to run", Cli.int)
 const command = Cli.command("otel-worker", "Run jobs and push their telemetry to a collector", [Cli.arg(collector), Cli.arg(jobs)])
 
-// One job: it takes a few milliseconds, and every third one fails.
+// One job: it takes 20 to 50 ms, and every third one fails.
 fn run_job(job: Int) -> Void needs {
   log: Log, clock: Clock, metrics: Metrics
 } {

@@ -51,11 +51,11 @@ root:
 
 ```sh
 cargo run -p chimi -- build --root programs/otel-worker app/main -o target/otel-worker
-target/otel-worker -- --collector http://localhost:4318 --jobs 6
+target/otel-worker --chimi-runner --clock=real -- --collector http://localhost:4318 --jobs 6
 ```
 
 Without `--collector`, the program uses `Otel.defaults.endpoint`,
-`http://localhost:4318`. `target/otel-worker -- --help` lists the options.
+`http://localhost:4318`. `target/otel-worker --chimi-runner -- --help` lists the options.
 
 `tests/std_otel.rs` `the_otel_worker_example_pushes_its_jobs` runs it against
 a stand-in collector and checks what each push holds.
