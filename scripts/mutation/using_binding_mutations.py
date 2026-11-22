@@ -9,6 +9,8 @@ CRATE = "compiler/chimi"
 
 TYPING = "src/typing.rs"
 EXECUTABLE = "src/executable.rs"
+EXECUTION = "src/execution.rs"
+RUNTIME = "runtime/native/runtime.c"
 
 FILTER = "function_value"
 
@@ -46,4 +48,16 @@ MUTATIONS = [
         "            CoreOperation::Provision {\n                expression: value,\n                providers: provided,\n            },",
         "            {\n                let _ = provided;\n                CoreOperation::Identity(value)\n            },",
     )]),
+    mutant("a row parameter does not stop the binding", TYPING, [(
+        "        if !bound_names.is_empty() && open_row {",
+        "        if false {",
+    )], filter="row_parameter"),
+    mutant("the interpreter evaluates a provider after the earlier ones", EXECUTION, [(
+        "                    provided.push((provider.name, value));",
+        "                    environment.requirements.insert(provider.name, value);",
+    )], filter="outside_its_own_using"),
+    mutant("native evaluates a provider after the earlier ones", RUNTIME, [(
+        "    ChimiControl *control = run_node(provider->node, runtime, incoming, span);",
+        "    ChimiControl *control = RUN(provider->node);",
+    )], filter="outside_its_own_using"),
 ]

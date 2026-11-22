@@ -1333,14 +1333,19 @@ impl<'core> Evaluator<'core> {
                 expression,
                 providers,
             } => {
+                // Every provider is evaluated in the enclosing scope: typing
+                // gives a provider's own needs to the enclosing expression, so
+                // a provider never sees another provider of the same clause.
+                let mut provided = Vec::with_capacity(providers.len());
                 for provider in providers {
                     let value = success_or_return!(self.eval_node(
                         provider.value,
                         span,
                         environment.clone(),
                     ));
-                    environment.requirements.insert(provider.name, value);
+                    provided.push((provider.name, value));
                 }
+                environment.requirements.extend(provided);
                 self.eval_node(expression, span, environment)
             }
             CoreOperation::Sequence(steps) => {

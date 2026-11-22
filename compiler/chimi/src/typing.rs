@@ -8378,7 +8378,27 @@ impl ProjectTypeChecker {
             .filter(|need| supplied_names.contains(&need.lexical_name))
             .map(|need| need.lexical_name.clone())
             .collect::<Vec<_>>();
-        if bound_names.is_empty() {
+        let open_row = !self.needs_rows[latent_needs.raw() as usize]
+            .parameters
+            .is_empty();
+        if !bound_names.is_empty() && open_row {
+            // A row parameter's needs belong to whoever calls the value, and a
+            // row bound to a fixed name would give that name two providers.
+            let (_, range, _) = providers
+                .iter()
+                .find(|(name, _, _)| bound_names.contains(name))
+                .expect("a bound name is one of the providers");
+            self.type_error_range(
+                module_id,
+                "T4219",
+                *range,
+                format!(
+                    "`using` cannot fix `{}` on a function value whose needs include a row parameter, since a call may bind that row to the same name; supply it where the function is called",
+                    bound_names.join("`, `")
+                ),
+            );
+        }
+        if bound_names.is_empty() || open_row {
             self.using_bindings.remove(&(module_id, expression));
         } else {
             self.using_bindings

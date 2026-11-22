@@ -168,13 +168,15 @@ impl<'a> Verifier<'a> {
                 }
                 self.check_spec_body(call, *expression)
             }
-            // `using record` binds the record, then provides its fields.
-            CoreOperation::Sequence(steps)
-                if matches!(steps.last(), Some(CoreStep::Expression(last))
-                    if matches!(self.node(*last).operation, CoreOperation::Provision { .. })) =>
-            {
+            // `using record` binds the record, then provides its fields; a
+            // `using` that fixes providers on a function value binds them and
+            // the provided value, then wraps it in a closure.
+            CoreOperation::Sequence(steps) if self.is_lowered_using(body) => {
                 for step in steps {
                     match step {
+                        CoreStep::Bind { value, .. } if self.is_lowered_using(*value) => {
+                            self.check_spec_body(call, *value)?;
+                        }
                         CoreStep::Bind { value, .. } => {
                             if let Some(violation) = not_shareable(*value, self.node(*value).type_id) {
                                 return Err(violation);
@@ -204,6 +206,25 @@ impl<'a> Verifier<'a> {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Whether `node` is a `using` as core lowering writes it: a provision, or
+    /// a sequence that ends in one or binds one before wrapping it.
+    fn is_lowered_using(&self, node: CoreNodeId) -> bool {
+        match &self.node(node).operation {
+            CoreOperation::Provision { .. } => true,
+            CoreOperation::Sequence(steps) => match steps.last() {
+                Some(CoreStep::Expression(last)) => match self.node(*last).operation {
+                    CoreOperation::Closure { .. } => steps.iter().any(|step| {
+                        matches!(step, CoreStep::Bind { value, .. }
+                            if matches!(self.node(*value).operation, CoreOperation::Provision { .. }))
+                    }),
+                    _ => self.is_lowered_using(*last),
+                },
+                _ => false,
+            },
+            _ => false,
         }
     }
 

@@ -13655,3 +13655,93 @@ pub fn main() -> Text {
         "\"outcome\":\"success\",\"value\":\"caller x | bound a 1 / bound b 2 / bad | tag t | w tag t\""
     );
 }
+
+// Chained clauses fix their needs one at a time, in either order, and a
+// provider method that is itself a bound function value keeps its own
+// provider rather than the record it is supplied as.
+#[test]
+fn chained_and_nested_using_clauses_each_fix_their_own_providers() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn n(text: Text) -> { name: fn() -> Text } { { name: fn() { text } } }
+
+fn shout(t: Text) -> Text needs { greeter: Greeter } { "${greeter.greet(t)}!" }
+
+pub fn main() -> Text {
+  let half = named using { greeter: g("b") }
+  let first = half using { namer: n("bn") }
+  let second = (named using { namer: n("bn2") }) using { greeter: g("b2") }
+  let loud = { greet: shout using { greeter: g("base") } }
+  let louder = { greet: shout using { greeter: loud } }
+  let run = fn() { "${hello()} | ${call(first)} | ${call(second)} | ${hello() using { greeter: louder }}" }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-binds-chained", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | b bn | b2 bn2 | base x!!\""
+    );
+}
+
+// The providers of one clause are evaluated where the `using` is written:
+// a provider that has needs of its own gets them from there, never from
+// another provider of the same clause, whatever the expression's type.
+#[test]
+fn a_provider_is_evaluated_outside_its_own_using_clause() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn built() -> { name: fn() -> Text } needs { greeter: Greeter } {
+  let t = greeter.greet("built")
+  { name: fn() { t } }
+}
+
+pub fn main() -> Text {
+  let run = fn() {
+    let f = named using { greeter: g("own"), namer: built() }
+    let v = named() using { greeter: g("own"), namer: built() }
+    "${call(f)} | ${v}"
+  }
+  run() using { greeter: g("outer") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-provider-scope", &source),
+        "\"outcome\":\"success\",\"value\":\"own outer built | own outer built\""
+    );
+}
+
+// A needs row parameter of a function value is its caller's, and a call may
+// bind it to a name the `using` would fix, so fixing a provider on such a
+// value is rejected rather than run with one provider for both.
+#[test]
+fn using_cannot_fix_a_provider_on_a_value_with_a_needs_row_parameter() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn twice<R>(h: fn() -> Text needs R) -> Text needs R + { greeter: Greeter } {
+  "${greeter.greet("own")} / ${h()}"
+}
+
+pub fn main() -> Text {
+  let bound = twice using { greeter: g("bound") }
+  let run = fn() { bound(hello) }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    let codes: Vec<String> = diagnostics_of(&source).into_iter().map(|(code, _)| code).collect();
+    assert_eq!(codes, ["T4219"]);
+    // Calling it under the `using` instead is fine: one provider serves both.
+    let called = source.replace(
+        "  let bound = twice using { greeter: g(\"bound\") }\n  let run = fn() { bound(hello) }\n",
+        "  let run = fn() { twice(hello) }\n",
+    );
+    assert_eq!(
+        run_both("using-row-parameter-called", &called),
+        "\"outcome\":\"success\",\"value\":\"caller own / caller x\""
+    );
+}

@@ -2458,7 +2458,7 @@ impl CoreLowerer {
             });
             held.push((provider.name, symbol, type_id));
         }
-        let provided = held
+        let provided: Vec<CoreField> = held
             .iter()
             .map(|(name, symbol, type_id)| CoreField {
                 name: name.clone(),
@@ -2521,7 +2521,7 @@ impl CoreLowerer {
         let mut captures = parameters.clone();
         captures.push(function);
         captures.extend(rebound.iter().map(|(_, symbol, _)| *symbol));
-        let rebound = rebound
+        let rebound: Vec<CoreField> = rebound
             .into_iter()
             .map(|(name, symbol, type_id)| CoreField {
                 name,
