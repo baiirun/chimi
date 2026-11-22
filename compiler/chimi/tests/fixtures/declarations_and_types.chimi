@@ -1,5 +1,4 @@
-import modules/money as Money
-import modules/money.{Money}
+import modules/money as Money.{Money}
 
 pub struct Box<Value> {
   value: Value,

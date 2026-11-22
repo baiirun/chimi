@@ -1515,31 +1515,39 @@ impl<'source> Parser<'source> {
             self.bump();
             self.expect(TokenKind::Identifier);
             self.finish();
-        } else if self.at(TokenKind::Dot) {
-            self.start(NodeKind::ImportMembers);
-            self.bump();
-            self.expect(TokenKind::LeftBrace);
-            self.skip_newlines();
-            if self.at(TokenKind::RightBrace) {
-                self.error_at_current("member imports must name at least one type or constructor");
-            } else {
-                self.parse_import_member();
-                while self.accept(TokenKind::Comma) {
-                    self.skip_newlines();
-                    if self.at(TokenKind::RightBrace) {
-                        break;
-                    }
-                    self.parse_import_member();
-                }
+            // `import std/clock as Clock.{Clock, Instant}` binds both at once.
+            if self.at(TokenKind::Dot) {
+                self.parse_import_members();
             }
-            self.skip_newlines();
-            self.expect(TokenKind::RightBrace);
-            self.finish();
+        } else if self.at(TokenKind::Dot) {
+            self.parse_import_members();
         } else {
             self.error_at_current(
                 "module imports require an explicit alias with `as` or an explicit member list",
             );
         }
+        self.finish();
+    }
+
+    fn parse_import_members(&mut self) {
+        self.start(NodeKind::ImportMembers);
+        self.bump();
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("member imports must name at least one type or constructor");
+        } else {
+            self.parse_import_member();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightBrace) {
+                    break;
+                }
+                self.parse_import_member();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
         self.finish();
     }
 
@@ -3641,7 +3649,6 @@ mod tests {
         assert_eq!(
             root_kinds,
             [
-                NodeKind::ImportDeclaration,
                 NodeKind::ImportDeclaration,
                 NodeKind::StructDeclaration,
                 NodeKind::EnumDeclaration,

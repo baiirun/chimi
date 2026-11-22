@@ -22,6 +22,7 @@ mod ids;
 mod inspection;
 mod json;
 mod lint;
+mod manifest;
 pub mod line_index;
 mod numeric;
 mod occurrences;
@@ -44,7 +45,7 @@ mod typing;
 pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};
 pub use compiler::{
     CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
-    IncrementalTypeReport, ModuleDiagnostics, NameReport, ProjectPathError, ProjectSource,
+    IncrementalTypeReport, ModuleDiagnostics, ModuleOrigin, NameReport, ProjectPathError, ProjectSource,
     ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};

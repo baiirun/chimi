@@ -1,9 +1,7 @@
 // A failing predicate stops Map.filter at the first key it rejects in
 // ascending key order: "m" and "z" would both fail, and "m" escapes.
-import std/map as Map
-import std/map.{Map}
-import std/result as Result
-import std/result.{Err}
+import std/map as Map.{Map}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Rejected {

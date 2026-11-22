@@ -18,8 +18,7 @@
 /// of this module.
 
 import std/bytes as Bytes
-import std/env as Env
-import std/env.{Environment}
+import std/env as Env.{Environment}
 import std/int as Int
 import std/list as List
 import std/option as Option

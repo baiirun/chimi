@@ -25,6 +25,20 @@ pub struct ProjectSource {
     module_path: String,
     source: SourceSnapshot,
     syntax: Option<Arc<ParseResult>>,
+    origin: ModuleOrigin,
+}
+
+/// Where a module of a build comes from. Lint, `chimi doc --html`, doc
+/// examples and `chimi test` cover only [`ModuleOrigin::Own`] modules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModuleOrigin {
+    /// The entry package's, or a project's with no manifest.
+    #[default]
+    Own,
+    /// A package the entry package depends on, directly or not.
+    Dependency,
+    /// The standard tree.
+    Standard,
 }
 
 impl ProjectSource {
@@ -40,6 +54,7 @@ impl ProjectSource {
             module_path,
             source,
             syntax: None,
+            origin: ModuleOrigin::Own,
         })
     }
 
@@ -54,6 +69,15 @@ impl ProjectSource {
 
     pub fn module_path(&self) -> &str {
         &self.module_path
+    }
+
+    pub fn origin(&self) -> ModuleOrigin {
+        self.origin
+    }
+
+    pub(crate) fn with_origin(mut self, origin: ModuleOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     pub(crate) fn source(&self) -> &SourceSnapshot {
@@ -371,8 +395,8 @@ impl TypeReport {
     /// `include_standard` for the `std/` modules as well. Each is a warning
     /// whose code names its rule.
     pub fn lint(&self, include_standard: bool) -> Vec<Diagnostic> {
-        crate::lint::lint(&self.typed.resolved, |module_path| {
-            include_standard || !module_path.starts_with("std/")
+        crate::lint::lint(&self.typed.resolved, |origin| {
+            origin == ModuleOrigin::Own || (include_standard && origin == ModuleOrigin::Standard)
         })
     }
 }
@@ -758,6 +782,7 @@ fn lower_project_sources(mut sources: Vec<ProjectSource>) -> semantic::SemanticP
                 path: source.module_path,
                 source: source.source,
                 syntax: source.syntax,
+                origin: source.origin,
             })
             .collect(),
     )

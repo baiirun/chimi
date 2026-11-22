@@ -6602,6 +6602,213 @@ fn a_formatted_member_import_stays_tight_and_still_checks() {
     );
 }
 
+// decisions.md 2026-11-22: one import line binds a module alias and members.
+#[test]
+fn one_import_line_binds_an_alias_and_its_members() {
+    let source = concat!(
+        "import std/map as Map.{Map}\n",
+        "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) }\n",
+        "pub fn main() -> Int { sized(Map.empty()) + 7 }\n",
+    );
+    assert_eq!(run_both("combined_import", source), "\"outcome\":\"success\",\"value\":7");
+}
+
+#[test]
+fn a_combined_import_of_an_unknown_module_is_reported_once() {
+    let source = "import app/missing as Missing.{Thing}\npub fn main() -> Int { 0 }\n";
+    assert_eq!(check_codes(source), ["E_UNRESOLVED_MODULE"]);
+}
+
+#[test]
+fn a_combined_import_still_checks_its_members() {
+    let source = "import std/map as Map.{Nope}\npub fn main() -> Int { 0 }\n";
+    assert_eq!(check_codes(source), ["E_UNRESOLVED_IMPORT_MEMBER"]);
+}
+
+// The formatter joins an alias import and a member import of one path, at the
+// first of the two lines. A commented line, a comment between the lines, and
+// a path with two aliases stay as written.
+#[test]
+fn the_formatter_joins_split_imports_of_one_path() {
+    let source = concat!(
+        "import std/map.{Map}\n",
+        "import std/text as Text\n",
+        "import std/map as Map\n",
+        "import std/bytes.{Bytes}\n",
+        "import std/bytes as Bytes // binary data\n",
+        "import std/set as Set\n",
+        "import std/set as Sets\n",
+        "import std/set.{Set}\n",
+        "import std/order as Order\n",
+        "// orderings\n",
+        "import std/order.{Ordering}\n",
+        "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) + Text.byte_length(\"a\") }\n",
+        "fn none() -> Bytes { Bytes.empty() }\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(!formatted.is_blocked(), "{}", formatted.render_diagnostics());
+    assert!(
+        formatted.text().starts_with(concat!(
+            "import std/map as Map.{Map}\n",
+            "import std/text as Text\n",
+            "import std/bytes.{Bytes}\n",
+            "import std/bytes as Bytes // binary data\n",
+            "import std/set as Set\n",
+            "import std/set as Sets\n",
+            "import std/set.{Set}\n",
+            "import std/order as Order\n",
+            "// orderings\n",
+            "import std/order.{Ordering}\n",
+        )),
+        "{}",
+        formatted.text()
+    );
+    assert_formatter_round_trips(source);
+    assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
+}
+
+// A member imported twice is a conflict; joining would hide it.
+#[test]
+fn the_formatter_keeps_a_repeated_member_import_as_written() {
+    let source = concat!(
+        "import std/set as Set\n",
+        "import std/set.{Set}\n",
+        "import std/set.{Set}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(formatted.text().starts_with(source.split("pub").next().unwrap()), "{}", formatted.text());
+    assert_eq!(check_codes(formatted.text()), ["E_IMPORT_MEMBER_CONFLICT"]);
+}
+
+const PAY_PRELUDE: &str = concat!(
+    "import std/clock as Clock.{Clock}\n",
+    "import std/io.{Console}\n",
+    "interface Pay {\n  charge: fn(Int) -> Void\n}\n",
+    "fn charge(amount: Int) -> Void needs { pay: Pay } {\n  pay.charge(amount)\n}\n",
+);
+
+fn diagnostics_of(source: &str) -> Vec<(String, String)> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
+        .collect()
+}
+
+// decisions.md 2026-11-22: a written needs clause is complete. A need reached
+// through a call, and a runner-closed one, are both missing entries.
+#[test]
+fn a_written_needs_clause_must_list_every_need_its_body_reaches() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "fn checkout(amount: Int) -> Void needs { console: Console } {\n",
+            "  charge(amount)\n  let _ = Clock.now()\n  Void\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(
+        diagnostics_of(&source),
+        [
+            (
+                "T4204".to_owned(),
+                "checkout writes its needs, so the list must be complete: add `clock: Clock`, \
+                 which its body reaches"
+                    .to_owned()
+            ),
+            (
+                "T4204".to_owned(),
+                "checkout writes its needs, so the list must be complete: add `pay: Pay`, \
+                 which its body reaches"
+                    .to_owned()
+            ),
+        ]
+    );
+}
+
+// A need a `using` in the body supplies is not reached; a row parameter the
+// clause writes covers what binds it; no clause keeps needs inferred; a listed
+// need the body does not reach is allowed.
+#[test]
+fn a_complete_needs_clause_counts_using_rows_and_extra_entries() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "fn supplied(amount: Int) -> Void needs { console: Console } {\n",
+            "  charge(amount) using { pay: { charge: fn(_) { Void } } }\n}\n",
+            "fn generic<R>(f: fn() -> Void needs R) -> Void needs R {\n  f()\n}\n",
+            "fn inferred(amount: Int) {\n  charge(amount)\n}\n",
+            "fn extra(amount: Int) -> Void needs { pay: Pay, clock: Clock } {\n  charge(amount)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(diagnostics_of(&source), []);
+}
+
+// A function's own row parameter that its body reaches must be written too.
+#[test]
+fn a_written_needs_clause_must_list_a_reached_row_parameter() {
+    let source = concat!(
+        "import std/io.{Console}\n",
+        "fn g<R>(f: fn() -> Void needs R) -> Void needs { console: Console } {\n  f()\n}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    assert_eq!(
+        diagnostics_of(source),
+        [(
+            "T4204".to_owned(),
+            "g writes its needs, so the list must be complete: add the row `R`, which its body \
+             reaches"
+                .to_owned()
+        )]
+    );
+}
+
+// Writing a need under a reached name with another interface is a conflict,
+// not a listed need: the program would otherwise defect at run time.
+#[test]
+fn a_written_need_under_a_reached_name_must_name_its_interface() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "interface Other {\n  ping: fn() -> Int\n}\n",
+            "fn renamed() -> Void needs { pay: Other } {\n  charge(1)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(
+        diagnostics_of(&source),
+        [(
+            "T4103".to_owned(),
+            "renamed reaches the need `pay` as `Other` and `Pay`; one name needs one interface"
+                .to_owned()
+        )]
+    );
+}
+
+// `main` follows the rule too, so a written clause can no longer hide a
+// runner-closed need (CHI-285).
+#[test]
+fn main_with_a_written_clause_lists_its_runner_needs() {
+    let source = concat!(
+        "import std/clock as Clock.{Clock}\n",
+        "import std/io.{Console}\n",
+        "pub fn main() -> Int needs { console: Console } {\n  let _ = Clock.now()\n  0\n}\n",
+    );
+    assert_eq!(check_codes(source), ["T4204"]);
+    let listed = source.replace("{ console: Console }", "{ console: Console, clock: Clock }");
+    assert_eq!(check_codes(&listed), Vec::<String>::new());
+    // A need only `using` can close is the root check's to report, once.
+    let unclosed = format!(
+        "{PAY_PRELUDE}pub fn main() -> Int needs {{ console: Console }} {{\n  charge(1)\n  0\n}}\n"
+    );
+    assert_eq!(check_codes(&unclosed), ["E5002"]);
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {

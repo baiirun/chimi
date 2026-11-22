@@ -1,8 +1,6 @@
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Address, Inbox}
+import std/process as Process.{Address, Inbox}
 import std/supervisor as Supervisor
 
 // The Phase 4 forcing program (lab scenario FP02): a dispatcher hands jobs

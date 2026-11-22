@@ -2,8 +2,7 @@
 // order: "b" is rejected before "c", though "c" went in first, and the failure
 // escapes unchanged.
 import std/map as Map
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Rejected {

@@ -400,11 +400,14 @@ fn name_from(token: &SyntaxToken<'_>) -> Name {
     }
 }
 
+pub(crate) use crate::compiler::ModuleOrigin;
+
 #[derive(Debug)]
 pub(crate) struct ModuleSource {
     pub(crate) path: String,
     pub(crate) source: SourceSnapshot,
     pub(crate) syntax: Option<Arc<ParseResult>>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -1037,6 +1040,7 @@ pub(crate) struct SemanticModule {
     pub(crate) imports: Vec<ModuleImport>,
     pub(crate) declarations: Vec<ModuleDeclaration>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Debug)]
@@ -1081,6 +1085,7 @@ pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
                 input.path,
                 input.source,
                 syntax,
+                input.origin,
             )
         })
         .collect();
@@ -1092,9 +1097,17 @@ pub(crate) fn lower_module(
     path: String,
     mut source: SourceSnapshot,
     syntax: Arc<ParseResult>,
+    origin: ModuleOrigin,
 ) -> Arc<SemanticModule> {
     source.assign_file_id(FileId::new(id.raw()));
-    Arc::new(ProjectLowerer::lower(id, path, source, syntax))
+    let mut module = ProjectLowerer::lower(id, path, source, syntax);
+    // A dependency's tests are its own package's concern: `chimi test` runs
+    // only the entry package's (packages.md, "Commands").
+    if origin == ModuleOrigin::Dependency {
+        module.declarations.retain(|declaration| !declaration.test);
+    }
+    module.origin = origin;
+    Arc::new(module)
 }
 
 pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
@@ -1108,7 +1121,7 @@ pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
         .child_nodes()
         .into_iter()
         .filter(|node| node.kind() == NodeKind::ImportDeclaration)
-        .map(|node| lowerer.lower_import(&node))
+        .flat_map(|node| lowerer.lower_import(&node))
         .collect()
 }
 
@@ -1189,7 +1202,7 @@ impl ProjectLowerer {
             }
             let node = node.clone();
             match node.kind() {
-                NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
+                NodeKind::ImportDeclaration => imports.extend(lowerer.lower_import(&node)),
                 NodeKind::StructDeclaration
                 | NodeKind::EnumDeclaration
                 | NodeKind::InterfaceDeclaration
@@ -1254,10 +1267,14 @@ impl ProjectLowerer {
             imports,
             declarations,
             diagnostics,
+            origin: ModuleOrigin::Own,
         }
     }
 
-    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> ModuleImport {
+    /// One import line lowers to one binding per form it writes: the combined
+    /// `import std/clock as Clock.{Clock, Instant}` gives an alias and a member
+    /// binding with the same path and range, exactly as the two-line form does.
+    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> Vec<ModuleImport> {
         let path = node
             .child_tokens()
             .into_iter()
@@ -1265,10 +1282,11 @@ impl ProjectLowerer {
             .map(|token| token.text().to_owned())
             .collect::<Vec<_>>()
             .join("/");
-        let binding = node
+        let range = significant_range(node);
+        let bindings: Vec<ImportBinding> = node
             .child_nodes()
             .into_iter()
-            .find_map(|child| match child.kind() {
+            .filter_map(|child| match child.kind() {
                 NodeKind::ImportAlias => direct_identifier(&child).map(ImportBinding::Alias),
                 NodeKind::ImportMembers => Some(ImportBinding::Members(
                     child
@@ -1280,12 +1298,20 @@ impl ProjectLowerer {
                 )),
                 _ => None,
             })
-            .unwrap_or(ImportBinding::Missing);
-        ModuleImport {
-            path,
-            binding,
-            range: significant_range(node),
-        }
+            .collect();
+        let bindings = if bindings.is_empty() {
+            vec![ImportBinding::Missing]
+        } else {
+            bindings
+        };
+        bindings
+            .into_iter()
+            .map(|binding| ModuleImport {
+                path: path.clone(),
+                binding,
+                range,
+            })
+            .collect()
     }
 
     fn lower_module_declaration(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {

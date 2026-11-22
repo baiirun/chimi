@@ -32,10 +32,8 @@
 
 import std/bytes.{Bytes}
 import std/debug as Debug
-import std/result as Result
-import std/result.{Err, Ok, Result}
-import std/stream as Stream
-import std/stream.{Reader, StreamError, Writer}
+import std/result as Result.{Err, Ok, Result}
+import std/stream as Stream.{Reader, StreamError, Writer}
 
 // 1. Public types.
 

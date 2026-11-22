@@ -1,7 +1,5 @@
-import app/checkout as Checkout
-import app/checkout.{FraudError, NotifyError, Order, PaymentError, Reservation, ShippingError, StockError}
-import std/clock as Clock
-import std/clock.{Clock, Instant}
+import checkout/order as Checkout.{FraudError, NotifyError, Order, PaymentError, Reservation, ShippingError, StockError}
+import std/clock as Clock.{Clock, Instant}
 import std/duration as Duration
 import std/text as Text
 

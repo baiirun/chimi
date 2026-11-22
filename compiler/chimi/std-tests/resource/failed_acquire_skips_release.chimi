@@ -1,8 +1,7 @@
 // A failed `acquire` reaches neither `use` nor `release`: the outcome is the
 // acquire's failure, not the defect `release` would raise.
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum PoolError {

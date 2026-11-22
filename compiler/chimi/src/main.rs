@@ -1,17 +1,17 @@
-use chimi::Compiler;
+use chimi::{Compiler, ModuleOrigin};
 use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
 use chimi::project::{LoadedProject, StandardTree};
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
     "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
     "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
-    "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
+    "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
     "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
@@ -19,7 +19,7 @@ const USAGE: &str = concat!(
     "chimi build <path> [-o <executable>] [--target <triple>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
     "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
-    "[-o <executable>] [--target <triple>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+    "[-o <executable>] [--target <triple>] | chimi test [<path> | <directory> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
     "[--trace=off|boundaries|full] | ",
@@ -110,6 +110,8 @@ enum DocTarget {
     Project { root: PathBuf, module: String },
     /// A module of the standard tree, such as `std/option`.
     Standard { module: String },
+    /// Every own module of a package or a workspace (`--html` only).
+    Directory { root: PathBuf },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -593,6 +595,9 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
                     module: module.to_owned(),
                 }
             }
+            _ if Path::new(&argument).is_dir() => DocTarget::Directory {
+                root: PathBuf::from(argument),
+            },
             _ => DocTarget::File {
                 path: PathBuf::from(argument),
             },
@@ -609,6 +614,11 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
         DocOutput::Html { .. } if names_one_std_module => Err(UsageError {
             message: "doc --html writes the whole standard tree; name it as std",
         }),
+        DocOutput::Text | DocOutput::Json if matches!(target, DocTarget::Directory { .. }) => {
+            Err(UsageError {
+                message: "doc of a directory writes pages; pass --html <directory>",
+            })
+        }
         DocOutput::Text | DocOutput::Json if names_all_of_std => Err(UsageError {
             message: "doc requires a source path, a project root and module, or a std/ module",
         }),
@@ -855,6 +865,14 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
         DocTarget::Standard { module } => {
             (LoadedProject::standard_tree(standard), module, "std".to_owned())
         }
+        DocTarget::Directory { root } => {
+            let title = root
+                .canonicalize()
+                .ok()
+                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            (LoadedProject::load_directory(root, standard), String::new(), title)
+        }
     };
     let project = match loaded {
         Ok(project) => project,
@@ -872,10 +890,13 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
         DocOutput::Html { directory } => {
             // A std target documents the standard tree; any other target only
             // its project's own modules.
-            let modules = report.documentation_of(|path| {
-                let in_std = path.starts_with("std/");
-                if standard_target { in_std } else { !in_std }
-            });
+            let wanted = if standard_target {
+                ModuleOrigin::Standard
+            } else {
+                ModuleOrigin::Own
+            };
+            let modules =
+                report.documentation_of(|path| project.origin_of(path) == Some(wanted));
             return write_doc_site(&directory, &title, &modules);
         }
         DocOutput::Text => report.documentation(&module).map(|doc| doc.render_text()),
@@ -1081,7 +1102,7 @@ fn build(
         return ExitCode::FAILURE;
     }
     let output = output.unwrap_or_else(|| default_executable_path(&input));
-    let artifact_directory = artifact_directory(&output);
+    let artifact_directory = artifact_directory(&input, &output);
     let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
@@ -1107,7 +1128,8 @@ fn build(
 /// `chimi test`: exits 0 when every selected test passed, 1 when one failed,
 /// and 2 when the run could not start (testing.md, Exit status).
 fn test(input: Input, standard: &StandardTree, options: TestOptions) -> ExitCode {
-    let artifact_directory = artifact_directory(&default_executable_path(&input)).join("test");
+    let artifact_directory =
+        artifact_directory(&input, &default_executable_path(&input)).join("test");
     let Some(mut project) = load_project(input, standard) else {
         return ExitCode::from(2);
     };
@@ -1236,12 +1258,21 @@ fn default_executable_path(input: &Input) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn artifact_directory(output: &std::path::Path) -> PathBuf {
+/// Where a build keeps its intermediate files: `target/chimi/<name>` under
+/// the workspace root for a package or a workspace, so every member shares
+/// one `target/`, and under the current directory otherwise.
+fn artifact_directory(input: &Input, output: &std::path::Path) -> PathBuf {
     let name = output
         .file_name()
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| std::ffi::OsStr::new("chimi-program"));
-    PathBuf::from("target/chimi").join(name)
+    let base = match input {
+        Input::Project { root, .. } | Input::Directory { root } => {
+            chimi::project::workspace_root_of(root).unwrap_or_default()
+        }
+        Input::File { .. } => PathBuf::new(),
+    };
+    base.join("target/chimi").join(name)
 }
 
 fn load_project(input: Input, standard: &StandardTree) -> Option<LoadedProject> {

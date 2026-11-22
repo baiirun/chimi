@@ -2,8 +2,7 @@
 // past them (including digits that would wrap 128 bits), and the round trip
 // through to_text; the checked forms at the 38-digit and scale-38 edges.
 import std/debug as Debug
-import std/decimal as Decimal
-import std/decimal.{ParseError}
+import std/decimal as Decimal.{ParseError}
 import std/test as Test
 
 fn parsed(text: Text) -> Text {
