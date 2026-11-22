@@ -968,3 +968,30 @@ fn the_kernel_lock_is_held_while_the_carrier_applies_a_request() {
         vec![("kernel step", true)]
     );
 }
+
+unsafe extern "C" fn record_unrun_context(log: *mut c_void, task_context: *mut c_void) {
+    // SAFETY: the test passes its own vector as the release context.
+    unsafe { (*log.cast::<Vec<usize>>()).push(task_context as usize) };
+}
+
+unsafe extern "C" fn never_runs(_: *mut c_void) -> ChimiFiberResult {
+    unreachable!("the test drops the scheduler before any task runs")
+}
+
+/// The task table is unordered: dropping a scheduler releases the contexts
+/// of the tasks that never ran in id order all the same.
+#[test]
+fn unrun_contexts_are_released_in_task_order() {
+    let mut log: Vec<usize> = Vec::new();
+    let mut options = SchedulerOptions::new(STACK, TraceMode::Off, ClockMode::Virtual);
+    options.release_task_context = Some(record_unrun_context);
+    options.release_context = (&raw mut log).cast();
+    let mut scheduler = Scheduler::with_options(options);
+    for context in 1..=12usize {
+        let task = scheduler.start_root(never_runs).expect("task");
+        // What a `REQUEST_TASK_START` records for the child it starts.
+        scheduler.tasks.get_mut(&task).expect("task").entry_context = context as *mut c_void;
+    }
+    drop(scheduler);
+    assert_eq!(log, (1..=12).collect::<Vec<_>>());
+}

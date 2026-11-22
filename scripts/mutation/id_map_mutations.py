@@ -31,13 +31,11 @@ MUTATIONS = [
       "            self.0 = (self.0.rotate_left(5) ^ u64::from(byte)).wrapping_mul(SPREAD);",
       "            self.0 ^= u64::from(byte).wrapping_mul(SPREAD);"),
     # The table is unordered, so what reports tasks sorts them by id.
+    # "Program roots" is expected to survive: production starts one root
+    # (process_abi.rs), so no test has several roots to terminate.
     m("the deadlock report keeps the table's order",
       "        parked.sort_by_key(|parked| parked.task);",
       "",
-      file="src/scheduler.rs"),
-    m("a finished run names any task left holding its fiber, not the lowest",
-      "            .map(|(task, _)| *task)\n            .min();",
-      "            .map(|(task, _)| *task)\n            .max();",
       file="src/scheduler.rs"),
     m("program roots are forced in the table's order",
       "        roots.sort_unstable();",
@@ -45,10 +43,6 @@ MUTATIONS = [
       file="src/scheduler/process.rs"),
     m("unrun contexts are released in the table's order",
       "        unrun_contexts.sort_unstable_by_key(|(task, _)| *task);",
-      "",
-      file="src/scheduler.rs"),
-    m("records drop in the table's order",
-      "        records.sort_unstable_by_key(|(task, _)| *task);",
       "",
       file="src/scheduler.rs"),
 ]

@@ -938,12 +938,6 @@ impl Drop for Scheduler {
         }
         self.release_surviving_incarnations();
         self.release_held_values();
-        // A record still holding a parked fiber cancels it as it drops, which
-        // runs the fiber's cleanup: keep that in id order, as it was before
-        // the table became a hash map.
-        let mut records: Vec<_> = std::mem::take(&mut self.tasks).into_iter().collect();
-        records.sort_unstable_by_key(|(task, _)| *task);
-        drop(records);
     }
 }
 

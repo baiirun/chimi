@@ -1180,9 +1180,8 @@ the gates measure, so it goes first.
      whole program's by 12% (multi-carrier-baseline.md, "A hash map for
      the task table"). The table is unordered now, so what lists tasks
      sorts them by id, as the tree's order gave before: the deadlock report
-     and its trace events, the roots a program termination forces, the
-     unrun contexts released at the end, and the records dropped with the
-     scheduler. A hash map does not shrink, so its memory stays at the run's
+     and its trace events, the roots a program termination forces, and the
+     unrun contexts released at the end. A hash map does not shrink, so its memory stays at the run's
      peak task count.
 4. **4d: the kernel split by owner, still under one lock.** Per carrier:
    the tasks homed on it, its ready queue, jobs and timers, the mailboxes
