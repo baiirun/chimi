@@ -1201,34 +1201,48 @@ the gates measure, so it goes first.
      - `withdraw_signal_wait` and `clear_child_wait`: a `retain` over the
        global waiter lists on every request.
      - `channels.parcels` read on each channel and mailbox operation.
+     - `released_terminal`, taken on every hold, and `task_values`.
      - Config read everywhere: trace mode, stack size, hooks, clock mode.
    - Ids stay as they are: global counters, allocated on the path that
      takes every lock (creation already does). Tasks and incarnations move
      (4b, 4c), so a shard encoded in an id would go stale, and the reports
      sort by id to get creation order. A request finds its own records in
      its own shard; a miss means "not local".
-   - PRs, each behaviour-preserving, run with the simulation build, and
-     measured (pairs on 1, 2 and 4 carriers; pairs under callgrind; PG01
+   - PRs, each behaviour-preserving unless it says otherwise, run with
+     the simulation build, and measured (pairs on 1, 2 and 4 carriers; pairs under callgrind; PG01
      to PG06 on one carrier):
      - 4d-3: signal collection and delivery on carrier 0 only, which owns
        the root and whose idle wait watches the signal pipe.
        - As landed: `between_resumes` reads the signal words only on
-         carrier 0, so the other carriers' holds no longer swap the user
-         signal word or read the root's record. One carrier is unchanged.
-         A signal that arrives while carrier 0 runs a fiber is delivered at
-         its next hold, as with one carrier. The waiter lists
-         (`withdraw_signal_wait`, `clear_child_wait`) stayed: a `retain`
-         over an empty list costs nothing, and 4e's local path can read
-         whether they are empty under any lock.
+         carrier 0, so the other carriers' housekeeping no longer swaps
+         the user signal word or reads the root's record. (A signal-wait
+         request still collects user signals on the carrier that serves
+         it, and a fired signal timer delivers on any carrier.) One
+         carrier is unchanged.
+       - The one behaviour change with several carriers: a signal is
+         taken at carrier 0's next hold. Before, any carrier's hold could
+         take it. If main runs a long step that makes no request, a
+         SIGTERM's cancel and a std/signal wake wait for that step to end,
+         as they always did on one carrier.
+       - The waiter lists (`withdraw_signal_wait`, `clear_child_wait`)
+         stayed: a `retain` over an empty list costs next to nothing.
+         Under 4e it writes `Global`, so the local path checks that the
+         list is empty first.
+       - `std_signal.rs` `signals_reach_a_program_on_four_carriers`: three
+         hangups for three waiters, and a terminate that drains a program
+         sleeping on several carriers, on four carriers.
      - 4d-4: immutable configuration into a `KernelConfig`.
      - 4d-5: a channel operation moves into its task's record, so channel
        state is per channel and per task.
      - 4d-6, in parts: a `Shard` per carrier holding its ready queue, jobs,
        parked flag and wake mark; then tasks (a move moves the record);
        then incarnations, which follow their task; then channels, in their
-       creator's shard. Shared: a `Global` with homes, supervisors, names,
-       parcels, counters, clock, timers, signals, reactor, children and
-       trace.
+       creator's shard, and `released_terminal` and `task_values` per
+       shard. Shared: a `Global` with homes, supervisors, names, parcels,
+       counters, clock, timers, signals, reactor, children and trace.
+       Carrier 0's housekeeping writes `Signals` (the latch, delivery,
+       timers once the root ends), so it takes every lock when a signal
+       word is set or the root has ended.
 5. **4e: a lock per shard.** A request whose state is all in its own
    carrier's shard takes only that shard's lock: a send to a local
    mailbox, a receive, a channel operation on a local channel, a yield or

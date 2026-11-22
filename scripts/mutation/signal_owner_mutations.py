@@ -1,6 +1,6 @@
 """Mutants of R4 step 4d-3: signals are read and delivered on carrier 0 only.
 
-Run: scripts/mutation/mutate.py --timeout 600 scripts/mutation/signal_owner_mutations.py
+Run: scripts/mutation/mutate.py --timeout 120 scripts/mutation/signal_owner_mutations.py
 Results: scripts/mutation/signal_owner_results.txt.
 """
 

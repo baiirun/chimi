@@ -1507,8 +1507,8 @@ impl Scheduler {
 
     /// Housekeeping `drive` does before its first resume and after each one.
     /// Signals are carrier 0's: the root is homed there and its idle wait
-    /// watches the signal pipe, so the other carriers never read the
-    /// signal words (step 4 PR 4d-3).
+    /// watches the signal pipe, so the other carriers' housekeeping leaves
+    /// the signal words alone (step 4 PR 4d-3).
     fn between_resumes(&mut self) {
         self.remove_released_terminal();
         if self.current == ready::Carrier(0) {
