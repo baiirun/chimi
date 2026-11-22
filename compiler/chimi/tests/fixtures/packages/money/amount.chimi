@@ -10,6 +10,6 @@ fn never_used() -> Int {
   0
 }
 
-test "a dependency's test does not run" {
+test "money's own test" {
   Void
 }

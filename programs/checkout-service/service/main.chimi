@@ -1,6 +1,6 @@
-import app/checkout as Checkout.{FraudError, PaymentError, ShippingError, StockError}
-import app/fakes as Fakes
-import app/worker as Worker.{Event, Outcome}
+import checkout/order as Checkout.{FraudError, PaymentError, ShippingError, StockError}
+import checkout/fakes as Fakes
+import service/worker as Worker.{Event, Outcome}
 import std/broadcast as Broadcast
 import std/cause as Cause
 import std/channel as Channel.{Receive, Receiver}

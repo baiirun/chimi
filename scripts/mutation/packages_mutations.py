@@ -49,8 +49,8 @@ MUTATIONS = [
         "        if self.packages.is_none()\n            && let Some(manifest) = nested_manifest(&root, &path)",
     )]),
     unit("a package directory keeps nested packages' files", P, [(
-        "                .filter(|path| nested_manifest(&root, &root.join(path)).is_none())",
-        "                .filter(|_| true)",
+        "                                nested_manifest(&package.root, &package.root.join(path)).is_none()",
+        "                                true",
     )]),
     unit("the entry module may be outside the entry package", P, [(
         "            if first != entry.name.as_str() || rest.is_empty() {",
