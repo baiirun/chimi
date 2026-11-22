@@ -1,0 +1,9 @@
+KILLED       a first resume keeps the placed home [lib] (9s)
+KILLED       a move leaves the home [lib] (9s)
+KILLED       set_home changes nothing [lib] (7s)
+KILLED       enqueue ignores the home [lib] (7s)
+KILLED       a child is homed on the current carrier [lib] (7s)
+KILLED       an unwind job goes to the current carrier [lib] (7s)
+KILLED       any carrier may resume a started fiber [lib] (7s)
+KILLED       retire_carrier checks other carriers' tasks [lib] (8s)
+# result: every mutant killed
