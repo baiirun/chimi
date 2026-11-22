@@ -2074,6 +2074,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::LogHostWrite
             | StandardFunction::MetricsHostEnabled
             | StandardFunction::MetricsHostRecord
+            | StandardFunction::MetricsHostDocument
             => {
                 self.invoke_host_operation(function, arguments, call_node)
             }

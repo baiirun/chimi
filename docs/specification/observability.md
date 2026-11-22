@@ -140,6 +140,8 @@ pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs
 pub fn observe(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs { metrics: Metrics }
 
 pub fn seconds(duration: Duration) -> Float
+
+pub fn runner_document() -> Text needs { metrics: Metrics }
 ```
 
 <!-- chimi: check -->
@@ -170,8 +172,9 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 ### The runner's aggregate
 
 - The provider MUST record nothing unless the runner option
-  `--metrics-file=<path>` is given; it reads that once, when `main` starts,
-  and without it a label set is never encoded.
+  `--metrics-file=<path>` is given or the program has called
+  `runner_document`; it asks the runtime on each measurement, and until one
+  of them holds a label set is never encoded.
 - It MUST add each measurement into one aggregate per name and label set.
   A label set is the labels as one JSON object, so the order they were
   written in does not matter and a label written twice keeps its last value.
@@ -230,11 +233,34 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 - The interpreter's provider MUST aggregate the same way and write the same
   document to `ExecutionConfig::with_metrics_file`.
 
+### Reading the aggregate while main runs
+
+- `runner_document` MUST return the runner's aggregate as it stands, as the
+  document above, with `time_unix_ns` the start plus the execution clock's
+  reading at the call. Every measurement recorded before it returns, on any
+  carrier, is in it.
+- From its first call on, the provider MUST record without
+  `--metrics-file`, on every carrier. What was recorded before that call
+  without the file is not in the aggregate, so an exporter reads it first,
+  at the top of `main`.
+- With `--metrics-file`, the file at exit is what a read at the end of
+  `main` would return, apart from `time_unix_ns`, which is when it is
+  written.
+- With `--benchmark-repeats`, the repeats share the aggregate, as they do
+  for the file, and the first read: a repeat after it records from its
+  start, and its reads include the earlier repeats.
+- It reads the runner's aggregate whatever provider closes `metrics`: under
+  a fake it returns what the runner's provider recorded, which is nothing
+  in a test. The need says that the function reads metrics.
+- The interpreter's provider MUST return the same document, with both times
+  0.
+
 ### Not in this slice
 
-- Metrics are written once, at exit. `chimi metrics export --otlp` turns the
-  file into OpenTelemetry metrics (tooling.md). There is no export while the
-  program runs; that is CHI-296.
+- The file is written once, at exit. `chimi metrics export --otlp` turns it
+  into OpenTelemetry metrics (tooling.md). A program reads the aggregate
+  while it runs with `runner_document`; pushing it to a collector is
+  `std/otel` (CHI-296).
 - There are no custom histogram bounds and no up-down counter.
 
 ## std/otel
@@ -287,5 +313,7 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text
 | Recording functions build the measurement and reach a fake through `using`, on both backends; `seconds` | `tests/std_metrics.rs` `a_test_records_measurements_through_a_fake` |
 | A test without a `metrics` provider is `T4400` | `tests/std_metrics.rs` `a_test_without_a_metrics_provider_is_rejected` |
 | The interpreter's provider writes the same document | `tests/std_metrics.rs` `the_interpreter_writes_the_same_document` |
+| `runner_document` reads the aggregate mid-run with the read's time, turns recording on without the file, and matches the exit file, on both backends | `tests/std_metrics.rs` `the_aggregate_can_be_read_while_main_runs` |
+| After a read, tasks on four carriers record without the file | `tests/std_metrics.rs` `a_read_turns_recording_on_for_every_carrier` |
 | `metrics_request` matches `chimi metrics export --otlp` as JSON, on both backends | `tests/std_otel.rs` `a_metrics_request_is_what_the_cli_exports` |
 | An unreadable document fails with the CLI's reason | `tests/std_otel.rs` `a_document_that_is_not_metrics_fails_with_the_reason` |

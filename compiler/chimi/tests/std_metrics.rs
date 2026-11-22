@@ -544,3 +544,147 @@ fn a_metrics_document_without_times_is_refused() {
     assert_eq!((other.status, other.stdout.as_str()), (Some(1), ""));
     assert!(other.stderr.contains("not a chimi.metrics.v1 document"), "{}", other.stderr);
 }
+
+const READER: &str = r#"import std/clock as Clock
+import std/duration as Duration
+import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Text needs { clock: Clock.Clock, metrics: Metrics } {
+  Metrics.count("before", 1, [])
+  let first = Metrics.runner_document()
+  Metrics.count("orders", 2, [("route", "/pay")])
+  Clock.sleep(Duration.seconds(1))
+  Metrics.gauge("depth", 1.5, [])
+  "${first}|${Metrics.runner_document()}"
+}
+"#;
+
+const READ_FIRST: &str = concat!(
+    r#"{"schema":"chimi.metrics.v1","metrics":[],"dropped":{"label_sets":0,"kind_conflicts":0},"#,
+    r#""start_unix_ns":1794303000000000000,"time_unix_ns":1794303000000000000}"#,
+);
+
+const READ_SECOND: &str = concat!(
+    r#"{"schema":"chimi.metrics.v1","metrics":["#,
+    r#"{"name":"depth","labels":{},"kind":"gauge","value":1.5},"#,
+    r#"{"name":"orders","labels":{"route":"/pay"},"kind":"count","value":2}],"#,
+    r#""dropped":{"label_sets":0,"kind_conflicts":0},"#,
+    r#""start_unix_ns":1794303000000000000,"time_unix_ns":1794303001000000000}"#,
+);
+
+/// The text value of the outcome record among `lines`.
+fn text_outcome(lines: &str) -> String {
+    let line = lines
+        .lines()
+        .find(|line| line.starts_with(r#"{"schema":"chimi.runtime.v1","outcome":"success""#))
+        .unwrap_or_else(|| panic!("no success outcome in {lines}"));
+    let value = line.split_once("\"value\":").expect("a value").1;
+    let value = value.strip_suffix('}').unwrap_or(value);
+    let mut text = String::new();
+    let mut characters = value.trim_matches('"').chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => match characters.next() {
+                Some('n') => text.push('\n'),
+                Some(other) => text.push(other),
+                None => {}
+            },
+            other => text.push(other),
+        }
+    }
+    text
+}
+
+// Reading the aggregate mid-run gives the document `--metrics-file` holds,
+// with the time of the read, and turns recording on without the file:
+// what was recorded before the first read is not in it. Rejects a read that
+// is empty, that records nothing afterwards, that stamps the run's end or
+// start as the read's time, or that differs between the backends.
+#[test]
+fn the_aggregate_can_be_read_while_main_runs() {
+    let scratch = Scratch::new("reader", READER);
+    let program = scratch.build();
+    let outcome = scratch.0.join("outcome.jsonl");
+    let outcome_option = format!("--outcome-file={}", outcome.display());
+    let clock = ["--clock=virtual", "--clock-start=2026-11-10T09:30:00Z"];
+    let output = runner(&program, &[clock[0], clock[1], &outcome_option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let expected = format!("{READ_FIRST}\n|{READ_SECOND}\n");
+    assert_eq!(text_outcome(&std::fs::read_to_string(&outcome).unwrap()), expected);
+
+    // The interpreter has no clock, so its times are Unix 0 and it cannot
+    // sleep.
+    let untimed_source = READER.replace("  Clock.sleep(Duration.seconds(1))\n", "");
+    std::fs::write(scratch.0.join("untimed.chimi"), untimed_source).unwrap();
+    let interpreted = scratch.chimi(&["run", "untimed.chimi"]);
+    assert_eq!(interpreted.status, Some(0), "{}", interpreted.stderr);
+    let untimed = expected
+        .replace("1794303000000000000", "0")
+        .replace("1794303001000000000", "0");
+    assert_eq!(text_outcome(&interpreted.stdout), untimed);
+
+    // With the file, recording was on from the start, and the file at exit
+    // is the last read.
+    std::fs::remove_file(&outcome).unwrap();
+    let file = scratch.0.join("metrics.json");
+    let file_option = format!("--metrics-file={}", file.display());
+    let output = runner(&program, &[clock[0], clock[1], &outcome_option, &file_option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let before = r#"{"name":"before","labels":{},"kind":"count","value":1}"#;
+    let with_before = |document: &str| {
+        document.replacen(r#""metrics":["#, &format!(r#""metrics":[{before},"#), 1)
+    };
+    let first = READ_FIRST.replace(r#""metrics":[]"#, &format!(r#""metrics":[{before}]"#));
+    assert_eq!(
+        text_outcome(&std::fs::read_to_string(&outcome).unwrap()),
+        format!("{first}\n|{}\n", with_before(READ_SECOND))
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{}\n", with_before(READ_SECOND)));
+}
+
+const CARRIER_READER: &str = r#"import std/list as List
+import std/metrics as Metrics.{Metrics}
+import std/task as Task
+
+pub fn main() -> Text needs { metrics: Metrics } {
+  let _ = Metrics.runner_document()
+  let tasks = List.map([1, 2, 3, 4], fn(task) {
+    Task.start(fn() {
+      List.each(List.enumerate(List.repeat(0, 500)), fn(pair) {
+        let (index, _) = pair
+        Metrics.count("done", 1, [])
+        // Reads on every carrier while the others record.
+        case index % 100 == 0 {
+          True -> {
+            let _ = Metrics.runner_document()
+            Void
+          }
+          False -> Void
+        }
+      })
+      0
+    })
+  })
+  List.each(tasks, fn(task) {
+    let _ = Task.result(task)
+    Void
+  })
+  Metrics.runner_document()
+}
+"#;
+
+// Once the aggregate has been read, tasks on several carriers record into
+// it without `--metrics-file`, and read it while others record. Rejects
+// recording that only the first carrier sees turned on, or a read that
+// loses or corrupts a measurement.
+#[test]
+fn a_read_turns_recording_on_for_every_carrier() {
+    let scratch = Scratch::new("carrier-reader", CARRIER_READER);
+    let program = scratch.build();
+    let outcome = scratch.0.join("outcome.jsonl");
+    let option = format!("--outcome-file={}", outcome.display());
+    let output = runner(&program, &["--clock=real", "--carriers=4", &option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let document = text_outcome(&std::fs::read_to_string(&outcome).unwrap());
+    assert!(document.contains(r#"{"name":"done","labels":{},"kind":"count","value":2000}"#), "{document}");
+}

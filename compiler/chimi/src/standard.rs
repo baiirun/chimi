@@ -669,9 +669,10 @@ pub(crate) enum StandardFunction {
     // `std/log`'s host core, which only its runner provider calls.
     LogHostMinimumLevel,
     LogHostWrite,
-    // `std/metrics`'s host core, which only its runner provider calls.
+    // `std/metrics`'s host core: its runner provider and `runner_document`.
     MetricsHostEnabled,
     MetricsHostRecord,
+    MetricsHostDocument,
 }
 
 impl StandardFunction {
@@ -991,7 +992,7 @@ impl StandardFunction {
             | Self::FsTestRoot => None,
             Self::SignalHostInstall | Self::SignalHostWait => None,
             Self::LogHostMinimumLevel | Self::LogHostWrite => None,
-            Self::MetricsHostEnabled | Self::MetricsHostRecord => None,
+            Self::MetricsHostEnabled | Self::MetricsHostRecord | Self::MetricsHostDocument => None,
         }
     }
 
@@ -1204,6 +1205,7 @@ impl StandardFunction {
             Self::LogHostWrite => "host_write",
             Self::MetricsHostEnabled => "host_enabled",
             Self::MetricsHostRecord => "host_record",
+            Self::MetricsHostDocument => "host_document",
         }
     }
 
