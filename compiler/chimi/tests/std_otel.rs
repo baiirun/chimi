@@ -365,10 +365,21 @@ impl Scratch {
     /// Builds `program` natively and runs it on the real clock, writing
     /// its metrics to `metrics.json`; returns the run and the file.
     fn run_native(&self, program: &str) -> (std::process::Output, String) {
+        let (output, metrics, _) = self.run_native_timed(program);
+        (output, metrics)
+    }
+
+    /// As `run_native`, with how long the run took, the build left out.
+    fn run_native_timed(
+        &self,
+        program: &str,
+    ) -> (std::process::Output, String, std::time::Duration) {
         self.write("main.chimi", program);
         let built = self.chimi(&["build", "main.chimi", "-o", "program"]);
         assert!(built.status.success(), "{built:?}");
         let metrics = self.0.join("metrics.json");
+        let _ = std::fs::remove_file(&metrics);
+        let started = std::time::Instant::now();
         let output = Command::new(self.0.join("program"))
             .current_dir(&self.0)
             .args(["--chimi-runner", "--clock=real"])
@@ -376,7 +387,12 @@ impl Scratch {
             .arg("--")
             .output()
             .unwrap();
-        (output, std::fs::read_to_string(&metrics).unwrap_or_default())
+        let took = started.elapsed();
+        (
+            output,
+            std::fs::read_to_string(&metrics).unwrap_or_default(),
+            took,
+        )
     }
 }
 
@@ -404,19 +420,34 @@ fn metrics_are_pushed_every_interval_and_when_the_body_ends() {
     assert!(pushes.len() >= 3, "{} pushes", pushes.len());
     for push in pushes.iter() {
         assert_eq!(push.path, "/v1/metrics");
-        assert!(push.headers.contains("content-type: application/json"), "{}", push.headers);
-        assert!(push.headers.contains("x-api-key: secret"), "{}", push.headers);
-        assert!(push.body.contains(r#"{"stringValue":"shop"}"#), "{}", push.body);
+        assert!(
+            push.headers.contains("content-type: application/json"),
+            "{}",
+            push.headers
+        );
+        assert!(
+            push.headers.contains("x-api-key: secret"),
+            "{}",
+            push.headers
+        );
+        assert!(
+            push.body.contains(r#"{"stringValue":"shop"}"#),
+            "{}",
+            push.body
+        );
     }
-    assert!(pushes[0].body.contains(r#""asInt":"3""#), "{}", pushes[0].body);
+    assert!(
+        pushes[0].body.contains(r#""asInt":"3""#),
+        "{}",
+        pushes[0].body
+    );
     let last = &pushes.last().unwrap().body;
     assert!(last.contains(r#""asInt":"4""#), "{last}");
 }
 
 // A collector that refuses, answers 5xx or never answers does not fail the
-// program or hold up its end past `flush_within`; each failed push is
-// counted. Rejects a push failure raised into the body, an unbounded final
-// push, or a failure left uncounted.
+// program, and each failed push is counted once. Rejects a push failure
+// raised into the body, or a failure counted twice or not at all.
 #[test]
 fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -425,25 +456,82 @@ fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     let failing = Collector::start(Answer::Status(503));
     let slow = Collector::start(Answer::Hang);
     let scratch = Scratch::new("down");
+    // One periodic push at 200 ms and the final one: two failures.
     let body = r#"    Metrics.count("orders", 1, [])
-    Clock.sleep(Duration.milliseconds(250))
+    Clock.sleep(Duration.milliseconds(300))
     "done""#;
-    for (port, name) in [(refused_port, "refused"), (failing.port, "failing"), (slow.port, "slow")] {
-        let settings = ", interval: Duration.milliseconds(100), timeout: Duration.milliseconds(200), flush_within: Duration.milliseconds(300)";
-        let started = std::time::Instant::now();
+    let settings = ", interval: Duration.milliseconds(200), timeout: Duration.milliseconds(20), flush_within: Duration.milliseconds(20)";
+    for (port, name) in [
+        (refused_port, "refused"),
+        (failing.port, "failing"),
+        (slow.port, "slow"),
+    ] {
         let (output, metrics) = scratch.run_native(&exporting(port, settings, body));
-        let took = started.elapsed();
         assert!(output.status.success(), "{name}: {output:?}");
         assert!(
-            metrics.contains(r#"{"name":"chimi.otel.failed_exports","labels":{},"kind":"count","value":"#),
+            metrics.contains(
+                r#"{"name":"chimi.otel.failed_exports","labels":{},"kind":"count","value":2}"#
+            ),
             "{name}: {metrics}"
         );
-        // The build is not timed; the run is the sleep plus at most one
-        // timed-out push and the final one.
-        assert!(took < std::time::Duration::from_secs(10), "{name} took {took:?}");
     }
-    assert!(!failing.pushes().is_empty());
-    assert!(!slow.pushes().is_empty());
+    assert_eq!(failing.pushes().len(), 2);
+    assert_eq!(slow.pushes().len(), 2);
+}
+
+// The last push is given `flush_within`, not `timeout`, so a collector that
+// never answers delays the end by that much and no more. Rejects a final
+// push bounded by `timeout` or not bounded.
+#[test]
+fn the_last_push_is_bounded_by_flush_within() {
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("flush");
+    let settings = ", interval: Duration.seconds(60), timeout: Duration.seconds(5), flush_within: Duration.milliseconds(400)";
+    let (output, _, took) =
+        scratch.run_native_timed(&exporting(slow.port, settings, r#"    "done""#));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(slow.pushes().len(), 1);
+    assert!(took >= std::time::Duration::from_millis(400), "{took:?}");
+    assert!(took < std::time::Duration::from_millis(2500), "{took:?}");
+}
+
+// The last push runs when the body defects too. Rejects a final push only
+// on return.
+#[test]
+fn a_body_that_defects_still_pushes() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("defect");
+    let body = r#"    Metrics.count("orders", 5, [])
+    Debug.crash("broken")"#;
+    let program = exporting(collector.port, ", interval: Duration.seconds(60)", body).replace(
+        "import std/duration as Duration",
+        "import std/debug as Debug\nimport std/duration as Duration",
+    );
+    let (output, _) = scratch.run_native(&program);
+    assert_eq!(output.status.code(), Some(70), "{output:?}");
+    let pushes = collector.pushes();
+    assert_eq!(pushes.len(), 1);
+    assert!(
+        pushes[0].body.contains(r#""asInt":"5""#),
+        "{}",
+        pushes[0].body
+    );
+}
+
+// An interval, timeout or limit for the last push that is not positive is a
+// defect before anything is pushed. Rejects a zero interval that pushes in a
+// tight loop.
+#[test]
+fn settings_that_are_not_positive_are_a_defect() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("settings");
+    for field in ["interval", "timeout", "flush_within"] {
+        let settings = format!(", {field}: Duration.milliseconds(0)");
+        let (output, _) =
+            scratch.run_native(&exporting(collector.port, &settings, r#"    "done""#));
+        assert_eq!(output.status.code(), Some(70), "{field}: {output:?}");
+    }
+    assert!(collector.pushes().is_empty());
 }
 
 // Stopping the program pushes once more before it exits. Rejects a final
@@ -477,5 +565,9 @@ fn a_stopped_program_pushes_before_it_exits() {
     let _ = runner.wait().unwrap();
     let pushes = collector.pushes();
     assert_eq!(pushes.len(), 1, "one push, on stop");
-    assert!(pushes[0].body.contains(r#""asInt":"7""#), "{}", pushes[0].body);
+    assert!(
+        pushes[0].body.contains(r#""asInt":"7""#),
+        "{}",
+        pushes[0].body
+    );
 }

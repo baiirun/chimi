@@ -13,6 +13,14 @@ def mutant(name, edits):
 
 
 MUTATIONS = [
+    mutant("settings are not checked", [(
+        "    True -> Debug.crash(\"Otel.export: interval, timeout and flush_within must be positive\")",
+        "    True -> Void",
+    )]),
+    mutant("the last push is bounded by timeout", [(
+        "    push_within(settings, settings.flush_within)\n",
+        "    push_within(settings, settings.timeout)\n",
+    )]),
     mutant("no push when the body ends", [(
         "    Task.cancel(pushing)\n    push_within(settings, settings.flush_within)\n",
         "    Task.cancel(pushing)\n",

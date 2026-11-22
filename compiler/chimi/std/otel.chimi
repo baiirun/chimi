@@ -19,16 +19,17 @@
 
 import std/bytes as Bytes
 import std/clock as Clock.{Clock}
+import std/debug as Debug
 import std/duration as Duration.{Duration}
 import std/http as Http
 import std/json as Json.{Number, Value}
 import std/list as List
 import std/map as Map.{Map}
 import std/metrics as Metrics.{Metrics}
-import std/net as Net.{Network}
+import std/net.{Network}
 import std/option as Option.{None, Option, Some}
 import std/resource as Resource
-import std/result as Result.{Err, Ok}
+import std/result as Result.{Ok}
 import std/task as Task
 import std/text as Text
 
@@ -139,6 +140,7 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text {
 /// slow, or answers other than 2xx) is dropped and counted as
 /// `chimi.otel.failed_exports`; the next push carries the totals, so a
 /// collector that comes back sees every count. A push never fails `body`.
+/// Each `export` pushes on its own, so nested exports push twice.
 ///
 /// Fails with: what `body` fails with.
 /// Defects when: `settings.interval`, `timeout` or `flush_within` is not
@@ -148,6 +150,10 @@ pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E need
   clock: Clock,
   metrics: Metrics
 } {
+  case settings.interval <= Duration.zero or settings.timeout <= Duration.zero or settings.flush_within <= Duration.zero {
+    True -> Debug.crash("Otel.export: interval, timeout and flush_within must be positive")
+    False -> Void
+  }
   let _ = Metrics.runner_document()
   let exporter = Exporter { settings: settings }
   Resource.scoped(fn() {
