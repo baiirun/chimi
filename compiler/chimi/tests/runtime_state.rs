@@ -90,6 +90,17 @@ const SHARED: &[&str] = &[
     "process_peak_footprint_bytes",
     "process_fragment_footprint_bytes",
     "process_peak_fragment_footprint_bytes",
+    "metrics_lock",
+    "metric_series",
+    "metric_series_count",
+    "metric_series_capacity",
+    "metric_names",
+    "metric_name_count",
+    "metric_name_capacity",
+    "metric_series_table",
+    "metric_name_table",
+    "metric_dropped_label_sets",
+    "metric_dropped_kind_conflicts",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {
@@ -234,4 +245,12 @@ fn the_handle_table_counts_across_threads() {
 #[test]
 fn the_runtime_state_holds_across_carrier_threads() {
     run_thread_fixture("carrier-threads-stress");
+}
+
+/// The std/metrics aggregate under four threads (`fixtures/metrics-stress.c`):
+/// every measurement lands while the tables grow, and each thread's series
+/// holds exactly its own total.
+#[test]
+fn the_metrics_aggregate_counts_across_threads() {
+    run_thread_fixture("metrics-stress");
 }
