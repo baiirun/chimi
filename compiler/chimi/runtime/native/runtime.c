@@ -12356,7 +12356,10 @@ NODE_WRAPPER(provision, "provision", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; bool stopped = false;
   environment = clone_requirement_environment(incoming);
   for (uint32_t i = 0; i < node->length; ++i) {
-    const ChimiNamedNode *provider = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(provider->node);
+    /* Each provider runs in the enclosing scope, as typing gives its own needs
+       to the enclosing expression: no provider sees another of this clause. */
+    const ChimiNamedNode *provider = &CHIMI_NAMED_NODES[node->offset + i];
+    ChimiControl *control = run_node(provider->node, runtime, incoming, span);
     if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
     const char *name = CHIMI_STRINGS[provider->name];
     for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)

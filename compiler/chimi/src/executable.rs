@@ -1508,9 +1508,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
     // A name aliased to its clause parameter, an update temporary left unbound,
     // or a local of an unreachable function binds nothing, so it takes no
     // environment slot: a frame holds only the locals reachable code binds.
-    symbols.extend(lowerer.synthetic_locals.iter().map(|&id| CoreSymbol {
+    symbols.extend(lowerer.synthetic_locals.iter().map(|&(id, name)| CoreSymbol {
         id,
-        name: "cause".to_owned(),
+        name: name.to_owned(),
         kind: CoreSymbolKind::Local,
         constructor: None,
         standard: None,
@@ -1576,8 +1576,9 @@ struct CoreLowerer {
     cause_scopes: Vec<Option<CauseScope>>,
     /// The typed project's symbol count; generated locals are numbered after it.
     symbol_count: usize,
-    /// The locals generated for cause arms, in numbering order.
-    synthetic_locals: Vec<SymbolId>,
+    /// The locals generated for cause arms and bound function values, with
+    /// their names, in numbering order.
+    synthetic_locals: Vec<(SymbolId, &'static str)>,
 }
 
 struct CauseScope {
@@ -1761,19 +1762,21 @@ impl CoreLowerer {
                 CoreOperation::Identity(self.expression(module_id, expression))
             }
             ModuleExpression::Using {
+                semantic_id,
                 expression,
                 providers,
                 ..
-            } => CoreOperation::Provision {
-                expression: self.expression(module_id, expression),
-                providers: providers
+            } => {
+                let value = self.expression(module_id, expression);
+                let providers = providers
                     .iter()
                     .map(|provider| CoreField {
                         name: provider.name.text.clone(),
                         value: self.expression(module_id, &provider.value),
                     })
-                    .collect(),
-            },
+                    .collect();
+                self.provision(module_id, *semantic_id, expression, value, providers)
+            }
             ModuleExpression::UsingRecord {
                 semantic_id,
                 expression,
@@ -2129,7 +2132,7 @@ impl CoreLowerer {
             Some(local) => local,
             None => {
                 scope.local = Some(next);
-                self.synthetic_locals.push(next);
+                self.synthetic_locals.push((next, "cause"));
                 next
             }
         };
@@ -2403,13 +2406,165 @@ impl CoreLowerer {
                 CoreField { name, value }
             })
             .collect();
-        let provision = CoreOperation::Provision {
-            expression: self.expression(module_id, expression),
-            providers,
-        };
+        let value = self.expression(module_id, expression);
+        let provision = self.provision(module_id, semantic_id, expression, value, providers);
         let result_type = self.typed.expression_facts[&(module_id, semantic_id)].success;
         let provision = self.push_typed_node(module_id, semantic_id, result_type, provision);
         CoreOperation::Sequence(vec![bind, CoreStep::Expression(provision)])
+    }
+
+    /// `value`, lowered from `expression`, evaluated with `providers`: the
+    /// `using` at `semantic_id`.
+    ///
+    /// A provider the `using` binds into the function value it produces
+    /// (`TypedProject::using_bindings`) must serve every call of that value,
+    /// whoever calls it. Both backends give a call its caller's providers ahead
+    /// of the ones a function value captured, so the value is wrapped in a
+    /// closure that supplies the bound providers again at each call:
+    ///
+    /// `{ let p = X; let f = e using { a: p }; fn(args) { f(args) using { a: p } } }`
+    ///
+    /// The providers are evaluated once, before `e`, as an unwrapped provision
+    /// evaluates them. A need the value still has stays its caller's.
+    fn provision(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        expression: &ModuleExpression,
+        value: CoreNodeId,
+        providers: Vec<CoreField>,
+    ) -> CoreOperation {
+        let key = (module_id, expression.semantic_id());
+        let Some(bound) = self.typed.using_bindings.get(&key).cloned() else {
+            return CoreOperation::Provision {
+                expression: value,
+                providers,
+            };
+        };
+        let function_type = self.typed.expression_facts[&key].success;
+        let contract = match resolved_type(&self.typed, function_type) {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => contract.clone(),
+            _ => unreachable!("typing binds providers only into a function value"),
+        };
+        let mut steps = Vec::new();
+        let mut held = Vec::new();
+        for provider in providers {
+            let symbol = self.synthetic_local("provider");
+            let type_id = self.nodes[provider.value.raw() as usize].type_id;
+            steps.push(CoreStep::Bind {
+                symbol,
+                value: provider.value,
+            });
+            held.push((provider.name, symbol, type_id));
+        }
+        let provided: Vec<CoreField> = held
+            .iter()
+            .map(|(name, symbol, type_id)| CoreField {
+                name: name.clone(),
+                value: self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    *type_id,
+                    CoreOperation::Reference(*symbol),
+                ),
+            })
+            .collect();
+        let provided = self.push_typed_node(
+            module_id,
+            semantic_id,
+            function_type,
+            CoreOperation::Provision {
+                expression: value,
+                providers: provided,
+            },
+        );
+        let function = self.synthetic_local("function");
+        steps.push(CoreStep::Bind {
+            symbol: function,
+            value: provided,
+        });
+        let parameters = contract
+            .inputs
+            .iter()
+            .map(|_| self.synthetic_local("argument"))
+            .collect::<Vec<_>>();
+        let callee = self.push_typed_node(
+            module_id,
+            semantic_id,
+            function_type,
+            CoreOperation::Reference(function),
+        );
+        let arguments = parameters
+            .iter()
+            .zip(&contract.inputs)
+            .map(|(parameter, type_id)| {
+                self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    *type_id,
+                    CoreOperation::Reference(*parameter),
+                )
+            })
+            .collect();
+        let call = self.push_typed_node(
+            module_id,
+            semantic_id,
+            contract.success,
+            CoreOperation::Call { callee, arguments },
+        );
+        let rebound = held
+            .iter()
+            .filter(|(name, _, _)| bound.contains(name))
+            .map(|(name, symbol, type_id)| (name.clone(), *symbol, *type_id))
+            .collect::<Vec<_>>();
+        let mut captures = parameters.clone();
+        captures.push(function);
+        captures.extend(rebound.iter().map(|(_, symbol, _)| *symbol));
+        let rebound: Vec<CoreField> = rebound
+            .into_iter()
+            .map(|(name, symbol, type_id)| CoreField {
+                name,
+                value: self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    type_id,
+                    CoreOperation::Reference(symbol),
+                ),
+            })
+            .collect();
+        let body = self.push_typed_node(
+            module_id,
+            semantic_id,
+            contract.success,
+            CoreOperation::Provision {
+                expression: call,
+                providers: rebound,
+            },
+        );
+        let result_type = self.typed.expression_facts[&(module_id, semantic_id)].success;
+        let closure = self.push_typed_node(
+            module_id,
+            semantic_id,
+            result_type,
+            CoreOperation::Closure {
+                parameters,
+                captures,
+                body,
+            },
+        );
+        steps.push(CoreStep::Expression(closure));
+        CoreOperation::Sequence(steps)
+    }
+
+    /// A new local, numbered after the typed project's symbols.
+    fn synthetic_local(&mut self, name: &'static str) -> SymbolId {
+        let symbol = SymbolId::new(
+            u32::try_from(self.symbol_count + self.synthetic_locals.len())
+                .expect("symbol count fits u32"),
+        );
+        self.synthetic_locals.push((symbol, name));
+        symbol
     }
 
     fn is_local(&self, symbol: SymbolId) -> bool {
