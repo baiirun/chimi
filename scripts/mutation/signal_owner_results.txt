@@ -1,0 +1,7 @@
+# mutation run at 8a896691aca34e13cef9e23fc0e98fe9c4ed04fa
+# signal_owner_mutations.py: 3 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (25s)
+KILLED       every carrier takes signals [lib] (7s)
+TIMEOUT      no carrier takes signals [lib] (120s)
+TIMEOUT      carrier 0 collects but never delivers [lib] (120s)
+# result: every mutant killed
