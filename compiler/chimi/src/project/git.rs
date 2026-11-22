@@ -254,16 +254,45 @@ fn commit_of(database: &Path, rev: &str) -> Result<Option<String>, GitError> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
 }
 
+/// Runs `git` on `database`. Two builds fetching into one cached
+/// repository at once can collide on a ref's lock file; the loser waits and
+/// tries again, a few times, before reporting the failure.
 fn git(database: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
-    finished(
-        Command::new("git")
-            .arg("--git-dir")
-            .arg(database)
-            // Only transports that fetch; `ext::` runs commands.
-            .args(["-c", "protocol.ext.allow=never"])
-            .args(arguments)
-            .output(),
-    )
+    let run = || {
+        finished(
+            Command::new("git")
+                .arg("--git-dir")
+                .arg(database)
+                // Only transports that fetch; `ext::` runs commands.
+                .args(["-c", "protocol.ext.allow=never"])
+                .args(arguments)
+                // Untranslated messages, which `is_lock_collision` reads.
+                .env("LC_ALL", "C")
+                .output(),
+        )
+    };
+    let mut wait = std::time::Duration::from_millis(100);
+    for _ in 0..LOCK_RETRIES {
+        match run() {
+            Err(detail) if is_lock_collision(&detail) => {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            finished => return finished,
+        }
+    }
+    run()
+}
+
+/// Retries after a lock collision, waiting 0.1, 0.2, 0.4 and 0.8 seconds.
+const LOCK_RETRIES: usize = 4;
+
+/// Whether `git` failed because another process held a lock file in the
+/// repository, which it reports as `cannot lock ref` or `Unable to create
+/// '….lock': File exists`.
+fn is_lock_collision(detail: &str) -> bool {
+    detail.contains("cannot lock ref")
+        || (detail.contains(".lock") && detail.contains("File exists"))
 }
 
 fn finished(output: std::io::Result<std::process::Output>) -> Result<Vec<u8>, String> {
@@ -309,7 +338,69 @@ fn repository_key(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::repository_key;
+    use super::{GitCache, Network, is_lock_collision, repository_key};
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(directory: &Path, arguments: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(directory)
+            .args([
+                "-c",
+                "user.name=chimi",
+                "-c",
+                "user.email=chimi@example.com",
+            ])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(arguments)
+            .output()
+            .expect("run git");
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
+    fn a_fetch_that_meets_another_fetchs_lock_waits_and_retries() {
+        let scratch = std::env::temp_dir().join(format!("chimi-git-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let repo = scratch.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "-b", "main"]);
+        std::fs::write(repo.join("file"), "1").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "--quiet", "-m", "first"]);
+        let url = format!("file://{}", repo.display());
+        let cache = GitCache::at(scratch.join("cache"), Network::Allowed);
+        let first = cache.resolve(&url, "main").unwrap();
+
+        std::fs::write(repo.join("file"), "2").unwrap();
+        git(&repo, &["commit", "--quiet", "-am", "second"]);
+        // Another fetch holds the branch's lock for a moment.
+        let database = cache.database(&url).unwrap();
+        let lock = database.join("refs/heads/main.lock");
+        std::fs::write(&lock, "").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::fs::remove_file(lock).unwrap();
+        });
+        let second = cache.resolve(&url, "main").unwrap();
+        release.join().unwrap();
+        assert_ne!(first, second, "the retry fetched the new commit");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn only_lock_collisions_are_retried() {
+        assert!(is_lock_collision(
+            "error: cannot lock ref 'refs/heads/main': Unable to create '/c/refs/heads/main.lock': File exists."
+        ));
+        assert!(!is_lock_collision(
+            "fatal: repository '/missing' does not exist"
+        ));
+    }
 
     #[test]
     fn a_repository_key_is_readable_and_unique_per_url() {

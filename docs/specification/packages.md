@@ -174,7 +174,10 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   or whose `url`, `rev` or `directory` changed, fetches them, and rewrites
   `chimi.lock` with entries sorted by name; `chimi deps update <name>` also
   moves that package's pin to what its `rev` points to now, and naming a
-  package that is not a git dependency of the workspace is an error. It
+  package that is not a git dependency of the workspace is an error,
+  reported before anything is fetched when no member names it and the
+  lockfile does not pin it. (A dependency's new git dependency is first
+  pinned by an update without names.) It
   prints each pin it adds, moves or drops. These are the
   only commands that write the lockfile or move a pinned commit.
 - `check`, `run`, `build`, `test`, `doc` and `lint` MUST NOT write the
@@ -191,6 +194,9 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   `$CHIMI_CACHE` when set, otherwise `$XDG_CACHE_HOME/chimi`, otherwise
   `~/.cache/chimi`. A locked commit is checked out once into a directory named
   by its URL and commit, and never changes after that, so builds share it.
+- Two builds fetching into one cached repository at once can meet on a
+  git lock file; the one that loses waits and tries again, four times over
+  about 1.5 seconds, before it reports the failure.
 - A build fetches a locked commit missing from the cache. `--offline`,
   written before the command and after `--std-dir` if there is one
   (`chimi --offline test .`), makes a missing
@@ -284,6 +290,8 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | A git package's `directory` stays inside its repository | `tests/packages.rs` `a_git_package_directory_must_stay_inside_its_repository` |
 | A member's update writes the workspace's one lockfile | `tests/packages.rs` `a_members_update_writes_the_one_lockfile_at_the_workspace_root` |
 | A full commit id that no branch reaches can be a `rev` | `tests/packages.rs` `a_rev_may_be_a_commit_no_branch_reaches` |
+| An update rejects an unknown package name before fetching | `tests/packages.rs` `an_update_rejects_an_unknown_name_before_fetching` |
+| A fetch that meets another fetch's lock waits and retries | `project::git::tests::a_fetch_that_meets_another_fetchs_lock_waits_and_retries` |
 | The lockfile reads back what it writes, and rejects anything else | `manifest::lock::tests` |
 
 Mutation lists: `scripts/mutation/packages_mutations.py`,
