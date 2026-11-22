@@ -13,7 +13,8 @@ def m(name, old, new):
 
 # The spin changes only how long a carrier waits, so the two mutants that
 # remove or lengthen it are expected to survive: the measurement, not a
-# test, shows the gain (multi-carrier-baseline.md).
+# test, shows the gain (multi-carrier-baseline.md). "One core spins too"
+# survives on any host with more than one core, where the tests run.
 MUTATIONS = [
     m("a poisoned lock is not taken over during the spin",
       "            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),",
