@@ -49,7 +49,7 @@ impl<'kernel> Locked<'kernel> {
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
         let (result, wakes) = {
-            let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut kernel = lock_spinning(self.kernel);
             #[cfg(test)]
             let _held = HeldMark::set();
             debug_assert!(
@@ -62,6 +62,32 @@ impl KernelAccess for Locked<'_> {
         };
         wakes.write();
         result
+    }
+}
+
+/// How long a carrier retries the kernel lock before it blocks in it.
+const LOCK_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
+
+/// Takes the kernel lock, first retrying for up to `LOCK_SPIN` without
+/// blocking. A kernel hold lasts about a microsecond, while a thread that
+/// blocks in the lock sleeps until the holder wakes it, which with several
+/// carriers sending at once cost more than the holds themselves
+/// (multi-carrier-baseline.md, "Spinning on the kernel lock"). A poisoned
+/// lock is taken over, as everywhere the kernel is reached.
+fn lock_spinning<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    let spin_until = std::time::Instant::now() + LOCK_SPIN;
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if std::time::Instant::now() >= spin_until {
+            return lock.lock().unwrap_or_else(PoisonError::into_inner);
+        }
+        for _ in 0..32 {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -298,4 +324,43 @@ fn test_readable(fd: i32) -> bool {
     };
     // SAFETY: one valid pollfd for the duration of the call.
     unsafe { libc::poll(&mut poll, 1, 0) > 0 }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::{LOCK_SPIN, lock_spinning};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// A lock held past the spin is still taken once its holder lets go.
+    #[test]
+    fn a_lock_held_past_the_spin_is_taken_when_released() {
+        let lock = Mutex::new(0);
+        std::thread::scope(|scope| {
+            let held = lock.lock().expect("lock");
+            let (taken, waiter) = std::sync::mpsc::channel();
+            let lock = &lock;
+            scope.spawn(move || {
+                *lock_spinning(lock) += 1;
+                taken.send(()).expect("send");
+            });
+            std::thread::sleep(LOCK_SPIN * 50);
+            assert!(waiter.try_recv().is_err(), "not taken while held");
+            drop(held);
+            waiter.recv_timeout(Duration::from_secs(30)).expect("taken once released");
+        });
+        assert_eq!(*lock.lock().expect("lock"), 1);
+    }
+
+    /// A lock a panic poisoned is taken over, during the spin and after it.
+    #[test]
+    fn a_poisoned_lock_is_taken_over() {
+        let lock = Mutex::new(7);
+        let _ = std::panic::catch_unwind(|| {
+            let _held = lock.lock().expect("lock");
+            panic!("poison it");
+        });
+        assert!(lock.is_poisoned());
+        assert_eq!(*lock_spinning(&lock), 7);
+    }
 }
