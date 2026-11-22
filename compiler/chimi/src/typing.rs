@@ -698,6 +698,11 @@ pub(crate) struct TypedProject {
     /// The provider names and types a `using record` supplies, in the record
     /// type's field order, by the `using` expression's semantic id.
     pub(crate) using_records: HashMap<(ModuleId, SemanticId), Vec<(String, TypeId)>>,
+    /// The providers a `using` binds into the function value it produces: the
+    /// names it removed from that value's own needs, by the semantic id of the
+    /// expression before `using`. A call of the value uses these, never its
+    /// caller's providers of the same name. Absent when it binds none.
+    pub(crate) using_bindings: HashMap<(ModuleId, SemanticId), Vec<String>>,
     /// A polymorphic callee's function type with this call's substitution
     /// applied, keyed by the callee expression. Monomorphic callees have none.
     pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -1678,6 +1683,7 @@ struct ProjectTypeChecker {
     failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
     record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
     using_records: HashMap<(ModuleId, SemanticId), Vec<(String, TypeId)>>,
+    using_bindings: HashMap<(ModuleId, SemanticId), Vec<String>>,
     callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
@@ -1949,6 +1955,7 @@ impl ProjectTypeChecker {
             failure_type_patterns: HashMap::new(),
             record_updates: HashMap::new(),
             using_records: HashMap::new(),
+            using_bindings: HashMap::new(),
             callee_instantiations: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
@@ -2932,6 +2939,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, value.clone()))
                 .collect(),
+            using_bindings: previous
+                .using_bindings
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
             callee_instantiations: previous
                 .callee_instantiations
                 .iter()
@@ -3097,6 +3110,7 @@ impl ProjectTypeChecker {
             failure_type_patterns: self.failure_type_patterns,
             record_updates: self.record_updates,
             using_records: self.using_records,
+            using_bindings: self.using_bindings,
             callee_instantiations: self.callee_instantiations,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
@@ -8214,7 +8228,14 @@ impl ProjectTypeChecker {
             .map(|(provider, fact)| (provider.name.text.clone(), provider.name.range, fact.success))
             .collect::<Vec<_>>();
         let provider_facts = provider_facts.into_iter().map(|(_, fact)| fact).collect();
-        self.supply_providers(module_id, expression_fact, &supplied, provider_facts, false)
+        self.supply_providers(
+            module_id,
+            expression.semantic_id(),
+            expression_fact,
+            &supplied,
+            provider_facts,
+            false,
+        )
     }
 
     /// `expression using record`: the record value's fields are the providers,
@@ -8280,7 +8301,14 @@ impl ProjectTypeChecker {
                 .map(|field| (field.name, field.type_id))
                 .collect(),
         );
-        self.supply_providers(module_id, expression_fact, &supplied, vec![record_fact], rejected)
+        self.supply_providers(
+            module_id,
+            expression.semantic_id(),
+            expression_fact,
+            &supplied,
+            vec![record_fact],
+            rejected,
+        )
     }
 
     /// Removes the needs that `providers` (name, where it is written, type)
@@ -8288,10 +8316,13 @@ impl ProjectTypeChecker {
     /// takes and `T4213` for one that does not conform. `provider_facts` are
     /// the provider expressions' own failures and needs. With `explain_all`,
     /// set when the providers were already reported as wrong, every need is
-    /// marked explained so no later check reports it missing.
+    /// marked explained so no later check reports it missing. The names it
+    /// removes from the needs of the function value `expression` produces are
+    /// recorded in `using_bindings` under `expression`.
     fn supply_providers(
         &mut self,
         module_id: ModuleId,
+        expression: SemanticId,
         expression_fact: ExpressionFact,
         providers: &[(String, TextRange, TypeId)],
         provider_facts: Vec<ExpressionFact>,
@@ -8341,6 +8372,38 @@ impl ProjectTypeChecker {
             self.remove_supplied_needs(expression_fact.needs, &supplied_names);
         remaining_expression_needs =
             self.mark_explained_needs(remaining_expression_needs, &explained_names);
+        let bound_names = self.needs_rows[latent_needs.raw() as usize]
+            .entries
+            .iter()
+            .filter(|need| supplied_names.contains(&need.lexical_name))
+            .map(|need| need.lexical_name.clone())
+            .collect::<Vec<_>>();
+        let open_row = !self.needs_rows[latent_needs.raw() as usize]
+            .parameters
+            .is_empty();
+        if !bound_names.is_empty() && open_row {
+            // A row parameter's needs belong to whoever calls the value, and a
+            // row bound to a fixed name would give that name two providers.
+            let (_, range, _) = providers
+                .iter()
+                .find(|(name, _, _)| bound_names.contains(name))
+                .expect("a bound name is one of the providers");
+            self.type_error_range(
+                module_id,
+                "T4219",
+                *range,
+                format!(
+                    "`using` cannot fix `{}` on a function value whose needs include a row parameter, since a call may bind that row to the same name; supply it where the function is called",
+                    bound_names.join("`, `")
+                ),
+            );
+        }
+        if bound_names.is_empty() || open_row {
+            self.using_bindings.remove(&(module_id, expression));
+        } else {
+            self.using_bindings
+                .insert((module_id, expression), bound_names);
+        }
         let mut remaining_latent_needs = self.remove_supplied_needs(latent_needs, &supplied_names);
         remaining_latent_needs =
             self.mark_explained_needs(remaining_latent_needs, &explained_names);

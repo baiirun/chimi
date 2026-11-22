@@ -13486,3 +13486,262 @@ fn a_rejected_provider_record_reports_once() {
     let codes: Vec<String> = diagnostics_of(&source).into_iter().map(|(code, _)| code).collect();
     assert_eq!(codes, ["T4218"]);
 }
+
+// CHI-294: a provider `using` supplies to a function value serves every call
+// of that value. A caller with its own provider of the same name must not
+// replace it; the value's type says it no longer has that need.
+const BOUND_PRELUDE: &str = r#"interface Greeter {
+  greet: fn(Text) -> Text
+}
+
+interface Namer {
+  name: fn() -> Text
+}
+
+fn hello() -> Text needs { greeter: Greeter } { greeter.greet("x") }
+
+fn named() -> Text needs { greeter: Greeter, namer: Namer } { greeter.greet(namer.name()) }
+
+fn call(h: fn() -> Text) -> Text { h() }
+
+fn g(text: Text) -> { greet: fn(Text) -> Text } { { greet: fn(n) { "${text} ${n}" } } }
+"#;
+
+#[test]
+fn a_function_value_keeps_the_providers_its_using_supplied() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+const CONSTANT = fn() { hello() } using { greeter: { greet: fn(n) { "constant ${n}" } } }
+
+fn make() -> fn() -> Text needs { greeter: Greeter } needs { greeter: Greeter } {
+  let _ = hello()
+  fn() { hello() }
+}
+
+pub fn main() -> Text {
+  let closure = fn() { hello() } using { greeter: g("closure") }
+  let declared = hello using { greeter: g("declared") }
+  let providers = { greeter: g("record") }
+  let from_record = fn() { hello() } using providers
+  let returned = make() using { greeter: g("returned") }
+  let run = fn() {
+    "${hello()} | ${call(closure)} | ${call(declared)} | ${call(from_record)} | ${call(CONSTANT)} | ${call(returned)}"
+  }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-binds-function-value", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | closure x | declared x | record x | constant x | returned x\""
+    );
+}
+
+// Only the supplied need is fixed: a need the value still has comes from
+// whoever calls it.
+#[test]
+fn a_function_value_still_takes_its_open_needs_from_its_caller() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn call_named(h: fn() -> Text needs { namer: Namer }) -> Text needs { namer: Namer } { h() }
+
+pub fn main() -> Text {
+  let half = named using { greeter: g("bound") }
+  let run = fn() { "${hello()} | ${call_named(half)}" }
+  run() using { greeter: g("caller"), namer: { name: fn() { "caller's name" } } }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-binds-only-supplied-needs", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | bound caller's name\""
+    );
+}
+
+// A value passed where a type with the need is declared may be supplied
+// again; the first `using` still serves it, since it is what the value's own
+// body was given.
+#[test]
+fn the_first_using_of_a_widened_function_value_serves_it() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn widen(h: fn() -> Text needs { greeter: Greeter }) -> fn() -> Text needs { greeter: Greeter } { h }
+
+pub fn main() -> Text {
+  let first = fn() { hello() } using { greeter: g("first") }
+  let again = widen(first) using { greeter: g("second") }
+  let run = fn() { "${hello()} | ${again()}" }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-binds-widened-value", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | first x\""
+    );
+}
+
+// A `using` that only supplies what evaluating the expression needs fixes
+// nothing on the value: here the value's type is a generic `T`, and the
+// function it turns out to be still needs `greeter` from its caller.
+#[test]
+fn a_using_that_supplies_only_evaluation_needs_binds_nothing() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn pick<T>(x: T) -> T needs { greeter: Greeter } {
+  let _ = hello()
+  x
+}
+
+fn wrap<T>(x: T) -> T { pick(x) using { greeter: g("inside") } }
+
+pub fn main() -> Text {
+  let f = wrap(fn() { hello() })
+  f() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-evaluation-needs-bind-nothing", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x\""
+    );
+}
+
+// The bound value keeps the function's inputs, failures and generics.
+#[test]
+fn a_bound_function_value_keeps_its_arguments_failures_and_generics() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+enum Oops {
+  Bad
+}
+
+fn shout(count: Int, suffix: Text) -> Text needs { greeter: Greeter } {
+  case count < 0 {
+    True -> Failure(Bad)
+    False -> "${greeter.greet(suffix)} ${count}"
+  }
+}
+
+fn tagged<T>(value: T) -> (T, Text) needs { greeter: Greeter } { (value, greeter.greet("t")) }
+
+fn twice(h: fn(Int, Text) -> Text errors Oops) -> Text {
+  let failed = case h(-1, "z") {
+    Success(v) -> v
+    Failure(Bad) -> "bad"
+  }
+  "${h(1, "a")} / ${h(2, "b")} / ${failed}"
+}
+
+pub fn main() -> Text {
+  let loud = shout using { greeter: g("bound") }
+  let tag = tagged using { greeter: g("tag") }
+  let run = fn() {
+    let (_, number) = tag(1)
+    let (word, text) = tag("w")
+    "${hello()} | ${twice(loud)} | ${number} | ${word} ${text}"
+  }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-bound-value-shape", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | bound a 1 / bound b 2 / bad | tag t | w tag t\""
+    );
+}
+
+// Chained clauses fix their needs one at a time, in either order, and a
+// provider method that is itself a bound function value keeps its own
+// provider rather than the record it is supplied as.
+#[test]
+fn chained_and_nested_using_clauses_each_fix_their_own_providers() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn n(text: Text) -> { name: fn() -> Text } { { name: fn() { text } } }
+
+fn shout(t: Text) -> Text needs { greeter: Greeter } { "${greeter.greet(t)}!" }
+
+pub fn main() -> Text {
+  let half = named using { greeter: g("b") }
+  let first = half using { namer: n("bn") }
+  let second = (named using { namer: n("bn2") }) using { greeter: g("b2") }
+  let loud = { greet: shout using { greeter: g("base") } }
+  let louder = { greet: shout using { greeter: loud } }
+  let run = fn() { "${hello()} | ${call(first)} | ${call(second)} | ${hello() using { greeter: louder }}" }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-binds-chained", &source),
+        "\"outcome\":\"success\",\"value\":\"caller x | b bn | b2 bn2 | base x!!\""
+    );
+}
+
+// The providers of one clause are evaluated where the `using` is written:
+// a provider that has needs of its own gets them from there, never from
+// another provider of the same clause, whatever the expression's type.
+#[test]
+fn a_provider_is_evaluated_outside_its_own_using_clause() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn built() -> { name: fn() -> Text } needs { greeter: Greeter } {
+  let t = greeter.greet("built")
+  { name: fn() { t } }
+}
+
+pub fn main() -> Text {
+  let run = fn() {
+    let f = named using { greeter: g("own"), namer: built() }
+    let v = named() using { greeter: g("own"), namer: built() }
+    "${call(f)} | ${v}"
+  }
+  run() using { greeter: g("outer") }
+}
+"#
+    );
+    assert_eq!(
+        run_both("using-provider-scope", &source),
+        "\"outcome\":\"success\",\"value\":\"own outer built | own outer built\""
+    );
+}
+
+// A needs row parameter of a function value is its caller's, and a call may
+// bind it to a name the `using` would fix, so fixing a provider on such a
+// value is rejected rather than run with one provider for both.
+#[test]
+fn using_cannot_fix_a_provider_on_a_value_with_a_needs_row_parameter() {
+    let source = format!(
+        "{BOUND_PRELUDE}{}",
+        r#"
+fn twice<R>(h: fn() -> Text needs R) -> Text needs R + { greeter: Greeter } {
+  "${greeter.greet("own")} / ${h()}"
+}
+
+pub fn main() -> Text {
+  let bound = twice using { greeter: g("bound") }
+  let run = fn() { bound(hello) }
+  run() using { greeter: g("caller") }
+}
+"#
+    );
+    let codes: Vec<String> = diagnostics_of(&source).into_iter().map(|(code, _)| code).collect();
+    assert_eq!(codes, ["T4219"]);
+    // Calling it under the `using` instead is fine: one provider serves both.
+    let called = source.replace(
+        "  let bound = twice using { greeter: g(\"bound\") }\n  let run = fn() { bound(hello) }\n",
+        "  let run = fn() { twice(hello) }\n",
+    );
+    assert_eq!(
+        run_both("using-row-parameter-called", &called),
+        "\"outcome\":\"success\",\"value\":\"caller own / caller x\""
+    );
+}
