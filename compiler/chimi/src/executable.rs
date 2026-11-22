@@ -3089,8 +3089,58 @@ impl CoreLowerer {
                     arguments: vec![zero],
                 }
             }
-            _ => self.reference(symbol),
+            _ => self
+                .host_capability_value(module_id, expression, symbol)
+                .unwrap_or_else(|| self.reference(symbol)),
         }
+    }
+
+    /// A need the runtime serves method by method (`console`), read as a
+    /// value: a record of its methods, each the provider's in scope or, with
+    /// none, the host's, as a call `console.write_line(..)` would select.
+    fn host_capability_value(
+        &mut self,
+        module_id: ModuleId,
+        expression: &ModuleExpression,
+        requirement: SymbolId,
+    ) -> Option<CoreOperation> {
+        if self.typed.resolved.symbol(requirement).kind != ProjectSymbolKind::Requirement {
+            return None;
+        }
+        let key = (module_id, expression.semantic_id());
+        let CanonicalType::Named {
+            symbol: interface, ..
+        } = resolved_type(&self.typed, self.typed.expression_facts.get(&key)?.success)
+        else {
+            return None;
+        };
+        let interface = *interface;
+        let Some(StandardSymbol::Type(standard)) = self.typed.resolved.standard_symbol(interface)
+        else {
+            return None;
+        };
+        if !crate::operations::host_served_interface(standard) {
+            return None;
+        }
+        let methods = self.typed.fields.get(&interface)?.clone();
+        let fields = methods
+            .into_iter()
+            .map(|method| CoreField {
+                value: self.push_typed_node(
+                    module_id,
+                    expression.semantic_id(),
+                    method.type_id,
+                    CoreOperation::DependencyMethod {
+                        requirement,
+                        interface,
+                        method: method.semantic_id,
+                        name: method.name.clone(),
+                    },
+                ),
+                name: method.name,
+            })
+            .collect();
+        Some(CoreOperation::Record(fields))
     }
 
     fn reference(&self, symbol: SymbolId) -> CoreOperation {

@@ -163,6 +163,15 @@ access, and cleanup on success, expected failure, defect, and cancellation. It
 MUST NOT make provider lookup ambient: execution receives a resolved provider
 plan for every remaining root need.
 
+A runner-closed `console`, `files: FileSystem` or `random` need is a value like
+any other need: a function MAY read it and pass it on (`fakes(console)`,
+`let c = console`). The value is a record of the interface's methods, each the
+provider's in scope where the need is read or, with none, the runtime's host
+operation, exactly as a method call `console.write_line(..)` there would
+select (CHI-295). Calls through it are dependency calls of that need, and a
+value passed back as a provider (`using { console: c }`) still makes one
+dependency call per call.
+
 The runner supplies application arguments as ordinary `List<Text>` data. It
 also selects or accepts the root provider plan, validates that every declared
 need has a compatible provider before computation starts, and supplies trace,
