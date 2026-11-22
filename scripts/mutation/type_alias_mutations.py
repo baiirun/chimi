@@ -10,8 +10,8 @@ CRATE = "compiler/chimi"
 MUTATIONS = [
     dict(
         name="an alias lowers to Poison instead of its type",
-        file="src/typing.rs",
-        edits=[("                        self.alias_type(symbol)\n", "                        TypeId::new(0)\n")],
+        file="src/typing/aliases.rs",
+        edits=[("        }\n        self.alias_type(alias)\n    }", "        }\n        TypeId::new(0)\n    }")],
         targets=["language"],
         filter="alias",
     ),
@@ -53,7 +53,7 @@ MUTATIONS = [
     dict(
         name="a cycle through a needs row is not followed",
         file="src/typing/aliases.rs",
-        edits=[("                    RequirementTermUse::Field { interface, .. } => Some(interface),", "                    RequirementTermUse::Field { .. } => None,")],
+        edits=[("                    RequirementTermUse::Field { interface, .. } => Some(interface),", "                    RequirementTermUse::Field { interface, .. } => Some(interface).filter(|_| false),")],
         targets=["language"],
         filter="alias",
     ),
