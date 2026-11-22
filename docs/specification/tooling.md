@@ -387,8 +387,10 @@ Rules:
   `--service-name`, or `unknown_service` as OpenTelemetry names an unnamed
   service.
 - Each name is one metric. Each of its label sets is one data point, with
-  the labels as string attributes, `startTimeUnixNano` the run's start and
-  `timeUnixNano` the end of `main`.
+  the labels as string attributes in ascending key order (the order the
+  runtime writes a label set in), `startTimeUnixNano` the run's start and
+  `timeUnixNano` the end of `main`. A time or dropped total MUST be a whole
+  number from 0 to 2^64 - 1, spelled without a fraction or exponent.
   - A count is a `sum`, cumulative and monotonic, with `asInt`.
   - A gauge is a `gauge` with `asDouble`.
   - An observation is a cumulative `histogram` with `count`, `sum`,

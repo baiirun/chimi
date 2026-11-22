@@ -75,7 +75,7 @@ which language gaps matter for a module.
 | | `std/random` (seeded test provider) | C | missing | G6 for bytes |
 | Network | `std/net` (TCP, sockets), `std/http` (client and server) | C + D | missing | G6, G11, G12, G14 |
 | Serialization | `std/json` (struct encoders and decoders built by hand, streaming) | B | `Value` tree | G9, G10 |
-| Observability | `std/log`, `std/trace`, `std/metrics` (user-emitted structured events) | C or runtime | `std/log` and `std/metrics` built (Phase 7c, `observability.md`); export planned | G10, G17 |
+| Observability | `std/log`, `std/trace`, `std/metrics` (user-emitted structured events) | C or runtime | `std/log` and `std/metrics` built (Phase 7c, `observability.md`); `std/otel` encodes metrics for OTLP, live push in progress (CHI-296) | G10, G17 |
 | Testing | `std/test` (assertions, fake providers, deterministic clock and random) | A + toolchain | missing | G2, G10, G16 |
 | Security | `std/crypto` (hashing, HMAC, secure random) | C | missing | G6 |
 | | `std/tls`, `std/x509` | C | missing | G6, G12, G18 |

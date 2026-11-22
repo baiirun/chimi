@@ -3,8 +3,10 @@
 ## Status
 
 This is the normative contract for the Phase 7c observability modules
-(CHI-289): `std/log` and `std/metrics` now; OpenTelemetry export is planned
-in the same phase and is not specified yet. The words MUST, MUST NOT,
+(CHI-289): `std/log` and `std/metrics`, and `std/otel`'s OpenTelemetry
+encoding (CHI-296). Offline export is `chimi trace export --otlp` and
+`chimi metrics export --otlp` (tooling.md); pushing to a collector while the
+program runs is being built in CHI-296 and is not specified yet. The words MUST, MUST NOT,
 SHOULD, SHOULD NOT, and MAY are normative. The modules follow the
 [standard library conventions](standard-library-conventions.md) and the
 [runner-provided capability rules](system-modules.md#runner-provided-capabilities).
@@ -235,6 +237,37 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
   program runs; that is CHI-296.
 - There are no custom histogram bounds and no up-down counter.
 
+## std/otel
+
+```text
+pub enum DocumentError { Invalid(message: Text) }
+
+pub fn metrics_request(document: Text, service_name: Text) -> Text
+```
+
+- `metrics_request` MUST turn a `chimi.metrics.v1` document ("The runner's
+  aggregate") into the body of an OTLP/JSON `ExportMetricsServiceRequest`:
+  the same metrics, data points and resource as `chimi metrics export --otlp`
+  with `--service-name` (tooling.md), compared as JSON values. Its scope is
+  `{"name":"chimi"}` without a version, because Chimi code cannot read the
+  toolchain's version.
+- Object members are written in ascending byte order, as `Json.encode`
+  writes every object; OTLP/JSON readers do not depend on member order.
+  Attributes are in ascending key order, as the CLI writes them.
+- A document it cannot read MUST fail with `DocumentError.Invalid` and the
+  reason the CLI gives: not JSON, not an object, the wrong schema, no
+  `metrics` list, a start or end time missing, before 1970 or not a whole
+  number below 2^64, or a series that is not an object or not a count,
+  gauge or observation (named by its index).
+- It is pure: no need, no host operation, the same text on both backends.
+
+### Not in this slice
+
+- Sending the body to a collector, while the program runs and at exit, and
+  pushing logs (CHI-296). Traces stay offline: a trace has one span per
+  operation, too fine to push live, and an explicit span API is a later
+  ticket.
+
 ## Conformance
 
 | Behavior | Test |
@@ -254,3 +287,5 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 | Recording functions build the measurement and reach a fake through `using`, on both backends; `seconds` | `tests/std_metrics.rs` `a_test_records_measurements_through_a_fake` |
 | A test without a `metrics` provider is `T4400` | `tests/std_metrics.rs` `a_test_without_a_metrics_provider_is_rejected` |
 | The interpreter's provider writes the same document | `tests/std_metrics.rs` `the_interpreter_writes_the_same_document` |
+| `metrics_request` matches `chimi metrics export --otlp` as JSON, on both backends | `tests/std_otel.rs` `a_metrics_request_is_what_the_cli_exports` |
+| An unreadable document fails with the CLI's reason | `tests/std_otel.rs` `a_document_that_is_not_metrics_fails_with_the_reason` |
