@@ -308,8 +308,12 @@ fn format_parse(parsed: &ParseResult) -> String {
             }
         }
         // A record type is written on one line, like the type it sits in, and so
-        // is a short record or record update.
-        if is_record_type_syntax(token) || in_short_record(token) || in_short_lambda(token) {
+        // are a short record or record update and a type alias.
+        if is_record_type_syntax(token)
+            || in_short_record(token)
+            || in_short_lambda(token)
+            || token_has_ancestor(token, &[NodeKind::TypeAliasDeclaration])
+        {
             match kind {
                 TokenKind::Newline => {
                     writer.space();

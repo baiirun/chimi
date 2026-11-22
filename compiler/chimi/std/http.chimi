@@ -277,6 +277,10 @@ pub fn response_body(response: Response) -> Bytes {
 
 // 4. Serving.
 
+/// A server's settings, the type of `Http.defaults` and of `serve`'s
+/// `settings`.
+pub type Settings = { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }
+
 /// A server's settings, to update with what differs: requests whose head
 /// (request line and headers) passes `max_head_bytes` get 431, as do those
 /// with more than `max_headers` headers or chunked-body trailer lines; a body
@@ -288,7 +292,7 @@ pub fn response_body(response: Response) -> Bytes {
 /// defaults are 64 KiB, 100 headers, 8 MiB, 60 s, 60 s and 512 connections.
 /// `max_body_bytes` may be 0 (no bodies); the others must be positive, and
 /// `Http.serve` and `Http.serve_connection` defect otherwise.
-pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int } = {
+pub const defaults: Settings = {
   max_head_bytes: 65536,
   max_headers: 100,
   max_body_bytes: 8388608,
@@ -315,7 +319,7 @@ pub const defaults: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int
 ///
 /// Fails with: nothing; only closing the listener ends serving.
 /// Defects when: never because of `handle`.
-pub fn serve<E, R>(listener: Listener, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve<E, R>(listener: Listener, settings: Settings, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   let bounds = limits(settings)
@@ -493,7 +497,7 @@ fn admit<E>(connections: Running, spec: HandoffSpec<Admitted, Unused, E>, admitt
 ///
 /// Fails with: nothing; a failure of the connection ends it.
 /// Defects when: `handle` defects.
-pub fn serve_connection<E, R>(connection: Connection, settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
+pub fn serve_connection<E, R>(connection: Connection, settings: Settings, handle: fn(Request) -> Response errors E needs R) -> Void needs R + {
   clock: Clock
 } {
   Resource.scoped(fn() { connection }, Net.close, fn(open) {
@@ -515,7 +519,7 @@ struct Limits {
   write: Duration,
 }
 
-fn limits(settings: { max_head_bytes: Int, max_headers: Int, max_body_bytes: Int, request_timeout: Duration, write_timeout: Duration, max_connections: Int }) -> Limits {
+fn limits(settings: Settings) -> Limits {
   case (settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0 and settings.max_connections > 0, positive(settings.request_timeout) and positive(settings.write_timeout)) {
     (True, True) -> Void
     (False, _) -> Debug.crash("Http: max_head_bytes, max_headers and max_connections must be positive, and max_body_bytes not negative")
@@ -1500,6 +1504,10 @@ pub enum HttpError {
   TooLarge
 }
 
+/// A client's settings, the type of `Http.client_defaults` and of `send`'s
+/// `settings`.
+pub type ClientSettings = { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }
+
 /// A client's settings, to update with what differs: `roots` are the
 /// authorities trusted for `https` (the system's by default), `timeout`
 /// bounds the whole exchange from connecting to the last byte of the
@@ -1507,7 +1515,7 @@ pub enum HttpError {
 /// `max_headers` headers, or whose body passes `max_body_bytes` fails with
 /// `HttpError.TooLarge`. The defaults are the system's roots, 30 s, 64 KiB,
 /// 100 headers and 8 MiB.
-pub const client_defaults: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int } = {
+pub const client_defaults: ClientSettings = {
   roots: Tls.defaults.roots,
   timeout: Duration.seconds(30),
   max_head_bytes: 65536,
@@ -1540,7 +1548,7 @@ pub const client_defaults: { roots: Roots, timeout: Duration, max_head_bytes: In
 /// character, as for `Http.response`, the method is not a token or is
 /// `CONNECT`, there is more than one `host` header, or a setting is not
 /// positive.
-pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Response needs {
+pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: ClientSettings) -> Response needs {
   network: Network,
   clock: Clock
 } {
@@ -1567,7 +1575,7 @@ pub fn send(method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes,
 /// to wrap `connection`.
 ///
 /// Fails with: as `Http.send`, except connecting and the TLS handshake.
-pub fn send_over(connection: Connection, method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Response needs {
+pub fn send_over(connection: Connection, method: Method, url: Text, headers: List<(Text, Text)>, body: Bytes, settings: ClientSettings) -> Response needs {
   clock: Clock
 } {
   let target = parse_url(url)
@@ -1726,7 +1734,7 @@ fn host_text(host: Text) -> Text {
   }
 }
 
-fn client_limits(settings: { roots: Roots, timeout: Duration, max_head_bytes: Int, max_headers: Int, max_body_bytes: Int }) -> Limits {
+fn client_limits(settings: ClientSettings) -> Limits {
   case settings.max_head_bytes > 0 and settings.max_headers > 0 and settings.max_body_bytes >= 0 and positive(settings.timeout) {
     True -> Limits {
       head_bytes: settings.max_head_bytes,

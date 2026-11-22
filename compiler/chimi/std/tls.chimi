@@ -78,10 +78,13 @@ pub enum TlsError {
 
 // 3. Settings.
 
+/// A client's settings, the type of `Tls.defaults`.
+pub type Settings = { roots: Roots }
+
 /// A client's settings: start from these and name what differs, as
 /// `{ ..Tls.defaults, roots: Tls.roots(pem) }`. The default roots are the
 /// system's.
-pub const defaults: { roots: Roots } = { roots: Roots { pem: None } }
+pub const defaults: Settings = { roots: Roots { pem: None } }
 
 /// Roots that trust exactly the certificates in `pem`, one or more PEM
 /// `CERTIFICATE` blocks.
@@ -114,7 +117,7 @@ pub fn identity(certificate: Bytes, key: Bytes) -> Identity {
 /// `NoRoots`, `Handshake` or `Invalid`, and what the inner connection's
 /// streams fail with. On a failure the inner connection is left open, for
 /// the caller that opened it to close.
-pub fn client(connection: Connection, host: Text, settings: { roots: Roots }) -> Connection {
+pub fn client(connection: Connection, host: Text, settings: Settings) -> Connection {
   secured(connection, host, fn() {
     case settings.roots.pem {
       Some(pem) -> tls(native_client(pem, host), host)

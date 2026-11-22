@@ -249,6 +249,9 @@ enum Place {
   Pinned(connection: Connection, depth: Int, ended: List<Watch.Publisher<Bool>>)
 }
 
+/// A pool's settings, the type of `Sql.defaults`.
+pub type Settings = { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration }
+
 /// A pool's settings, to update with what differs: at most
 /// `max_connections` are open at once; a statement that waits longer than
 /// `wait_timeout` for one fails with `SqlError.PoolTimedOut`, and closing the
@@ -256,7 +259,7 @@ enum Place {
 /// reset (rolling back what its use left open) takes longer than
 /// `reset_timeout` is closed instead of reused. The defaults are 10, 30 s and
 /// 5 s. All three must be positive, and `Sql.open` defects otherwise.
-pub const defaults: { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration } = {
+pub const defaults: Settings = {
   max_connections: 10,
   wait_timeout: Duration.seconds(30),
   reset_timeout: Duration.seconds(5),
@@ -271,7 +274,7 @@ pub const defaults: { max_connections: Int, wait_timeout: Duration, reset_timeou
 /// back.
 ///
 /// Fails with: what `use` fails with.
-pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration }, use: fn(Database) -> T errors E needs R) -> T needs R + {
+pub fn open<T, E, R>(driver: Driver, target: Text, settings: Settings, use: fn(Database) -> T errors E needs R) -> T needs R + {
   clock: Clock
 } {
   case settings.max_connections > 0 and settings.wait_timeout > Duration.zero and settings.reset_timeout > Duration.zero {
