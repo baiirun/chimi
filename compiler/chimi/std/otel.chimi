@@ -185,9 +185,7 @@ pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E need
       Task.start(fn() { push_every(settings) })
     }, fn(pushing) {
       Task.cancel(pushing)
-      // The logs and the metrics share the last push's time.
-      Task.start(fn() { flush_logs(exporter) })
-      |> Task.result
+      flush_logs(exporter)
       push_within(settings, settings.flush_within)
     }, fn(_) { body(exporter) })
   })
