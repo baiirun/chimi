@@ -3323,7 +3323,7 @@ impl ProjectLowerer {
         let last_part = node
             .descendant_tokens()
             .into_iter()
-            .filter(|token| {
+            .rfind(|token| {
                 !matches!(
                     token.kind(),
                     TokenKind::Whitespace
@@ -3332,8 +3332,7 @@ impl ProjectLowerer {
                         | TokenKind::Comma
                         | TokenKind::RightBrace
                 )
-            })
-            .last();
+            });
         let mut rest = !rests.is_empty();
         if rests.len() > 1
             || rests
