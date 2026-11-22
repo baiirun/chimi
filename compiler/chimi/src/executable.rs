@@ -1313,6 +1313,12 @@ fn collect_reachable_expression(
                 visit(&provider.value);
             }
         }
+        ModuleExpression::UsingRecord {
+            expression, record, ..
+        } => {
+            visit(record);
+            visit(expression);
+        }
         ModuleExpression::Block { items, .. } => {
             for item in items {
                 match item {
@@ -1768,6 +1774,12 @@ impl CoreLowerer {
                     })
                     .collect(),
             },
+            ModuleExpression::UsingRecord {
+                semantic_id,
+                expression,
+                record,
+                ..
+            } => self.using_record(module_id, *semantic_id, expression, record),
             ModuleExpression::Sequence { expressions, .. } => CoreOperation::Sequence(
                 expressions
                     .iter()
@@ -2345,6 +2357,61 @@ impl CoreLowerer {
         CoreOperation::Sequence(steps)
     }
 
+    /// Lowers `expression using record` to a sequence that binds the record
+    /// once, then provides each of its fields under the field's name.
+    fn using_record(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        expression: &ModuleExpression,
+        record: &ModuleExpression,
+    ) -> CoreOperation {
+        let symbol = self
+            .typed
+            .resolved
+            .source_symbol(
+                module_id,
+                semantic_id,
+                ProjectSymbolKind::PatternBinding,
+                crate::resolution::USING_TEMPORARY,
+            )
+            .expect("resolution defines using temporaries");
+        let record_type = self.typed.expression_facts[&(module_id, record.semantic_id())].success;
+        let fields = self.typed.using_records[&(module_id, semantic_id)].clone();
+        let bind = CoreStep::Bind {
+            symbol,
+            value: self.expression(module_id, record),
+        };
+        let providers = fields
+            .into_iter()
+            .map(|(name, type_id)| {
+                let receiver = self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    record_type,
+                    CoreOperation::Reference(symbol),
+                );
+                let value = self.push_typed_node(
+                    module_id,
+                    semantic_id,
+                    type_id,
+                    CoreOperation::Select {
+                        receiver,
+                        member: name.clone(),
+                    },
+                );
+                CoreField { name, value }
+            })
+            .collect();
+        let provision = CoreOperation::Provision {
+            expression: self.expression(module_id, expression),
+            providers,
+        };
+        let result_type = self.typed.expression_facts[&(module_id, semantic_id)].success;
+        let provision = self.push_typed_node(module_id, semantic_id, result_type, provision);
+        CoreOperation::Sequence(vec![bind, CoreStep::Expression(provision)])
+    }
+
     fn is_local(&self, symbol: SymbolId) -> bool {
         matches!(
             self.typed.resolved.symbol(symbol).kind,
@@ -2610,6 +2677,12 @@ impl CoreLowerer {
                     for provider in providers {
                         collect(lowerer, module_id, &provider.value, captures);
                     }
+                }
+                ModuleExpression::UsingRecord {
+                    expression, record, ..
+                } => {
+                    collect(lowerer, module_id, record, captures);
+                    collect(lowerer, module_id, expression, captures);
                 }
                 ModuleExpression::Block { items, .. } => {
                     for item in items {

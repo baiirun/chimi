@@ -13304,3 +13304,185 @@ fn a_long_struct_pattern_keeps_its_arm_on_the_closing_line() {
     let again = Compiler::format(SourceSnapshot::from_text("main.chimi", formatted.text()));
     assert_eq!(again.text(), formatted.text());
 }
+
+// Phase 7c PR 6 (G23): `using` takes a provider record value, so one set of
+// providers is written once and supplied wherever it is needed.
+const NAMES_PRELUDE: &str = concat!(
+    "interface Greeter {\n  greet: fn(Text) -> Text\n}\n",
+    "interface Namer {\n  name: fn() -> Text\n}\n",
+    "fn hello() -> Text needs {\n  greeter: Greeter, namer: Namer\n} {\n",
+    "  greeter.greet(namer.name())\n}\n",
+);
+
+#[test]
+fn using_takes_a_provider_record_from_a_binding_a_call_or_a_chain() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "fn fakes(greeting: Text) {\n",
+            "  {\n",
+            "    greeter: { greet: fn(name) { \"${greeting} ${name}\" } }, namer: { name: fn() { \"bo\" } }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let providers = {\n",
+            "    greeter: { greet: fn(name) { \"hello ${name}\" } }, namer: { name: fn() { \"al\" } }\n",
+            "  }\n",
+            "  let only = { namer: { name: fn() { \"cy\" } } }\n",
+            "  let first = hello() using providers\n",
+            "  let second = hello() using fakes(\"hi\")\n",
+            "  let third = hello() using only using { greeter: { greet: fn(name) { \"hey ${name}\" } } }\n",
+            "  \"${first}, ${second}, ${third}\"\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("using-record-value", &source),
+        "\"outcome\":\"success\",\"value\":\"hello al, hi bo, hey cy\""
+    );
+}
+
+// A provider record built by a function that has its own needs: the call
+// runs once, before the body, and its needs stay on the caller.
+#[test]
+fn a_provider_record_from_a_function_with_needs_keeps_those_needs() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "interface Store {\n  word: fn() -> Text\n}\n",
+            "fn built() needs {\n  store: Store\n} {\n",
+            "  let word = store.word()\n",
+            "  { greeter: { greet: fn(name) { \"${word} ${name}\" } }, namer: { name: fn() { word } } }\n",
+            "}\n",
+            "fn greeting() {\n  hello() using built()\n}\n",
+            "pub fn main() -> Text {\n",
+            "  greeting() using { store: { word: fn() { \"yo\" } } }\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("using-record-with-needs", &source),
+        "\"outcome\":\"success\",\"value\":\"yo yo\""
+    );
+}
+
+#[test]
+fn using_rejects_a_value_that_is_not_a_provider_record() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "fn number() -> Text {\n  let n = 3\n  hello() using n\n}\n",
+            "fn unknown() {\n  fn(p) { hello() using p }\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    let diagnostics = diagnostics_of(&source);
+    let codes: Vec<&str> = diagnostics.iter().map(|(code, _)| code.as_str()).collect();
+    assert_eq!(codes.iter().filter(|code| **code == "T4218").count(), 2, "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|(code, message)| code == "T4218"
+        && message.contains("and this is `Int`")), "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|(code, message)| code == "T4218"
+        && message.contains("type is not known yet")), "{diagnostics:?}");
+}
+
+// A record value follows the written form's rules: every field must be a
+// need of the expression, and must conform to it.
+#[test]
+fn a_provider_record_value_supplies_only_needs_that_conform() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "fn extra() -> Text {\n",
+            "  let providers = {\n",
+            "    greeter: { greet: fn(name) { name } }, namer: { name: fn() { \"a\" } }, other: 1\n",
+            "  }\n",
+            "  hello() using providers\n",
+            "}\n",
+            "fn wrong() -> Text {\n",
+            "  let providers = { greeter: { greet: fn(name) { name } }, namer: 3 }\n",
+            "  hello() using providers\n",
+            "}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    let diagnostics = diagnostics_of(&source);
+    assert!(diagnostics.iter().any(|(code, message)| code == "T4212"
+        && message == "expression does not need provider `other`"), "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|(code, message)| code == "T4213"
+        && message.starts_with("provider `namer`")), "{diagnostics:?}");
+}
+
+// `using` takes a name, member or call; a pipeline after it is not part of
+// the provider record, so it is a syntax error rather than a silent change
+// of meaning.
+#[test]
+fn a_pipeline_after_a_provider_record_value_is_a_syntax_error() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "fn shout(text: Text) -> Text { text }\n",
+            "pub fn main() -> Text {\n",
+            "  let providers = { greeter: { greet: fn(name) { name } }, namer: { name: fn() { \"a\" } } }\n",
+            "  hello() using providers |> shout\n",
+            "}\n",
+        )
+    );
+    assert!(check_codes(&source).contains(&"S1001".to_owned()), "{:?}", check_codes(&source));
+}
+
+// A provider record value under a process spec is judged as a whole: a record
+// holding a provider that cannot be shared cannot supply the spec's need.
+#[test]
+fn a_spec_provider_record_value_must_be_shareable() {
+    let source = process_program(&format!(
+        concat!(
+            "{program}",
+            "fn outer(receiver: Receiver<Int>) {{\n{local}",
+            "  let providers = {{ store: local }}\n",
+            "  Process.spec(serve, 1, Duration.seconds(1)) using providers\n",
+            "}}\n",
+        ),
+        program = STORE_PROGRAM,
+        local = LOCAL_STORE,
+    ));
+    let diagnostics = check_diagnostics(&source);
+    let found = diagnostics
+        .iter()
+        .map(|(code, text, _)| (code.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("T4260", "providers")], "{diagnostics:?}");
+    assert!(diagnostics[0].2.contains("provider `store`"), "{diagnostics:?}");
+}
+
+// Updating a provider record replaces one provider and keeps the rest, where a
+// second `using` could not: each need is supplied once.
+#[test]
+fn an_updated_provider_record_replaces_one_provider() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "pub fn main() -> Text {\n",
+            "  let providers = {\n",
+            "    greeter: { greet: fn(name) { \"hello ${name}\" } }, namer: { name: fn() { \"al\" } }\n",
+            "  }\n",
+            "  hello() using { ..providers, namer: { name: fn() { \"di\" } } }\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("using-record-update", &source),
+        "\"outcome\":\"success\",\"value\":\"hello di\""
+    );
+}
+
+// A provider record already reported as wrong explains the needs it was
+// meant to supply, so `main` gets no missing-need error for each of them.
+#[test]
+fn a_rejected_provider_record_reports_once() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        "pub fn main() -> Text {\n  let p = 3\n  hello() using p\n}\n",
+    );
+    let codes: Vec<String> = diagnostics_of(&source).into_iter().map(|(code, _)| code).collect();
+    assert_eq!(codes, ["T4218"]);
+}

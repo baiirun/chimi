@@ -695,6 +695,9 @@ pub(crate) struct TypedProject {
     pub(crate) failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
     /// The result shape of each record update, by the update's semantic id.
     pub(crate) record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
+    /// The provider names and types a `using record` supplies, in the record
+    /// type's field order, by the `using` expression's semantic id.
+    pub(crate) using_records: HashMap<(ModuleId, SemanticId), Vec<(String, TypeId)>>,
     /// A polymorphic callee's function type with this call's substitution
     /// applied, keyed by the callee expression. Monomorphic callees have none.
     pub(crate) callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
@@ -1674,6 +1677,7 @@ struct ProjectTypeChecker {
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
     record_updates: HashMap<(ModuleId, SemanticId), RecordUpdateShape>,
+    using_records: HashMap<(ModuleId, SemanticId), Vec<(String, TypeId)>>,
     callee_instantiations: HashMap<(ModuleId, SemanticId), TypeId>,
     type_facts: HashMap<(ModuleId, SemanticId), TypeId>,
     expression_facts: HashMap<(ModuleId, SemanticId), ExpressionFact>,
@@ -1944,6 +1948,7 @@ impl ProjectTypeChecker {
             pattern_binding_types: HashMap::new(),
             failure_type_patterns: HashMap::new(),
             record_updates: HashMap::new(),
+            using_records: HashMap::new(),
             callee_instantiations: HashMap::new(),
             type_facts: HashMap::new(),
             expression_facts: HashMap::new(),
@@ -2921,6 +2926,12 @@ impl ProjectTypeChecker {
                 .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
                 .map(|(key, value)| (*key, value.clone()))
                 .collect(),
+            using_records: previous
+                .using_records
+                .iter()
+                .filter(|((module_id, _), _)| !affected_modules.contains(module_id))
+                .map(|(key, value)| (*key, value.clone()))
+                .collect(),
             callee_instantiations: previous
                 .callee_instantiations
                 .iter()
@@ -3085,6 +3096,7 @@ impl ProjectTypeChecker {
             pattern_binding_types: self.pattern_binding_types,
             failure_type_patterns: self.failure_type_patterns,
             record_updates: self.record_updates,
+            using_records: self.using_records,
             callee_instantiations: self.callee_instantiations,
             type_facts: self.type_facts,
             expression_facts: self.expression_facts,
@@ -4271,6 +4283,19 @@ impl ProjectTypeChecker {
                 providers,
                 ..
             } => self.infer_using(module_id, expression, providers, generics, bindings),
+            ModuleExpression::UsingRecord {
+                semantic_id,
+                expression,
+                record,
+                ..
+            } => self.infer_using_record(
+                module_id,
+                *semantic_id,
+                expression,
+                record,
+                generics,
+                bindings,
+            ),
             ModuleExpression::Sequence { expressions, .. } => {
                 let facts = expressions
                     .iter()
@@ -8179,41 +8204,136 @@ impl ProjectTypeChecker {
             provider_facts.push((provider, fact));
         }
 
+        let supplied = provider_facts
+            .iter()
+            .filter(|(provider, _)| {
+                !duplicate_names
+                    .iter()
+                    .any(|name| name == &provider.name.text)
+            })
+            .map(|(provider, fact)| (provider.name.text.clone(), provider.name.range, fact.success))
+            .collect::<Vec<_>>();
+        let provider_facts = provider_facts.into_iter().map(|(_, fact)| fact).collect();
+        self.supply_providers(module_id, expression_fact, &supplied, provider_facts, false)
+    }
+
+    /// `expression using record`: the record value's fields are the providers,
+    /// each named by its field. Reports `T4218` for a value that is not a
+    /// record with at least one field.
+    fn infer_using_record(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        expression: &ModuleExpression,
+        record: &ModuleExpression,
+        generics: &HashMap<String, SymbolId>,
+        bindings: &mut HashMap<SymbolId, ValueBinding>,
+    ) -> ExpressionFact {
+        let expression_fact = self.infer_expression(module_id, expression, generics, bindings);
+        let record_fact = self.infer_expression(module_id, record, generics, bindings);
+        let record_type = self.resolve_inference_type(record_fact.success);
+        let mut rejected = true;
+        let fields = match self.types[record_type.raw() as usize].clone() {
+            CanonicalType::Record(fields) if !fields.is_empty() => {
+                rejected = false;
+                fields
+            }
+            CanonicalType::Poison => Vec::new(),
+            CanonicalType::Record(_) => {
+                self.type_error_range(
+                    module_id,
+                    "T4218",
+                    expression_range(record),
+                    "`using` takes a provider record with at least one provider, and this record is empty".to_owned(),
+                );
+                Vec::new()
+            }
+            CanonicalType::InferenceVariable(_) => {
+                self.type_error_range(
+                    module_id,
+                    "T4218",
+                    expression_range(record),
+                    "`using` takes a provider record, and this value's type is not known yet; annotate the parameter or `let` binding it comes from with its record type".to_owned(),
+                );
+                Vec::new()
+            }
+            _ => {
+                let name = self.type_display_name(record_type);
+                self.type_error_range(
+                    module_id,
+                    "T4218",
+                    expression_range(record),
+                    format!("`using` takes a provider record, as in `using {{ name: provider }}`, and this is `{name}`; a struct or interface value is not a provider record"),
+                );
+                Vec::new()
+            }
+        };
+        let range = expression_range(record);
+        let supplied = fields
+            .iter()
+            .map(|field| (field.name.clone(), range, field.type_id))
+            .collect::<Vec<_>>();
+        self.using_records.insert(
+            (module_id, semantic_id),
+            fields
+                .into_iter()
+                .map(|field| (field.name, field.type_id))
+                .collect(),
+        );
+        self.supply_providers(module_id, expression_fact, &supplied, vec![record_fact], rejected)
+    }
+
+    /// Removes the needs that `providers` (name, where it is written, type)
+    /// supply from `expression_fact`, reporting `T4212` for a provider no need
+    /// takes and `T4213` for one that does not conform. `provider_facts` are
+    /// the provider expressions' own failures and needs. With `explain_all`,
+    /// set when the providers were already reported as wrong, every need is
+    /// marked explained so no later check reports it missing.
+    fn supply_providers(
+        &mut self,
+        module_id: ModuleId,
+        expression_fact: ExpressionFact,
+        providers: &[(String, TextRange, TypeId)],
+        provider_facts: Vec<ExpressionFact>,
+        explain_all: bool,
+    ) -> ExpressionFact {
         let (success, latent_needs) = self.callable_success_and_needs(expression_fact.success);
         let available_needs = self.union_needs_rows([expression_fact.needs, latent_needs]);
         let mut supplied_names = Vec::new();
         let mut explained_names = Vec::new();
-        for (provider, fact) in &provider_facts {
-            if duplicate_names
-                .iter()
-                .any(|name| name == &provider.name.text)
-            {
-                continue;
-            }
+        if explain_all {
+            explained_names.extend(
+                self.needs_rows[available_needs.raw() as usize]
+                    .entries
+                    .iter()
+                    .map(|need| need.lexical_name.clone()),
+            );
+        }
+        for (name, range, provider_type) in providers {
             let matching_need = self.needs_rows[available_needs.raw() as usize]
                 .entries
                 .iter()
-                .find(|need| need.lexical_name == provider.name.text)
+                .find(|need| &need.lexical_name == name)
                 .cloned();
             let Some(need) = matching_need else {
                 self.type_error_range(
                     module_id,
                     "T4212",
-                    provider.name.range,
-                    format!("expression does not need provider `{}`", provider.name.text),
+                    *range,
+                    format!("expression does not need provider `{name}`"),
                 );
                 continue;
             };
-            if let Some(reason) = self.provider_conformance_error(fact.success, need.interface) {
+            if let Some(reason) = self.provider_conformance_error(*provider_type, need.interface) {
                 self.type_error_range(
                     module_id,
                     "T4213",
-                    provider.name.range,
-                    format!("provider `{}` {reason}", provider.name.text),
+                    *range,
+                    format!("provider `{name}` {reason}"),
                 );
-                explained_names.push(provider.name.text.clone());
+                explained_names.push(name.clone());
             } else {
-                supplied_names.push(provider.name.text.clone());
+                supplied_names.push(name.clone());
             }
         }
 
@@ -8229,11 +8349,11 @@ impl ProjectTypeChecker {
             success,
             failures: self.union_failure_rows(
                 std::iter::once(expression_fact.failures)
-                    .chain(provider_facts.iter().map(|(_, fact)| fact.failures)),
+                    .chain(provider_facts.iter().map(|fact| fact.failures)),
             ),
             needs: self.union_needs_rows(
                 std::iter::once(remaining_expression_needs)
-                    .chain(provider_facts.iter().map(|(_, fact)| fact.needs)),
+                    .chain(provider_facts.iter().map(|fact| fact.needs)),
             ),
         }
     }
