@@ -549,7 +549,7 @@ static void the_process_counts_follow_the_carriers(void) {
    values while carrier 2 rises and falls, so the true peak is both at once;
    then carrier 2 frees a block alone and carrier 1 allocates as much. */
 static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
-  enum { YOUNG_VALUES = 4096, RISE = 8 * 1024 * 1024, LONE = 2 * RISE };
+  enum { YOUNG_VALUES = 65536, RISE = 8 * 1024 * 1024, LONE = 2 * RISE };
   int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
   HeapTotals start = heap_totals_sum();
   report_process_peaks(&start);
@@ -571,7 +571,7 @@ static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
   allocation_scope_end(&pass, NULL, NULL);
   carrier->fiber.heap = previous;
   heap_destroy(heap);
-  CHECK(with_young - before_young > 4 * FOOTPRINT_FOLD_SLACK, "the young pass holds only %" PRId64 " bytes",
+  CHECK(with_young - before_young > 4 * slack, "the young pass holds only %" PRId64 " bytes",
         with_young - before_young);
   /* Carrier 2 frees a block it never allocated and then waits; carrier 1
      allocates as much. The program never holds both. */
