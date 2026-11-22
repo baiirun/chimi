@@ -910,15 +910,21 @@ impl TypedProject {
                 let Some(contract) = self.contracts.get(&symbol.id) else {
                     continue;
                 };
-                let written: Vec<&str> = signature
-                    .requirements
-                    .terms
-                    .iter()
-                    .map(|term| match term {
-                        RequirementTermUse::Field { name, .. }
-                        | RequirementTermUse::Variable { name, .. } => name.text.as_str(),
-                    })
-                    .collect();
+                let mut written: Vec<String> = Vec::new();
+                for term in &signature.requirements.terms {
+                    match term {
+                        RequirementTermUse::Field { name, .. } => written.push(name.text.clone()),
+                        RequirementTermUse::Variable { semantic_id, .. }
+                        | RequirementTermUse::Group { semantic_id, .. } => {
+                            written.extend(self.written_group_or_row(
+                                module.id,
+                                *semantic_id,
+                                term,
+                            ));
+                        }
+                    }
+                }
+                let written: Vec<&str> = written.iter().map(String::as_str).collect();
                 let row = &self.needs_rows[contract.needs.raw() as usize];
                 for need in &row.entries {
                     if need.explained
@@ -968,6 +974,39 @@ impl TypedProject {
                 range,
                 message,
             ));
+        }
+    }
+
+    /// The names a `Variable` or `Group` term writes: a group's entries, or the
+    /// generic row parameter's own name.
+    fn written_group_or_row(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        term: &RequirementTermUse,
+    ) -> Vec<String> {
+        let resolved = self
+            .resolved
+            .reference_resolution(module_id, semantic_id, Namespace::Type);
+        if let Some(ReferenceResolution::Resolved(symbol)) = resolved {
+            let symbol = self.resolved.symbol(symbol);
+            if symbol.kind == ProjectSymbolKind::NeedsGroup {
+                return crate::resolution::needs_group_declaration(&self.resolved.semantic, symbol)
+                    .map(|row| {
+                        row.terms
+                            .iter()
+                            .filter_map(|term| match term {
+                                RequirementTermUse::Field { name, .. } => Some(name.text.clone()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+        }
+        match term {
+            RequirementTermUse::Variable { name, .. } => vec![name.text.clone()],
+            _ => Vec::new(),
         }
     }
 
@@ -3191,6 +3230,13 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), address);
                 }
             }
+            // Lowered for its own diagnostics (an entry named twice is `T4103`);
+            // each use expands it again where the clause is lowered.
+            ModuleDeclarationKind::NeedsGroup => {
+                if let Some(row) = &declaration.needs_group {
+                    self.lower_needs_row(module_id, row, &generic_symbols);
+                }
+            }
         }
     }
 
@@ -3327,7 +3373,8 @@ impl ProjectTypeChecker {
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
-            | ModuleDeclarationKind::ProcessName => false,
+            | ModuleDeclarationKind::ProcessName
+            | ModuleDeclarationKind::NeedsGroup => false,
         }
     }
 
@@ -8654,11 +8701,16 @@ impl ProjectTypeChecker {
         let mut parameters = Vec::new();
         for term in &row.terms {
             match term {
-                RequirementTermUse::Variable { name, .. } => {
+                RequirementTermUse::Variable { semantic_id, name } => {
                     if let Some(symbol) = generics.get(&name.text).copied() {
                         self.constrain_generic(module_id, symbol, GenericKind::NeedsRow, name);
                         parameters.push(symbol);
+                    } else {
+                        self.expand_needs_group(module_id, *semantic_id, &mut entries);
                     }
+                }
+                RequirementTermUse::Group { semantic_id, .. } => {
+                    self.expand_needs_group(module_id, *semantic_id, &mut entries);
                 }
                 RequirementTermUse::Field {
                     semantic_id,
@@ -8674,29 +8726,7 @@ impl ProjectTypeChecker {
                         continue;
                     };
                     let interface = self.lower_value_type(module_id, interface, generics);
-                    if let Some(existing) = entries
-                        .iter()
-                        .find(|entry: &&Need| entry.lexical_name == name.text)
-                    {
-                        if existing.interface != interface {
-                            self.type_error(
-                                module_id,
-                                "T4103",
-                                name,
-                                format!(
-                                    "requirement `{}` names incompatible interface types",
-                                    name.text
-                                ),
-                            );
-                        }
-                        continue;
-                    }
-                    entries.push(Need {
-                        requirement,
-                        lexical_name: name.text.clone(),
-                        interface,
-                        explained: false,
-                    });
+                    self.add_need(module_id, &mut entries, requirement, name, interface);
                 }
             }
         }
@@ -8707,6 +8737,100 @@ impl ProjectTypeChecker {
             entries,
             parameters,
         })
+    }
+
+    /// Adds one need to a row being lowered; a second entry under the same name
+    /// must name the same interface (`T4103`).
+    fn add_need(
+        &mut self,
+        module_id: ModuleId,
+        entries: &mut Vec<Need>,
+        requirement: SymbolId,
+        name: &crate::semantic::Name,
+        interface: TypeId,
+    ) {
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry: &&Need| entry.lexical_name == name.text)
+        {
+            if existing.interface != interface {
+                self.type_error(
+                    module_id,
+                    "T4103",
+                    name,
+                    format!(
+                        "requirement `{}` names incompatible interface types",
+                        name.text
+                    ),
+                );
+            }
+            return;
+        }
+        entries.push(Need {
+            requirement,
+            lexical_name: name.text.clone(),
+            interface,
+            explained: false,
+        });
+    }
+
+    /// A needs group written in a clause is only a name for its entries
+    /// (decisions.md, 2026-11-22): each entry is added as if written there, its
+    /// interface read in the group's own module, and bound in the body to the
+    /// requirement resolution gave the term.
+    fn expand_needs_group(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        entries: &mut Vec<Need>,
+    ) {
+        let Some(group) = self.resolved_type_symbol(module_id, semantic_id) else {
+            return;
+        };
+        let group_symbol = self.resolved.symbol(group).clone();
+        if group_symbol.kind != ProjectSymbolKind::NeedsGroup {
+            return;
+        }
+        let Some(group_module) = group_symbol.module_id else {
+            return;
+        };
+        let Some(row) =
+            crate::resolution::needs_group_declaration(&self.resolved.semantic, &group_symbol)
+                .cloned()
+        else {
+            return;
+        };
+        let no_generics = HashMap::new();
+        for term in &row.terms {
+            let RequirementTermUse::Field {
+                semantic_id: entry_id,
+                name,
+                interface,
+            } = term
+            else {
+                continue;
+            };
+            let requirement = self
+                .find_symbol(
+                    module_id,
+                    Some(semantic_id),
+                    ProjectSymbolKind::Requirement,
+                    &name.text,
+                )
+                .or_else(|| {
+                    self.find_symbol(
+                        group_module,
+                        Some(*entry_id),
+                        ProjectSymbolKind::Requirement,
+                        &name.text,
+                    )
+                });
+            let Some(requirement) = requirement else {
+                continue;
+            };
+            let interface = self.lower_value_type(group_module, interface, &no_generics);
+            self.add_need(module_id, entries, requirement, name, interface);
+        }
     }
 
     fn builtin_type(&mut self, name: &str) -> TypeId {
@@ -11201,6 +11325,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
             ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
+            ModuleDeclarationKind::NeedsGroup => ProjectSymbolKind::NeedsGroup,
         };
         self.find_symbol(
             module_id,

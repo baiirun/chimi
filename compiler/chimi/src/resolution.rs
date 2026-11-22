@@ -159,6 +159,8 @@ pub(crate) enum ProjectSymbolKind {
     Constant,
     /// A `process name` declaration: a module-level `Process.Address<M>`.
     ProcessName,
+    /// `needs Name { ... }`: a named set of needs, used in needs clauses.
+    NeedsGroup,
     GenericParameter,
     Parameter,
     Requirement,
@@ -182,6 +184,7 @@ impl ProjectSymbolKind {
             Self::Function => "function",
             Self::Constant => "constant",
             Self::ProcessName => "process name",
+            Self::NeedsGroup => "needs group",
             Self::GenericParameter => "generic parameter",
             Self::Parameter => "parameter",
             Self::Requirement => "requirement",
@@ -1238,6 +1241,7 @@ impl ProjectResolver {
             ModuleDeclarationKind::ProcessName => {
                 (Namespace::Value, ProjectSymbolKind::ProcessName)
             }
+            ModuleDeclarationKind::NeedsGroup => (Namespace::Type, ProjectSymbolKind::NeedsGroup),
         };
         let id = self.add_symbol(
             Some(module_id),
@@ -1649,6 +1653,9 @@ impl ProjectResolver {
         if let Some(annotation) = &declaration.annotation {
             self.resolve_type(module_index, annotation, &generics);
         }
+        if let Some(group) = &declaration.needs_group {
+            self.resolve_requirement_row(module_index, group, &generics, None);
+        }
         let mut scope = Scope::default();
         if let Some(signature) = &declaration.function {
             for parameter in &signature.parameters {
@@ -1908,6 +1915,82 @@ impl ProjectResolver {
         }
     }
 
+    /// Resolves `Group` or `Alias.Group` in a needs clause to a needs group. A
+    /// name that is some other type is unresolved here, since only a generic row
+    /// or a group may stand alone in a needs clause.
+    fn resolve_needs_group(&self, module_index: usize, path: &[Name]) -> ReferenceResolution {
+        let resolution = if path.len() == 1 {
+            resolve_local(
+                self.modules[module_index].types.get(&path[0].text),
+                self.modules[module_index].imported_types.get(&path[0].text),
+                None,
+            )
+        } else {
+            self.resolve_qualified_type(module_index, path)
+        };
+        match resolution {
+            ReferenceResolution::Resolved(symbol)
+                if self.symbols[symbol.raw() as usize].kind != ProjectSymbolKind::NeedsGroup =>
+            {
+                ReferenceResolution::Unresolved
+            }
+            resolution => resolution,
+        }
+    }
+
+    /// The `(name, entry semantic id)` pairs a needs group declares.
+    pub(crate) fn needs_group_entries(&self, group: SymbolId) -> Vec<Name> {
+        needs_group_declaration(&self.semantic, &self.symbols[group.raw() as usize])
+            .map(|row| {
+                row.terms
+                    .iter()
+                    .filter_map(|term| match term {
+                        RequirementTermUse::Field { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A group used in a function's clause binds each of its entries as a
+    /// requirement in the body, under the term's own semantic id, as a written
+    /// entry would.
+    fn bind_group_entries(
+        &mut self,
+        module_index: usize,
+        semantic_id: SemanticId,
+        resolution: ReferenceResolution,
+        scope: &mut Option<&mut Scope>,
+    ) {
+        let ReferenceResolution::Resolved(group) = resolution else {
+            return;
+        };
+        if self.symbols[group.raw() as usize].kind != ProjectSymbolKind::NeedsGroup {
+            return;
+        }
+        for name in self.needs_group_entries(group) {
+            if let Some(scope) = scope.as_deref_mut() {
+                self.define_local(
+                    module_index,
+                    semantic_id,
+                    &name,
+                    ProjectSymbolKind::Requirement,
+                    scope,
+                );
+            } else {
+                self.add_symbol(
+                    Some(self.semantic.modules[module_index].id),
+                    Some(semantic_id),
+                    Namespace::Value,
+                    ProjectSymbolKind::Requirement,
+                    &name.text,
+                    false,
+                );
+            }
+        }
+    }
+
     fn resolve_requirement_row(
         &mut self,
         module_index: usize,
@@ -1918,11 +2001,13 @@ impl ProjectResolver {
         for term in &row.terms {
             match term {
                 RequirementTermUse::Variable { semantic_id, name } => {
-                    let resolution = generics
-                        .get(&name.text)
-                        .copied()
-                        .map(ReferenceResolution::Resolved)
-                        .unwrap_or(ReferenceResolution::Unresolved);
+                    let resolution = match generics.get(&name.text).copied() {
+                        Some(generic) => ReferenceResolution::Resolved(generic),
+                        None => self.resolve_needs_group(
+                            module_index,
+                            std::slice::from_ref(name),
+                        ),
+                    };
                     self.reference(
                         module_index,
                         *semantic_id,
@@ -1930,13 +2015,36 @@ impl ProjectResolver {
                         name,
                         resolution,
                     );
+                    self.bind_group_entries(module_index, *semantic_id, resolution, &mut scope);
                     if resolution == ReferenceResolution::Unresolved {
                         let module = &self.semantic.modules[module_index];
                         self.diagnostics.push(name_error(
                             module,
                             "E_UNRESOLVED_TYPE",
                             name.range,
-                            format!("cannot resolve generic row {}", name.text),
+                            format!("cannot resolve generic row or needs group {}", name.text),
+                        ));
+                    }
+                }
+                RequirementTermUse::Group { semantic_id, path } => {
+                    let resolution = self.resolve_needs_group(module_index, path);
+                    let display = format!("{}.{}", path[0].text, path[1].text);
+                    self.references.push(ProjectReference {
+                        file_id: self.semantic.modules[module_index].source.file_id(),
+                        semantic_id: *semantic_id,
+                        namespace: Namespace::Type,
+                        text: display.clone(),
+                        range: path[1].range,
+                        resolution,
+                    });
+                    self.bind_group_entries(module_index, *semantic_id, resolution, &mut scope);
+                    if !matches!(resolution, ReferenceResolution::Resolved(_)) {
+                        let module = &self.semantic.modules[module_index];
+                        self.diagnostics.push(name_error(
+                            module,
+                            "E_UNRESOLVED_TYPE",
+                            path[1].range,
+                            format!("cannot resolve needs group {display}"),
                         ));
                     }
                 }
@@ -3086,6 +3194,23 @@ impl Scope {
 
 /// The name of the locals a record update lowers through; no source name can spell it.
 pub(crate) const UPDATE_TEMPORARY: &str = "#update";
+
+/// The entries row of the `needs` group `symbol` declares.
+pub(crate) fn needs_group_declaration<'a>(
+    semantic: &'a crate::semantic::SemanticProject,
+    symbol: &ProjectSymbol,
+) -> Option<&'a RequirementRowUse> {
+    let module = semantic
+        .modules
+        .iter()
+        .find(|module| Some(module.id) == symbol.module_id)?;
+    module
+        .declarations
+        .iter()
+        .find(|declaration| Some(declaration.semantic_id) == symbol.semantic_id)?
+        .needs_group
+        .as_ref()
+}
 
 fn resolve_local(
     local: Option<&Vec<SymbolId>>,

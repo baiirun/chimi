@@ -436,6 +436,9 @@ pub(crate) enum ModuleDeclarationKind {
     /// `Process.Address<Message>` with named routing. `annotation` holds the message
     /// type; there is no initializer.
     ProcessName,
+    /// `[pub] needs Name { ... }`: a name for a set of needs, written alone or
+    /// with `+` in a needs clause. `needs_group` holds its entries.
+    NeedsGroup,
 }
 
 #[derive(Clone, Debug)]
@@ -455,6 +458,8 @@ pub(crate) struct ModuleDeclaration {
     /// `name` is [`test_symbol_name`] of the test's name, which no source can spell,
     /// so code cannot reference it.
     pub(crate) test: bool,
+    /// A needs group's entries; `None` for every other declaration.
+    pub(crate) needs_group: Option<RequirementRowUse>,
 }
 
 /// The symbol name a test item's function carries: `test "<name>"`. It contains a
@@ -553,9 +558,16 @@ pub(crate) struct RequirementRowUse {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RequirementTermUse {
+    /// A bare name: a generic row parameter, or a needs group of this module or
+    /// member-imported. Resolution decides which.
     Variable {
         semantic_id: SemanticId,
         name: Name,
+    },
+    /// `Alias.Group`: another module's needs group.
+    Group {
+        semantic_id: SemanticId,
+        path: Vec<Name>,
     },
     Field {
         semantic_id: SemanticId,
@@ -1189,6 +1201,11 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
+                NodeKind::NeedsGroupDeclaration => {
+                    if let Some(declaration) = lowerer.lower_needs_group(&node) {
+                        declarations.push(declaration);
+                    }
+                }
                 NodeKind::TestDeclaration => {
                     if let Some(declaration) = lowerer.lower_test(&node, &declarations) {
                         declarations.push(declaration);
@@ -1340,6 +1357,7 @@ impl ProjectLowerer {
             body,
             annotation: None,
             test: false,
+            needs_group: None,
         })
     }
 
@@ -1412,6 +1430,7 @@ impl ProjectLowerer {
             body: Some(body),
             annotation: None,
             test: false,
+            needs_group: None,
         })
     }
 
@@ -1580,6 +1599,34 @@ impl ProjectLowerer {
             body,
             annotation,
             test: false,
+            needs_group: None,
+        })
+    }
+
+    /// Lowers a `NeedsGroupDeclaration`, `[pub] needs Name { ... }`.
+    fn lower_needs_group(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = direct_identifier(node)?;
+        // The group's own name is the node's identifier; only its record is entries.
+        let mut row = self.lower_requirement_row(node);
+        row.terms
+            .retain(|term| matches!(term, RequirementTermUse::Field { .. }));
+        let needs_group = Some(row);
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::NeedsGroup,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: None,
+            body: None,
+            annotation: None,
+            test: false,
+            needs_group,
         })
     }
 
@@ -1609,6 +1656,7 @@ impl ProjectLowerer {
             body: None,
             annotation,
             test: false,
+            needs_group: None,
         })
     }
 
@@ -1706,6 +1754,7 @@ impl ProjectLowerer {
             body,
             annotation: None,
             test: true,
+            needs_group: None,
         })
     }
 
@@ -1924,6 +1973,24 @@ impl ProjectLowerer {
                 name: name_from(&token),
             })
             .collect::<Vec<_>>();
+        for group in node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::RequirementGroupName)
+        {
+            let path: Vec<Name> = group
+                .child_tokens()
+                .into_iter()
+                .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                .map(|token| name_from(&token))
+                .collect();
+            if path.len() == 2 {
+                terms.push(RequirementTermUse::Group {
+                    semantic_id: self.allocate_semantic_id(),
+                    path,
+                });
+            }
+        }
         for record in node
             .child_nodes()
             .into_iter()
