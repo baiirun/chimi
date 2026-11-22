@@ -1336,7 +1336,7 @@ impl<'core> Evaluator<'core> {
                 // Every provider is evaluated in the enclosing scope: typing
                 // gives a provider's own needs to the enclosing expression, so
                 // a provider never sees another provider of the same clause.
-                let mut provided = Vec::with_capacity(providers.len());
+                let mut provided: Vec<(String, RuntimeValue)> = Vec::with_capacity(providers.len());
                 for provider in providers {
                     let value = success_or_return!(self.eval_node(
                         provider.value,

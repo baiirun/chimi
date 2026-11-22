@@ -725,6 +725,17 @@ Greeter }`, the value is a `T`, and if it is a function that needs `greeter`,
 its caller supplies it. A function value that is supplied again after widening
 to a type with the need keeps the provider its first `using` gave it.
 
+A function value whose needs include a row parameter, such as `twice` in
+`fn twice<R>(h: fn() -> Text needs R) -> Text needs R + { greeter: Greeter }`,
+cannot have a provider fixed this way (`T4219`). The row's needs are the
+caller's, and a call may bind it to the same name, which would leave one
+need with two providers. Supplying the provider where the value is called
+works as before.
+
+Each provider of a clause is evaluated where the `using` is written, before
+the expression, and a provider's own needs come from there: a provider never
+sees another provider of the same clause.
+
 The provider record may also be a value: a name, a member, or a call, whose
 type is a record. Each of its fields is a provider under the field's name, so
 one set of providers is written once and supplied wherever it is needed:
