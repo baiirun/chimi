@@ -3173,8 +3173,10 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
             "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
             "[--trace=off|boundaries|full] | ",
-            "chimi std check | chimi std test [<test option>...]; a compiler developer may put ",
-            "--std-dir <directory> before inspect, check, run, build, test, std check, or std test\n"
+            "chimi std check | chimi std test [<test option>...] | ",
+            "chimi deps update [--root <directory>] [<package>...]; --offline before a command that ",
+            "loads a program uses only the dependency cache; a compiler developer may put ",
+            "--std-dir <directory> first, before inspect, check, run, build, test, std check, or std test\n"
         )
     );
 }

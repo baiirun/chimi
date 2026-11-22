@@ -274,6 +274,10 @@ pub(crate) enum NodeKind {
     /// `[pub] process name <identifier>: <Message>`. `process` and `name` are
     /// contextual words, recognised only at module item position.
     ProcessNameDeclaration,
+    /// `[pub] needs <Name> { <name>: <Interface>, ... }`: a named group of needs.
+    NeedsGroupDeclaration,
+    /// `Alias.Group` naming another module's needs group inside a needs clause.
+    RequirementGroupName,
     /// `test "<name>" { <block> }`. `test` is a contextual word, recognised only at
     /// module item position when a text literal follows it.
     TestDeclaration,
@@ -353,6 +357,8 @@ impl NodeKind {
             Self::LetBinding => "let_binding",
             Self::ConstDeclaration => "const_declaration",
             Self::ProcessNameDeclaration => "process_name_declaration",
+            Self::NeedsGroupDeclaration => "needs_group_declaration",
+            Self::RequirementGroupName => "requirement_group_name",
             Self::TestDeclaration => "test_declaration",
             Self::InterpolatedText => "interpolated_text",
             Self::UsingExpression => "using_expression",
@@ -1467,9 +1473,11 @@ impl<'source> Parser<'source> {
             let before = self.position;
             match self.kind() {
                 TokenKind::Import => self.parse_import(),
-                TokenKind::Pub | TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
-                    self.parse_declaration()
-                }
+                TokenKind::Pub
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Needs => self.parse_declaration(),
                 TokenKind::Identifier if self.process_name_starts_at(self.position) => {
                     self.parse_process_name_declaration()
                 }
@@ -1575,11 +1583,12 @@ impl<'source> Parser<'source> {
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
             Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
             Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
+            Some((NodeKind::NeedsGroupDeclaration, _)) => self.parse_needs_group_declaration(),
             Some((NodeKind::TestDeclaration, _)) => self.parse_test_declaration(),
             Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
             Some((NodeKind::TypeAliasDeclaration, _)) => self.parse_type_alias(),
             _ => self.error_and_bump(
-                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, or `process name` \
+                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, `needs`, or `process name` \
                  after `pub`",
             ),
         }
@@ -1599,6 +1608,7 @@ impl<'source> Parser<'source> {
             TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
             TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
             TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
+            TokenKind::Needs => Some((NodeKind::NeedsGroupDeclaration, TokenKind::Needs)),
             TokenKind::Identifier if self.native_starts_at(index) => {
                 Some((NodeKind::FunctionDeclaration, TokenKind::Fn))
             }
@@ -2133,9 +2143,21 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_requirement_atom(&mut self) {
+        if self.at(TokenKind::Identifier) && self.kind_at(self.position + 1) == TokenKind::Dot {
+            self.start(NodeKind::RequirementGroupName);
+            self.bump();
+            self.bump();
+            self.expect(TokenKind::Identifier);
+            self.finish();
+            return;
+        }
         if self.accept(TokenKind::Identifier) {
             return;
         }
+        self.parse_requirement_atom_record();
+    }
+
+    fn parse_requirement_atom_record(&mut self) {
         self.start(NodeKind::RequirementRecord);
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();
@@ -2191,6 +2213,17 @@ impl<'source> Parser<'source> {
 
     /// Parses `[pub] process name <identifier>: <type>`.
     /// Requires: `process_name_starts_at` holds after the optional `pub`.
+    /// Parses `[pub] needs <Name> { <name>: <Interface>, ... }`.
+    fn parse_needs_group_declaration(&mut self) {
+        self.start(NodeKind::NeedsGroupDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Needs);
+        self.expect(TokenKind::Identifier);
+        self.skip_newlines();
+        self.parse_requirement_atom_record();
+        self.finish();
+    }
+
     fn parse_process_name_declaration(&mut self) {
         self.start(NodeKind::ProcessNameDeclaration);
         self.parse_visibility();
@@ -3359,6 +3392,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Fn
                 | TokenKind::Let
                 | TokenKind::Const
+                | TokenKind::Needs
         )
     }
 

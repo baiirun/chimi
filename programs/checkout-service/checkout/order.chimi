@@ -90,6 +90,16 @@ pub interface Notifier {
   sms: fn(Order) -> Void errors NotifyError
 }
 
+/// Everything a checkout reaches: the five services and the clock.
+pub needs Services {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+}
+
 /// An order for `sku` at `cents`.
 pub fn order(id: Int, sku: Text, cents: Int) -> Order {
   Order { id: id, sku: sku, cents: cents }
@@ -207,14 +217,7 @@ fn notify(order: Order) -> Int needs {
   })
 }
 
-fn checkout(order: Order) -> Receipt needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+fn checkout(order: Order) -> Receipt needs Services {
   let reservation = fn() { checks(order) }
   |> Cause.context("checking order ${order.id}")
   let charged = fn() { charge(order) }
@@ -231,14 +234,7 @@ fn checkout(order: Order) -> Receipt needs {
 
 /// Runs one checkout under `deadline` and stores its outcome, so a worker can
 /// send it on as a value.
-pub fn run(order: Order, deadline: Instant) needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+pub fn run(order: Order, deadline: Instant) needs Services {
   let bounded = fn() {
     fn() { checkout(order) }
     |> Task.deadline(deadline)

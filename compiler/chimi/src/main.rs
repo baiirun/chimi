@@ -1,11 +1,12 @@
-use chimi::{Compiler, ModuleOrigin};
 use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
-use chimi::project::{LoadedProject, StandardTree};
+use chimi::project::{FileSystemReader, GitCache, LoadedProject, Network, StandardTree};
+use chimi::{Compiler, ModuleOrigin};
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 const VERSION: &str = concat!("chimi ", env!("CARGO_PKG_VERSION"), "-bootstrap");
 const USAGE: &str = concat!(
@@ -23,21 +24,36 @@ const USAGE: &str = concat!(
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
     "[--trace=off|boundaries|full] | ",
-    "chimi std check | chimi std test [<test option>...]; a compiler developer may put ",
-    "--std-dir <directory> before inspect, check, run, build, test, std check, or std test"
+    "chimi std check | chimi std test [<test option>...] | ",
+    "chimi deps update [--root <directory>] [<package>...]; --offline before a command that ",
+    "loads a program uses only the dependency cache; a compiler developer may put ",
+    "--std-dir <directory> first, before inspect, check, run, build, test, std check, or std test"
 );
 
 #[derive(Debug, Eq, PartialEq)]
 enum Input {
-    File { path: PathBuf },
-    Project { root: PathBuf, entry: String },
+    File {
+        path: PathBuf,
+    },
+    Project {
+        root: PathBuf,
+        entry: String,
+    },
     /// Every module under `root` (`chimi test <directory>` only).
-    Directory { root: PathBuf },
+    Directory {
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
+    /// Pins the workspace's git packages in `chimi.lock`, moving `packages`
+    /// to what their `rev` names now.
+    DepsUpdate {
+        root: PathBuf,
+        packages: Vec<String>,
+    },
     Format {
         path: PathBuf,
     },
@@ -98,7 +114,9 @@ enum DocOutput {
     Json,
     /// Static pages for every module of the target's project, or of the
     /// standard tree for a `std/` target, written into `directory`.
-    Html { directory: PathBuf },
+    Html {
+        directory: PathBuf,
+    },
 }
 
 /// The module `chimi doc` documents.
@@ -274,10 +292,12 @@ struct UsageError {
     message: &'static str,
 }
 
-/// A command and the standard tree directory that replaces the embedded one.
+/// A command, the standard tree directory that replaces the embedded one,
+/// and whether git packages may be fetched.
 #[derive(Debug, Eq, PartialEq)]
 struct Invocation {
     std_dir: Option<PathBuf>,
+    network: Network,
     command: Command,
 }
 
@@ -300,13 +320,78 @@ fn parse_invocation(
     } else {
         None
     };
+    let network = if arguments
+        .next_if(|argument| argument == "--offline")
+        .is_some()
+    {
+        Network::Offline
+    } else {
+        Network::Allowed
+    };
     let command = parse_command(arguments)?;
-    if std_dir.is_some() && matches!(command, Command::Version | Command::Format { .. }) {
+    if std_dir.is_some()
+        && matches!(
+            command,
+            Command::Version | Command::Format { .. } | Command::DepsUpdate { .. }
+        )
+    {
         return Err(UsageError {
             message: "--std-dir applies only to commands that load a program",
         });
     }
-    Ok(Invocation { std_dir, command })
+    if network == Network::Offline && matches!(command, Command::Version | Command::Format { .. }) {
+        return Err(UsageError {
+            message: "--offline applies only to commands that load a program",
+        });
+    }
+    if network == Network::Offline && matches!(command, Command::DepsUpdate { .. }) {
+        return Err(UsageError {
+            message: "deps update fetches what the manifests name, so it cannot run --offline",
+        });
+    }
+    Ok(Invocation {
+        std_dir,
+        network,
+        command,
+    })
+}
+
+/// `deps update [--root <directory>] [<package>...]`.
+fn parse_deps_command(
+    mut arguments: impl Iterator<Item = OsString>,
+) -> Result<Command, UsageError> {
+    if arguments
+        .next()
+        .is_none_or(|subcommand| subcommand != "update")
+    {
+        return Err(UsageError {
+            message: "deps takes one subcommand: update",
+        });
+    }
+    let mut arguments = arguments.peekable();
+    let root = if arguments.next_if(|argument| argument == "--root").is_some() {
+        let Some(root) = arguments.next() else {
+            return Err(UsageError {
+                message: "--root requires a directory",
+            });
+        };
+        PathBuf::from(root)
+    } else {
+        PathBuf::from(".")
+    };
+    let mut packages = Vec::new();
+    for argument in arguments {
+        let Some(package) = argument
+            .to_str()
+            .filter(|package| !package.starts_with('-'))
+        else {
+            return Err(UsageError {
+                message: "deps update takes package names after --root <directory>",
+            });
+        };
+        packages.push(package.to_owned());
+    }
+    Ok(Command::DepsUpdate { root, packages })
 }
 
 fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, UsageError> {
@@ -369,6 +454,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                 message: "std takes one subcommand: check or test",
             }),
         };
+    }
+
+    if command == "deps" {
+        return parse_deps_command(arguments);
     }
 
     if command == "test" {
@@ -589,7 +678,8 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
         }
         Some(argument) => match argument.to_str() {
             Some(module)
-                if module == "std" || (module.starts_with("std/") && !module.ends_with(".chimi")) =>
+                if module == "std"
+                    || (module.starts_with("std/") && !module.ends_with(".chimi")) =>
             {
                 DocTarget::Standard {
                     module: module.to_owned(),
@@ -629,7 +719,10 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
 /// Parses `chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]`.
 fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
-    if arguments.next().is_none_or(|subcommand| subcommand != "show") {
+    if arguments
+        .next()
+        .is_none_or(|subcommand| subcommand != "show")
+    {
         return Err(UsageError {
             message: "trace requires the show subcommand",
         });
@@ -730,7 +823,21 @@ fn parse_offset(value: OsString) -> Option<usize> {
     value.into_string().ok()?.parse().ok()
 }
 
-fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
+/// Where git packages come from for this run, set once by [`execute`].
+static DEPENDENCY_CACHE: OnceLock<GitCache> = OnceLock::new();
+
+fn dependency_cache() -> &'static GitCache {
+    DEPENDENCY_CACHE.get_or_init(|| GitCache::from_environment(Network::Allowed))
+}
+
+fn execute(
+    Invocation {
+        std_dir,
+        network,
+        command,
+    }: Invocation,
+) -> ExitCode {
+    let _ = DEPENDENCY_CACHE.set(GitCache::from_environment(network));
     let standard = match std_dir.map(StandardTree::directory).transpose() {
         Ok(standard) => standard.unwrap_or_default(),
         Err(error) => {
@@ -744,6 +851,7 @@ fn execute(Invocation { std_dir, command }: Invocation) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Format { path } => format(path),
+        Command::DepsUpdate { root, packages } => deps_update(&root, packages),
         Command::Doc { target, output } => doc(target, &standard, output),
         Command::Lint { input, output } => lint(input, &standard, output),
         Command::TraceShow { trace, source, all } => trace_show(&trace, source, &standard, all),
@@ -852,26 +960,57 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
                 || "main".to_owned(),
                 |stem| stem.to_string_lossy().into_owned(),
             );
-            (LoadedProject::single_file(path, standard), "main".to_owned(), title)
+            (
+                LoadedProject::single_file(path, standard),
+                "main".to_owned(),
+                title,
+            )
         }
         DocTarget::Project { root, module } => {
             let title = root
                 .canonicalize()
                 .ok()
-                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .and_then(|root| {
+                    root.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
                 .unwrap_or_else(|| module.clone());
-            (LoadedProject::load(root, module.clone(), standard), module, title)
+            (
+                LoadedProject::load_with(
+                    root,
+                    module.clone(),
+                    &FileSystemReader,
+                    standard,
+                    dependency_cache(),
+                ),
+                module,
+                title,
+            )
         }
-        DocTarget::Standard { module } => {
-            (LoadedProject::standard_tree(standard), module, "std".to_owned())
-        }
+        DocTarget::Standard { module } => (
+            LoadedProject::standard_tree(standard),
+            module,
+            "std".to_owned(),
+        ),
         DocTarget::Directory { root } => {
             let title = root
                 .canonicalize()
                 .ok()
-                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .and_then(|root| {
+                    root.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
                 .unwrap_or_default();
-            (LoadedProject::load_directory(root, standard), String::new(), title)
+            (
+                LoadedProject::load_directory_with(
+                    root,
+                    &FileSystemReader,
+                    standard,
+                    dependency_cache(),
+                ),
+                String::new(),
+                title,
+            )
         }
     };
     let project = match loaded {
@@ -895,8 +1034,7 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
             } else {
                 ModuleOrigin::Own
             };
-            let modules =
-                report.documentation_of(|path| project.origin_of(path) == Some(wanted));
+            let modules = report.documentation_of(|path| project.origin_of(path) == Some(wanted));
             return write_doc_site(&directory, &title, &modules);
         }
         DocOutput::Text => report.documentation(&module).map(|doc| doc.render_text()),
@@ -1229,7 +1367,13 @@ fn run_tests(
     } else {
         print!(
             "{}",
-            render_report(&suite, &selected, &results, options.show_output, options.seed)
+            render_report(
+                &suite,
+                &selected,
+                &results,
+                options.show_output,
+                options.seed
+            )
         );
     }
     if results.iter().all(|result| result.failure.is_none()) {
@@ -1275,11 +1419,33 @@ fn artifact_directory(input: &Input, output: &std::path::Path) -> PathBuf {
     base.join("target/chimi").join(name)
 }
 
+fn deps_update(root: &Path, packages: Vec<String>) -> ExitCode {
+    match chimi::project::update_dependencies(root, packages, dependency_cache()) {
+        Ok(changes) => {
+            for change in changes {
+                eprintln!("chimi: {change}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn load_project(input: Input, standard: &StandardTree) -> Option<LoadedProject> {
     let loaded = match input {
         Input::File { path } => LoadedProject::single_file(path, standard),
-        Input::Project { root, entry } => LoadedProject::load(root, entry, standard),
-        Input::Directory { root } => LoadedProject::load_directory(root, standard),
+        Input::Project { root, entry } => {
+            LoadedProject::load_with(root, entry, &FileSystemReader, standard, dependency_cache())
+        }
+        Input::Directory { root } => LoadedProject::load_directory_with(
+            root,
+            &FileSystemReader,
+            standard,
+            dependency_cache(),
+        ),
     };
     match loaded {
         Ok(project) => Some(project),
@@ -1302,7 +1468,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command};
+    use super::{
+        Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command,
+    };
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -1322,7 +1490,13 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["doc", "--json", "--root", "service", "app/orders"])),
+            parse_command(arguments(&[
+                "doc",
+                "--json",
+                "--root",
+                "service",
+                "app/orders"
+            ])),
             Ok(Command::Doc {
                 target: DocTarget::Project {
                     root: PathBuf::from("service"),
@@ -1341,7 +1515,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["doc", "--html", "site", "--root", "service", "app"])),
+            parse_command(arguments(&[
+                "doc", "--html", "site", "--root", "service", "app"
+            ])),
             Ok(Command::Doc {
                 target: DocTarget::Project {
                     root: PathBuf::from("service"),
@@ -1386,7 +1562,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["trace", "show", "--all", "-", "--root", "svc", "app"])),
+            parse_command(arguments(&[
+                "trace", "show", "--all", "-", "--root", "svc", "app"
+            ])),
             Ok(Command::TraceShow {
                 trace: PathBuf::from("-"),
                 source: Some(Input::Project {
@@ -1426,8 +1604,14 @@ mod tests {
                 &["doc", "--root", "service"][..],
                 "doc --root requires a project directory and a module",
             ),
-            (&["doc", "a.chimi", "b.chimi"][..], "doc received unexpected arguments"),
-            (&["doc", "--html"][..], "doc --html requires an output directory"),
+            (
+                &["doc", "a.chimi", "b.chimi"][..],
+                "doc received unexpected arguments",
+            ),
+            (
+                &["doc", "--html"][..],
+                "doc --html requires an output directory",
+            ),
             (
                 &["doc", "--html", "site", "std/option"][..],
                 "doc --html writes the whole standard tree; name it as std",
@@ -1448,7 +1632,9 @@ mod tests {
     #[test]
     fn parses_lint_inputs() {
         assert_eq!(
-            parse_command(arguments(&["lint", "--json", "--root", "service", "app/main"])),
+            parse_command(arguments(&[
+                "lint", "--json", "--root", "service", "app/main"
+            ])),
             Ok(Command::Lint {
                 input: Input::Project {
                     root: PathBuf::from("service"),
@@ -1468,7 +1654,10 @@ mod tests {
         );
         let directory = std::env::temp_dir();
         assert_eq!(
-            parse_command(vec![OsString::from("lint"), directory.clone().into_os_string()]),
+            parse_command(vec![
+                OsString::from("lint"),
+                directory.clone().into_os_string()
+            ]),
             Ok(Command::Lint {
                 input: Input::Directory { root: directory },
                 output: DiagnosticOutput::Human,
@@ -1483,7 +1672,10 @@ mod tests {
                 &["lint", "--root", "service"][..],
                 "lint --root requires a project directory and a module",
             ),
-            (&["lint", "a.chimi", "b.chimi"][..], "lint received unexpected arguments"),
+            (
+                &["lint", "a.chimi", "b.chimi"][..],
+                "lint received unexpected arguments",
+            ),
         ] {
             assert_eq!(
                 parse_command(arguments(command)),
