@@ -358,7 +358,7 @@ impl Evaluator<'_> {
             }
             (StandardFunction::MetricsHostDocument, []) => {
                 self.metrics.reading = true;
-                Control::Success(RuntimeValue::Text(self.metrics.render().into()))
+                Control::Success(RuntimeValue::Text(self.metrics.render()))
             }
             (
                 StandardFunction::MetricsHostRecord,
