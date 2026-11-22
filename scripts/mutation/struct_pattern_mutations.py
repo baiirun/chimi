@@ -66,4 +66,11 @@ MUTATIONS = [
         targets=["language"],
         filter="struct_pattern",
     ),
+    dict(
+        name="a struct pattern's brace is written tight against a guard",
+        file="src/formatter.rs",
+        edits=[("TokenKind::Errors | TokenKind::Needs | TokenKind::If | TokenKind::As)", "TokenKind::Errors | TokenKind::Needs)")],
+        targets=["language"],
+        filter="struct_pattern",
+    ),
 ]

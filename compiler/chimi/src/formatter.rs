@@ -772,10 +772,12 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     // A type argument list's `>` is written tight, so the word after it, as in
     // `fn(T) -> Option<U> errors E`, needs its own space.
     // A record type's `}` before a signature's `errors` or `needs`, as in
-    // `-> { status: Status } needs { ... }`, needs one too.
+    // `-> { status: Status } needs { ... }`, needs one too, as does a struct pattern's
+    // `}` before a guard or an alias, as in `Money { cents: c, .. } if c > 0`.
     (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
-        || previous == TokenKind::RightBrace && matches!(current, TokenKind::Errors | TokenKind::Needs)
+        || previous == TokenKind::RightBrace
+            && matches!(current, TokenKind::Errors | TokenKind::Needs | TokenKind::If | TokenKind::As)
 }
 
 const fn word_kind(kind: TokenKind) -> bool {
