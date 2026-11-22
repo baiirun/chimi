@@ -14046,6 +14046,7 @@ fn fakes(c: Console) -> { greeter: { greet: fn(Text) -> Text } } {
 fn quiet() -> Void needs { console: Console } {
   let c = console
   c.write_line("to the fake")
+  c.write_error("error to the fake")
 }
 
 pub fn main() -> Void needs { console: Console } {
