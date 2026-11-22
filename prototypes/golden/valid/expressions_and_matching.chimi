@@ -49,4 +49,4 @@ fn authorize(state: AccountState, request: Request) -> Decision {
   }
 }
 
-const decision = authorize(Active, Transfer(Money(500)))
+const decision = authorize(Active, Transfer(Money { cents: 500 }))

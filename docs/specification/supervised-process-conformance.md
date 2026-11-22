@@ -1026,7 +1026,13 @@ pub fn main() -> PoolResult needs { clock: Clock } {
 
   Supervisor.remove_process(root, c)
   Supervisor.stop(root)
-  PoolResult(total_a, total_b, total_c, stale, rejected)
+  PoolResult {
+    a: total_a,
+    b: total_b,
+    c: total_c,
+    stale: stale,
+    rejected: rejected,
+  }
 }
 ```
 

@@ -22,7 +22,7 @@ fn by_age(left: Person, right: Person) -> Ordering {
 
 fn run() -> List<Text> {
   let xs = [5, 2, 8, 2, 7]
-  let people = [Person("ada", 36), Person("bo", 25), Person("cy", 36), Person("di", 25)]
+  let people = [Person { name: "ada", age: 36 }, Person { name: "bo", age: 25 }, Person { name: "cy", age: 36 }, Person { name: "di", age: 25 }]
   let results = [
     Debug.render(List.map(xs, fn(x) { x * 10 })),
     Debug.render(List.filter(xs, fn(x) { x > 4 })),

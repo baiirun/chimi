@@ -1,0 +1,12 @@
+// The runner closes `main`'s `log` need with the host provider, which writes
+// JSON lines to stderr; tests/std_log.rs checks the lines and the runner
+// options. This program reaches the provider on both backends.
+import std/log as Log.{Log}
+
+pub fn main() -> Text needs {
+  log: Log
+} {
+  Log.debug("left out at the default level", [])
+  Log.info("written", [Log.int("lines", 1)])
+  "logged"
+}

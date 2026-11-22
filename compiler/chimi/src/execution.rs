@@ -68,6 +68,12 @@ pub struct ExecutionConfig {
     max_line_bytes: usize,
     /// The `random` provider's seed; `None` seeds it from the operating system.
     random_seed: Option<u64>,
+    /// The least severe `std/log` level the runner's provider writes: 0 debug,
+    /// 1 info, 2 warn, 3 error.
+    log_level: i64,
+    /// Where the runner's `std/log` provider appends its lines; `None` writes
+    /// them to application stderr.
+    log_file: Option<String>,
 }
 
 impl ExecutionConfig {
@@ -88,6 +94,8 @@ impl ExecutionConfig {
             standard_input: Vec::new(),
             max_line_bytes: 1024 * 1024,
             random_seed: None,
+            log_level: 1,
+            log_file: None,
         })
     }
 
@@ -130,6 +138,25 @@ impl ExecutionConfig {
     /// Seeds the `random` provider, as `chimi test` does for each test.
     pub const fn with_random_seed(mut self, seed: u64) -> Self {
         self.random_seed = Some(seed);
+        self
+    }
+
+    /// Sets the least severe level the runner's `std/log` provider writes, from
+    /// its runner-option name (`debug`, `info`, `warn` or `error`).
+    pub fn with_log_level(mut self, level: &str) -> Result<Self, String> {
+        self.log_level = match level {
+            "debug" => 0,
+            "info" => 1,
+            "warn" => 2,
+            "error" => 3,
+            _ => return Err(format!("--log-level must be debug, info, warn or error, not `{level}`")),
+        };
+        Ok(self)
+    }
+
+    /// Appends the runner's `std/log` lines to `path` instead of stderr.
+    pub fn with_log_file(mut self, path: impl Into<String>) -> Self {
+        self.log_file = Some(path.into());
         self
     }
 
@@ -1997,6 +2024,8 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::FsTestRoot
             | StandardFunction::SignalHostInstall
             | StandardFunction::SignalHostWait
+            | StandardFunction::LogHostMinimumLevel
+            | StandardFunction::LogHostWrite
             => {
                 self.invoke_host_operation(function, arguments, call_node)
             }
@@ -3236,6 +3265,8 @@ mod tests {
                 standard_input: Vec::new(),
                 max_line_bytes: 1024 * 1024,
                 random_seed: None,
+                log_level: 1,
+                log_file: None,
             }
         );
         assert_eq!(

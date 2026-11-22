@@ -16,12 +16,15 @@ struct Pass {
 }
 
 fn churn(passes: Int) -> Int {
-  loop state = Pass(passes, 0) {
+  loop state = Pass { left: passes, total: 0 } {
     case state.left {
       0 -> break state.total
       _ -> {
         let garbage = [state.left, state.total, state.left + state.total]
-        Pass(state.left - 1, state.total + List.length(garbage) - 2)
+        Pass {
+          left: state.left - 1,
+          total: state.total + List.length(garbage) - 2,
+        }
       }
     }
   }

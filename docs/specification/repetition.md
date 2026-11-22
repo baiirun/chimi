@@ -41,10 +41,10 @@ struct Progress {
 }
 
 fn sum_to(limit: Int) -> Int {
-  loop progress = Progress(0, 0) {
+  loop progress = Progress { passes: 0, total: 0 } {
     case progress.passes {
       passes if passes > limit -> break progress.total
-      passes -> Progress(passes + 1, progress.total + passes)
+      passes -> Progress { passes: passes + 1, total: progress.total + passes }
     }
   }
 }

@@ -1,0 +1,5 @@
+std_log_mutations.py, 2026-11-22: 14 mutants, 14 killed.
+First run at 978fa38: 11 of 12 killed; "the interpreter's info level is debug"
+survived because no test set the level to info explicitly. The interpreter
+test now does, and the rerun at ebe83b7 killed it together with the two
+mutants added for the review fixes (log-file identity check, log-file stream).

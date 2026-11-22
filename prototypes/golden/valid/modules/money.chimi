@@ -14,7 +14,7 @@ pub enum MoneyError {
 
 pub fn from_cents(cents: Int) {
   case cents >= 0 {
-    True -> Money(cents)
+    True -> Money { cents: cents }
     False -> Failure(NegativeAmount(cents))
   }
 }

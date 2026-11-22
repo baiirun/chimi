@@ -61,7 +61,7 @@ pub fn driver() -> Driver needs {
   files: Files,
   clock: Clock,
 } {
-  let given = Given(files, clock)
+  let given = Given { files: files, clock: clock }
   Sql.driver(fn(target) { connect(given, target) })
 }
 
@@ -95,7 +95,10 @@ fn connect(given: Given, target: Text) -> Connection {
     True -> Void
     False -> allowed(given.files, target)
   }
-  let db = Opened(connected(native_open(target)), given.clock)
+  let db = Opened {
+    handle: connected(native_open(target)),
+    clock: given.clock,
+  }
   let set_up = Result.capture(fn() {
     statement(db, "pragma foreign_keys = on")
     case memory {
@@ -311,7 +314,7 @@ fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
       False -> failed(code, message)
     }
     Ok(None) -> case params {
-      [] -> Try.Ran(Answer([], [], 0))
+      [] -> Try.Ran(Answer { columns: [], rows: [], changed: 0 })
       _ -> Failure(SqlError.Rejected("SQLITE_RANGE", "the statement takes 0 parameters, and ${List.length(params)} were given"))
     }
     Ok(Some(handle)) -> Resource.scoped(fn() { handle }, native_finalize, fn(prepared_statement) {
@@ -329,7 +332,7 @@ fn run_once(db: Opened, text: Text, params: List<Value>) -> Try {
         let step = native_step(prepared_statement)
         case step {
           Ok(None) -> List.push(rows, decoded(names, declared, sql(native_row(prepared_statement))))
-          Ok(Some(changed)) -> break Try.Ran(Answer(names, rows, changed))
+          Ok(Some(changed)) -> break Try.Ran(Answer { columns: names, rows: rows, changed: changed })
           Err((code, message)) -> case locked(code) and rows == [] {
             True -> break Try.Locked(message)
             False -> failed(code, message)

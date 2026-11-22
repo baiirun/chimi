@@ -26,18 +26,22 @@ fn make(inbox: Inbox<Message>) -> Void {
   loop made = 0 {
     case Process.receive(inbox) {
       Message.Make(seed, reply) -> {
-        Channel.send(reply, Payload(seed * 2, seed * 3))
+        Channel.send(reply, Payload { doubled: seed * 2, tripled: seed * 3 })
         made + 1
       }
     }
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
-pub fn main() -> Payload needs { clock: Clock } {
+pub fn main() -> Payload needs {
+  clock: Clock
+} {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let managed = Supervisor.start_process(root, Process.spec(make, 1, Duration.seconds(1)), Supervisor.Restart.Never)
   let replies = Channel.bounded(1)
@@ -47,7 +51,7 @@ pub fn main() -> Payload needs { clock: Clock } {
   let received = Channel.receive(replies.receiver)
   let payload = case received {
     Receive.Received(value) -> value
-    Receive.Drained -> Payload(0, 0)
+    Receive.Drained -> Payload { doubled: 0, tripled: 0 }
   }
   Supervisor.stop(root)
   payload
