@@ -23,8 +23,7 @@ unsafe extern "C" {
     fn chimi_fixture_waits_on_a_member_main(context: *mut std::ffi::c_void) -> ChimiFiberResult;
 }
 
-/// A fiber that finds itself on another thread, or holding the kernel.
-const MOVED: i64 = 77;
+/// A fiber that finds itself holding the kernel.
 const HELD: i64 = 78;
 
 /// Every thread a fiber has run on, across a test.
@@ -73,12 +72,12 @@ fn ended(state: ChimiFiberState, defect_code: i64) -> ChimiFiberResult {
     }
 }
 
-/// Sleeps one microsecond as many times as its context says, checking
-/// after every park that it is on the thread it started on and that the
-/// carrier resumed it without the kernel.
+/// Sleeps one microsecond as many times as its context says, recording
+/// the thread it started on and checking after every park that the carrier
+/// resumed it without the kernel. An idle carrier may take it from its
+/// sleeping home after a park, so it may end on another thread.
 unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
-    let home = this_thread();
-    THREADS.lock().expect("threads").insert(home);
+    THREADS.lock().expect("threads").insert(this_thread());
     for _ in 0..context as usize {
         let mut now = request(REQUEST_TIMER_NOW, 0);
         let mut sleep = request(REQUEST_TIMER_SLEEP_UNTIL, 0);
@@ -87,9 +86,6 @@ unsafe extern "C" fn hops(context: *mut std::ffi::c_void) -> ChimiFiberResult {
             !call(&mut sleep)
         } {
             return ended(ChimiFiberState::Cancelled, 0);
-        }
-        if this_thread() != home {
-            return ended(ChimiFiberState::Defected, MOVED);
         }
         if carrier::kernel_held() {
             return ended(ChimiFiberState::Defected, HELD);
@@ -191,11 +187,11 @@ fn run_hoppers(clock: ClockMode, carriers: u32, per_carrier: u32, hops_each: usi
     }
 }
 
-/// Fibers homed on four carriers run on four threads under virtual time,
-/// each staying on its own thread, and the run ends with every carrier
-/// joined, again and again.
+/// Fibers homed on four carriers start on four threads under virtual time
+/// (a carrier may take one from a sleeping carrier after a park), and the
+/// run ends with every carrier joined, again and again.
 #[test]
-fn fibers_on_four_carrier_threads_stay_on_their_thread() {
+fn fibers_on_four_carrier_threads_start_on_their_threads() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     under_watchdog(Duration::from_secs(60), || {
         for _ in 0..40 {

@@ -38,6 +38,11 @@ impl ReadyQueues {
         self.queue(carrier).pop_front()
     }
 
+    /// The task `pop_front` would take from `carrier`'s queue.
+    pub(super) fn front(&self, carrier: Carrier) -> Option<TaskId> {
+        self.queues[carrier.0 as usize].front().copied()
+    }
+
     /// Takes `task` out of `carrier`'s queue wherever it waits there.
     pub(super) fn remove(&mut self, carrier: Carrier, task: TaskId) {
         let queue = self.queue(carrier);

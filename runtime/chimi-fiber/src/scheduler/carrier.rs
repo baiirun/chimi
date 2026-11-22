@@ -71,8 +71,12 @@ thread_local! {
 }
 
 /// True while this thread holds the kernel lock: tests check that a fiber
-/// the carrier loop resumes runs without it.
+/// the carrier loop resumes runs without it. Never inlined, as for any
+/// thread-local a fiber reads: a fiber may resume on another thread, and an
+/// inlined read could reuse the address of the thread it parked on
+/// ("Runtime state by owner", rules; seen on macOS).
 #[cfg(test)]
+#[inline(never)]
 pub(super) fn kernel_held() -> bool {
     KERNEL_HELD.with(std::cell::Cell::get)
 }
