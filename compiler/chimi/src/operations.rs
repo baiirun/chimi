@@ -569,6 +569,17 @@ pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
     },
 ];
 
+/// Whether the runtime serves `interface` itself, one host function per method,
+/// with no provider value: a method call on such a need with no provider in
+/// scope runs the host function, and reading the need as a value builds a
+/// record of those methods.
+pub(crate) fn host_served_interface(interface: StandardType) -> bool {
+    matches!(
+        interface,
+        StandardType::Console | StandardType::FileSystem | StandardType::Random
+    )
+}
+
 /// The runner provider for a need on `interface` named `need`, if the runner
 /// closes it.
 pub(crate) fn runner_provider(interface: StandardType, need: &str) -> Option<&'static RunnerProvider> {

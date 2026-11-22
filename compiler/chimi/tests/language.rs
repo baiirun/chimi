@@ -14024,4 +14024,68 @@ pub fn main() -> Text {
         run_both("row-lacks-decorator", source),
         "\"outcome\":\"success\",\"value\":\"t0 r@t0\""
     );
+// CHI-295: a need the runtime serves method by method (`console`, `random`,
+// `files`) may be read as a value and passed on, as any other need may. The
+// value's methods are the provider's in scope, or the host's with none.
+#[test]
+fn a_host_served_need_may_be_passed_as_a_value() {
+    let source = r#"
+import std/io.{Console}
+
+interface Greeter {
+  greet: fn(Text) -> Text
+}
+
+fn hello() -> Text needs { greeter: Greeter } { greeter.greet("x") }
+
+fn fakes(c: Console) -> { greeter: { greet: fn(Text) -> Text } } {
+  c.write_line("built once")
+  { greeter: { greet: fn(n) { "hi ${n}" } } }
+}
+
+fn quiet() -> Void needs { console: Console } {
+  let c = console
+  c.write_line("to the fake")
+}
+
+pub fn main() -> Void needs { console: Console } {
+  console.write_line(hello() using fakes(console))
+  let real = console
+  quiet() using {
+    console: { write_line: fn(t) { real.write_line("fake got ${t}") }, write_error: fn(t) { real.write_error(t) } },
+  }
+}
+"#;
+    assert_eq!(
+        run_both("host-need-value", source),
+        "\"outcome\":\"success\",\"value\":{\"type\":\"Void\"}"
+    );
+    let scratch = scratch_directory("host-need-value-output");
+    let path = scratch.join("main.chimi");
+    std::fs::write(&path, source).unwrap();
+    native_outcome(&scratch, &path);
+    let output = Command::new(scratch.join("program"))
+        .output()
+        .expect("run the native program");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "built once\nhi x\nfake got to the fake\n"
+    );
+    // Only the native runner reports `random_read`, so each backend is
+    // checked on its own here.
+    let random = r#"
+import std/random.{Random}
+fn draw(r: Random) -> Int { r.next_int() }
+pub fn main() -> Bool needs { random: Random } {
+  let drawn = draw(random)
+  drawn == drawn
+}
+"#;
+    std::fs::write(&path, random).unwrap();
+    for record in ["telemetry.jsonl", "outcome.jsonl"] {
+        std::fs::remove_file(scratch.join(record)).unwrap();
+    }
+    assert!(interpreter_outcome(&path).contains("\"outcome\":\"success\",\"value\":true"));
+    assert!(native_outcome(&scratch, &path).contains("\"outcome\":\"success\",\"value\":true"));
+    std::fs::remove_dir_all(scratch).unwrap();
 }
