@@ -13453,3 +13453,36 @@ fn a_spec_provider_record_value_must_be_shareable() {
     assert_eq!(found, [("T4260", "providers")], "{diagnostics:?}");
     assert!(diagnostics[0].2.contains("provider `store`"), "{diagnostics:?}");
 }
+
+// Updating a provider record replaces one provider and keeps the rest, where a
+// second `using` could not: each need is supplied once.
+#[test]
+fn an_updated_provider_record_replaces_one_provider() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        concat!(
+            "pub fn main() -> Text {\n",
+            "  let providers = {\n",
+            "    greeter: { greet: fn(name) { \"hello ${name}\" } }, namer: { name: fn() { \"al\" } }\n",
+            "  }\n",
+            "  hello() using { ..providers, namer: { name: fn() { \"di\" } } }\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("using-record-update", &source),
+        "\"outcome\":\"success\",\"value\":\"hello di\""
+    );
+}
+
+// A provider record already reported as wrong explains the needs it was
+// meant to supply, so `main` gets no missing-need error for each of them.
+#[test]
+fn a_rejected_provider_record_reports_once() {
+    let source = format!(
+        "{NAMES_PRELUDE}{}",
+        "pub fn main() -> Text {\n  let p = 3\n  hello() using p\n}\n",
+    );
+    let codes: Vec<String> = diagnostics_of(&source).into_iter().map(|(code, _)| code).collect();
+    assert_eq!(codes, ["T4218"]);
+}

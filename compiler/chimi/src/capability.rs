@@ -660,10 +660,12 @@ impl CapabilityChecker<'_> {
                 record,
                 ..
             } => {
+                // The record is evaluated first, at run time as here, so a move
+                // into it is checked before the body reads.
+                let mut provided = self.evaluate(module_id, record, environment);
                 let outer_spec_needs = std::mem::take(&mut self.spec_needs);
                 let value = self.evaluate(module_id, expression, environment);
                 let mut inner_spec_needs = std::mem::take(&mut self.spec_needs);
-                let mut provided = self.evaluate(module_id, record, environment);
                 // The record is shared or not as a whole, so each provider it
                 // supplies is judged by the record.
                 let names = self

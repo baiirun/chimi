@@ -726,7 +726,12 @@ let second = submit(other_cart) using Fakes.all()
 - Under a process spec, the record is shared or not as a whole, so a record
   holding a provider that cannot be shared cannot supply the spec (`T4260`).
 - `using` clauses chain: `run() using providers using { clock: fake_clock }`
-  supplies the record's providers and then the written one.
+  supplies both. Each need is supplied once: a later clause cannot replace a
+  provider an earlier one supplied (`T4212`). The last clause's providers are
+  evaluated first.
+- To replace one provider of a record value, update it:
+  `run() using { ..providers, clock: fake_clock }` supplies the updated
+  record.
 
 A provider shape mismatch leaves the need unresolved for analysis but marks the
 mismatch as explained. A later closed-root check SHOULD NOT emit a redundant

@@ -8214,7 +8214,7 @@ impl ProjectTypeChecker {
             .map(|(provider, fact)| (provider.name.text.clone(), provider.name.range, fact.success))
             .collect::<Vec<_>>();
         let provider_facts = provider_facts.into_iter().map(|(_, fact)| fact).collect();
-        self.supply_providers(module_id, expression_fact, &supplied, provider_facts)
+        self.supply_providers(module_id, expression_fact, &supplied, provider_facts, false)
     }
 
     /// `expression using record`: the record value's fields are the providers,
@@ -8232,8 +8232,12 @@ impl ProjectTypeChecker {
         let expression_fact = self.infer_expression(module_id, expression, generics, bindings);
         let record_fact = self.infer_expression(module_id, record, generics, bindings);
         let record_type = self.resolve_inference_type(record_fact.success);
+        let mut rejected = true;
         let fields = match self.types[record_type.raw() as usize].clone() {
-            CanonicalType::Record(fields) if !fields.is_empty() => fields,
+            CanonicalType::Record(fields) if !fields.is_empty() => {
+                rejected = false;
+                fields
+            }
             CanonicalType::Poison => Vec::new(),
             CanonicalType::Record(_) => {
                 self.type_error_range(
@@ -8259,7 +8263,7 @@ impl ProjectTypeChecker {
                     module_id,
                     "T4218",
                     expression_range(record),
-                    format!("`using` takes a provider record, as in `using {{ name: provider }}`, and this is `{name}`"),
+                    format!("`using` takes a provider record, as in `using {{ name: provider }}`, and this is `{name}`; a struct or interface value is not a provider record"),
                 );
                 Vec::new()
             }
@@ -8276,24 +8280,35 @@ impl ProjectTypeChecker {
                 .map(|field| (field.name, field.type_id))
                 .collect(),
         );
-        self.supply_providers(module_id, expression_fact, &supplied, vec![record_fact])
+        self.supply_providers(module_id, expression_fact, &supplied, vec![record_fact], rejected)
     }
 
     /// Removes the needs that `providers` (name, where it is written, type)
     /// supply from `expression_fact`, reporting `T4212` for a provider no need
     /// takes and `T4213` for one that does not conform. `provider_facts` are
-    /// the provider expressions' own failures and needs.
+    /// the provider expressions' own failures and needs. With `explain_all`,
+    /// set when the providers were already reported as wrong, every need is
+    /// marked explained so no later check reports it missing.
     fn supply_providers(
         &mut self,
         module_id: ModuleId,
         expression_fact: ExpressionFact,
         providers: &[(String, TextRange, TypeId)],
         provider_facts: Vec<ExpressionFact>,
+        explain_all: bool,
     ) -> ExpressionFact {
         let (success, latent_needs) = self.callable_success_and_needs(expression_fact.success);
         let available_needs = self.union_needs_rows([expression_fact.needs, latent_needs]);
         let mut supplied_names = Vec::new();
         let mut explained_names = Vec::new();
+        if explain_all {
+            explained_names.extend(
+                self.needs_rows[available_needs.raw() as usize]
+                    .entries
+                    .iter()
+                    .map(|need| need.lexical_name.clone()),
+            );
+        }
         for (name, range, provider_type) in providers {
             let matching_need = self.needs_rows[available_needs.raw() as usize]
                 .entries

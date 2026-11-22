@@ -2704,7 +2704,11 @@ impl ProjectLowerer {
             } else {
                 self.allocate_semantic_id()
             };
-            if record.kind() != NodeKind::RecordExpression {
+            // A spread, `using { ..providers, store: other }`, is an update of a
+            // record value, so it supplies the updated record.
+            if record.kind() != NodeKind::RecordExpression
+                || direct_child(&record, NodeKind::RecordSpread).is_some()
+            {
                 expression = ModuleExpression::UsingRecord {
                     semantic_id,
                     expression: Box::new(expression),
