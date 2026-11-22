@@ -1,0 +1,17 @@
+Event times (Phase 7c step 7, PR 1), 2026-11-22.
+
+fiber_clock_read_mutations.py at e9b3ba4: 3 mutants.
+  KILLED   the real clock reading ignores its origin
+  TIMEOUT  a fiber reads virtual time as the origin (sleeps never end: Clock::now reads the same reading)
+  KILLED   a resume publishes no clock
+
+event_times_mutations.py: 8 mutants (e9b3ba4; the interpreter two at 795d919 after adding
+the_interpreter_writes_the_native_virtual_event_times, which they survived without).
+  TIMEOUT  a fiber reads virtual time as the origin
+  KILLED   a resume publishes no clock
+  KILLED   a dependency call is at the origin
+  KILLED   an operation is at the origin
+  KILLED   the start ignores --clock-start
+  KILLED   the real start is the origin
+  KILLED   the interpreter writes no time
+  KILLED   the interpreter writes no start
