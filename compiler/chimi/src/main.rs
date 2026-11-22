@@ -1519,6 +1519,15 @@ fn run_tests(
         eprintln!("chimi: no test matches the filter");
         return ExitCode::from(2);
     }
+    // Test runs in one place share the `tests` executable and the traces
+    // directory, so a second run waits until the first has reported.
+    let _run_lock = match chimi::backend::native::lock_directory(artifact_directory, ".test-lock") {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("chimi: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let trace = match options.trace {
         None => None,
         Some(level) => {

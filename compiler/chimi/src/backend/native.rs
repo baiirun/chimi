@@ -205,6 +205,7 @@ pub fn build_application(
     artifact_directory: &Path,
     packages: Vec<crate::project::BuiltPackage>,
 ) -> Result<NativeBuildReport, String> {
+    let _lock = lock_artifact_directory(artifact_directory)?;
     let artifact = build_to_path(program, artifact_directory, executable_path)?;
     let dynamic_dependencies = dynamic_dependencies(executable_path)?;
     let manifest_path = artifact_directory.join("build.json");
@@ -234,7 +235,34 @@ pub fn build_executable(
     program: &BackendProgram,
     output_directory: &Path,
 ) -> Result<NativeArtifact, String> {
+    let _lock = lock_artifact_directory(output_directory)?;
     build_to_path(program, output_directory, &output_directory.join("program"))
+}
+
+/// Holds `directory` for one build until the returned file is dropped. Builds
+/// of different programs to one directory (two `chimi build`s run in the same
+/// place, or parallel tests) write the same intermediate files, so without
+/// the lock one build can replace `program_data.o` or the runtime archive
+/// while another links them.
+fn lock_artifact_directory(directory: &Path) -> Result<std::fs::File, String> {
+    lock_directory(directory, ".build-lock")
+}
+
+/// Waits for, then holds, the exclusive lock file `name` in `directory` until
+/// the returned file is dropped. Locks of different names never wait for each
+/// other, so a holder of one may take another.
+pub fn lock_directory(directory: &Path, name: &str) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join(name))
+        .map_err(|error| format!("open {name}: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("lock {}: {error}", directory.display()))?;
+    Ok(lock)
 }
 
 fn build_to_path(
