@@ -54,7 +54,9 @@ pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use doc_site::{DocPage, render_site};
 pub use metrics_export::{MetricsError, export_metrics_otlp};
 pub use trace_export::export_trace_otlp;
-pub use trace_view::{Locate, TraceError, render_trace};
+pub use trace_view::{
+    Locate, Place, PlaceModule, TraceError, TraceModule, TraceModules, render_trace, trace_modules,
+};
 pub use formatter::FormatReport;
 pub use hints::TypeHint;
 pub use inspection::{

@@ -514,6 +514,12 @@ pub(super) fn render_program_data(core: &CoreProgram, bytecode: bool) -> String 
     .unwrap();
     writeln!(
         output,
+        "const char *CHIMI_TRACE_MODULES = {};",
+        c_string(&core.trace_modules)
+    )
+    .unwrap();
+    writeln!(
+        output,
         "const uint32_t CHIMI_REQUIRES_SCHEDULER = {};",
         u32::from(requires_scheduler(core))
     )

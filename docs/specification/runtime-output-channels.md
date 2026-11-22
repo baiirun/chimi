@@ -184,8 +184,40 @@ event's wall time:
 - The interpreter has no execution clock, so it writes 0 for both fields.
   That is what the native runtime writes under the virtual clock for every
   program the interpreter can run.
-- An event's existing attributes come first. `time_ns` follows them, and
-  `start_unix_ns` comes last.
+- An event's existing attributes come first. `time_ns` follows them, then
+  `start_unix_ns`, then `modules` ("Source modules").
+
+### Source modules
+
+A telemetry event names its place by `file_id` and byte offsets. So a reader
+can find that place again in a directory or workspace that loads a different
+set of modules, `computation_started` also carries `attributes.modules`: one
+entry per file id, in file id order, with the module path and its
+fingerprint.
+
+```json
+{"schema":"chimi.runtime.v1","event":"computation_started","sequence":0,"attributes":{"time_ns":0,"start_unix_ns":0,"modules":[{"path":"main","fingerprint":"bea35bbdd91a2dd4"},{"path":"std/int","fingerprint":"7d45be76ecef7aba"}]}}
+```
+
+- Every module the build loaded MUST be listed, the standard library's
+  included, and both backends MUST write the same list for one program. A
+  file id the build had no module for is `{"path":null,"fingerprint":null}`.
+- The fingerprint is FNV-1a 64 over the module's text, as 16 hex digits. A
+  program build leaves test items out, so for it each test item counts as
+  spaces of its length and the text after the module's last other item is
+  left out: appending tests changes neither the executable nor the
+  fingerprint. In a test build, a module with test items is fingerprinted over
+  its whole text, since its places may be in them. It tells a
+  viewer whether it was given the run's source; it is not a security check.
+- A reader matches a recorded module by its path, or, when the source it
+  was given has no module of that path, by being the only module there with
+  that fingerprint: a file built alone is the module `main`, and the same
+  file in a directory is named after the file.
+- The field is additive: `chimi.runtime.v1` keeps its name, and a reader
+  MUST accept a `computation_started` without it, as traces written before
+  it have none.
+- The native runtime writes the list from the program data the build
+  embeds (`CHIMI_TRACE_MODULES`), so writing it costs one string per run.
 
 The outcome sink contains exactly one terminal record for an ordinary
 execution:

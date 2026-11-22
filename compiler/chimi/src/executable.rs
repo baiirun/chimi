@@ -53,6 +53,11 @@ pub(crate) struct CoreProgram {
     pub(crate) origins: Vec<Origin>,
     /// Where each origin starts, as `module/path.chimi:line`, which causes show.
     pub(crate) origin_locations: Vec<String>,
+    /// The `"modules"` attribute of a trace's `computation_started` event:
+    /// each file id's module path and source fingerprint, so a viewer reads
+    /// places from the modules this build loaded
+    /// (runtime-output-channels.md, "Source modules"). Both backends write this text as it is.
+    pub(crate) trace_modules: String,
 }
 
 impl CoreProgram {
@@ -1537,6 +1542,7 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
         constants: Vec::new(),
         nodes: lowerer.nodes,
         origin_locations: origin_locations(&root.typed, &root.origins),
+        trace_modules: trace_modules(&root.typed),
         origins: root.origins,
     };
     if !lowerer_diagnostics.is_empty() {
@@ -3279,6 +3285,38 @@ fn lower_core_symbols(typed: &TypedProject) -> Vec<CoreSymbol> {
         .collect::<Vec<_>>();
     number_constructors_across_types(&mut symbols);
     symbols.into_iter().map(|(symbol, _)| symbol).collect()
+}
+
+/// `,"modules":[{"path":…,"fingerprint":…},…]`, one entry per file id in
+/// file id order.
+fn trace_modules(typed: &TypedProject) -> String {
+    let modules = &typed.resolved.semantic.modules;
+    let mut by_file: Vec<Option<&crate::semantic::SemanticModule>> = Vec::new();
+    for module in modules {
+        let file = module.source.file_id().raw() as usize;
+        if by_file.len() <= file {
+            by_file.resize(file + 1, None);
+        }
+        by_file[file] = Some(module);
+    }
+    let mut output = String::from(",\"modules\":[");
+    for (index, module) in by_file.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str("{\"path\":");
+        match module {
+            Some(module) => {
+                crate::json::write_json_string(&mut output, &module.path);
+                output.push_str(",\"fingerprint\":\"");
+                output.push_str(&module.trace_fingerprint());
+                output.push_str("\"}");
+            }
+            None => output.push_str("null,\"fingerprint\":null}"),
+        }
+    }
+    output.push(']');
+    output
 }
 
 /// `module/path.chimi:line` for each origin, with the one-based line of its start.

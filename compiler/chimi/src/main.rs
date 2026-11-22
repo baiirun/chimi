@@ -1038,20 +1038,14 @@ fn trace_show(
         }
     };
     let with_source = source.is_some();
-    let locator: Box<dyn Fn(u32, u32) -> Option<String>> = match source {
-        None => Box::new(|_, _| None),
-        Some(input) => {
-            let Some(project) = load_project(input, standard) else {
-                return ExitCode::FAILURE;
-            };
-            Box::new(project.source_locator())
-        }
+    let Some(locator) = trace_locator(&text, source, standard) else {
+        return ExitCode::FAILURE;
     };
     // A place the source cannot name means the source is not the program
     // the run was built from, so its other locations may be wrong too.
     let missed = std::cell::Cell::new(false);
-    let locate = |file: u32, offset: u32| {
-        let location = locator(file, offset);
+    let locate = |place: chimi::Place<'_>| {
+        let location = locator(place);
         missed.set(missed.get() || location.is_none());
         location
     };
@@ -1074,6 +1068,53 @@ fn trace_show(
     }
 }
 
+type TraceLocator = dyn Fn(chimi::Place<'_>) -> Option<String>;
+
+/// Where the places in a trace are in `source`, or `None` after saying why
+/// the source cannot be used: it lacks modules the run had, or their source
+/// changed since. A trace that records no modules is read by file id, which
+/// is right only when the source is the one the run was built from.
+fn trace_locator(
+    text: &str,
+    source: Option<Input>,
+    standard: &StandardTree,
+) -> Option<Box<TraceLocator>> {
+    let Some(input) = source else {
+        return Some(Box::new(|_| None));
+    };
+    let project = load_project(input, standard)?;
+    let recorded = chimi::trace_modules(text);
+    let modules = match project.match_trace(&recorded.modules) {
+        Ok(modules) => modules,
+        Err(mismatch) => {
+            let mut message =
+                String::from("chimi: the given source is not the program the trace was run from");
+            if !mismatch.missing.is_empty() {
+                message.push_str(&format!(
+                    "; it has no module {}",
+                    mismatch.missing.join(", ")
+                ));
+            }
+            if !mismatch.changed.is_empty() {
+                message.push_str(&format!(
+                    "; {} changed since the run",
+                    mismatch.changed.join(", ")
+                ));
+            }
+            message.push_str("; give the same file, directory or project the run was built from");
+            eprintln!("{message}");
+            return None;
+        }
+    };
+    if recorded.unrecorded {
+        eprintln!(
+            "chimi: warning: the trace does not record its modules, so places are found by \
+             file id; they are right only if the source is the one the run was built from"
+        );
+    }
+    Some(Box::new(project.source_locator(modules)))
+}
+
 fn trace_export(
     trace: &std::path::Path,
     source: Option<Input>,
@@ -1093,14 +1134,8 @@ fn trace_export(
             return ExitCode::FAILURE;
         }
     };
-    let locator: Box<dyn Fn(u32, u32) -> Option<String>> = match source {
-        None => Box::new(|_, _| None),
-        Some(input) => {
-            let Some(project) = load_project(input, standard) else {
-                return ExitCode::FAILURE;
-            };
-            Box::new(project.source_locator())
-        }
+    let Some(locator) = trace_locator(&text, source, standard) else {
+        return ExitCode::FAILURE;
     };
     match chimi::export_trace_otlp(&text, &*locator, service_name) {
         Ok(document) => {
