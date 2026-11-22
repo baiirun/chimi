@@ -361,5 +361,8 @@ pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics }
 | `metrics_request` matches `chimi metrics export --otlp` as JSON, on both backends | `tests/std_otel.rs` `a_metrics_request_is_what_the_cli_exports` |
 | An unreadable document fails with the CLI's reason | `tests/std_otel.rs` `a_document_that_is_not_metrics_fails_with_the_reason` |
 | `export` pushes every interval and when the body ends, to `/v1/metrics` with the content type and headers | `tests/std_otel.rs` `metrics_are_pushed_every_interval_and_when_the_body_ends` |
-| A refused, 5xx or silent collector is counted, not raised, and bounded by `flush_within` | `tests/std_otel.rs` `a_collector_that_is_down_slow_or_failing_is_counted_not_raised` |
+| A refused, 5xx or silent collector is counted once per failed push, not raised | `tests/std_otel.rs` `a_collector_that_is_down_slow_or_failing_is_counted_not_raised` |
+| The last push is bounded by `flush_within` | `tests/std_otel.rs` `the_last_push_is_bounded_by_flush_within` |
+| A body that defects still pushes | `tests/std_otel.rs` `a_body_that_defects_still_pushes` |
+| Settings that are not positive are a defect | `tests/std_otel.rs` `settings_that_are_not_positive_are_a_defect` |
 | A stopped program pushes before it exits | `tests/std_otel.rs` `a_stopped_program_pushes_before_it_exits` |
