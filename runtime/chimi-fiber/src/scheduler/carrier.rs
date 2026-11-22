@@ -295,7 +295,7 @@ pub(super) fn wait_idle(kernel: &mut impl KernelAccess) -> Waited {
 /// verdict: a wake was lost.
 #[cfg(test)]
 pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
-    let carriers = kernel.ready.carriers();
+    let carriers = kernel.shards.carriers();
     let mut parked: Vec<Option<super::wake::WakeFds>> = vec![None; carriers as usize];
     loop {
         let mut ran = false;

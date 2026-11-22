@@ -757,7 +757,7 @@ impl Scheduler {
             return RootStep::Continue;
         }
         self.shutdown_processes();
-        if !self.ready.is_empty() || !self.jobs.is_empty() {
+        if !self.shards.no_ready() || !self.shards.no_jobs() {
             return RootStep::Continue;
         }
         // A process left with a timer pending (a shutdown deadline) is
@@ -865,7 +865,7 @@ pub(super) fn run_on_carriers(
         // drives before it first waits, so it finds that work anyway; the
         // marks are only cleared, as `Locked` expects none left.
         drop(held.take_wakes());
-        held.ready.carriers()
+        held.shards.carriers()
     };
     let gate = StartGate::default();
     let run = std::thread::scope(|scope| {
@@ -982,7 +982,7 @@ pub(super) fn run_root_on_threads(
     deadlock_code: i64,
 ) -> RootRun {
     let placeholder = Scheduler::new(scheduler.config.stack_bytes, scheduler.config.trace_mode);
-    let carriers = scheduler.ready.carriers();
+    let carriers = scheduler.shards.carriers();
     let (run, kernel) =
         run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code, None);
     drop(std::mem::replace(scheduler, kernel));

@@ -25,6 +25,7 @@ mod reactor_tests;
 #[cfg(test)]
 mod release_tests;
 mod scope;
+mod shard;
 mod select;
 #[cfg(test)]
 mod select_tests;
@@ -807,10 +808,13 @@ impl TaskValue {
 
 pub struct Scheduler {
     tasks: id_map::IdMap<TaskId, Task>,
-    ready: ready::ReadyQueues,
-    /// Work a carrier must do on its own thread for another carrier's
-    /// decision, run before its ready tasks.
-    jobs: jobs::Jobs,
+    /// Each carrier's ready queue, jobs (work it must do on its own thread
+    /// for another carrier's decision, run before its ready tasks), and
+    /// parked flag. A carrier parks on its wake pipe with nothing to do
+    /// and is unparked when it next takes the kernel; work handed to a
+    /// parked carrier is seen in its queues, which `others_quiet` counts,
+    /// so a wake does not unpark it. Carrier 0 never parks this way.
+    shards: shard::Shards,
     /// The carrier running this scheduler's loop now.
     current: ready::Carrier,
     /// Set while the scheduler is torn down on one thread: every fiber is
@@ -823,12 +827,6 @@ pub struct Scheduler {
     /// The carriers' wake pipes, and which to wake once the lock is
     /// released.
     wakes: wake::Wakes,
-    /// One flag per carrier: set when the carrier parks on its wake pipe
-    /// with nothing to do, cleared when it next takes the kernel. Work
-    /// handed to a parked carrier is seen in its queues, which
-    /// `others_quiet` counts, so a wake does not clear the flag. Carrier 0
-    /// never parks this way; it waits for the others.
-    parked: Vec<bool>,
     /// Set when a run ends (`stop_carriers`): every carrier but 0 leaves
     /// its loop at its next idle step instead of parking, retiring its
     /// fibers first if the run finished.
@@ -991,14 +989,12 @@ impl Scheduler {
         );
         Self {
             tasks: id_map::IdMap::default(),
-            ready: ready::ReadyQueues::new(1),
-            jobs: jobs::Jobs::new(1),
+            shards: shard::Shards::new(1),
             current: ready::Carrier::default(),
             any_carrier: false,
             #[cfg(test)]
             rotating: BTreeSet::new(),
             wakes: wake::Wakes::new(1).expect("one carrier opens no pipe"),
-            parked: vec![false],
             run_end: None,
             next_task: 1,
             events: Vec::new(),
@@ -1177,7 +1173,7 @@ impl Scheduler {
         if self.refill_before_waiting() {
             return carrier::IdleStep::Continue;
         }
-        self.parked[self.current.0 as usize] = true;
+        self.shards.set_parked(self.current, true);
         if self.others_quiet() {
             self.wake_carrier(ready::Carrier(0));
         }
@@ -1229,7 +1225,7 @@ impl Scheduler {
     /// fibers for the next run.
     pub(super) fn stop_carriers(&mut self, end: carrier::RunEnd) {
         self.run_end = Some(end);
-        for carrier in 1..self.ready.carriers() {
+        for carrier in 1..self.shards.carriers() {
             self.wake_carrier(ready::Carrier(carrier));
         }
     }
@@ -1245,7 +1241,7 @@ impl Scheduler {
     /// Panics otherwise: such a fiber could only be destroyed off its home.
     fn retire_carrier(&self) {
         let current = self.current;
-        assert!(self.jobs.is_empty_for(current), "a finished run left a job on carrier {}", current.0);
+        assert!(self.shards.jobs_empty_for(current), "a finished run left a job on carrier {}", current.0);
         let held = self
             .tasks
             .iter()
@@ -1262,16 +1258,16 @@ impl Scheduler {
 
     /// True when `carrier` has a ready task or a job.
     fn has_work(&self, carrier: ready::Carrier) -> bool {
-        !self.ready.is_empty_for(carrier) || !self.jobs.is_empty_for(carrier)
+        !self.shards.ready_is_empty_for(carrier) || !self.shards.jobs_empty_for(carrier)
     }
 
     /// True when every carrier but 0 is parked and no carrier has a ready
     /// task or a job: the only state in which carrier 0 may move virtual
     /// time or say the program is idle. Always true with one carrier.
     fn others_quiet(&self) -> bool {
-        self.parked[1..].iter().all(|parked| *parked)
-            && self.ready.is_empty()
-            && self.jobs.is_empty()
+        self.shards.others_parked()
+            && self.shards.no_ready()
+            && self.shards.no_jobs()
     }
 
     /// Why a carrier with nothing runnable, no host operation, no IO wait
@@ -1426,9 +1422,9 @@ impl Scheduler {
     /// Makes `carrier` the one running the loop until the next entry: the
     /// queue it pops and the home of the tasks it starts without a parent.
     fn enter_carrier(&mut self, carrier: ready::Carrier) {
-        debug_assert!(carrier.0 < self.ready.carriers(), "unknown carrier {carrier:?}");
+        debug_assert!(carrier.0 < self.shards.carriers(), "unknown carrier {carrier:?}");
         self.current = carrier;
-        self.parked[carrier.0 as usize] = false;
+        self.shards.set_parked(carrier, false);
     }
 
     /// A kernel with `carriers` carriers, each with its own ready queue, job
@@ -1449,13 +1445,11 @@ impl Scheduler {
     /// Gives a kernel with no ready task or job `carriers` carriers. The
     /// kernel is unchanged when a wake pipe fails.
     fn install_carriers(&mut self, carriers: u32) -> Result<(), SchedulerError> {
-        assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
+        assert!(self.shards.no_ready() && self.shards.no_jobs(), "set before any work");
         let wakes = wake::Wakes::new(carriers)
             .map_err(|error| SchedulerError::CarrierSetupFailed(error.raw_os_error()))?;
-        self.ready = ready::ReadyQueues::new(carriers);
-        self.jobs = jobs::Jobs::new(carriers);
+        self.shards = shard::Shards::new(carriers);
         self.wakes = wakes;
-        self.parked = vec![false; carriers as usize];
         Ok(())
     }
 
@@ -1548,12 +1542,12 @@ impl Scheduler {
     /// before the carrier idles; their wakes refill the ready queue.
     fn next_runnable(&mut self, resumes: &mut u32) -> Option<carrier::Runnable> {
         loop {
-            while let Some(job) = self.jobs.pop_front(self.current) {
+            while let Some(job) = self.shards.pop_job(self.current) {
                 if let Some(runnable) = self.prepare_job(job) {
                     return Some(runnable);
                 }
             }
-            while let Some(task) = self.ready.pop_front(self.current) {
+            while let Some(task) = self.shards.pop_ready(self.current) {
                 if let Some(runnable) = self.prepare_run(task) {
                     return Some(runnable);
                 }
@@ -1578,22 +1572,22 @@ impl Scheduler {
     /// 0 never parks this way, so the root and the descriptor waits it owns
     /// never move. None with one carrier, or when nothing can be taken.
     fn steal(&mut self) -> Option<TaskId> {
-        let carriers = self.ready.carriers();
+        let carriers = self.shards.carriers();
         let victim = (1..carriers)
             .map(|step| ready::Carrier((self.current.0 + step) % carriers))
             .find(|carrier| {
-                self.parked[carrier.0 as usize]
+                self.shards.is_parked(*carrier)
                     && self
-                        .ready
-                        .front(*carrier)
+                        .shards
+                        .front_ready(*carrier)
                         .is_some_and(|task| self.tasks.get(&task).is_none_or(|record| record.ran) && !self.moved_by_test(task))
             })?;
-        let task = self.ready.pop_front(victim).expect("a ready task");
+        let task = self.shards.pop_ready(victim).expect("a ready task");
         // A carrier other than 0 is woken only for its queued work or the
         // end of the run, so once both queues are empty a wake not yet
         // written would only find nothing; it would also take the lock
         // from the carrier doing its work.
-        if self.ready.is_empty_for(victim) && self.jobs.is_empty_for(victim) && self.run_end.is_none() {
+        if self.shards.ready_is_empty_for(victim) && self.shards.jobs_empty_for(victim) && self.run_end.is_none() {
             self.wakes.unmark(victim);
         }
         // An entry whose task is no longer runnable is skipped by
@@ -1651,14 +1645,14 @@ impl Scheduler {
     fn enqueue(&mut self, task: TaskId, front: bool) {
         #[cfg(test)]
         if self.rotating.contains(&task) {
-            let next = ready::Carrier((self.tasks[&task].carrier.0 + 1) % self.ready.carriers());
+            let next = ready::Carrier((self.tasks[&task].carrier.0 + 1) % self.shards.carriers());
             self.rehome(task, next);
         }
         let carrier = self.tasks[&task].carrier;
         if front {
-            self.ready.push_front(carrier, task);
+            self.shards.push_ready_front(carrier, task);
         } else {
-            self.ready.push_back(carrier, task);
+            self.shards.push_ready(carrier, task);
         }
         self.wake_carrier(carrier);
     }
@@ -2325,8 +2319,8 @@ impl Scheduler {
 
     /// Runs every carrier's queued jobs here, for teardown.
     fn run_queued_jobs(&mut self) {
-        for carrier in 0..self.ready.carriers() {
-            while let Some(job) = self.jobs.pop_front(ready::Carrier(carrier)) {
+        for carrier in 0..self.shards.carriers() {
+            while let Some(job) = self.shards.pop_job(ready::Carrier(carrier)) {
                 if let Some(runnable) = self.prepare_job(job) {
                     let event = resume_fiber(runnable.fiber, runnable.command);
                     self.complete(runnable, event);
@@ -2899,7 +2893,7 @@ impl Scheduler {
             // job there resumes it, then ends the task.
             let forced = self.forcing > 0;
             let carrier = self.tasks[&task].carrier;
-            self.jobs.push_back(carrier, jobs::Job::Unwind { task, forced });
+            self.shards.push_job(carrier, jobs::Job::Unwind { task, forced });
             self.wake_carrier(carrier);
             return;
         }
@@ -3774,7 +3768,7 @@ mod tests {
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
         let (two, root, child, waiting) = cancel_from_carrier_zero(2, ready::Carrier(1));
         assert!(waiting, "the root drains with its fiber until its job runs");
-        assert!(two.jobs.is_empty());
+        assert!(two.shards.no_jobs());
         assert_eq!(two.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
         assert_eq!(two.tasks[&child].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
 
@@ -3796,7 +3790,7 @@ mod tests {
             .expect("task");
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, task).expect("cancel");
-        assert!(scheduler.jobs.is_empty());
+        assert!(scheduler.shards.no_jobs());
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
@@ -3843,8 +3837,8 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(1));
         let task = scheduler.start_root(ask_the_time_then_park).expect("task");
         let runnable = scheduler
-            .ready
-            .pop_front(ready::Carrier(1))
+            .shards
+            .pop_ready(ready::Carrier(1))
             .and_then(|task| scheduler.prepare_run(task))
             .expect("runnable");
         scheduler.enter_carrier(ready::Carrier(0));
@@ -4002,8 +3996,8 @@ mod tests {
         let task = start_parked(&mut scheduler);
         scheduler.wake(task).expect("wake");
         let _runnable = scheduler
-            .ready
-            .pop_front(ready::Carrier(1))
+            .shards
+            .pop_ready(ready::Carrier(1))
             .and_then(|task| scheduler.prepare_run(task))
             .expect("runnable");
         scheduler.enter_carrier(ready::Carrier(0));
@@ -4035,8 +4029,8 @@ mod tests {
         let task = start_parked(&mut scheduler);
         scheduler.wake(task).expect("wake");
         let runnable = scheduler
-            .ready
-            .pop_front(ready::Carrier(1))
+            .shards
+            .pop_ready(ready::Carrier(1))
             .and_then(|task| scheduler.prepare_run(task))
             .expect("runnable");
         // As if a cancellation already waits for its releases.
@@ -4138,7 +4132,7 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.force_terminal(task, TaskOutcome::Cancelled, false);
         assert_eq!(
-            scheduler.jobs.pop_front(ready::Carrier(1)),
+            scheduler.shards.pop_job(ready::Carrier(1)),
             Some(jobs::Job::Unwind { task, forced: true })
         );
     }
@@ -4153,14 +4147,14 @@ mod tests {
         let task = start_parked(&mut scheduler);
         scheduler.wake(task).expect("wake");
         let runnable = scheduler
-            .ready
-            .pop_front(ready::Carrier(1))
+            .shards
+            .pop_ready(ready::Carrier(1))
             .and_then(|task| scheduler.prepare_run(task))
             .expect("runnable");
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, task).expect("cancel");
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Running, "the fiber still runs");
-        assert!(scheduler.jobs.is_empty());
+        assert!(scheduler.shards.no_jobs());
         scheduler.enter_carrier(ready::Carrier(1));
         let event = resume_fiber(runnable.fiber, runnable.command);
         assert_eq!(event.state, ChimiFiberState::Parked as u32, "the step ran as it was");
@@ -4248,14 +4242,14 @@ mod tests {
         let failed = kernel.install_carriers(3);
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
         assert!(failed.is_err());
-        assert_eq!(kernel.ready.carriers(), 1, "a failed install changes nothing");
-        assert_eq!(kernel.parked.len(), 1);
+        assert_eq!(kernel.shards.carriers(), 1, "a failed install changes nothing");
+        assert_eq!(kernel.shards.carriers(), 1);
         assert_eq!(kernel.wakes.read_fd(ready::Carrier(0)), None);
 
         let kernel = Scheduler::with_options_carriers(options, 3).expect("kernel");
-        assert_eq!(kernel.ready.carriers(), 3);
+        assert_eq!(kernel.shards.carriers(), 3);
         assert!(kernel.wakes.read_fd(ready::Carrier(2)).is_some());
-        assert_eq!(kernel.parked.len(), 3);
+        assert_eq!(kernel.shards.carriers(), 3);
     }
 
     /// A task woken from carrier 0 for its home on carrier 1 wakes carrier
@@ -4301,7 +4295,7 @@ mod tests {
             .expect("task");
         carrier::drive(&mut one);
         zero.with(|kernel| kernel.cancel(None, task)).expect("cancel");
-        assert!(!kernel.lock().expect("kernel").jobs.is_empty(), "the unwind is a job");
+        assert!(!kernel.lock().expect("kernel").shards.no_jobs(), "the unwind is a job");
         assert!(readable(wake_fd(&kernel, 1)));
     }
 
