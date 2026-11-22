@@ -1,7 +1,10 @@
-import std/channel as Channel.{ChannelError, Receive, Receiver}
+import std/channel as Channel
+import std/channel.{ChannelError, Receive, Receiver}
 import std/duration as Duration
-import std/process as Process.{HandoffSpec, Inbox}
-import std/supervisor as Supervisor.{HandoffError, Running}
+import std/process as Process
+import std/process.{HandoffSpec, Inbox}
+import std/supervisor as Supervisor
+import std/supervisor.{HandoffError, Running}
 
 enum Message {
   Stop

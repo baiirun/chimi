@@ -1,6 +1,8 @@
-import std/channel as Channel.{Receive, Receiver, Sender}
+import std/channel as Channel
+import std/channel.{Receive, Receiver, Sender}
 import std/duration as Duration
-import std/process as Process.{Address, Inbox}
+import std/process as Process
+import std/process.{Address, Inbox}
 import std/supervisor as Supervisor
 import std/task as Task
 

@@ -1,5 +1,7 @@
-import std/channel as Channel.{Receiver}
-import std/process as Process.{Address, Down, Inbox}
+import std/channel as Channel
+import std/channel.{Receiver}
+import std/process as Process
+import std/process.{Address, Down, Inbox}
 
 // SF28: the monitor keeps its notice and runs it when the notice is received,
 // so passing a notice moves it, and everything it captures, into the monitor.

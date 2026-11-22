@@ -1,6 +1,8 @@
-import std/clock as Clock.{Clock}
+import std/clock as Clock
+import std/clock.{Clock}
 import std/duration as Duration
-import std/process as Process.{Inbox}
+import std/process as Process
+import std/process.{Inbox}
 import std/supervisor as Supervisor
 
 // SG01: run with `--signal=TERM@1500ms`. A worker handles three queued jobs
