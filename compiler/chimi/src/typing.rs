@@ -885,7 +885,9 @@ impl TypedProject {
     /// A written `needs` clause is complete (decisions.md, 2026-11-22): every
     /// need a function's body reaches, through calls too and runner-closed ones
     /// included, must be listed. A function with no clause keeps its needs
-    /// inferred. One `T4204` per unlisted need, at the function's name.
+    /// inferred. One `T4204` per unlisted need, at the function's name, and one
+    /// `T4103` for a name the body reaches with two interfaces. `main` is not
+    /// told to list a need the runner does not close: E5002 reports that.
     fn validate_written_needs(&mut self, body_modules: &HashSet<ModuleId>) {
         let mut findings = Vec::new();
         for module_id in body_modules {
@@ -926,9 +928,45 @@ impl TypedProject {
                 }
                 let written: Vec<&str> = written.iter().map(String::as_str).collect();
                 let row = &self.needs_rows[contract.needs.raw() as usize];
+                // `main`'s root check (E5002) already reports a need the runner
+                // does not close, which listing it would not fix.
+                let is_main = declaration.public && declaration.name.text == "main";
+                let mut conflicted: Vec<&str> = Vec::new();
                 for need in &row.entries {
+                    // Rows keep one entry per name and interface, so two entries
+                    // under one name are a conflict to report, not two to add.
+                    let others: Vec<&Need> = row
+                        .entries
+                        .iter()
+                        .filter(|other| {
+                            other.lexical_name == need.lexical_name
+                                && other.interface != need.interface
+                        })
+                        .collect();
+                    if !others.is_empty() {
+                        if !conflicted.contains(&need.lexical_name.as_str()) {
+                            conflicted.push(&need.lexical_name);
+                            let interfaces = std::iter::once(need)
+                                .chain(others)
+                                .map(|entry| format!("`{}`", self.format_type(entry.interface)))
+                                .collect::<Vec<_>>()
+                                .join(" and ");
+                            findings.push((
+                                module.source.file_id(),
+                                declaration.name.range,
+                                "T4103",
+                                format!(
+                                    "{} reaches the need `{}` as {interfaces}; one name needs \
+                                     one interface",
+                                    declaration.name.text, need.lexical_name
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
                     if need.explained
                         || written.contains(&need.lexical_name.as_str())
+                        || (is_main && !self.runner_closes(need))
                         || matches!(
                             self.types[self.resolve_type_id(need.interface).raw() as usize],
                             CanonicalType::Poison
@@ -939,6 +977,7 @@ impl TypedProject {
                     findings.push((
                         module.source.file_id(),
                         declaration.name.range,
+                        "T4204",
                         format!(
                             "{} writes its needs, so the list must be complete: add `{}: {}`, \
                              which its body reaches",
@@ -956,6 +995,7 @@ impl TypedProject {
                         findings.push((
                             module.source.file_id(),
                             declaration.name.range,
+                            "T4204",
                             format!(
                                 "{} writes its needs, so the list must be complete: add the \
                                  row `{}`, which its body reaches",
@@ -966,10 +1006,10 @@ impl TypedProject {
                 }
             }
         }
-        for (file_id, range, message) in findings {
+        for (file_id, range, code, message) in findings {
             self.diagnostics.push(Diagnostic::error(
                 DiagnosticStage::Type,
-                "T4204",
+                code,
                 file_id,
                 range,
                 message,
