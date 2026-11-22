@@ -494,14 +494,18 @@ test "sessions are freed" {
 /// prints only after binding, is the readiness signal, and a server that
 /// exits first (its port was taken) is started again on another port.
 fn start_openssl_server(scratch: &Scratch, version: &str) -> (std::process::Child, u16) {
-    let free = std::iter::repeat_with(|| {
+    start_openssl_server_on(scratch, version, free_ports())
+}
+
+/// Ports a listener was just given and released: free, unless taken again.
+fn free_ports() -> impl Iterator<Item = u16> {
+    std::iter::repeat_with(|| {
         std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port()
-    });
-    start_openssl_server_on(scratch, version, free)
+    })
 }
 
 /// Starts `openssl s_server` on the first of `ports` it can bind, trying at
@@ -512,6 +516,8 @@ fn start_openssl_server_on(
     ports: impl Iterator<Item = u16>,
 ) -> (std::process::Child, u16) {
     use std::io::BufRead;
+    let errors = scratch.0.join("s_server.err");
+    let error_text = || std::fs::read_to_string(&errors).unwrap_or_default();
     for port in ports.take(5) {
         let mut server = Command::new("openssl")
             .current_dir(&scratch.0)
@@ -520,18 +526,23 @@ fn start_openssl_server_on(
             .args(["-accept", &format!("127.0.0.1:{port}")])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&errors).unwrap())
             .spawn()
             .expect("openssl s_server runs (the TLS interop test needs OpenSSL)");
         let (ready, listening) = std::sync::mpsc::channel();
         let output = std::io::BufReader::new(server.stdout.take().unwrap());
         // Reads the server's output to its end, so it never blocks on a full pipe.
         std::thread::spawn(move || {
-            for line in output.lines() {
-                let Ok(line) = line else { break };
-                if line.starts_with("ACCEPT") {
+            let mut output = output;
+            let mut line = Vec::new();
+            while output
+                .read_until(b'\n', &mut line)
+                .is_ok_and(|read| read > 0)
+            {
+                if line.starts_with(b"ACCEPT") {
                     let _ = ready.send(());
                 }
+                line.clear();
             }
         });
         match listening.recv_timeout(std::time::Duration::from_secs(10)) {
@@ -543,15 +554,18 @@ fn start_openssl_server_on(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let _ = server.kill();
                 let _ = server.wait();
-                panic!("openssl s_server did not start");
+                panic!("openssl s_server did not start: {}", error_text());
             }
         }
     }
-    panic!("openssl s_server could not bind a loopback port in five tries");
+    panic!(
+        "openssl s_server did not listen in five tries: {}",
+        error_text()
+    );
 }
 
 // Rejects a server start that trusts a port it never bound: the first port
-// offered is already taken, so the server must come up on the second.
+// offered is already taken, so the server must come up on another.
 #[test]
 fn the_openssl_server_moves_off_a_taken_port() {
     let scratch = Scratch::new("openssl-port", "");
@@ -559,14 +573,9 @@ fn the_openssl_server_moves_off_a_taken_port() {
     std::fs::write(scratch.0.join("server.key"), SERVER_KEY).unwrap();
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let taken_port = taken.local_addr().unwrap().port();
-    let free = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let ports = [taken_port, free].into_iter();
+    let ports = std::iter::once(taken_port).chain(free_ports());
     let (mut server, port) = start_openssl_server_on(&scratch, "-tls1_3", ports);
-    assert_eq!(port, free);
+    assert_ne!(port, taken_port);
     assert!(server.try_wait().unwrap().is_none(), "the server exited");
     let _ = server.kill();
     let _ = server.wait();
