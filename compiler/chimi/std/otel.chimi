@@ -18,20 +18,27 @@
 /// written only when not zero.
 
 import std/bytes as Bytes
+import std/channel.{Receive}
 import std/clock as Clock.{Clock}
 import std/debug as Debug
 import std/duration as Duration.{Duration}
 import std/http as Http
+import std/int as Int
 import std/json as Json.{Number, Value}
 import std/list as List
+import std/log as Log.{Log}
 import std/map as Map.{Map}
 import std/metrics as Metrics.{Metrics}
 import std/net.{Network}
 import std/option as Option.{None, Option, Some}
+import std/process as Process.{Address, Inbox}
 import std/resource as Resource
 import std/result as Result.{Ok}
+import std/select as Select
+import std/supervisor as Supervisor
 import std/task as Task
 import std/text as Text
+import std/watch as Watch
 
 // 1. Public types.
 
@@ -40,14 +47,17 @@ import std/text as Text
 /// `<endpoint>/v1/metrics`. `headers` are sent with every push, such as an
 /// API key. `timeout` bounds one push, and `flush_within` the last one,
 /// when the body ends. `client` is the HTTP client's settings, such as its
-/// roots for `https`.
-pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings }
+/// roots for `https`. Logs written through `Otel.log` at `log_level` or
+/// above go to `<endpoint>/v1/logs`; at most `log_buffer` of them wait to
+/// be pushed, and more are dropped.
+pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings, log_level: Log.Level, log_buffer: Int }
 
 /// The defaults, to update with what differs:
 /// `{ ..Otel.defaults, endpoint: "http://collector:4318", service_name: "checkout" }`.
 /// They push to a collector on this machine every 10 s, give a push 5 s
 /// and the last push 5 s, and name the service `unknown_service`, as
-/// OpenTelemetry names an unnamed one.
+/// OpenTelemetry names an unnamed one. They send logs at `Info` and above,
+/// and keep at most 1024 waiting.
 pub const defaults: Settings = {
   endpoint: "http://localhost:4318",
   service_name: "unknown_service",
@@ -56,11 +66,14 @@ pub const defaults: Settings = {
   flush_within: Duration.seconds(5),
   headers: [],
   client: Http.client_defaults,
+  log_level: Log.Level.Info,
+  log_buffer: 1024,
 }
 
 /// A running export, which `Otel.export` passes to its body.
 pub struct Exporter {
   settings: Settings,
+  logs: Address<LogMessage>,
 }
 
 // 2. Failure types.
@@ -154,14 +167,109 @@ pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E need
     True -> Debug.crash("Otel.export: interval, timeout and flush_within must be positive")
     False -> Void
   }
+  case settings.log_buffer < 1 {
+    True -> Debug.crash("Otel.export: log_buffer must be positive")
+    False -> Void
+  }
   let _ = Metrics.runner_document()
-  let exporter = Exporter { settings: settings }
+  // The logs process is stopped last, after the last push has emptied it.
   Resource.scoped(fn() {
-    Task.start(fn() { push_every(settings) })
-  }, fn(pushing) {
-    Task.cancel(pushing)
-    push_within(settings, settings.flush_within)
-  }, fn(_) { body(exporter) })
+    Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))
+  }, Supervisor.stop, fn(running) {
+    let shipping = Process.spec(fn(inbox: Inbox<LogMessage>) {
+      ship_logs(inbox, settings)
+    }, settings.log_buffer, settings.flush_within)
+    let logs = Supervisor.address(Supervisor.start_process(running, shipping, Supervisor.Restart.Never))
+    let exporter = Exporter { settings: settings, logs: logs }
+    Resource.scoped(fn() {
+      Task.start(fn() { push_every(settings) })
+    }, fn(pushing) {
+      Task.cancel(pushing)
+      // The logs and the metrics share the last push's time.
+      Task.start(fn() { flush_logs(exporter) })
+      |> Task.result
+      push_within(settings, settings.flush_within)
+    }, fn(_) { body(exporter) })
+  })
+}
+
+/// A `log` provider that writes each entry to the `log` provider it is
+/// built under, as before, and also sends it to the collector, when its
+/// level is at least `settings.log_level`:
+///
+/// ```text
+/// Otel.export(settings, fn(exporter) {
+///   serve() using { log: Otel.log(exporter) }
+/// })
+/// ```
+///
+/// An entry is stamped with the wall-clock time it was written and pushed
+/// within an interval, or with the last push when the body ends. Writing
+/// never waits for the collector: an entry that finds `settings.log_buffer`
+/// entries already waiting is dropped and counted as
+/// `chimi.otel.dropped_logs`.
+///
+/// Cost: what the outer provider's `write` costs, plus O(1).
+pub fn log(exporter: Exporter) -> { write: fn(Log.Entry) -> Void } needs {
+  log: Log,
+  clock: Clock,
+  metrics: Metrics
+} {
+  let outer = log
+  let given_clock = clock
+  let given_metrics = metrics
+  {
+    write: fn(entry: Log.Entry) {
+      outer.write(entry)
+      case Log.at_least(Log.level(entry), exporter.settings.log_level) {
+        True -> {
+          let unix_ns = Clock.unix_nanoseconds(Clock.timestamp()) using { clock: given_clock }
+          case Result.capture(fn() {
+            Process.send(exporter.logs, LogMessage.Record(entry, unix_ns))
+          }) {
+            Ok(_) -> Void
+            _ -> Metrics.count("chimi.otel.dropped_logs", 1, []) using { metrics: given_metrics }
+          }
+        }
+        False -> Void
+      }
+    }
+  }
+}
+
+/// The OTLP/JSON body of an `ExportLogsServiceRequest` holding `entries`,
+/// each with the Unix time in nanoseconds it was written, with its resource
+/// named `service_name`. A level is its OpenTelemetry severity: `Debug` 5,
+/// `Info` 9, `Warn` 13 and `Error` 17. A field is an attribute: text a
+/// string, a whole number an int, another number a double, a boolean a
+/// bool, an array or object an array or key-value list, and `null` empty.
+///
+/// Cost: O(n log n) in the size of the entries.
+pub fn logs_request(entries: List<(Log.Entry, Int)>, service_name: Text) -> Text {
+  let records = List.map(entries, fn(pair) {
+    let (entry, unix_ns) = pair
+    let (number, text) = severity(Log.level(entry))
+    object([
+      ("timeUnixNano", Json.text(Int.to_text(unix_ns))),
+      ("observedTimeUnixNano", Json.text(Int.to_text(unix_ns))),
+      ("severityNumber", Json.int(number)),
+      ("severityText", Json.text(text)),
+      ("body", object([("stringValue", Json.text(Log.message(entry)))])),
+      ("attributes", Json.array(List.map(Log.fields(entry), fn(field) {
+        let (key, value) = field
+        object([("key", Json.text(key)), ("value", any_value(value))])
+      }))),
+    ])
+  })
+  Json.encode(object([
+    ("resourceLogs", Json.array([object([
+      ("resource", object([("attributes", Json.array([attribute("service.name", service_name)]))])),
+      ("scopeLogs", Json.array([object([
+        ("scope", object([("name", Json.text("chimi"))])),
+        ("logRecords", Json.array(records)),
+      ])])),
+    ])])),
+  ]))
 }
 
 // 8. Private helpers.
@@ -177,18 +285,30 @@ fn push_every(settings: Settings) -> Void needs {
   }
 }
 
-// One push of the aggregate as it stands, given at most `limit`. A failed
-// push is counted, never raised.
+// One push of the aggregate as it stands, given at most `limit`.
 fn push_within(settings: Settings, limit: Duration) -> Void needs {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  post(settings, "metrics", fn() {
+    metrics_request(Metrics.runner_document(), settings.service_name)
+  }, limit)
+}
+
+// Posts what `body` returns to `<endpoint>/v1/<signal>`, given at most
+// `limit` with building the body. A failed push is counted, never raised.
+fn post<E>(settings: Settings, signal: Text, body: fn() -> Text errors E needs {
+  metrics: Metrics
+}, limit: Duration) -> Void needs {
   network: Network,
   clock: Clock,
   metrics: Metrics
 } {
   let pushed = Result.capture(fn() {
     Task.timeout(fn() {
-      let body = metrics_request(Metrics.runner_document(), settings.service_name)
       let headers = List.append([("content-type", "application/json")], settings.headers)
-      let reply = Http.send(Http.Method.Post, "${settings.endpoint}/v1/metrics", headers, Bytes.from_text(body), { ..settings.client, timeout: limit })
+      let reply = Http.send(Http.Method.Post, "${settings.endpoint}/v1/${signal}", headers, Bytes.from_text(body()), { ..settings.client, timeout: limit })
       let status = Http.status(reply)
       status >= 200 and status < 300
     }, limit)
@@ -196,6 +316,107 @@ fn push_within(settings: Settings, limit: Duration) -> Void needs {
   case pushed {
     Ok(True) -> Void
     _ -> Metrics.count("chimi.otel.failed_exports", 1, [])
+  }
+}
+
+// What the logs process receives: an entry with its Unix time, or a request
+// to push what is waiting and say so on `done`.
+enum LogMessage {
+  Record(entry: Log.Entry, unix_ns: Int)
+  Flush(done: Watch.Publisher<Bool>)
+}
+
+// The logs process: entries wait in the loop's state until the interval's
+// deadline or a flush, then go in one push.
+fn ship_logs(inbox: Inbox<LogMessage>, settings: Settings) -> Void needs {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  loop state = ([], Clock.add(Clock.now(), settings.interval)) {
+    let (waiting, deadline) = state
+    let next = Select.first([
+      Select.inbox(inbox, fn(message) { Some(message) }),
+      Select.at(deadline, None),
+    ])
+    case next {
+      Some(LogMessage.Record(entry, unix_ns)) -> (List.push(waiting, (entry, unix_ns)), deadline)
+      Some(LogMessage.Flush(done)) -> {
+        push_logs(settings, waiting, settings.flush_within)
+        let _ = Result.capture(fn() { Watch.publish(done, True) })
+        ([], deadline)
+      }
+      None -> {
+        push_logs(settings, waiting, settings.timeout)
+        ([], Clock.add(Clock.now(), settings.interval))
+      }
+    }
+  }
+}
+
+fn push_logs(settings: Settings, waiting: List<(Log.Entry, Int)>, limit: Duration) -> Void needs {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  case waiting {
+    [] -> Void
+    _ -> post(settings, "logs", fn() {
+      logs_request(waiting, settings.service_name)
+    }, limit)
+  }
+}
+
+// Asks the logs process to push what is waiting and waits until it has, at
+// most `flush_within`.
+fn flush_logs(exporter: Exporter) -> Void needs {
+  clock: Clock
+} {
+  let flag = Watch.starting_with(False)
+  let done = Watch.subscribe(flag.publisher)
+  let _ = Result.capture(fn() {
+    Task.timeout(fn() {
+      Process.send(exporter.logs, LogMessage.Flush(flag.publisher))
+      loop _waiting = True {
+        let received = Watch.receive(done)
+        case received {
+          Receive.Received(False) -> True
+          _ -> break Void
+        }
+      }
+    }, exporter.settings.flush_within)
+  })
+  Void
+}
+
+// An OpenTelemetry severity number and text for a level.
+fn severity(level: Log.Level) -> (Int, Text) {
+  case level {
+    Log.Level.Debug -> (5, "DEBUG")
+    Log.Level.Info -> (9, "INFO")
+    Log.Level.Warn -> (13, "WARN")
+    Log.Level.Error -> (17, "ERROR")
+  }
+}
+
+// A JSON value as an OTLP `AnyValue`.
+fn any_value(value: Value) -> Value {
+  case value {
+    Value.Null -> object([])
+    Value.Boolean(flag) -> object([("boolValue", Json.boolean(flag))])
+    Value.Text(text) -> object([("stringValue", Json.text(text))])
+    Value.Number(number) -> {
+      let digits = spelling(number)
+      case Result.capture(fn() { Json.number_to_int(number) }) {
+        Ok(_) -> object([("intValue", Json.text(digits))])
+        _ -> object([("doubleValue", Value.Number(number))])
+      }
+    }
+    Value.Array(items) -> object([("arrayValue", object([("values", Json.array(List.map(items, any_value)))]))])
+    Value.Object(fields) -> object([("kvlistValue", object([("values", Json.array(List.map(Map.entries(fields), fn(field) {
+      let (key, item) = field
+      object([("key", Json.text(key)), ("value", any_value(item))])
+    })))]))])
   }
 }
 

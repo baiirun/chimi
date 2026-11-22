@@ -571,3 +571,156 @@ fn a_stopped_program_pushes_before_it_exits() {
         pushes[0].body
     );
 }
+
+/// A program that exports to `port` with `settings` while `body` runs with
+/// `Otel.log` as its `log` provider.
+fn logging(port: u16, settings: &str, body: &str) -> String {
+    format!(
+        r#"import std/clock as Clock.{{Clock}}
+import std/duration as Duration
+import std/json as Json
+import std/log as Log.{{Log}}
+import std/map as Map
+import std/metrics as Metrics.{{Metrics}}
+import std/net.{{Network}}
+import std/otel as Otel
+
+fn work() -> Text needs {{ log: Log, clock: Clock }} {{
+{body}
+}}
+
+pub fn main() -> Text needs {{ network: Network, clock: Clock, metrics: Metrics, log: Log }} {{
+  let settings = {{ ..Otel.defaults, endpoint: "http://127.0.0.1:{port}", service_name: "shop"{settings} }}
+  Otel.export(settings, fn(exporter) {{
+    work() using {{ log: Otel.log(exporter) }}
+  }})
+}}
+"#
+    )
+}
+
+// `Otel.log` writes each entry to the outer provider as before and pushes
+// it to `/v1/logs` within an interval, or with the last push, when its level
+// is at least `log_level`; fields become typed attributes. Rejects an entry
+// lost from the outer log, a filtered entry sent, an entry written last
+// that never leaves, the wrong severity, or an attribute of the wrong type.
+#[test]
+fn logs_are_pushed_and_still_written() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("logs");
+    let body = r#"  Log.info("charged", [Log.int("order", 42), Log.float("seconds", 1.5), Log.text("who", "ann"), Log.bool("ok", True), Log.json("tags", Json.object(Map.from([("a", Json.text("b"))])))])
+  Log.debug("hidden", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.warn("slow", [])
+  "done""#;
+    let (output, metrics) = scratch.run_native(&logging(
+        collector.port,
+        ", interval: Duration.milliseconds(100)",
+        body,
+    ));
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains(r#""message":"charged""#), "{stderr}");
+    assert!(stderr.contains(r#""message":"slow""#), "{stderr}");
+    assert!(!metrics.contains("chimi.otel"), "{metrics}");
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 2, "one within the interval, one at the end");
+    let first = &logs[0].body;
+    assert!(
+        first.contains(r#""body":{"stringValue":"charged"}"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#""severityNumber":9,"severityText":"INFO""#),
+        "{first}"
+    );
+    for attribute in [
+        r#"{"key":"order","value":{"intValue":"42"}}"#,
+        r#"{"key":"seconds","value":{"doubleValue":1.5}}"#,
+        r#"{"key":"who","value":{"stringValue":"ann"}}"#,
+        r#"{"key":"ok","value":{"boolValue":true}}"#,
+        r#"{"key":"tags","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"b"}}]}}}"#,
+    ] {
+        assert!(first.contains(attribute), "{attribute} in {first}");
+    }
+    assert!(first.contains(r#"{"stringValue":"shop"}"#), "{first}");
+    assert!(!logs.iter().any(|push| push.body.contains("hidden")));
+    let last = &logs[1].body;
+    assert!(last.contains(r#""body":{"stringValue":"slow"}"#), "{last}");
+    assert!(
+        last.contains(r#""severityNumber":13,"severityText":"WARN""#),
+        "{last}"
+    );
+    assert!(!last.contains("charged"), "an entry is pushed once: {last}");
+}
+
+// Writing a log never waits for the collector: with the logs process busy
+// on a push that hangs and its buffer full, more entries are dropped and
+// counted. Rejects a write that blocks, or drops left uncounted.
+#[test]
+fn a_full_log_buffer_drops_and_counts() {
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("log-buffer");
+    let body = r#"  Log.info("first", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.info("a", [])
+  Log.info("b", [])
+  Log.info("c", [])
+  Log.info("d", [])
+  Log.info("e", [])
+  "done""#;
+    let settings = ", interval: Duration.milliseconds(100), timeout: Duration.seconds(5), flush_within: Duration.milliseconds(200), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(slow.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":3}"#),
+        "{metrics}"
+    );
+}
+
+// Stopping the program pushes the waiting logs too. Rejects logs left in
+// the logs process when it is stopped.
+#[test]
+fn a_stopped_program_pushes_its_waiting_logs() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("stopped-logs");
+    let body = r#"  Log.info("bye", [])
+  Clock.sleep(Duration.seconds(60))
+  "done""#;
+    scratch.write(
+        "main.chimi",
+        &logging(collector.port, ", interval: Duration.seconds(60)", body),
+    );
+    let built = scratch.chimi(&["build", "main.chimi", "-o", "program"]);
+    assert!(built.status.success(), "{built:?}");
+    let mut runner = Command::new(scratch.0.join("program"))
+        .current_dir(&scratch.0)
+        .args(["--chimi-runner", "--clock=real", "--"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let sent = Command::new("kill")
+        .args(["-TERM", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let _ = runner.wait().unwrap();
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 1, "one logs push, on stop");
+    assert!(
+        logs[0].body.contains(r#""body":{"stringValue":"bye"}"#),
+        "{}",
+        logs[0].body
+    );
+}
