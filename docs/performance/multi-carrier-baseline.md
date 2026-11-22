@@ -287,6 +287,34 @@ so compare the two columns, not these with earlier rows.
   carriers about 1.5 s of sleeping and waking in the kernel per run became
   under 0.1 s, while total CPU stayed about the same.
 
+## A hash map for the task table (step 4 PR 4d-2)
+
+The same pairs program and method as the section above: the base (4d-1,
+PR 188) and the change built from separate target directories, run
+alternately ten times each at each carrier count. The host was noisy (the
+base's one-carrier runs spread from 947 to 1206 ms), so compare the two
+columns, not these with earlier rows.
+
+| Carriers | Base, median ms | Hash map, median ms |
+| --- | --- | --- |
+| 1 | 1136 | 900 |
+| 2 | 872 | 872 |
+| 4 | 938 | 835 |
+| 8 | 890 | 789 |
+
+- Instructions are steadier than times. Under callgrind, pairs with 2000
+  rounds on one carrier ran 750 million instructions before and 661
+  million after (12% fewer). The kernel's share, the inclusive cost of
+  `Scheduler::complete`, fell from 209 to 141 million (a third), and
+  `next_runnable` from 49 to 29 million. That work runs under the kernel
+  lock, so each hold is shorter on every carrier count.
+- Before, B-tree searches of the task table were about 72 million
+  instructions, most of them inside `apply_step`, `prepare_run` and
+  `wake_at`, which look the same task up many times.
+- What remains of the program's time is mostly outside the kernel: the
+  runtime's allocator and its `memset` of new allocations (about 160
+  million instructions between them).
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08

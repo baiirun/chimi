@@ -10,6 +10,7 @@ mod clock;
 mod idle_tests;
 #[cfg(test)]
 mod steal_tests;
+mod id_map;
 mod jobs;
 mod process;
 mod process_abi;
@@ -425,7 +426,7 @@ impl ChimiCapabilityViolation {
 pub type CapabilityViolationReport =
     unsafe extern "C" fn(*mut c_void, *const ChimiCapabilityViolation);
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TaskId(u64);
 
 impl TaskId {
@@ -805,7 +806,7 @@ impl TaskValue {
 }
 
 pub struct Scheduler {
-    tasks: BTreeMap<TaskId, Task>,
+    tasks: id_map::IdMap<TaskId, Task>,
     ready: ready::ReadyQueues,
     /// Work a carrier must do on its own thread for another carrier's
     /// decision, run before its ready tasks.
@@ -980,7 +981,7 @@ impl Scheduler {
             release_spec_context.map(|release| (release, release_context)),
         );
         Self {
-            tasks: BTreeMap::new(),
+            tasks: id_map::IdMap::default(),
             ready: ready::ReadyQueues::new(1),
             jobs: jobs::Jobs::new(1),
             current: ready::Carrier::default(),
