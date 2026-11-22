@@ -58,6 +58,14 @@ impl<K: Copy + Eq + Hash, R> Homed<K, R> {
         self.slots.get_mut(id).map(|slot| slot.record.get_mut())
     }
 
+    /// The record and its home, both writable, in one lookup.
+    #[inline]
+    pub(super) fn get_mut_homed(&mut self, id: &K) -> Option<(&mut Carrier, &mut R)> {
+        self.slots
+            .get_mut(id)
+            .map(|slot| (&mut slot.home, slot.record.get_mut()))
+    }
+
     pub(super) fn contains_key(&self, id: &K) -> bool {
         self.slots.contains_key(id)
     }

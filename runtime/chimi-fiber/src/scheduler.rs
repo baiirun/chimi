@@ -2262,20 +2262,19 @@ impl Scheduler {
     /// Marks a runnable `task` running and enters its fiber; None if it is no
     /// longer runnable.
     fn prepare_run(&mut self, task: TaskId) -> Option<carrier::Runnable> {
-        let record = self
+        let (home, record) = self
             .tasks
-            .get(&task)
-            .filter(|record| record.phase == TaskPhase::Runnable)?;
+            .get_mut_homed(&task)
+            .filter(|(_, record)| record.phase == TaskPhase::Runnable)?;
         // A fiber that never ran may start here (`may_resume_here`): its
         // first resume makes this carrier its home, as `Home` records.
         if !record.ran {
-            self.tasks.set_home(&task, self.current);
+            *home = self.current;
         }
         debug_assert!(
-            self.any_carrier || self.tasks.home(&task) == Some(self.current),
+            self.any_carrier || *home == self.current,
             "a task resumed off its home carrier"
         );
-        let record = self.tasks.get_mut(&task).expect("a runnable task");
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.phase = TaskPhase::Running;
         record.request = std::ptr::null_mut();
