@@ -77,11 +77,7 @@ pub fn main() -> Int needs {
   console: Console,
 } {
   let healthy_at = Clock.add(Clock.now(), Duration.milliseconds(120))
-  let inventory = Fakes.inventory()
-  let fraud = Fakes.fraud()
-  let payments = Fakes.payments(healthy_at)
-  let carriers = Fakes.carriers()
-  let notifier = Fakes.notifier()
+  let providers = Fakes.all(healthy_at)
 
   let jobs = Channel.bounded(4)
   let job_sender = jobs.sender
@@ -102,22 +98,10 @@ pub fn main() -> Int needs {
 
   let auditor = Task.start(fn() { audit(feed) })
   let first = Task.start(fn() {
-    Worker.work("w1", first_jobs, first_settings, outcome_sender, event_publisher) using {
-      inventory: inventory,
-      fraud: fraud,
-      payments: payments,
-      carriers: carriers,
-      notifier: notifier,
-    }
+    Worker.work("w1", first_jobs, first_settings, outcome_sender, event_publisher) using providers
   })
   let second = Task.start(fn() {
-    Worker.work("w2", second_jobs, second_settings, outcome_sender, event_publisher) using {
-      inventory: inventory,
-      fraud: fraud,
-      payments: payments,
-      carriers: carriers,
-      notifier: notifier,
-    }
+    Worker.work("w2", second_jobs, second_settings, outcome_sender, event_publisher) using providers
   })
 
   Channel.send(job_sender, Checkout.order(1, "book", 2500))

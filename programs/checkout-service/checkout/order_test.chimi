@@ -13,13 +13,7 @@ fn checkout(id: Int, sku: Text, cents: Int, healthy_at: Instant, budget_ms: Int)
   clock: Clock
 } {
   let deadline = Clock.add(Clock.now(), Duration.milliseconds(budget_ms))
-  Checkout.run(Checkout.order(id, sku, cents), deadline) using {
-    inventory: Fakes.inventory(),
-    fraud: Fakes.fraud(),
-    payments: Fakes.payments(healthy_at),
-    carriers: Fakes.carriers(),
-    notifier: Fakes.notifier(),
-  }
+  Checkout.run(Checkout.order(id, sku, cents), deadline) using Fakes.all(healthy_at)
 }
 
 fn elapsed_ms(start: Instant) -> Int needs {
