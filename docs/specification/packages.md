@@ -1,7 +1,10 @@
 # Packages and workspaces
 
-Status: specified (T5, CHI-290). Nothing here is implemented yet; each section
-says which pull request brings it.
+Status: implemented in part (T5, CHI-290). Packages, path dependencies,
+imports across packages, module origins, workspaces and the editor finding
+a file's package are implemented. Git dependencies, the lockfile and the
+cache (PR 4) are not yet; until then a git dependency fails with "git
+dependencies are not supported yet".
 
 ## Purpose
 
@@ -193,11 +196,17 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   `chimi.toml` with `[package]`, it is the entry package and its dependencies
   load as above.
 - `chimi test <directory>`, given a package, tests every module of that
-  package (not its dependencies); given a workspace, tests every member in
-  member order and fails if any member fails.
-- `chimi lint` and `chimi doc --html` lint and document the entry package's
-  own modules; dependencies are type-checked but never linted, as `std/`
-  is not.
+  package (not its dependencies). Given a workspace, it loads every member
+  into one build and tests all their modules, failing if any test fails.
+  Module paths name their package, so members never collide.
+- `chimi lint` and `chimi doc --html` lint and document the own modules of
+  what they are given: the entry package for `--root`, or every member for
+  a workspace directory (`chimi lint <workspace>`, `chimi doc --html <site>
+  <workspace>`). Dependencies are type-checked but never linted or
+  documented, as `std/` is not.
+- A build of a package keeps its intermediate files under the workspace
+  root's `target/chimi/`, whatever the current directory; a plain project
+  keeps them under the current directory's `target/`, as before.
 - The language server finds the package of an open file by walking up to the
   nearest `chimi.toml`, with the same function the commands use, and resolves
   imports as a build would.
@@ -212,6 +221,7 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | Lockfile | `chimi.lock` at the workspace root, written only by `chimi deps update` |
 | Cache | `$CHIMI_CACHE`, `$XDG_CACHE_HOME/chimi`, or `~/.cache/chimi` |
 | Commands | `chimi deps update`; `--offline` on commands that load a package |
+| Library | `LoadedProject::load` and `load_directory` read a manifest in the root; `ProjectSource::origin`; `project::package_root_of` |
 | Build report | `chimi.build.v1` lists each package with its source and commit |
 
 ## Implementation model
@@ -238,19 +248,28 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 | Contract | Test |
 | --- | --- |
-| A path dependency's module is imported by package name | added with PR 2 |
-| An undeclared package in the build cannot be imported | added with PR 2 |
-| `internal/` modules are private to their package | added with PR 2 |
-| A package's own module is imported by its package name | added with PR 2 |
-| `import money` with no module path fails | added with PR 2 |
-| Two sources for one package name fail, naming both | added with PR 2 |
-| Unknown manifest keys fail, naming them | added with PR 2 |
-| A workspace tests every member | added with PR 3 |
-| An unlisted package under a workspace fails | added with PR 3 |
-| A path dependency outside the workspace fails | added with PR 3 |
+| A path dependency's module is imported by package name | `project::tests::a_package_imports_its_own_modules_and_its_dependencies_by_package_name`, `tests/packages.rs` `a_program_runs_across_path_dependencies` |
+| An undeclared package in the build cannot be imported | `project::tests::imports_that_break_a_package_boundary_fail_naming_it` |
+| `internal/` modules are private to their package | the same test, and the first one for a package's own |
+| A package's own module is imported by its package name | `project::tests::a_package_imports_its_own_modules_and_its_dependencies_by_package_name` |
+| `import money` with no module path fails | `project::tests::imports_that_break_a_package_boundary_fail_naming_it` |
+| Two sources for one package name fail, naming both | `project::tests::the_package_graph_rejects_bad_dependencies_naming_both_ends` |
+| Unknown manifest keys fail, naming them | `manifest::tests::rejects_anything_outside_the_shape_naming_it` |
+| Test, lint and doc cover only the entry package | `tests/packages.rs` |
+| A dependency's module is named `<package>/<path>` in diagnostics | `tests/packages.rs` |
+| The editor analyzes an open file in its package | chimi-lsp `a_file_in_a_package_is_analyzed_with_its_package` |
+| A workspace tests, lints and documents every member | `tests/packages.rs` `a_workspace_tests_every_member`, `a_workspace_lints_and_documents_every_member`; `project::tests::a_workspace_directory_loads_every_members_modules_as_its_own` |
+| Bad workspace members fail, naming them | `project::tests::a_workspace_rejects_bad_members` |
+| A member's build writes under the workspace's `target/` | `tests/packages.rs` `a_members_build_keeps_its_artifacts_in_the_workspace_target` |
+| The forcing program, a two-package workspace, runs, tests and lints clean | `cli.rs` `native_checkout_service_forces_the_phase_3_surface`; `programs/checkout-service` |
+| An unlisted package under a workspace fails | `project::tests::a_package_the_workspace_above_does_not_list_fails` |
+| A path dependency outside the workspace fails | `project::tests::a_dependency_outside_the_workspace_fails` |
 | A build uses the locked commit after the tag moves | added with PR 4 |
 | A stale lockfile fails the build and is not written | added with PR 4 |
 | `--offline` with a missing commit fails without fetching | added with PR 4 |
+
+Mutation lists: `scripts/mutation/packages_mutations.py`,
+`packages_editor_mutations.py` and `workspaces_mutations.py`.
 
 ## Notes
 

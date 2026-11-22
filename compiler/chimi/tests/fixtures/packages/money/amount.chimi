@@ -1,0 +1,15 @@
+import money/internal/cents as Cents
+import rounding/even as Even
+
+/// The sum of two amounts, rounded down to an even number of cents.
+pub fn add(left: Int, right: Int) -> Int {
+  Even.down(Cents.sum(left, right))
+}
+
+fn never_used() -> Int {
+  0
+}
+
+test "money's own test" {
+  Void
+}

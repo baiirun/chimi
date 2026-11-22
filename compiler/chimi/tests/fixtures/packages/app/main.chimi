@@ -1,0 +1,5 @@
+import app/total as Total
+
+pub fn main() -> Int {
+  Total.cents()
+}

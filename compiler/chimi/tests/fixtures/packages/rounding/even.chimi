@@ -1,0 +1,4 @@
+/// The largest even number not above `value`.
+pub fn down(value: Int) -> Int {
+  value - value % 2
+}

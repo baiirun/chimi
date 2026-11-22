@@ -1,4 +1,4 @@
-import app/checkout as Checkout.{FraudError, Order, PaymentError, Receipt, Services, ShippingError, StockError}
+import checkout/order as Checkout.{FraudError, Order, PaymentError, Receipt, Services, ShippingError, StockError}
 import std/broadcast as Broadcast
 import std/channel as Channel.{Receive, Receiver, Sender}
 import std/clock as Clock
