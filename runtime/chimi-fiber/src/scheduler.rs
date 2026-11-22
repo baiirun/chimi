@@ -938,6 +938,12 @@ impl Drop for Scheduler {
         }
         self.release_surviving_incarnations();
         self.release_held_values();
+        // A record still holding a parked fiber cancels it as it drops, which
+        // runs the fiber's cleanup: keep that in id order, as it was before
+        // the table became a hash map.
+        let mut records: Vec<_> = std::mem::take(&mut self.tasks).into_iter().collect();
+        records.sort_unstable_by_key(|(task, _)| *task);
+        drop(records);
     }
 }
 
@@ -1238,11 +1244,13 @@ impl Scheduler {
         let held = self
             .tasks
             .iter()
-            .find(|(_, record)| record.carrier == current && record.fiber.is_some());
+            .filter(|(_, record)| record.carrier == current && record.fiber.is_some())
+            .map(|(task, _)| *task)
+            .min();
         assert!(
             held.is_none(),
             "a finished run left task {:?} holding its fiber on carrier {}",
-            held.map(|(task, _)| *task),
+            held,
             current.0
         );
     }
@@ -1264,7 +1272,7 @@ impl Scheduler {
     /// Why a carrier with nothing runnable, no host operation, no IO wait
     /// and no timer is idle: quiescent, or stuck with parked tasks.
     fn idle_outcome(&mut self) -> Idle {
-        let parked: Vec<_> = self
+        let mut parked: Vec<_> = self
             .tasks
             .iter()
             .filter(|(_, record)| record.phase == TaskPhase::Parked)
@@ -1278,6 +1286,8 @@ impl Scheduler {
                 },
             })
             .collect();
+        // The task table is unordered; the deadlock report lists by id.
+        parked.sort_by_key(|parked| parked.task);
         let stuck = parked
             .iter()
             .any(|parked| self.tasks[&parked.task].process.is_none());
@@ -2056,6 +2066,7 @@ impl Scheduler {
         self.constructed_events
     }
 
+    /// In no particular order.
     pub fn unobserved_terminal_tasks(&self) -> impl Iterator<Item = TaskId> + '_ {
         self.tasks.iter().filter_map(|(task, record)| {
             matches!(record.phase, TaskPhase::Terminal(_))
@@ -2122,12 +2133,15 @@ impl Scheduler {
     /// channel, and the context of every task whose entry never ran. Runs
     /// once, when the scheduler is dropped.
     fn release_held_values(&mut self) {
-        let unrun_contexts: Vec<_> = self
+        let mut unrun_contexts: Vec<_> = self
             .tasks
-            .values_mut()
-            .map(|record| std::mem::replace(&mut record.entry_context, std::ptr::null_mut()))
+            .iter_mut()
+            .map(|(task, record)| {
+                (*task, std::mem::replace(&mut record.entry_context, std::ptr::null_mut()))
+            })
             .collect();
-        for task_context in unrun_contexts {
+        unrun_contexts.sort_unstable_by_key(|(task, _)| *task);
+        for (_, task_context) in unrun_contexts {
             self.release_task_context(task_context);
         }
         for value in self.channels.drain_held_values() {

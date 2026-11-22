@@ -1178,8 +1178,12 @@ the gates measure, so it goes first.
      B-tree lookup walked the tree's levels. On pairs (one carrier, 2000
      rounds, callgrind) the kernel's instructions fell by a third and the
      whole program's by 12% (multi-carrier-baseline.md, "A hash map for
-     the task table"). Nothing iterates the table in order, so no order
-     changes.
+     the task table"). The table is unordered now, so what lists tasks
+     sorts them by id, as the tree's order gave before: the deadlock report
+     and its trace events, the roots a program termination forces, the
+     unrun contexts released at the end, and the records dropped with the
+     scheduler. A hash map does not shrink, so its memory stays at the run's
+     peak task count.
 4. **4d: the kernel split by owner, still under one lock.** Per carrier:
    the tasks homed on it, its ready queue, jobs and timers, the mailboxes
    of incarnations homed on it, and the channels created on it. Shared:

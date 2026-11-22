@@ -289,27 +289,31 @@ so compare the two columns, not these with earlier rows.
 
 ## A hash map for the task table (step 4 PR 4d-2)
 
-The same pairs program and method as the section above: the base (4d-1,
-PR 188) and the change built from separate target directories, run
-alternately ten times each at each carrier count. The host was noisy (the
-base's one-carrier runs spread from 947 to 1206 ms), so compare the two
-columns, not these with earlier rows.
+The same pairs program with 20,000 rounds and the same method as the
+section above: the base (4d-1, PR 188) and the change built from separate
+target directories, run alternately ten times each at each carrier count.
+The host was noisy, so compare the two columns, not these with earlier
+rows, and read the instruction counts below as the measured gain.
 
-| Carriers | Base, median ms | Hash map, median ms |
+| Carriers | Base, median ms (range) | Hash map, median ms (range) |
 | --- | --- | --- |
-| 1 | 1136 | 900 |
-| 2 | 872 | 872 |
-| 4 | 938 | 835 |
-| 8 | 890 | 789 |
+| 1 | 1136 (947 to 1206) | 900 (792 to 932) |
+| 2 | 872 (820 to 936) | 872 (816 to 1014) |
+| 4 | 938 (883 to 1012) | 835 (747 to 896) |
+| 8 | 890 (783 to 990) | 789 (687 to 833) |
 
+- The one-carrier drop is larger than the 12% fewer instructions, and two
+  carriers show none: most of each difference is within the runs' spread.
 - Instructions are steadier than times. Under callgrind, pairs with 2000
   rounds on one carrier ran 750 million instructions before and 661
-  million after (12% fewer). The kernel's share, the inclusive cost of
-  `Scheduler::complete`, fell from 209 to 141 million (a third), and
-  `next_runnable` from 49 to 29 million. That work runs under the kernel
-  lock, so each hold is shorter on every carrier count.
-- Before, B-tree searches of the task table were about 72 million
-  instructions, most of them inside `apply_step`, `prepare_run` and
+  million after (12% fewer). The inclusive cost of `Scheduler::complete`,
+  the kernel's work after each resume, fell from 209 to 141 million (a
+  third), and `next_runnable` from 49 to 29 million. That work runs under
+  the kernel lock, so holds should be shorter on any carrier count; only
+  one carrier was profiled.
+- B-tree searches fell from 86 to 14 million instructions (other maps
+  remain B-trees), and the hash map's lookups cost about 46 million. Most
+  of the task table's searches were inside `apply_step`, `prepare_run` and
   `wake_at`, which look the same task up many times.
 - What remains of the program's time is mostly outside the kernel: the
   runtime's allocator and its `memset` of new allocations (about 160

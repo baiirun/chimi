@@ -8,8 +8,8 @@ Results: scripts/mutation/id_map_results.txt.
 CRATE = "runtime/chimi-fiber"
 
 
-def m(name, old, new):
-    return dict(name=name, file="src/scheduler/id_map.rs", edits=[(old, new)], targets=["lib"], filter="")
+def m(name, old, new, file="src/scheduler/id_map.rs"):
+    return dict(name=name, file=file, edits=[(old, new)], targets=["lib"], filter="")
 
 
 # A worse hash leaves every lookup correct and only slower, so the tests
@@ -30,4 +30,25 @@ MUTATIONS = [
     m("bytes are not chained",
       "            self.0 = (self.0.rotate_left(5) ^ u64::from(byte)).wrapping_mul(SPREAD);",
       "            self.0 ^= u64::from(byte).wrapping_mul(SPREAD);"),
+    # The table is unordered, so what reports tasks sorts them by id.
+    m("the deadlock report keeps the table's order",
+      "        parked.sort_by_key(|parked| parked.task);",
+      "",
+      file="src/scheduler.rs"),
+    m("a finished run names any task left holding its fiber, not the lowest",
+      "            .map(|(task, _)| *task)\n            .min();",
+      "            .map(|(task, _)| *task)\n            .max();",
+      file="src/scheduler.rs"),
+    m("program roots are forced in the table's order",
+      "        roots.sort_unstable();",
+      "",
+      file="src/scheduler/process.rs"),
+    m("unrun contexts are released in the table's order",
+      "        unrun_contexts.sort_unstable_by_key(|(task, _)| *task);",
+      "",
+      file="src/scheduler.rs"),
+    m("records drop in the table's order",
+      "        records.sort_unstable_by_key(|(task, _)| *task);",
+      "",
+      file="src/scheduler.rs"),
 ]
