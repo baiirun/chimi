@@ -85,6 +85,9 @@ const SHARED: &[&str] = &[
     "child_signal_installed",
     // Set by the first fatal exit, so only one thread runs exit.
     "runtime_exiting",
+    // The thread-local carrier's offset from the thread pointer, the same
+    // on every thread; set once by a constructor before main.
+    "carrier_tls_offset",
     // Process-wide footprints and peaks, folded in by every carrier.
     "process_footprint_bytes",
     "process_peak_footprint_bytes",
