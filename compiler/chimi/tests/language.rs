@@ -13072,6 +13072,8 @@ fn a_struct_pattern_names_each_field_once_or_ends_with_rest() {
     };
     assert_eq!(check_codes(&program("Money { cents: n }")), ["T4215"]);
     assert_eq!(check_codes(&program("Money { cents: n, cents: m, .. }")), ["T4211"]);
+    let repeated = "struct Money {\n  cents: Int\n  currency: Text\n}\n\nfn f(value: Money) -> Int {\n  case value {\n    Money { cents: n, cents: m, .. } -> n + m\n  }\n}\n\npub fn main() -> Int {\n  1\n}\n";
+    assert_eq!(check_codes(repeated), ["T4211"]);
     assert_eq!(check_codes(&program("Money { dollars: n, .. }")), ["T4205"]);
     assert_eq!(check_codes(&program("Money { .., cents: n }")), ["S1001"]);
     let source = program("Money(0, currency)");
