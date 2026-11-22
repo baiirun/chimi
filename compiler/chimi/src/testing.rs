@@ -569,6 +569,7 @@ impl TestSuite {
             standard,
             executable,
             artifact_directory,
+            Vec::new(),
         )
         .map(|_| ())
     }

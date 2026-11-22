@@ -643,4 +643,42 @@ fn an_update_rejects_an_unknown_name_before_fetching() {
         text(&output.stderr)
     );
     assert!(!cache.exists(), "nothing was fetched");
+fn a_build_report_lists_each_package_with_its_source_and_commit() {
+    let scratch = git_dependency_scratch("git-report", 1);
+    let cache = scratch.path("cache");
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    assert!(
+        chimi_with_cache(&cache, &["deps", "update", "--root", app])
+            .status
+            .success()
+    );
+    let lock = std::fs::read_to_string(scratch.path("app/chimi.lock")).unwrap();
+    let commit = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("commit = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap();
+    let executable = scratch.path("program");
+    let output = chimi_with_cache(
+        &cache,
+        &[
+            "build",
+            "--root",
+            app,
+            "app/main",
+            "-o",
+            executable.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let report = text(&output.stdout);
+    let app_directory = scratch.path("app").canonicalize().unwrap();
+    let url = format!("file://{}", scratch.path("repo").display());
+    let expected = format!(
+        "\"packages\":[{{\"name\":\"app\",\"own\":true,\"source\":{{\"path\":\"{}\"}}}},\
+         {{\"name\":\"json_tools\",\"own\":false,\"source\":{{\"git\":\"{url}\",\"rev\":\"v1\",\"commit\":\"{commit}\"}}}}]",
+        app_directory.display()
+    );
+    assert!(report.contains(&expected), "{report}\nexpected {expected}");
 }

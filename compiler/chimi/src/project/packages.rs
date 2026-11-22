@@ -753,6 +753,11 @@ impl PackageGraph {
         Ok(graph)
     }
 
+    /// Every package of the build.
+    pub(crate) fn packages(&self) -> impl Iterator<Item = &Package> {
+        self.packages.iter()
+    }
+
     /// The packages the command names, in member order.
     pub(crate) fn own(&self) -> impl Iterator<Item = &Package> {
         self.packages.iter().filter(|package| package.own)

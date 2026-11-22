@@ -2,8 +2,8 @@
 
 Status: implemented (T5, CHI-290): packages, path and git dependencies,
 imports across packages, module origins, workspaces, the lockfile, the
-dependency cache and the editor finding a file's package. Listing packages
-in the build report is follow-up work (CHI-292).
+dependency cache, the editor finding a file's package, and packages in the
+build report.
 
 ## Purpose
 
@@ -241,7 +241,7 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | Cache | `$CHIMI_CACHE`, `$XDG_CACHE_HOME/chimi`, or `~/.cache/chimi` |
 | Commands | `chimi deps update [--root <directory>] [<package>...]`; `chimi --offline <command>` for any command that loads a program |
 | Library | `LoadedProject::load` and `load_directory` read a manifest in the root; `ProjectSource::origin`; `project::package_root_of` |
-| Build report | `chimi.build.v1` lists each package with its source and commit (follow-up, CHI-292) |
+| Build report | `chimi.build.v1` lists each package with its source and commit: `"packages":[{"name","own","source":{"path"} or {"git","rev","commit"}}]`, the command's own packages first, then by name |
 
 ## Implementation model
 
@@ -292,6 +292,7 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | A full commit id that no branch reaches can be a `rev` | `tests/packages.rs` `a_rev_may_be_a_commit_no_branch_reaches` |
 | An update rejects an unknown package name before fetching | `tests/packages.rs` `an_update_rejects_an_unknown_name_before_fetching` |
 | A fetch that meets another fetch's lock waits and retries | `project::git::tests::a_fetch_that_meets_another_fetchs_lock_waits_and_retries` |
+| The build report lists each package with its source and commit | `tests/packages.rs` `a_build_report_lists_each_package_with_its_source_and_commit` |
 | The lockfile reads back what it writes, and rejects anything else | `manifest::lock::tests` |
 
 Mutation lists: `scripts/mutation/packages_mutations.py`,
