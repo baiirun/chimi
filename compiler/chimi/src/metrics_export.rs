@@ -263,3 +263,27 @@ fn write_metric(output: &mut String, group: &[Series], times: &Times<'_>) {
     }
     output.push_str("}}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Each dropped total is its own count, written only when it is not zero.
+    // Rejects a dropped total read from the wrong key or left out.
+    #[test]
+    fn dropped_label_sets_export_as_a_count() {
+        let document = concat!(
+            r#"{"schema":"chimi.metrics.v1","metrics":[],"#,
+            r#""dropped":{"label_sets":2,"kind_conflicts":0},"start_unix_ns":5,"time_unix_ns":9}"#
+        );
+        let export = export_metrics_otlp(document, None).unwrap();
+        assert!(
+            export.contains(concat!(
+                r#"{"name":"chimi.metrics.dropped_label_sets","sum":{"dataPoints":[{"attributes":[],"#,
+                r#""startTimeUnixNano":"5","timeUnixNano":"9","asInt":"2"}]"#
+            )),
+            "{export}"
+        );
+        assert!(!export.contains("dropped_kind_conflicts"), "{export}");
+    }
+}
