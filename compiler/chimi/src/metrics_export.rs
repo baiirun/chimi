@@ -158,13 +158,16 @@ impl Series {
         let JsonData::Object(labels) = record.get("labels")? else {
             return None;
         };
-        let labels = labels
+        // In ascending key order, as the runtime writes a label set, so a
+        // hand-edited document exports as `std/otel` writes it.
+        let mut labels = labels
             .iter()
             .map(|(key, value)| match value {
                 JsonData::Text(value) => Some((key.clone(), value.clone())),
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()?;
+        labels.sort();
         let kind = match record.text("kind")? {
             "count" => Kind::Count,
             "gauge" => Kind::Gauge,
