@@ -638,6 +638,10 @@ typedef struct {
      carrier 0. */
   pthread_t thread;
   bool bound;
+  /* This carrier's thread holds console_lock. A Carrier field rather than a
+     thread-local of its own: a writer parks between leaving and entering the
+     lock, and may resume on another thread (`carrier` is read afresh). */
+  bool console_lock_held;
 } Carrier;
 
 /* Carrier 0 is the main thread's and runs every fiber until more carriers are
@@ -6916,9 +6920,8 @@ static ConsoleStream console_streams[CONSOLE_STREAM_COUNT] = {
 /* Guards both streams and queues, since a task on any carrier writes lines.
    A writer holds it except while it parks. console_drain_all runs at exit,
    which may start inside a writer that holds it (exhausted_memory), so the
-   holder is noted per thread. */
+   holder is noted per carrier (Carrier.console_lock_held). */
 static pthread_mutex_t console_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local bool console_lock_held;
 
 /* With one carrier there is no other writer, so a line takes no lock: the
    lock measured about 25 ns a line on a program that only prints.
@@ -6926,11 +6929,11 @@ static _Thread_local bool console_lock_held;
 static void console_enter(void) {
   if (carrier_count == 1) return;
   pthread_mutex_lock(&console_lock);
-  console_lock_held = true;
+  carrier->console_lock_held = true;
 }
 static void console_leave(void) {
   if (carrier_count == 1) return;
-  console_lock_held = false;
+  carrier->console_lock_held = false;
   pthread_mutex_unlock(&console_lock);
 }
 
@@ -7025,7 +7028,7 @@ static void console_drain_blocking(const ConsoleStream *stream) {
 }
 
 static void console_drain_all(void) {
-  bool entered = !console_lock_held;
+  bool entered = !carrier->console_lock_held;
   if (entered) console_enter();
   for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
     if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
