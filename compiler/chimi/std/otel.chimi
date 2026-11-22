@@ -1,0 +1,297 @@
+/// OpenTelemetry export: what a run records, in the OTLP/JSON encoding a
+/// collector takes at `/v1/metrics`.
+///
+/// `Otel.metrics_request` turns a `chimi.metrics.v1` document, the runner's
+/// aggregate (observability.md, "The runner's aggregate"), into the body of
+/// an OTLP `ExportMetricsServiceRequest`. It is what
+/// `chimi metrics export --otlp` writes, apart from the scope's version:
+///
+/// ```text
+/// let body = Otel.metrics_request(document, "checkout")
+/// ```
+///
+/// Each name is one metric, and each of its label sets is one data point,
+/// cumulative from the run's start. A count is a monotonic sum, a gauge is a
+/// gauge, and an observation is an explicit-bucket histogram with the
+/// document's bounds. Dropped label sets and kind conflicts are counts named
+/// `chimi.metrics.dropped_label_sets` and `chimi.metrics.dropped_kind_conflicts`,
+/// written only when not zero.
+
+import std/json as Json.{Number, Value}
+import std/list as List
+import std/map as Map.{Map}
+import std/option as Option.{None, Option, Some}
+
+// 2. Failure types.
+
+/// Failures of reading a metrics document.
+pub enum DocumentError {
+  /// The text is not a `chimi.metrics.v1` document this module can read;
+  /// `message` says what is wrong.
+  Invalid(message: Text)
+}
+
+// 6. Encoding.
+
+/// The OTLP/JSON body for the metrics document `document`, with its resource
+/// named `service_name`.
+///
+/// Cost: O(n log n) in the size of the document.
+pub fn metrics_request(document: Text, service_name: Text) -> Text {
+  let fields = case Json.decode(document) {
+    Success(Value.Object(fields)) -> fields
+    Success(_) -> Failure(DocumentError.Invalid("not a JSON object"))
+    Failure(_) -> Failure(DocumentError.Invalid("not a JSON document"))
+  }
+  case Map.get(fields, "schema") {
+    Some(Value.Text("chimi.metrics.v1")) -> Void
+    _ -> Failure(DocumentError.Invalid("not a chimi.metrics.v1 document"))
+  }
+  let times = Times {
+    start: time(fields, "start_unix_ns"),
+    end: time(fields, "time_unix_ns"),
+  }
+  let entries = case Map.get(fields, "metrics") {
+    Some(Value.Array(entries)) -> entries
+    _ -> Failure(DocumentError.Invalid("the document has no metrics list"))
+  }
+  let series = List.map(List.enumerate(entries), fn(entry) {
+    let (index, value) = entry
+    Option.unwrap_or_fail(read_series(value), DocumentError.Invalid("metric ${index} is not a count, gauge or observation"))
+  })
+  let metrics = List.append(List.map(groups(series), fn(group) { metric(group, times) }), dropped(fields, times))
+  Json.encode(object([
+    ("resourceMetrics", Json.array([object([
+      ("resource", object([("attributes", Json.array([attribute("service.name", service_name)]))])),
+      ("scopeMetrics", Json.array([object([
+        ("scope", object([("name", Json.text("chimi"))])),
+        ("metrics", Json.array(metrics)),
+      ])])),
+    ])])),
+  ]))
+}
+
+// 7. Private helpers.
+
+// AGGREGATION_TEMPORALITY_CUMULATIVE.
+const cumulative = 2
+
+struct Times {
+  start: Text,
+  end: Text,
+}
+
+enum Kind {
+  Count
+  Gauge
+  Observe
+}
+
+// One label set of one name, with the numbers as the document spells them.
+struct Series {
+  name: Text,
+  labels: List<(Text, Text)>,
+  kind: Kind,
+  // A count's or gauge's value.
+  value: Value,
+  // An observation's count, sum, bounds and bucket counts.
+  histogram: Option<Histogram>,
+}
+
+struct Histogram {
+  count: Value,
+  sum: Value,
+  bounds: List<Value>,
+  buckets: List<Value>,
+}
+
+// OTLP times are unsigned nanoseconds since 1970, written as decimal text.
+fn time(fields: Map<Text, Value>, key: Text) -> Text {
+  case Map.get(fields, key) {
+    Some(Value.Number(number)) -> case Json.number_to_int(number) {
+      Success(nanoseconds) -> case nanoseconds < 0 {
+        True -> Failure(DocumentError.Invalid("the document's ${key} is before 1970, which OpenTelemetry cannot carry"))
+        False -> spelling(number)
+      }
+      Failure(_) -> Failure(DocumentError.Invalid("the document's ${key} is not a whole number of nanoseconds"))
+    }
+    _ -> Failure(DocumentError.Invalid("the document has no ${key}; it was written by a runtime without run times"))
+  }
+}
+
+fn read_series(value: Value) -> Option<Series> {
+  case value {
+    Value.Object(fields) -> case (Map.get(fields, "name"), Map.get(fields, "labels"), Map.get(fields, "kind")) {
+      (Some(Value.Text(name)), Some(Value.Object(labels)), Some(Value.Text(kind))) -> {
+        let pairs = List.map(Map.entries(labels), fn(label) {
+          let (key, value) = label
+          case value {
+            Value.Text(text) -> Some((key, text))
+            _ -> None
+          }
+        })
+        case List.all(pairs, Option.is_some) {
+          False -> None
+          True -> {
+            let labels = List.filter_map(pairs, fn(pair) { pair })
+            case kind {
+              "count" -> numeric(fields, "value", fn(value) { simple(name, labels, Kind.Count, value) })
+              "gauge" -> numeric(fields, "value", fn(value) { simple(name, labels, Kind.Gauge, value) })
+              "observe" -> observation(fields, name, labels)
+              _ -> None
+            }
+          }
+        }
+      }
+      _ -> None
+    }
+    _ -> None
+  }
+}
+
+fn simple(name: Text, labels: List<(Text, Text)>, kind: Kind, value: Value) -> Series {
+  Series { name: name, labels: labels, kind: kind, value: value, histogram: None }
+}
+
+fn numeric(fields: Map<Text, Value>, key: Text, build: fn(Value) -> Series) -> Option<Series> {
+  case Map.get(fields, key) {
+    Some(Value.Number(number)) -> Some(build(Value.Number(number)))
+    _ -> None
+  }
+}
+
+fn numbers(value: Option<Value>) -> Option<List<Value>> {
+  case value {
+    Some(Value.Array(items)) -> case List.all(items, is_number) {
+      True -> Some(items)
+      False -> None
+    }
+    _ -> None
+  }
+}
+
+fn is_number(value: Value) -> Bool {
+  case value {
+    Value.Number(_) -> True
+    _ -> False
+  }
+}
+
+fn observation(fields: Map<Text, Value>, name: Text, labels: List<(Text, Text)>) -> Option<Series> {
+  case (Map.get(fields, "count"), Map.get(fields, "sum"), numbers(Map.get(fields, "bounds")), numbers(Map.get(fields, "bucket_counts"))) {
+    (Some(Value.Number(count)), Some(Value.Number(sum)), Some(bounds), Some(buckets)) -> case List.length(buckets) == List.length(bounds) + 1 {
+      True -> Some(Series {
+        name: name,
+        labels: labels,
+        kind: Kind.Observe,
+        value: Value.Null,
+        histogram: Some(Histogram { count: Value.Number(count), sum: Value.Number(sum), bounds: bounds, buckets: buckets }),
+      })
+      False -> None
+    }
+    _ -> None
+  }
+}
+
+// The document's series are ordered by name, so one name's label sets are
+// adjacent; a name and kind start a new group when either changes.
+fn groups(series: List<Series>) -> List<List<Series>> {
+  List.reduce(series, [], fn(done, next) {
+    let last = List.length(done) - 1
+    case List.get(done, last) {
+      Some(group) -> case List.first(group) {
+        Some(first) -> case first.name == next.name and first.kind == next.kind {
+          True -> List.set(done, last, List.push(group, next))
+          False -> List.push(done, [next])
+        }
+        None -> List.push(done, [next])
+      }
+      None -> List.push(done, [next])
+    }
+  })
+}
+
+fn metric(group: List<Series>, times: Times) -> Value {
+  let (name, kind) = case group {
+    [first, .._] -> (first.name, first.kind)
+    [] -> ("", Kind.Count)
+  }
+  let points = Json.array(List.map(group, fn(series) { point(series, times) }))
+  let data = case kind {
+    Kind.Count -> ("sum", object([
+      ("dataPoints", points),
+      ("aggregationTemporality", Json.int(cumulative)),
+      ("isMonotonic", Json.boolean(True)),
+    ]))
+    Kind.Gauge -> ("gauge", object([("dataPoints", points)]))
+    Kind.Observe -> ("histogram", object([
+      ("dataPoints", points),
+      ("aggregationTemporality", Json.int(cumulative)),
+    ]))
+  }
+  object([("name", Json.text(name)), data])
+}
+
+fn point(series: Series, times: Times) -> Value {
+  let common = [
+    ("attributes", Json.array(List.map(series.labels, fn(label) {
+      let (key, value) = label
+      attribute(key, value)
+    }))),
+    ("startTimeUnixNano", Json.text(times.start)),
+    ("timeUnixNano", Json.text(times.end)),
+  ]
+  let values = case (series.kind, series.histogram) {
+    (Kind.Count, _) -> [("asInt", as_text(series.value))]
+    (Kind.Gauge, _) -> [("asDouble", series.value)]
+    (Kind.Observe, Some(histogram)) -> [
+      ("count", as_text(histogram.count)),
+      ("sum", histogram.sum),
+      ("bucketCounts", Json.array(List.map(histogram.buckets, as_text))),
+      ("explicitBounds", Json.array(histogram.bounds)),
+    ]
+    (Kind.Observe, None) -> []
+  }
+  object(List.append(common, values))
+}
+
+fn dropped(fields: Map<Text, Value>, times: Times) -> List<Value> {
+  let totals = case Map.get(fields, "dropped") {
+    Some(Value.Object(totals)) -> totals
+    _ -> Map.empty()
+  }
+  List.filter_map([
+    ("label_sets", "chimi.metrics.dropped_label_sets"),
+    ("kind_conflicts", "chimi.metrics.dropped_kind_conflicts"),
+  ], fn(entry) {
+    let (key, name) = entry
+    case Map.get(totals, key) {
+      Some(Value.Number(number)) -> case Json.number_to_int(number) {
+        Success(0) -> None
+        Success(_) -> Some(metric([simple(name, [], Kind.Count, Value.Number(number))], times))
+        Failure(_) -> None
+      }
+      _ -> None
+    }
+  })
+}
+
+// An OTLP 64-bit integer: its decimal digits as a JSON string.
+fn as_text(value: Value) -> Value {
+  case value {
+    Value.Number(number) -> Json.text(spelling(number))
+    other -> other
+  }
+}
+
+fn spelling(number: Number) -> Text {
+  Json.encode(Value.Number(number))
+}
+
+fn attribute(key: Text, value: Text) -> Value {
+  object([("key", Json.text(key)), ("value", object([("stringValue", Json.text(value))]))])
+}
+
+fn object(fields: List<(Text, Value)>) -> Value {
+  Json.object(Map.from(fields))
+}
