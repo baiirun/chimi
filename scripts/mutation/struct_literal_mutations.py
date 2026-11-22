@@ -56,7 +56,7 @@ MUTATIONS = [
     dict(
         name="the positional rejection carries no fix",
         file="src/typing/struct_literals.rs",
-        edits=[("        if written_as_call && !fields.is_empty() {", "        if false && written_as_call && !fields.is_empty() {")],
+        edits=[("        if written_as_call {", "        if false && written_as_call {")],
         targets=["language"],
         filter="struct",
     ),
