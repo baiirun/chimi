@@ -1,0 +1,9 @@
+# mutation run at 95b59bf42ceef7ccddcd0373a52f9a22e9efdf29
+# id_map_mutations.py: 5 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (25s)
+KILLED       every id hashes to zero [lib] (6s)
+KILLED       an even constant drops the low bit [lib] (6s)
+KILLED       the id is not multiplied [lib] (6s)
+KILLED       bytes are ignored [lib] (6s)
+KILLED       bytes are not chained [lib] (6s)
+# result: every mutant killed
