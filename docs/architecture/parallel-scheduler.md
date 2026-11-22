@@ -1310,6 +1310,15 @@ the gates measure, so it goes first.
        - This is soundness work, so 4e-1 and 4e-2 get an Opus review with
          a verifier, a TSan run (gcc, as for the C side) of the carrier
          suites, and the simulation build.
+     - 4e-1 as built: `carrier::Kernel` holds one cache-line-padded lock
+       per carrier and the scheduler in an `UnsafeCell`; `Locked::with`
+       takes every lock in carrier order, each with the 4d-1 spin, and
+       `Kernel::lock_all` does so blocking for setup and tests. Pairs
+       (20,000 rounds, ten alternating runs each against main at 062029f):
+       one, two and four carriers within noise (832 against 850 ms at one
+       carrier), eight carriers 690 to 853 ms, the cost of eight locks per
+       hold. It lands with 4e-2, which takes it back off the hot path,
+       rather than alone.
      - Risks: the C handle table's lock is taken by every Sender copy and
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
