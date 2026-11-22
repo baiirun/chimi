@@ -1,0 +1,4 @@
+using_binding_mutations.py, 2026-11-22: 10 mutants, 10 killed.
+The first seven ran at 5790878 (two needed a type annotation to build) and
+again at ef25eb6; the row-parameter and provider-scope mutants were added
+after review and killed at ef25eb6 and 7d2a74c.
