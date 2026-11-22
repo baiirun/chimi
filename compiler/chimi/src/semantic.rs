@@ -400,11 +400,14 @@ fn name_from(token: &SyntaxToken<'_>) -> Name {
     }
 }
 
+pub(crate) use crate::compiler::ModuleOrigin;
+
 #[derive(Debug)]
 pub(crate) struct ModuleSource {
     pub(crate) path: String,
     pub(crate) source: SourceSnapshot,
     pub(crate) syntax: Option<Arc<ParseResult>>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -1026,6 +1029,7 @@ pub(crate) struct SemanticModule {
     pub(crate) imports: Vec<ModuleImport>,
     pub(crate) declarations: Vec<ModuleDeclaration>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Debug)]
@@ -1070,6 +1074,7 @@ pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
                 input.path,
                 input.source,
                 syntax,
+                input.origin,
             )
         })
         .collect();
@@ -1081,9 +1086,17 @@ pub(crate) fn lower_module(
     path: String,
     mut source: SourceSnapshot,
     syntax: Arc<ParseResult>,
+    origin: ModuleOrigin,
 ) -> Arc<SemanticModule> {
     source.assign_file_id(FileId::new(id.raw()));
-    Arc::new(ProjectLowerer::lower(id, path, source, syntax))
+    let mut module = ProjectLowerer::lower(id, path, source, syntax);
+    // A dependency's tests are its own package's concern: `chimi test` runs
+    // only the entry package's (packages.md, "Commands").
+    if origin == ModuleOrigin::Dependency {
+        module.declarations.retain(|declaration| !declaration.test);
+    }
+    module.origin = origin;
+    Arc::new(module)
 }
 
 pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
@@ -1243,6 +1256,7 @@ impl ProjectLowerer {
             imports,
             declarations,
             diagnostics,
+            origin: ModuleOrigin::Own,
         }
     }
 

@@ -1,0 +1,13 @@
+# mutation run at b52d83913dc2c6744774ceebd7b1b6e2dc72b463
+# workspaces_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [lib -- project::] (104s)
+BASELINE ok  [packages -- workspace] (61s)
+SURVIVED     only the first member loads [lib -- project::] (42s)
+KILLED       only the first member is the build's own [lib -- project::] (36s)
+KILLED       two members may share a name [lib -- project::] (11s)
+KILLED       --root takes a workspace [lib -- project::] (4s)
+KILLED       artifacts stay under the current directory [packages -- workspace] (6s)
+KILLED       doc of a directory prints text [packages -- workspace] (1s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# rerun after review fixes: 'only the first member loads' now killed; 'a member may sit outside the workspace' and 'a member may be listed twice' killed
