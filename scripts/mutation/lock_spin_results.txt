@@ -1,0 +1,8 @@
+# mutation run at 797d4b9caf0f69d481765f0c72bcf23bd58a94e8
+# lock_spin_mutations.py: 4 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (26s)
+KILLED       a poisoned lock is not taken over during the spin [lib] (6s)
+KILLED       a poisoned lock is not taken over after the spin [lib] (6s)
+SURVIVED     no spin (performance only) [lib] (6s)
+SURVIVED     the spin never gives up (performance only) [lib] (6s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
