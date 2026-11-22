@@ -1,0 +1,7 @@
+# mutation run at 4cfcaab (CHI-295): every mutant killed
+BASELINE ok  [language -- a_host_served_need] (156s)
+KILLED       the need is read as a plain reference [language -- a_host_served_need] (68s)
+KILLED       console is not host-served [language -- a_host_served_need] (52s)
+KILLED       random is not host-served [language -- a_host_served_need] (17s)
+KILLED       the record keeps only the first method [language -- a_host_served_need] (64s)
+KILLED       the record keeps only the last method [language -- a_host_served_need] (38s)
