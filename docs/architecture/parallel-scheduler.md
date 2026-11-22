@@ -5,7 +5,9 @@
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
 thread takes. Steps 1 to 3 are done: `--carriers=<n>` runs processes on n
 threads around one kernel lock, and the default stays one carrier
-(decisions.md, 2026-11-21). Step 4 is planned below ("Step 4 plan").
+(decisions.md, 2026-11-21). Step 4 is planned below ("Step 4 plan"):
+4a to 4c are done (fibers move between threads, and an idle carrier steals
+from a sleeping one); 4d to 4f split the kernel lock.
 
 ## Why
 
@@ -1113,7 +1115,7 @@ the gates measure, so it goes first.
        Rust fibers) moving threads. The C side rests on the simulation
        build, which moves every resume between two carriers on one thread,
        and on reading the generated code (gcc and clang, x86-64 and
-       aarch64). 4c adds C fibers that really move.
+       aarch64). 4c adds C fibers that really move (see 4c as landed).
      - `Scheduler::rehome` moves a task that neither runs nor drains to
        another carrier, and lets its fiber's next resume claim that
        carrier's thread (`Home::release`). Only tests call it until 4c.
@@ -1135,6 +1137,36 @@ the gates measure, so it goes first.
      carriers.
    - Parallel counting must not get slower.
    - A stolen process keeps its membership's home for restarts.
+   - 4c as landed:
+     - `Scheduler::steal` runs in `next_runnable` once the carrier's own
+       jobs, ready queue and host releases are empty. It takes the front
+       of the first parked carrier's ready queue, trying carriers in turn
+       from the next one, and `move_home` makes the thief its home. Carrier
+       0 never sets its parked flag, so it is never a victim; it can steal.
+     - Only a task that has run before is taken. A task that never ran is
+       new work, and taking it would pull a fan-out onto the carrier that
+       started it. A carrier whose front entry never ran is skipped, and
+       the search goes on to the next one.
+     - "Parked" is the flag `park_step` sets and the carrier's next kernel
+       access clears. It covers the 50 µs spin before the block, so a
+       spinning carrier can be stolen from; it then finds nothing and parks
+       again. Telling the two apart needs a flag the carrier writes outside
+       the lock, and the measurements did not call for it.
+     - When the steal empties the victim's ready queue and jobs, its wake
+       mark is withdrawn before the lock is released. A carrier other than
+       0 is marked only for its queued work or the end of the run, so
+       nothing is lost. Without this, stop on four carriers was 67 µs.
+     - Jobs (unwinds) are not stolen. A graceful stop wakes the member,
+       which ends itself, so the stop chain goes through the ready queue.
+       A first try that unwound a parked process body on the deciding
+       carrier left stop unchanged for that reason.
+     - Results (multi-carrier-baseline.md, "Stealing"): stop on four
+       carriers 85 to 19 µs, within PG04's limit at every count; the serial
+       round trip 4 µs at every count (it was 42 µs on eight); fan-out,
+       parallel messaging and start unchanged.
+     - Runtime C fibers now really move: about 15,000 steals ran across
+       the carriers and carrier_stress suites on real threads (counted with
+       a temporary log), and both suites pass.
 4. **4d: the kernel split by owner, still under one lock.** Per carrier:
    the tasks homed on it, its ready queue, jobs and timers, the mailboxes
    of incarnations homed on it, and the channels created on it. Shared:

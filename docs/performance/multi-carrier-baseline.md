@@ -211,6 +211,47 @@ fiber may move threads. Its cost on one carrier, against main at
   (`Carrier *const here = carrier;`) and an inline thread-pointer read on
   Linux brought it to the numbers above.
 
+## Stealing (step 4 PR 4c)
+
+Same host and command as above, release binaries at the 4c commit; the
+"before" column is the step 4 measurement above (4a), taken the same way.
+
+| Measurement | Carriers | Before (4a) | After (4c) |
+| --- | --- | --- | --- |
+| PG04 stop, µs per process | 1 | 21.1 | 17.2 |
+| | 2 | 64.9 | 29.9 |
+| | 4 | 84.7 | 19.4 |
+| | 8 | 81.7 | 23.4 |
+| Serial round trip (ping-pong), µs | 1 | 3.8 | 4.3 |
+| | 2 | 8.9 | 4.2 |
+| | 4 | 11.8 | 4.1 |
+| | 8 | 42.3 | 3.9 |
+| PG04 start, µs per process | 1 | 29.4 | 26.2 |
+| | 4 | 50.6 | 44.5 |
+| | 8 | 53.1 | 50.9 |
+| Parallel counting (fan-out), ms | 1 | 2991 | 3532 |
+| | 4 | 962 | 894 |
+| | 8 | 766 | 799 |
+| Parallel messaging (pairs), ms | 1 | 758 | 720 |
+| | 4 | 2133 | 2181 |
+
+- Stop and the round trip were bound by the wake of a sleeping carrier
+  (step 4 above). An idle carrier now runs that work itself: the
+  supervisor's carrier takes each member woken to stop, and main's carrier
+  takes the echo process it just sent to. Stop on four carriers is now
+  about one carrier's, inside PG04's 30 µs limit at every count, and the
+  round trip no longer grows with the carrier count.
+- Fan-out is unchanged within this host's noise (the one-carrier runs moved
+  18% between the two measurements). Only a task that has run before is
+  taken, so new work still starts where placement put it.
+- Parallel messaging and process start are unchanged: both wait on the
+  kernel lock, which 4d to 4f address. PG04 start stays just over its 50 µs
+  limit at eight carriers, as before.
+- The thief withdraws the sleeping carrier's wake when it took the last of
+  that carrier's work. Without that, stop on four carriers measured 67 µs:
+  the woken carrier found nothing to run but took the kernel lock from the
+  carrier that was working.
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08
