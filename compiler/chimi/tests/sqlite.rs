@@ -55,7 +55,7 @@ struct Run {
 /// directory; `memory(body)` on one connection to `:memory:`; `failure(f)`
 /// is what `f` failed with.
 const PRELUDE: &str = r#"import std/bytes as Bytes
-import std/clock as Clock
+import std/clock as Clock.{Clock}
 import std/decimal as Decimal
 import std/duration as Duration
 import std/fs as Fs
@@ -70,18 +70,18 @@ import std/sqlite as Sqlite
 import std/task as Task
 import std/test as Test
 
-fn database<T, E, R>(body: fn(Database) -> T errors E needs R) -> T needs R {
+fn database<T, E, R>(body: fn(Database) -> T errors E needs R) -> T needs R + { clock: Clock } {
   Fs.temporary_directory(fn(directory) {
     within(directory, "app.db", body)
   })
 }
 
-fn within<T, E, R>(directory: Path, name: Text, body: fn(Database) -> T errors E needs R) -> T needs R {
+fn within<T, E, R>(directory: Path, name: Text, body: fn(Database) -> T errors E needs R) -> T needs R + { clock: Clock } {
   let driver = Sqlite.driver() using { files: Fs.files_within(directory) }
   Sql.open(driver, Path.to_text(Path.join(directory, name)), Sql.defaults, body)
 }
 
-fn memory<T, E, R>(body: fn(Database) -> T errors E needs R) -> T needs R {
+fn memory<T, E, R>(body: fn(Database) -> T errors E needs R) -> T needs R + { clock: Clock } {
   Fs.temporary_directory(fn(directory) {
     let driver = Sqlite.driver() using { files: Fs.files_within(directory) }
     Sql.open(driver, ":memory:", { ..Sql.defaults, max_connections: 1 }, body)

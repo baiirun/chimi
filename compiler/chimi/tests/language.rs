@@ -6680,6 +6680,133 @@ fn the_formatter_keeps_a_repeated_member_import_as_written() {
     assert_eq!(check_codes(formatted.text()), ["E_IMPORT_MEMBER_CONFLICT"]);
 }
 
+const PAY_PRELUDE: &str = concat!(
+    "import std/clock as Clock.{Clock}\n",
+    "import std/io.{Console}\n",
+    "interface Pay {\n  charge: fn(Int) -> Void\n}\n",
+    "fn charge(amount: Int) -> Void needs { pay: Pay } {\n  pay.charge(amount)\n}\n",
+);
+
+fn diagnostics_of(source: &str) -> Vec<(String, String)> {
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+        .expect("valid module path");
+    Compiler::type_project(vec![module])
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
+        .collect()
+}
+
+// decisions.md 2026-11-22: a written needs clause is complete. A need reached
+// through a call, and a runner-closed one, are both missing entries.
+#[test]
+fn a_written_needs_clause_must_list_every_need_its_body_reaches() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "fn checkout(amount: Int) -> Void needs { console: Console } {\n",
+            "  charge(amount)\n  let _ = Clock.now()\n  Void\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(
+        diagnostics_of(&source),
+        [
+            (
+                "T4204".to_owned(),
+                "checkout writes its needs, so the list must be complete: add `clock: Clock`, \
+                 which its body reaches"
+                    .to_owned()
+            ),
+            (
+                "T4204".to_owned(),
+                "checkout writes its needs, so the list must be complete: add `pay: Pay`, \
+                 which its body reaches"
+                    .to_owned()
+            ),
+        ]
+    );
+}
+
+// A need a `using` in the body supplies is not reached; a row parameter the
+// clause writes covers what binds it; no clause keeps needs inferred; a listed
+// need the body does not reach is allowed.
+#[test]
+fn a_complete_needs_clause_counts_using_rows_and_extra_entries() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "fn supplied(amount: Int) -> Void needs { console: Console } {\n",
+            "  charge(amount) using { pay: { charge: fn(_) { Void } } }\n}\n",
+            "fn generic<R>(f: fn() -> Void needs R) -> Void needs R {\n  f()\n}\n",
+            "fn inferred(amount: Int) {\n  charge(amount)\n}\n",
+            "fn extra(amount: Int) -> Void needs { pay: Pay, clock: Clock } {\n  charge(amount)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(diagnostics_of(&source), []);
+}
+
+// A function's own row parameter that its body reaches must be written too.
+#[test]
+fn a_written_needs_clause_must_list_a_reached_row_parameter() {
+    let source = concat!(
+        "import std/io.{Console}\n",
+        "fn g<R>(f: fn() -> Void needs R) -> Void needs { console: Console } {\n  f()\n}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    assert_eq!(
+        diagnostics_of(source),
+        [(
+            "T4204".to_owned(),
+            "g writes its needs, so the list must be complete: add the row `R`, which its body \
+             reaches"
+                .to_owned()
+        )]
+    );
+}
+
+// Writing a need under a reached name with another interface is a conflict,
+// not a listed need: the program would otherwise defect at run time.
+#[test]
+fn a_written_need_under_a_reached_name_must_name_its_interface() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "interface Other {\n  ping: fn() -> Int\n}\n",
+            "fn renamed() -> Void needs { pay: Other } {\n  charge(1)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(
+        diagnostics_of(&source),
+        [(
+            "T4103".to_owned(),
+            "renamed reaches the need `pay` as `Other` and `Pay`; one name needs one interface"
+                .to_owned()
+        )]
+    );
+}
+
+// `main` follows the rule too, so a written clause can no longer hide a
+// runner-closed need (CHI-285).
+#[test]
+fn main_with_a_written_clause_lists_its_runner_needs() {
+    let source = concat!(
+        "import std/clock as Clock.{Clock}\n",
+        "import std/io.{Console}\n",
+        "pub fn main() -> Int needs { console: Console } {\n  let _ = Clock.now()\n  0\n}\n",
+    );
+    assert_eq!(check_codes(source), ["T4204"]);
+    let listed = source.replace("{ console: Console }", "{ console: Console, clock: Clock }");
+    assert_eq!(check_codes(&listed), Vec::<String>::new());
+    // A need only `using` can close is the root check's to report, once.
+    let unclosed = format!(
+        "{PAY_PRELUDE}pub fn main() -> Int needs {{ console: Console }} {{\n  charge(1)\n  0\n}}\n"
+    );
+    assert_eq!(check_codes(&unclosed), ["E5002"]);
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {
