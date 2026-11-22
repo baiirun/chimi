@@ -10,7 +10,7 @@ use crate::json::{JsonData, decode_json};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
-const SCHEMA: &str = "chimi.runtime.v1";
+pub(crate) const SCHEMA: &str = "chimi.runtime.v1";
 
 /// Where a source range is, for the report: `path:line:column` when the
 /// trace's source is known, otherwise `None`.
@@ -401,34 +401,44 @@ fn describe_outcome(outcome: &str, record: &Record<'_>) -> String {
 }
 
 /// One JSON object's fields, read by name.
-struct Record<'a>(&'a [(String, JsonData)]);
+pub(crate) struct Record<'a>(pub(crate) &'a [(String, JsonData)]);
 
 impl<'a> Record<'a> {
-    fn get(&self, name: &str) -> Option<&'a JsonData> {
+    pub(crate) fn get(&self, name: &str) -> Option<&'a JsonData> {
         self.0
             .iter()
             .find(|(field, _)| field == name)
             .map(|(_, value)| value)
     }
 
-    fn text(&self, name: &str) -> Option<&'a str> {
+    pub(crate) fn text(&self, name: &str) -> Option<&'a str> {
         match self.get(name)? {
             JsonData::Text(text) => Some(text),
             _ => None,
         }
     }
 
-    fn number(&self, name: &str) -> Option<u64> {
+    pub(crate) fn number(&self, name: &str) -> Option<u64> {
         match self.get(name)? {
             JsonData::Number(number) => number.parse().ok(),
             _ => None,
         }
     }
 
-    fn attribute_text(&self, name: &str) -> Option<&'a str> {
+    pub(crate) fn attribute_text(&self, name: &str) -> Option<&'a str> {
         let JsonData::Object(attributes) = self.get("attributes")? else {
             return None;
         };
         Record(attributes).text(name)
+    }
+
+    pub(crate) fn attribute_number(&self, name: &str) -> Option<i64> {
+        let JsonData::Object(attributes) = self.get("attributes")? else {
+            return None;
+        };
+        match Record(attributes).get(name)? {
+            JsonData::Number(number) => number.parse().ok(),
+            _ => None,
+        }
     }
 }
