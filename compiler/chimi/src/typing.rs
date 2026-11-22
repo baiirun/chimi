@@ -9117,6 +9117,21 @@ impl ProjectTypeChecker {
         name: &crate::semantic::Name,
         interface: TypeId,
     ) {
+        let resolved = self.resolve_inference_type(interface);
+        // A method call on a record-typed need has no interface member to
+        // trace as a dependency call, and Core lowering assumes one.
+        if matches!(self.types[resolved.raw() as usize], CanonicalType::Record(_)) {
+            let shape = self.type_display_name(resolved);
+            self.type_error(
+                module_id,
+                "T4105",
+                name,
+                format!(
+                    "need `{}` has type `{shape}`; a need's type is an interface, so declare `interface Name {{ ... }}` with these members and write `{}: Name`",
+                    name.text, name.text
+                ),
+            );
+        }
         if let Some(existing) = entries
             .iter()
             .find(|entry: &&Need| entry.lexical_name == name.text)
