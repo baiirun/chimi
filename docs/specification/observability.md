@@ -253,10 +253,12 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text
   toolchain's version.
 - Object members are written in ascending byte order, as `Json.encode`
   writes every object; OTLP/JSON readers do not depend on member order.
+  Attributes are in ascending key order, as the CLI writes them.
 - A document it cannot read MUST fail with `DocumentError.Invalid` and the
   reason the CLI gives: not JSON, not an object, the wrong schema, no
-  `metrics` list, a start or end time missing or before 1970, or a series
-  that is not a count, gauge or observation (named by its index).
+  `metrics` list, a start or end time missing, before 1970 or not a whole
+  number below 2^64, or a series that is not an object or not a count,
+  gauge or observation (named by its index).
 - It is pure: no need, no host operation, the same text on both backends.
 
 ### Not in this slice

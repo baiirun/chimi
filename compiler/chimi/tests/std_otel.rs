@@ -97,11 +97,14 @@ const DOCUMENT: &str = concat!(
     r#"{"name":"charge_seconds","labels":{},"kind":"observe","count":4,"sum":11.75,"#,
     r#""bounds":[0.0,0.005,0.01,0.025,0.05,0.075,0.1,0.25,0.5,0.75,1.0,2.5,5.0,7.5,10.0],"#,
     r#""bucket_counts":[1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1]},"#,
-    r#"{"name":"orders","labels":{"method":"POST","route":"/pay"},"kind":"count","value":3},"#,
+    r#"{"name":"mode","labels":{},"kind":"count","value":1},"#,
+    r#"{"name":"mode","labels":{},"kind":"gauge","value":2.0},"#,
+    r#"{"name":"orders","labels":{"route":"/pay","method":"POST"},"kind":"count","value":3},"#,
     r#"{"name":"orders","labels":{},"kind":"count","value":9223372036854775807},"#,
-    r#"{"name":"queue \"depth\"","labels":{"route":"b"},"kind":"gauge","value":-3.5e-7}"#,
-    r#"],"dropped":{"label_sets":2,"kind_conflicts":1},"#,
-    r#""start_unix_ns":1794303000000000000,"time_unix_ns":1794303002000000000}"#,
+    r#"{"name":"queue \"depth\"","labels":{"route":"b"},"kind":"gauge","value":-3.5e-7},"#,
+    r#"{"name":"\u00e9t\u00e9 \ud83d\ude00","labels":{"z\u0000":"\u2603"},"kind":"gauge","value":1e3}"#,
+    r#"],"dropped":{"label_sets":2,"kind_conflicts":18446744073709551615},"#,
+    r#""start_unix_ns":1794303000000000000,"time_unix_ns":18446744073709551615}"#,
     "\n"
 );
 
@@ -126,8 +129,9 @@ pub fn main() -> Text needs { files: Files } {
 // The body is the CLI's export, compared as JSON values, apart from the
 // scope's version, which only the CLI knows. Rejects a count, histogram
 // count or bucket count written as a number instead of decimal text, a gauge
-// or bound rounded, labels or groups lost, a dropped total left out, or an
-// escape gone wrong.
+// or bound rounded, labels or groups lost, labels out of key order, a name
+// that changes kind merged into one metric, a time or dropped total above
+// the largest `Int` refused or left out, or an escape gone wrong.
 #[test]
 fn a_metrics_request_is_what_the_cli_exports() {
     let scratch = Scratch::new("matches-cli");
@@ -145,9 +149,42 @@ fn a_metrics_request_is_what_the_cli_exports() {
     let version = format!(",\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
     assert!(export.contains(&version), "{export}");
     scratch.write("export.json", &export.replace(&version, ""));
-    assert!(export.contains("\"chimi.metrics.dropped_label_sets\""), "{export}");
+    assert!(
+        export.contains("\"chimi.metrics.dropped_kind_conflicts\""),
+        "{export}"
+    );
+    assert!(export.contains(r#"[{"key":"method""#), "{export}");
 
     assert_eq!(scratch.outcome(CONVERT), "same");
+}
+
+// Documents a runtime does not write but a person might: no metrics, no
+// dropped totals, and dropped totals that are not whole numbers. Rejects a
+// dropped total of zero, a fraction or a negative number written as a count.
+#[test]
+fn an_unusual_document_is_what_the_cli_exports() {
+    let scratch = Scratch::new("unusual");
+    for document in [
+        r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":0,"time_unix_ns":0}"#,
+        r#"{"schema":"chimi.metrics.v1","metrics":[],"dropped":{"label_sets":0,"kind_conflicts":-2},"start_unix_ns":5,"time_unix_ns":9}"#,
+        r#"{"schema":"chimi.metrics.v1","metrics":[],"dropped":{"label_sets":2.0,"kind_conflicts":1e1},"start_unix_ns":5,"time_unix_ns":9}"#,
+    ] {
+        scratch.write("document.json", document);
+        let export = scratch.chimi(&[
+            "metrics",
+            "export",
+            "--otlp",
+            "--service-name",
+            "shop",
+            "document.json",
+        ]);
+        assert!(export.status.success(), "{export:?}");
+        let export = String::from_utf8(export.stdout).unwrap();
+        assert!(!export.contains("dropped"), "{export}");
+        let version = format!(",\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+        scratch.write("export.json", &export.replace(&version, ""));
+        assert_eq!(scratch.outcome(CONVERT), "same", "{document}");
+    }
 }
 
 // A document the encoder cannot read fails with the reason the CLI gives.
@@ -157,7 +194,10 @@ fn a_document_that_is_not_metrics_fails_with_the_reason() {
     let cases = [
         ("[]", "not a JSON object"),
         ("{", "not a JSON document"),
-        (r#"{"schema":"chimi.runtime.v1"}"#, "not a chimi.metrics.v1 document"),
+        (
+            r#"{"schema":"chimi.runtime.v1"}"#,
+            "not a chimi.metrics.v1 document",
+        ),
         (
             r#"{"schema":"chimi.metrics.v1","metrics":[]}"#,
             "the document has no start_unix_ns; it was written by a runtime without run times",
@@ -165,6 +205,26 @@ fn a_document_that_is_not_metrics_fails_with_the_reason() {
         (
             r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":-1,"time_unix_ns":0}"#,
             "the document's start_unix_ns is before 1970, which OpenTelemetry cannot carry",
+        ),
+        (
+            r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":-0,"time_unix_ns":0}"#,
+            "the document's start_unix_ns is before 1970, which OpenTelemetry cannot carry",
+        ),
+        (
+            r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":0,"time_unix_ns":1.0}"#,
+            "the document has no time_unix_ns; it was written by a runtime without run times",
+        ),
+        (
+            r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":1e3,"time_unix_ns":0}"#,
+            "the document has no start_unix_ns; it was written by a runtime without run times",
+        ),
+        (
+            r#"{"schema":"chimi.metrics.v1","metrics":[],"start_unix_ns":18446744073709551616,"time_unix_ns":0}"#,
+            "the document has no start_unix_ns; it was written by a runtime without run times",
+        ),
+        (
+            r#"{"schema":"chimi.metrics.v1","metrics":[3],"start_unix_ns":0,"time_unix_ns":0}"#,
+            "metric 0 is not an object",
         ),
         (
             r#"{"schema":"chimi.metrics.v1","start_unix_ns":0,"time_unix_ns":0}"#,

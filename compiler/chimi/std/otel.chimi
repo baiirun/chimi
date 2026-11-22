@@ -21,6 +21,7 @@ import std/json as Json.{Number, Value}
 import std/list as List
 import std/map as Map.{Map}
 import std/option as Option.{None, Option, Some}
+import std/text as Text
 
 // 2. Failure types.
 
@@ -31,10 +32,14 @@ pub enum DocumentError {
   Invalid(message: Text)
 }
 
-// 6. Encoding.
+// 7. Conversions.
 
 /// The OTLP/JSON body for the metrics document `document`, with its resource
 /// named `service_name`.
+///
+/// Fails with: `DocumentError.Invalid` when `document` is not a
+/// `chimi.metrics.v1` document, with the reason `chimi metrics export --otlp`
+/// gives.
 ///
 /// Cost: O(n log n) in the size of the document.
 pub fn metrics_request(document: Text, service_name: Text) -> Text {
@@ -57,7 +62,10 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text {
   }
   let series = List.map(List.enumerate(entries), fn(entry) {
     let (index, value) = entry
-    Option.unwrap_or_fail(read_series(value), DocumentError.Invalid("metric ${index} is not a count, gauge or observation"))
+    case value {
+      Value.Object(_) -> Option.unwrap_or_fail(read_series(value), DocumentError.Invalid("metric ${index} is not a count, gauge or observation"))
+      _ -> Failure(DocumentError.Invalid("metric ${index} is not an object"))
+    }
   })
   let metrics = List.append(List.map(groups(series), fn(group) { metric(group, times) }), dropped(fields, times))
   Json.encode(object([
@@ -71,7 +79,7 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text {
   ]))
 }
 
-// 7. Private helpers.
+// 8. Private helpers.
 
 // AGGREGATION_TEMPORALITY_CUMULATIVE.
 const cumulative = 2
@@ -107,16 +115,28 @@ struct Histogram {
 
 // OTLP times are unsigned nanoseconds since 1970, written as decimal text.
 fn time(fields: Map<Text, Value>, key: Text) -> Text {
+  let missing = DocumentError.Invalid("the document has no ${key}; it was written by a runtime without run times")
   case Map.get(fields, key) {
-    Some(Value.Number(number)) -> case Json.number_to_int(number) {
-      Success(nanoseconds) -> case nanoseconds < 0 {
-        True -> Failure(DocumentError.Invalid("the document's ${key} is before 1970, which OpenTelemetry cannot carry"))
-        False -> spelling(number)
+    Some(Value.Number(number)) -> {
+      let digits = spelling(number)
+      case (Text.starts_with(digits, "-"), is_unsigned(digits)) {
+        (True, _) -> Failure(DocumentError.Invalid("the document's ${key} is before 1970, which OpenTelemetry cannot carry"))
+        (False, True) -> digits
+        (False, False) -> Failure(missing)
       }
-      Failure(_) -> Failure(DocumentError.Invalid("the document's ${key} is not a whole number of nanoseconds"))
     }
-    _ -> Failure(DocumentError.Invalid("the document has no ${key}; it was written by a runtime without run times"))
+    _ -> Failure(missing)
   }
+}
+
+// Whether a JSON number's spelling is a whole number from 0 to 2^64 - 1,
+// which is what an OTLP unsigned 64-bit field holds. A valid JSON number
+// without a sign, fraction or exponent is decimal digits with no leading
+// zero, so comparing equal-length spellings compares the numbers.
+fn is_unsigned(digits: Text) -> Bool {
+  let whole = not List.any(["-", ".", "e", "E"], fn(mark) { Text.contains(digits, mark) })
+  let length = Text.byte_length(digits)
+  whole and (length < 20 or (length == 20 and digits <= "18446744073709551615"))
 }
 
 fn read_series(value: Value) -> Option<Series> {
@@ -135,8 +155,12 @@ fn read_series(value: Value) -> Option<Series> {
           True -> {
             let labels = List.filter_map(pairs, fn(pair) { pair })
             case kind {
-              "count" -> numeric(fields, "value", fn(value) { simple(name, labels, Kind.Count, value) })
-              "gauge" -> numeric(fields, "value", fn(value) { simple(name, labels, Kind.Gauge, value) })
+              "count" -> numeric(fields, "value", fn(value) {
+                simple(name, labels, Kind.Count, value)
+              })
+              "gauge" -> numeric(fields, "value", fn(value) {
+                simple(name, labels, Kind.Gauge, value)
+              })
               "observe" -> observation(fields, name, labels)
               _ -> None
             }
@@ -150,7 +174,9 @@ fn read_series(value: Value) -> Option<Series> {
 }
 
 fn simple(name: Text, labels: List<(Text, Text)>, kind: Kind, value: Value) -> Series {
-  Series { name: name, labels: labels, kind: kind, value: value, histogram: None }
+  Series {
+    name: name, labels: labels, kind: kind, value: value, histogram: None
+  }
 }
 
 fn numeric(fields: Map<Text, Value>, key: Text, build: fn(Value) -> Series) -> Option<Series> {
@@ -185,7 +211,9 @@ fn observation(fields: Map<Text, Value>, name: Text, labels: List<(Text, Text)>)
         labels: labels,
         kind: Kind.Observe,
         value: Value.Null,
-        histogram: Some(Histogram { count: Value.Number(count), sum: Value.Number(sum), bounds: bounds, buckets: buckets }),
+        histogram: Some(Histogram {
+          count: Value.Number(count), sum: Value.Number(sum), bounds: bounds, buckets: buckets
+        }),
       })
       False -> None
     }
@@ -266,10 +294,12 @@ fn dropped(fields: Map<Text, Value>, times: Times) -> List<Value> {
   ], fn(entry) {
     let (key, name) = entry
     case Map.get(totals, key) {
-      Some(Value.Number(number)) -> case Json.number_to_int(number) {
-        Success(0) -> None
-        Success(_) -> Some(metric([simple(name, [], Kind.Count, Value.Number(number))], times))
-        Failure(_) -> None
+      Some(Value.Number(number)) -> {
+        let digits = spelling(number)
+        case is_unsigned(digits) and digits != "0" {
+          True -> Some(metric([simple(name, [], Kind.Count, Value.Number(number))], times))
+          False -> None
+        }
       }
       _ -> None
     }

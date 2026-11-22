@@ -12,7 +12,30 @@ def mutant(name, edits):
     return dict(name=name, file=OTEL, edits=edits, targets=["std_otel"], filter="")
 
 
+EXPORT = "src/metrics_export.rs"
+
+
 MUTATIONS = [
+    dict(name="the CLI writes labels in document order", file=EXPORT, edits=[(
+        "        labels.sort();\n",
+        "",
+    )], targets=["std_otel"], filter=""),
+    mutant("a number above 2^64 - 1 counts as unsigned", [(
+        "(length < 20 or (length == 20 and digits <= \"18446744073709551615\"))",
+        "length <= 20",
+    )]),
+    mutant("a fraction or exponent counts as unsigned", [(
+        "[\"-\", \".\", \"e\", \"E\"]",
+        "[\"-\"]",
+    )]),
+    mutant("a 20-digit number below 2^64 is refused", [(
+        "(length < 20 or (length == 20 and digits <= \"18446744073709551615\"))",
+        "length < 20",
+    )]),
+    mutant("a non-object entry gets the series message", [(
+        "      _ -> Failure(DocumentError.Invalid(\"metric ${index} is not an object\"))",
+        "      _ -> Failure(DocumentError.Invalid(\"metric ${index} is not a count, gauge or observation\"))",
+    )]),
     mutant("a 64-bit integer is written as a number", [(
         "    Value.Number(number) -> Json.text(spelling(number))",
         "    Value.Number(number) -> Value.Number(number)",
@@ -26,16 +49,16 @@ MUTATIONS = [
         "first.name == next.name",
     )]),
     mutant("a zero dropped total is written", [(
-        "        Success(0) -> None",
-        "        Success(-1) -> None",
+        "is_unsigned(digits) and digits != \"0\"",
+        "is_unsigned(digits)",
     )]),
     mutant("a histogram of the wrong shape is read", [(
         "case List.length(buckets) == List.length(bounds) + 1 {",
         "case List.length(buckets) > 0 {",
     )]),
     mutant("a time before 1970 is accepted", [(
-        "      Success(nanoseconds) -> case nanoseconds < 0 {",
-        "      Success(nanoseconds) -> case nanoseconds < -1 {",
+        "case (Text.starts_with(digits, \"-\"), is_unsigned(digits)) {",
+        "case (False, is_unsigned(digits)) {",
     )]),
     mutant("a count is not monotonic", [(
         "      (\"isMonotonic\", Json.boolean(True)),\n",
