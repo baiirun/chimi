@@ -260,6 +260,9 @@ struct ChimiRuntime {
   uint32_t carriers;
   /* `--clock-start`: the virtual source's Timestamp at Instant zero, in Unix ns. */
   int64_t clock_start;
+  /* The Unix time at the execution clock's origin, set as the computation
+     starts (start_unix_nanos). */
+  int64_t start_unix_ns;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
   /* The latest process incarnation that defected, from the scheduler's
@@ -2722,7 +2725,7 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
   bool started = strcmp(event, "computation_started") == 0;
   /* The computation starts at the clock's origin, before the scheduler runs. */
   fprintf(output, "\"time_ns\":%" PRId64, started ? INT64_C(0) : chimi_fiber_now());
-  if (started) fprintf(output, ",\"start_unix_ns\":%" PRId64, start_unix_nanos(runtime));
+  if (started) fprintf(output, ",\"start_unix_ns\":%" PRId64, runtime->start_unix_ns);
   fputs("}}\n", output);
   pthread_mutex_unlock(&trace_lock);
 }
@@ -7420,8 +7423,9 @@ static int metric_series_order(const void *left, const void *right) {
 
 static bool close_output(FILE *output);
 
-/* Writes the metrics document; true when the write failed. */
-static bool write_metrics(FILE *output) {
+/* Writes the metrics document, whose counts began at `started`; true when
+   the write failed. */
+static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *output) {
   if (!output) return false;
   pthread_mutex_lock(&metrics_lock);
   size_t *order = malloc((metric_series_count ? metric_series_count : 1) * sizeof(*order));
@@ -7457,8 +7461,12 @@ static bool write_metrics(FILE *output) {
         break;
     }
   }
-  fprintf(output, "],\"dropped\":{\"label_sets\":%" PRIu64 ",\"kind_conflicts\":%" PRIu64 "}}\n",
-          metric_dropped_label_sets, metric_dropped_kind_conflicts);
+  /* `main` has ended: the clock is where its last fiber left it. */
+  int64_t ended;
+  if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;
+  fprintf(output, "],\"dropped\":{\"label_sets\":%" PRIu64 ",\"kind_conflicts\":%" PRIu64
+          "},\"start_unix_ns\":%" PRId64 ",\"time_unix_ns\":%" PRId64 "}\n",
+          metric_dropped_label_sets, metric_dropped_kind_conflicts, started, ended);
   pthread_mutex_unlock(&metrics_lock);
   free(order);
   return close_output(output);
@@ -13840,11 +13848,15 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   if (benchmark_repeats > 0) {
     struct timespec started, finished;
     clock_gettime(CLOCK_MONOTONIC, &started);
+    /* The metrics aggregate every repeat, so they start with the first. */
+    int64_t metrics_started = 0;
     for (uint32_t repeat = 0; repeat < benchmark_repeats; ++repeat) {
       runtime.next_sequence = 0;
       runtime.next_span = 2;
       for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
         carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
+      runtime.start_unix_ns = start_unix_nanos(&runtime);
+      if (repeat == 0) metrics_started = runtime.start_unix_ns;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {
@@ -13861,7 +13873,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
     bool write_failed = write_memory_report(memory_report_path, &runtime);
     write_failed = write_profile(profile_path) || write_failed;
-    write_failed = write_metrics(runtime.metrics_file) || write_failed;
+    write_failed = write_metrics(&runtime, metrics_started, runtime.metrics_file) || write_failed;
     runtime.metrics_file = NULL;
     write_failed = close_output(runtime.telemetry) || write_failed;
     runtime.telemetry = NULL;
@@ -13874,6 +13886,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     return write_failed ? 74 : 0;
   }
   install_stop_signals(&runtime);
+  runtime.start_unix_ns = start_unix_nanos(&runtime);
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiEnvironment *environment = new_environment(entry_function->local_count);
   if (entry_function->parameters_length == 1) {
@@ -13896,7 +13909,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);
   write_failed = write_profile(profile_path) || write_failed;
-  write_failed = write_metrics(runtime.metrics_file) || write_failed;
+  write_failed = write_metrics(&runtime, runtime.start_unix_ns, runtime.metrics_file) || write_failed;
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;

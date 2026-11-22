@@ -610,7 +610,9 @@ impl MetricsAggregate {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"schema\":\"chimi.metrics.v1\",\"metrics\":[{series}],\"dropped\":{{\"label_sets\":{},\"kind_conflicts\":{}}}}}\n",
+            // The interpreter has no clock: the run starts and ends at Unix 0,
+            // as under the native virtual clock without `--clock-start`.
+            "{{\"schema\":\"chimi.metrics.v1\",\"metrics\":[{series}],\"dropped\":{{\"label_sets\":{},\"kind_conflicts\":{}}},\"start_unix_ns\":0,\"time_unix_ns\":0}}\n",
             self.dropped_label_sets, self.dropped_kind_conflicts
         )
     }

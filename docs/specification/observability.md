@@ -203,7 +203,8 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
     {"name":"charge_seconds","labels":{},"kind":"observe","count":2,"sum":0.75,"bounds":[0.0,0.005,...,10.0],"bucket_counts":[0,...,1,1,...,0]},
     {"name":"orders","labels":{"route":"/pay"},"kind":"count","value":3},
     {"name":"queue_depth","labels":{},"kind":"gauge","value":12.0}
-  ],"dropped":{"label_sets":0,"kind_conflicts":0}}
+  ],"dropped":{"label_sets":0,"kind_conflicts":0},
+  "start_unix_ns":1794303000000000000,"time_unix_ns":1794303002000000000}
   ```
 
   - The document is on one line, ending in a newline; it is wrapped above
@@ -213,6 +214,13 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
   - A count's `value` is an integer. A gauge's `value`, a `sum` and the
     `bounds` are written as `Float.to_text` spells them.
   - `bucket_counts` has one more entry than `bounds`.
+  - `start_unix_ns` is the Unix time in nanoseconds when the run started,
+    the same value as the trace's `start_unix_ns`
+    (runtime-output-channels.md, "Event times"). `time_unix_ns` is when
+    `main` ended: the start plus the execution clock's reading then. Under
+    the virtual clock both come from `--clock-start` and the time slept. A
+    program that needs no scheduler reads no clock, so its end equals its
+    start. The interpreter writes 0 for both.
 - The file MUST differ from the runner's report files and from the log
   file, compared as files rather than spellings of the path; a clash is
   invalid configuration, exit 64. A file that cannot be opened is a sink
@@ -222,8 +230,9 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 
 ### Not in this slice
 
-- Metrics are written once, at exit. There is no export while the program
-  runs and no OpenTelemetry export yet.
+- Metrics are written once, at exit. `chimi metrics export --otlp` turns the
+  file into OpenTelemetry metrics (tooling.md). There is no export while the
+  program runs; that is CHI-296.
 - There are no custom histogram bounds and no up-down counter.
 
 ## Conformance

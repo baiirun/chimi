@@ -15,6 +15,7 @@ const USAGE: &str = concat!(
     "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
     "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
     "chimi trace export --otlp [--service-name <name>] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
+    "chimi metrics export --otlp [--service-name <name>] (<metrics-file> | -) | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
@@ -75,6 +76,11 @@ enum Command {
         trace: PathBuf,
         /// The program the trace came from, to name source locations.
         source: Option<Input>,
+        service_name: Option<String>,
+    },
+    /// Writes one run's metrics document as OTLP/JSON metrics.
+    MetricsExport {
+        metrics: PathBuf,
         service_name: Option<String>,
     },
     /// Prints one module's public surface.
@@ -449,6 +455,10 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
         return parse_trace_command(arguments);
     }
 
+    if command == "metrics" {
+        return parse_metrics_command(arguments);
+    }
+
     if command == "std" {
         return match arguments.next() {
             Some(subcommand) if subcommand == "check" => match arguments.next() {
@@ -787,6 +797,46 @@ fn parse_trace_export(
     })
 }
 
+/// Parses `chimi metrics export --otlp [--service-name <name>] <metrics-file>`.
+fn parse_metrics_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut arguments = arguments.peekable();
+    if arguments.next().is_none_or(|subcommand| subcommand != "export") {
+        return Err(UsageError {
+            message: "metrics requires the export subcommand",
+        });
+    }
+    if arguments.next_if(|argument| argument == "--otlp").is_none() {
+        return Err(UsageError {
+            message: "metrics export requires a format; --otlp is the only one",
+        });
+    }
+    let service_name = match arguments.next_if(|argument| argument == "--service-name") {
+        None => None,
+        Some(_) => match arguments.next().map(OsString::into_string) {
+            Some(Ok(name)) if !name.is_empty() => Some(name),
+            _ => {
+                return Err(UsageError {
+                    message: "metrics export --service-name requires a non-empty UTF-8 name",
+                });
+            }
+        },
+    };
+    let Some(metrics) = arguments.next() else {
+        return Err(UsageError {
+            message: "metrics export requires a metrics file, or - for standard input",
+        });
+    };
+    if arguments.next().is_some() {
+        return Err(UsageError {
+            message: "metrics export received unexpected arguments",
+        });
+    }
+    Ok(Command::MetricsExport {
+        metrics: PathBuf::from(metrics),
+        service_name,
+    })
+}
+
 /// The optional program after a trace file, and nothing after it.
 fn parse_trace_source(
     arguments: &mut impl Iterator<Item = OsString>,
@@ -923,6 +973,10 @@ fn execute(
             source,
             service_name,
         } => trace_export(&trace, source, &standard, service_name.as_deref()),
+        Command::MetricsExport {
+            metrics,
+            service_name,
+        } => metrics_export(&metrics, service_name.as_deref()),
         Command::Inspect {
             input,
             module_path,
@@ -1056,6 +1110,33 @@ fn trace_export(
         }
         Err(error) => {
             eprintln!("chimi: {}: {error}", trace.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn metrics_export(metrics: &std::path::Path, service_name: Option<&str>) -> ExitCode {
+    let text = if metrics.as_os_str() == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text)
+    } else {
+        std::fs::read_to_string(metrics)
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("chimi: cannot read {}: {error}", metrics.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    match chimi::export_metrics_otlp(&text, service_name) {
+        Ok(document) => {
+            // A closed pipe, as in `| head`, is not an error.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), document.as_bytes());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {}: {error}", metrics.display());
             ExitCode::FAILURE
         }
     }
@@ -1759,6 +1840,40 @@ mod tests {
             (
                 &["trace", "export", "--otlp", "a.jsonl", "a.chimi", "b"][..],
                 "trace export received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_metrics_export() {
+        assert_eq!(
+            parse_command(arguments(&[
+                "metrics", "export", "--otlp", "--service-name", "shop", "m.json"
+            ])),
+            Ok(Command::MetricsExport {
+                metrics: PathBuf::from("m.json"),
+                service_name: Some("shop".to_owned()),
+            })
+        );
+        for (command, message) in [
+            (&["metrics"][..], "metrics requires the export subcommand"),
+            (
+                &["metrics", "export", "m.json"][..],
+                "metrics export requires a format; --otlp is the only one",
+            ),
+            (
+                &["metrics", "export", "--otlp"][..],
+                "metrics export requires a metrics file, or - for standard input",
+            ),
+            (
+                &["metrics", "export", "--otlp", "a.json", "b.json"][..],
+                "metrics export received unexpected arguments",
             ),
         ] {
             assert_eq!(
