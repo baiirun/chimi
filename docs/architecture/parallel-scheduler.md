@@ -137,12 +137,12 @@ function-local static, so new state gets an owner when it is added.
 
 Rules for the steps that run more than one carrier:
 
-- `carrier` is a thread-local, which is enough only because a fiber never
-  leaves the thread of its first resume: a compiler may keep a
-  thread-local's address in a register across a call, so a fiber that
-  migrated would use the old thread's state. Stealing (step 4) must either
-  keep fibers pinned or make `carrier` an accessor that is read again after
-  every park.
+- `carrier` is a thread-local, and a compiler may keep a thread-local's
+  address, or the thread pointer it comes from, in a register across a
+  call, so a fiber that moved threads would use the old thread's state.
+  Since step 4 PR 4b `carrier` reads the thread pointer afresh at every use,
+  and the fiber crate reads its park context only through functions that
+  are never inlined.
 - No code keeps a pointer into the carrier across a scheduler request.
   `scheduler_request` reads the carrier again after it resumes and writes the
   saved fiber context into whichever carrier that is. `flush_channel_releases`
@@ -1080,6 +1080,32 @@ the gates measure, so it goes first.
    between real threads, alongside the simulation build that already moves
    every resume. The accessor's cost on one carrier is measured with PG01 and
    PG06, and it must stay within their noise.
+   - 4b as landed:
+     - The fiber crate had a real bug for a moved fiber.
+       `chimi_fiber_request` restored the fiber's park context through a
+       reference it took before suspending. After a move it wrote the old
+       thread's slot, and the next park on the new thread found none. Now
+       the context is read and written only through two functions that
+       are never inlined (`park_context`, `set_park_context`), after the
+       suspend returns. `a_parked_fiber_moves_between_threads` failed
+       before the change.
+     - In `runtime.c`, `carrier` is `carrier_current()`. On Linux (x86-64
+       and aarch64) it is one volatile read of the thread pointer plus the
+       variable's offset from it. That offset is the same on every thread
+       for an initial-exec variable, and is taken once before main.
+       Elsewhere (macOS) it is a call the compiler cannot merge.
+     - A plain call cost 30% on message copying (PG06's list payload), so
+       leaf code that never parks reads the carrier once
+       (`Carrier *const here = carrier;`). With that, PG01, PG03 and PG06
+       at one carrier are within the host's noise (multi-carrier-baseline.md,
+       "One carrier after 4b").
+     - `Scheduler::rehome` moves a task that neither runs nor drains to
+       another carrier, and lets its fiber's next resume claim that
+       carrier's thread (`Home::release`). Only tests call it until 4c.
+       `a_parked_task_moved_to_another_carrier_resumes_on_its_thread`
+       moves six tasks to the next carrier each time they become ready, on
+       three real threads under both clocks, and checks that every resume
+       is on another thread.
 3. **4c: an idle carrier steals.** Before it parks, an idle carrier takes
    the oldest ready task of a carrier that is parked asleep and makes
    itself that task's home, so a hand-off to a sleeping carrier runs at
