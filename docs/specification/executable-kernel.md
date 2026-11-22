@@ -165,13 +165,15 @@ a [record update](patterns-and-function-clauses.md#record-update),
 `Marker {}`.
 
 Positional construction such as `Money(2500)` is `T4216`, whose fix writes the
-struct literal (in brackets when the call is a `case` subject), and so is a
+struct literal (in parentheses when the call is a `case` subject), and so is a
 labelled call such as `Money(cents: 2500)`. A struct's constructor is not a function value: `let make = Money` and
 `value |> Money` are `T4216` too; write `fn(cents) { Money { cents: cents } }`.
 Braces with field names after anything that is not a struct of the module,
 such as an enum variant, a function, a field, or a local or parameter that
 shares a struct's name, are `T4217`. Another module's struct is
-`E_PRIVATE_STRUCT_CONSTRUCTOR`, since its fields are private to its module. Function calls and enum variant
+`E_PRIVATE_STRUCT_CONSTRUCTOR`, since its fields are private to its module;
+a member import binds the struct's type but no constructor, so a bare
+imported name before braces does not resolve as a value. Function calls and enum variant
 constructors stay positional.
 
 A struct literal after a bare name or a qualified name is read as one wherever
