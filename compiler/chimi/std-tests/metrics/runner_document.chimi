@@ -1,0 +1,14 @@
+// `Metrics.runner_document` reads the runner's aggregate while `main` runs;
+// tests/std_metrics.rs checks the document on both backends. This program
+// reaches the read: a count after the first read is in the second.
+import std/metrics as Metrics.{Metrics}
+import std/text as Text
+
+pub fn main() -> Bool needs {
+  metrics: Metrics
+} {
+  let first = Metrics.runner_document()
+  Metrics.count("runs", 1, [])
+  let second = Metrics.runner_document()
+  not Text.contains(first, "\"runs\"") and Text.contains(second, "{\"name\":\"runs\",\"labels\":{},\"kind\":\"count\",\"value\":1}")
+}
