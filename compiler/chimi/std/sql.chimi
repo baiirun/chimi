@@ -29,6 +29,7 @@
 
 import std/bytes.{Bytes}
 import std/channel as Channel.{Receive}
+import std/clock.{Clock}
 import std/debug as Debug
 import std/decimal.{Decimal}
 import std/duration as Duration.{Duration}
@@ -254,7 +255,9 @@ pub const defaults: { max_connections: Int, wait_timeout: Duration, reset_timeou
 /// back.
 ///
 /// Fails with: what `use` fails with.
-pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration }, use: fn(Database) -> T errors E needs R) -> T needs R {
+pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: Int, wait_timeout: Duration, reset_timeout: Duration }, use: fn(Database) -> T errors E needs R) -> T needs R + {
+  clock: Clock
+} {
   case settings.max_connections > 0 and settings.wait_timeout > Duration.zero and settings.reset_timeout > Duration.zero {
     True -> Void
     False -> Debug.crash("Sql: max_connections, wait_timeout and reset_timeout must be positive")
@@ -325,7 +328,9 @@ pub fn first(db: Database, sql: Text, params: List<Value>) -> Option<Row> {
 /// Fails with: what `body` fails with (after the rollback), a failed commit,
 /// what the driver fails with, the pool's failures, and
 /// `SqlError.TransactionEnded` on an ended transaction's database.
-pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R {
+pub fn transaction<T, E, R>(db: Database, body: fn(Database) -> T errors E needs R) -> T needs R + {
+  clock: Clock
+} {
   case db.place {
     Place.Pinned(connection, depth, ended) -> pinned(connection, ended, fn(_) { savepoint(connection, depth, ended, body) })
     Place.Pooled(_, _, _, _) -> borrow(db, fn(connection) { outermost(connection, body) })
@@ -701,7 +706,9 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
 // connection returned (once reset) or closed on every way out of `use`; the
 // driver's reset fails for a connection that broke or was cut off
 // mid-statement, so such a connection is never reused.
-fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R {
+fn borrow<T, E, R>(db: Database, use: fn(Connection) -> T errors E needs R) -> T needs R + {
+  clock: Clock
+} {
   case db.place {
     Place.Pinned(connection, _, ended) -> pinned(connection, ended, use)
     Place.Pooled(asks, driver, target, bounds) -> Resource.scoped(fn() { take(asks, bounds.wait) }, fn(_) {

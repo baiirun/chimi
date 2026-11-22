@@ -535,6 +535,16 @@ Each need has a lexical name and an interface type. Composition unions
 compatible needs. Reusing one name with incompatible interface types is a
 diagnostic.
 
+A function with no `needs` clause has its needs inferred from its body. A
+written clause is complete (decisions.md, 2026-11-22): every need the body
+reaches, directly or through the functions it calls, MUST be listed, and so
+MUST a runner-closed need such as `clock: Clock` or `console: Console`. A need
+the clause leaves out is `T4204` at the function's name, naming the entry to
+add. A need a `using` in the body supplies is not reached, and a row parameter
+the clause writes (`needs R + { clock: Clock }`) covers whatever binds it. The
+clause MAY list a need the body does not reach; the contract then still
+carries it.
+
 An `interface` is a structural record of function contracts:
 
 <!-- chimi: fragment -->
