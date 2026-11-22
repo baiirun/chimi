@@ -277,8 +277,15 @@ so compare the two columns, not these with earlier rows.
   serialises every request. That is what 4d and 4e address.
 - PG04 start on eight carriers measured 43 to 45 µs with the spin against
   54 µs before it, inside the 50 µs limit (single runs of the lab).
-- With more carriers than cores (8 and 32 on this 4-core host) the spin
-  still helped, unlike the wake spin (step 3 PR 6c), which is off then.
+- With more carriers than cores (8, 16 and 32 on this 4-core host) the
+  spin still helped, unlike the wake spin (step 3 PR 6c), which is off then.
+  On one core (`taskset -c 0`) it cost 8% with 8 or 32 carriers, since a
+  spinner holds the core the lock's holder needs, so a one-core host does
+  not spin. On two cores it cost nothing.
+- The review's own alternating runs agree (4 carriers 1584 to 1751 ms
+  before, 905 to 1002 after). The time saved was system time: on four
+  carriers about 1.5 s of sleeping and waking in the kernel per run became
+  under 0.1 s, while total CPU stayed about the same.
 
 ## Method
 
