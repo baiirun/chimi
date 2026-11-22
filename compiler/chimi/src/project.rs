@@ -19,6 +19,8 @@ pub struct LoadedProject {
     modules: Vec<ProjectSource>,
     /// Each doc example module's path and the module it documents.
     examples: Vec<(String, String)>,
+    /// The packages of a package build, whose rules doc examples follow too.
+    packages: Option<PackageGraph>,
 }
 
 /// Where a build reads `std/` modules from: the tree embedded in the compiler,
@@ -177,6 +179,7 @@ impl LoadedProject {
             return Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: None,
         });
         };
         let mut modules = Vec::new();
@@ -190,6 +193,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: None,
         })
     }
 
@@ -210,6 +214,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: None,
         })
     }
 
@@ -259,6 +264,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: loader.packages,
         })
     }
 
@@ -328,6 +334,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: loader.packages,
         })
     }
 
@@ -385,6 +392,13 @@ impl LoadedProject {
                 let source = SourceSnapshot::from_text(module.source().path(), example.text);
                 let source = ProjectSource::parsed(path.clone(), source)
                     .map_err(ProjectLoadError::InvalidModule)?;
+                if let Some(graph) = &self.packages {
+                    for import in imports(&source) {
+                        if !import.starts_with("std/") {
+                            check_import(graph, &import, &path)?;
+                        }
+                    }
+                }
                 self.modules.push(source);
                 added.push((path, module.module_path().to_owned()));
             }
@@ -966,10 +980,7 @@ struct Located {
 
 impl Loader<'_> {
     /// Where `module_path` lives, after checking that `importer` may import
-    /// it (packages.md, "Imports across packages"): its first segment names
-    /// the importer's own package or one of its dependencies, it names a
-    /// module rather than a package, and it is not another package's
-    /// `internal/` module.
+    /// it ([`check_import`]).
     fn locate(
         &self,
         module_path: &str,
@@ -997,43 +1008,7 @@ impl Loader<'_> {
                 origin: ModuleOrigin::Own,
             });
         };
-        let importing = graph
-            .find_str(first_segment(importer))
-            .expect("a loaded module belongs to a package of the build");
-        let edge_error = |make: fn(String, String) -> ProjectLoadError| {
-            make(module_path.to_owned(), importer.to_owned())
-        };
-        let target = if first == importing.name.as_str() {
-            importing
-        } else if importing
-            .dependencies
-            .iter()
-            .any(|dependency| dependency.as_str() == first)
-        {
-            graph.find_str(first).expect("every dependency is in the graph")
-        } else if graph.find_str(first).is_some() {
-            return Err(ProjectLoadError::NotADependency {
-                module: module_path.to_owned(),
-                importer: importer.to_owned(),
-                manifest: importing.manifest.clone(),
-            });
-        } else {
-            return Err(edge_error(|module, importer| ProjectLoadError::UnknownPackage {
-                module,
-                importer,
-            }));
-        };
-        if rest.is_empty() {
-            return Err(edge_error(|module, importer| {
-                ProjectLoadError::PackageIsNotAModule { module, importer }
-            }));
-        }
-        if target.name != importing.name && rest.starts_with("internal/") {
-            return Err(edge_error(|module, importer| ProjectLoadError::InternalModule {
-                module,
-                importer,
-            }));
-        }
+        let target = check_import(graph, module_path, importer)?;
         Ok(Located {
             root: target.root.clone(),
             relative: PathBuf::from(rest),
@@ -1044,6 +1019,62 @@ impl Loader<'_> {
             },
         })
     }
+}
+
+/// The package `module_path` names, after checking that the module
+/// `importer` may import it (packages.md, "Imports across packages"): its
+/// first segment names the importer's own package or one of its
+/// dependencies, it names a module rather than a package, and it is not
+/// another package's `internal/` module.
+fn check_import<'graph>(
+    graph: &'graph PackageGraph,
+    module_path: &str,
+    importer: &str,
+) -> Result<&'graph packages::Package, ProjectLoadError> {
+    let (first, rest) = module_path.split_once('/').unwrap_or((module_path, ""));
+    let importing = graph
+        .find_str(first_segment(importer))
+        .expect("a loaded module belongs to a package of the build");
+    let edge_error = |make: fn(String, String) -> ProjectLoadError| {
+        make(module_path.to_owned(), importer.to_owned())
+    };
+    let target = if first == importing.name.as_str() {
+        importing
+    } else if importing
+        .dependencies
+        .iter()
+        .any(|dependency| dependency.as_str() == first)
+    {
+        graph.find_str(first).expect("every dependency is in the graph")
+    } else if first == "std" {
+        // `import std/...` never reaches here; only a bare `import std` does.
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::PackageIsNotAModule { module, importer }
+        }));
+    } else if graph.find_str(first).is_some() {
+        return Err(ProjectLoadError::NotADependency {
+            module: module_path.to_owned(),
+            importer: importer.to_owned(),
+            manifest: importing.manifest.clone(),
+        });
+    } else {
+        return Err(edge_error(|module, importer| ProjectLoadError::UnknownPackage {
+            module,
+            importer,
+        }));
+    };
+    if rest.is_empty() {
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::PackageIsNotAModule { module, importer }
+        }));
+    }
+    if target.name != importing.name && rest.starts_with("internal/") {
+        return Err(edge_error(|module, importer| ProjectLoadError::InternalModule {
+            module,
+            importer,
+        }));
+    }
+    Ok(target)
 }
 
 /// The manifest of a package nested in the one at `root` that holds the
@@ -1305,7 +1336,7 @@ mod tests {
         let rounding = "[package]\nname = \"rounding\"\n";
         let money_with_rounding =
             "[package]\nname = \"money\"\n[dependencies]\nrounding = { path = \"../rounding\" }\n";
-        let cases: [(&str, &str, &str); 5] = [
+        let cases: [(&str, &str, &str); 6] = [
             (
                 "import rounding/even as Even\npub fn main() -> Int { 0 }",
                 "module app/main imports rounding/even, but `rounding` is not a dependency of `app`",
@@ -1325,6 +1356,11 @@ mod tests {
                 "import money/internal/cents as Cents\npub fn main() -> Int { 0 }",
                 "module app/main imports money/internal/cents, but `internal/` modules are private to package `money`",
                 "InternalModule",
+            ),
+            (
+                "import std as Std\npub fn main() -> Int { 0 }",
+                "module app/main imports std, which is a package, not a module",
+                "PackageIsNotAModule",
             ),
             (
                 "import main as Main\npub fn main() -> Int { 0 }",
@@ -1357,6 +1393,13 @@ mod tests {
             error.to_string(),
             "module main is not in package app: its modules are named app/<path>"
         );
+        let error = LoadedProject::load(
+            fixture.path().join("app"),
+            "money/amount",
+            &StandardTree::embedded(),
+        )
+        .expect_err("a dependency's module as the entry");
+        assert!(matches!(error, ProjectLoadError::NotInEntryPackage { .. }), "{error}");
     }
 
     #[test]
@@ -1424,7 +1467,7 @@ mod tests {
                     ("bank", "[package]\nname = \"bank\"\n[dependencies]\nmoney = { path = \"../other/money\" }\n"),
                     ("other/money", MONEY),
                 ],
-                "package `money` has two sources",
+                "package `money` has two sources: {root}/money (from {root}/app/chimi.toml) and {root}/other/money (from {root}/bank/chimi.toml)",
             ),
             (
                 &[("app", "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../cash\" }\n"), ("cash", "[workspace]\nmembers = []\n")],
@@ -1446,7 +1489,40 @@ mod tests {
                 continue;
             }
             let error = result.expect_err(message).to_string();
-            assert!(error.contains(message), "{message}: {error}");
+            let root = fixture.path().canonicalize().unwrap();
+            let message = message.replace("{root}", &root.display().to_string());
+            assert!(error.contains(&message), "{message}: {error}");
+        }
+    }
+
+    #[test]
+    fn doc_examples_follow_the_package_boundary() {
+        let rounding = "[package]\nname = \"rounding\"\n";
+        let money_with_rounding =
+            "[package]\nname = \"money\"\n[dependencies]\nrounding = { path = \"../rounding\" }\n";
+        for (import, allowed) in [
+            ("import money/amount as Amount", true),
+            ("import rounding/even as Even", false),
+            ("import money/internal/cents as Cents", false),
+        ] {
+            let main = format!(
+                "/// ```chimi\n/// {import}\n/// pub fn main() -> Int {{ 0 }}\n/// ```\npub fn main() -> Int {{ 0 }}\n"
+            );
+            let fixture = workspace(&[
+                ("app", APP, &[("main.chimi", main.as_str())]),
+                (
+                    "money",
+                    money_with_rounding,
+                    &[
+                        ("amount.chimi", "pub fn value() -> Int { 1 }"),
+                        ("internal/cents.chimi", "pub fn value() -> Int { 1 }"),
+                    ],
+                ),
+                ("rounding", rounding, &[("even.chimi", "pub fn value() -> Int { 1 }")]),
+            ]);
+            let mut project = load_app(&fixture).unwrap();
+            let result = project.add_doc_examples(&StandardTree::embedded());
+            assert_eq!(result.is_ok(), allowed, "{import}: {result:?}");
         }
     }
 

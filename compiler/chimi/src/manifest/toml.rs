@@ -60,7 +60,7 @@ impl fmt::Display for SyntaxError {
 
 pub(crate) fn parse(text: &str) -> Result<Document, SyntaxError> {
     let mut parser = Parser {
-        characters: text.chars().collect(),
+        characters: text.strip_prefix('\u{feff}').unwrap_or(text).chars().collect(),
         position: 0,
         line: 1,
     };
@@ -378,6 +378,12 @@ mod tests {
             let error = parse(text).expect_err(text);
             assert_eq!((error.line, error.message.as_str()), (line, message), "{text}");
         }
+    }
+
+    #[test]
+    fn skips_a_byte_order_mark() {
+        let document = parse("\u{feff}[package]\nname = \"a\"\n").unwrap();
+        assert_eq!(document.tables[0].name, "package");
     }
 
     #[test]

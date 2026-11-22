@@ -400,10 +400,10 @@ impl Workspace {
     /// of `path`, and every other previously published file is cleared.
     pub fn analyze(&mut self, path: &DocumentPath) -> Vec<FileDiagnostics> {
         let mut sets = BTreeMap::new();
-        let reached = match self
-            .configured_project_for(path)
-            .or_else(|| self.package_project_for(path))
-        {
+        // The file's own package is a project too, so the deepest root wins
+        // whether it is configured or a package, nested packages included.
+        self.add_package_project_for(path);
+        let reached = match self.configured_project_for(path) {
             Some(index) => self.analyze_configured(index, path, &mut sets),
             None => false,
         };
@@ -689,15 +689,17 @@ impl Workspace {
             .map(|(index, _)| index)
     }
 
-    /// The project of the package holding `path`, added on first use, when
-    /// no configured project covers it (packages.md, "Commands").
-    fn package_project_for(&mut self, path: &DocumentPath) -> Option<usize> {
-        let root = chimi::project::package_root_of(path.as_path())?.canonicalize().ok()?;
-        if let Some(index) = self.projects.iter().position(|project| project.root == root) {
-            return Some(index);
+    /// Adds the project of the package holding `path` on first use, unless a
+    /// project already has its root (packages.md, "Commands").
+    fn add_package_project_for(&mut self, path: &DocumentPath) {
+        let Some(root) = chimi::project::package_root_of(path.as_path())
+            .and_then(|root| root.canonicalize().ok())
+        else {
+            return;
+        };
+        if !self.projects.iter().any(|project| project.root == root) {
+            self.projects.push(ProjectConfig::package(root));
         }
-        self.projects.push(ProjectConfig::package(root));
-        Some(self.projects.len() - 1)
     }
 
     /// Analyzes a configured project into `sets` and reports whether it reached `path`.
@@ -1052,6 +1054,21 @@ mod tests {
             published(&money).is_none_or(|set| set.diagnostics.is_empty()),
             "a dependency is not linted: {sets:?}"
         );
+
+        // A package nested in `app` is its own project, not a single file.
+        fixture.write(
+            "chimi.toml",
+            "[workspace]\nmembers = [\"app\", \"money\", \"app/tools\"]\n",
+        );
+        fixture.write("app/tools/chimi.toml", "[package]\nname = \"tools\"\n");
+        let tool = fixture.write(
+            "app/tools/run.chimi",
+            "import tools/helper as Helper\n/// Doc.\npub fn value() -> Int { Helper.value() }\n",
+        );
+        fixture.write("app/tools/helper.chimi", "/// Doc.\npub fn value() -> Int { 3 }\n");
+        let sets = workspace.analyze(&tool);
+        let tool_set = sets.iter().find(|set| set.path == tool).expect("tool published");
+        assert_eq!(tool_set.diagnostics, [], "{sets:?}");
     }
 
     /// Lint findings reach the editor as warnings once the project compiles,

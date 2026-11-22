@@ -80,6 +80,18 @@ MUTATIONS = [
         "            Manifest::Workspace(_) => {\n                return Err(PackageError::RootIsWorkspace {\n                    manifest: manifest_path,\n                });\n            }",
         "            Manifest::Workspace(_) => return Ok(None),",
     )]),
+    unit("doc examples skip the package boundary", P, [(
+        "                if let Some(graph) = &self.packages {\n                    for import in imports(&source) {",
+        "                if let Some(graph) = None::<&PackageGraph> {\n                    for import in imports(&source) {",
+    )]),
+    unit("a conflict names the package's own manifest", G, [(
+        "                            first: (known.declared_by.clone(), known.root.clone()),",
+        "                            first: (known.manifest.clone(), known.root.clone()),",
+    )]),
+    unit("a bare std import is an unknown package", P, [(
+        "    } else if first == \"std\" {",
+        "    } else if false {",
+    )]),
     unit("unknown dependency keys are ignored", M, [(
         "        .find(|(key, _)| !matches!(key.as_str(), \"path\" | \"git\" | \"rev\" | \"directory\"))",
         "        .find(|_| false)",

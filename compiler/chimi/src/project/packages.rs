@@ -20,6 +20,9 @@ pub(crate) struct Package {
     /// Canonical.
     pub(crate) root: PathBuf,
     pub(crate) manifest: PathBuf,
+    /// The manifest whose dependency first brought this package into the
+    /// build; the entry package's own manifest for the entry.
+    declared_by: PathBuf,
     pub(crate) dependencies: Vec<PackageName>,
 }
 
@@ -173,6 +176,7 @@ impl PackageGraph {
             packages: vec![Package {
                 name: entry.name,
                 root: root.to_owned(),
+                declared_by: manifest_path.clone(),
                 manifest: manifest_path,
                 dependencies: Vec::new(),
             }],
@@ -212,7 +216,7 @@ impl PackageGraph {
                     if known.root != directory {
                         return Err(PackageError::Conflict {
                             name: dependency.name,
-                            first: (known.manifest.clone(), known.root.clone()),
+                            first: (known.declared_by.clone(), known.root.clone()),
                             second: (graph.packages[index].manifest.clone(), directory),
                         });
                     }
@@ -247,6 +251,7 @@ impl PackageGraph {
                     name: package.name,
                     root: directory,
                     manifest: manifest_path,
+                    declared_by: importer_manifest,
                     dependencies: Vec::new(),
                 });
                 pending.push((graph.packages.len() - 1, package.dependencies));
