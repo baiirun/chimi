@@ -1,6 +1,12 @@
 chimi trace export --otlp (Phase 7c step 7, PR 2), 2026-11-22.
 
-trace_export_mutations.py: 10 mutants, all KILLED. Two survived the first run
-(a dependency call has no length; a parent is not written) and were killed after
-open_spans_end_with_their_last_child and the every-span-has-a-parent check were
-added.
+trace_export_mutations.py: 10 mutants, all KILLED.
+- Two survived the first run: a dependency call with no length, and a parent
+  that is not written. Both were killed once these tests were added:
+  open_spans_end_with_their_last_child, and the check that every span has a
+  parent.
+- After review, a dependency call became a span with no length, because the
+  runtimes parent the provider's operations to the caller. The "no length"
+  mutant became equivalent and was replaced by two mutants that were killed:
+  an unfinished operation that does not take its children's end, and a second
+  run under one execution id being merged.
