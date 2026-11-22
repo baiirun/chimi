@@ -1,0 +1,5 @@
+# mutation run at c5047d1 (CHI-300): every mutant killed
+BASELINE ok  [language -- a_type_parameter_cannot] (97s)
+KILLED       a type's row parameter is accepted [language -- a_type_parameter_cannot] (40s)
+KILLED       the members keep the rejected row [language -- a_type_parameter_cannot] (34s)
+KILLED       variant fields keep the rejected row [language -- a_type_parameter_cannot] (37s)
