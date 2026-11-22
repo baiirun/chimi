@@ -21,7 +21,7 @@ def mutant(name, file, edits, filter=FILTER, targets=("language",)):
 
 MUTATIONS = [
     mutant("typing binds nothing", TYPING, [(
-        "        if bound_names.is_empty() {\n            self.using_bindings",
+        "        if bound_names.is_empty() || open_row {\n            self.using_bindings",
         "        if true {\n            self.using_bindings",
     )]),
     mutant("typing binds every supplied name, evaluation needs too", TYPING, [(
