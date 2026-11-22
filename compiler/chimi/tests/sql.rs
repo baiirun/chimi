@@ -122,7 +122,6 @@ fn assert_passed(run: &Run, count: usize) {
     );
 }
 
-
 // Rejects a row reader that misreads a column's kind, reads a null as a
 // value, or finds a column that is not there, and `one` and `first` that
 // miscount rows.

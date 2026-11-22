@@ -1,7 +1,7 @@
-use chimi::{Compiler, ModuleOrigin};
 use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
 use chimi::project::{FileSystemReader, GitCache, LoadedProject, Network, StandardTree};
+use chimi::{Compiler, ModuleOrigin};
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -32,10 +32,17 @@ const USAGE: &str = concat!(
 
 #[derive(Debug, Eq, PartialEq)]
 enum Input {
-    File { path: PathBuf },
-    Project { root: PathBuf, entry: String },
+    File {
+        path: PathBuf,
+    },
+    Project {
+        root: PathBuf,
+        entry: String,
+    },
     /// Every module under `root` (`chimi test <directory>` only).
-    Directory { root: PathBuf },
+    Directory {
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -107,7 +114,9 @@ enum DocOutput {
     Json,
     /// Static pages for every module of the target's project, or of the
     /// standard tree for a `std/` target, written into `directory`.
-    Html { directory: PathBuf },
+    Html {
+        directory: PathBuf,
+    },
 }
 
 /// The module `chimi doc` documents.
@@ -311,14 +320,20 @@ fn parse_invocation(
     } else {
         None
     };
-    let network = if arguments.next_if(|argument| argument == "--offline").is_some() {
+    let network = if arguments
+        .next_if(|argument| argument == "--offline")
+        .is_some()
+    {
         Network::Offline
     } else {
         Network::Allowed
     };
     let command = parse_command(arguments)?;
     if std_dir.is_some()
-        && matches!(command, Command::Version | Command::Format { .. } | Command::DepsUpdate { .. })
+        && matches!(
+            command,
+            Command::Version | Command::Format { .. } | Command::DepsUpdate { .. }
+        )
     {
         return Err(UsageError {
             message: "--std-dir applies only to commands that load a program",
@@ -342,8 +357,13 @@ fn parse_invocation(
 }
 
 /// `deps update [--root <directory>] [<package>...]`.
-fn parse_deps_command(mut arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
-    if arguments.next().is_none_or(|subcommand| subcommand != "update") {
+fn parse_deps_command(
+    mut arguments: impl Iterator<Item = OsString>,
+) -> Result<Command, UsageError> {
+    if arguments
+        .next()
+        .is_none_or(|subcommand| subcommand != "update")
+    {
         return Err(UsageError {
             message: "deps takes one subcommand: update",
         });
@@ -361,7 +381,10 @@ fn parse_deps_command(mut arguments: impl Iterator<Item = OsString>) -> Result<C
     };
     let mut packages = Vec::new();
     for argument in arguments {
-        let Some(package) = argument.to_str().filter(|package| !package.starts_with('-')) else {
+        let Some(package) = argument
+            .to_str()
+            .filter(|package| !package.starts_with('-'))
+        else {
             return Err(UsageError {
                 message: "deps update takes package names after --root <directory>",
             });
@@ -655,7 +678,8 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
         }
         Some(argument) => match argument.to_str() {
             Some(module)
-                if module == "std" || (module.starts_with("std/") && !module.ends_with(".chimi")) =>
+                if module == "std"
+                    || (module.starts_with("std/") && !module.ends_with(".chimi")) =>
             {
                 DocTarget::Standard {
                     module: module.to_owned(),
@@ -695,7 +719,10 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
 /// Parses `chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]`.
 fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
-    if arguments.next().is_none_or(|subcommand| subcommand != "show") {
+    if arguments
+        .next()
+        .is_none_or(|subcommand| subcommand != "show")
+    {
         return Err(UsageError {
             message: "trace requires the show subcommand",
         });
@@ -933,13 +960,20 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
                 || "main".to_owned(),
                 |stem| stem.to_string_lossy().into_owned(),
             );
-            (LoadedProject::single_file(path, standard), "main".to_owned(), title)
+            (
+                LoadedProject::single_file(path, standard),
+                "main".to_owned(),
+                title,
+            )
         }
         DocTarget::Project { root, module } => {
             let title = root
                 .canonicalize()
                 .ok()
-                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .and_then(|root| {
+                    root.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
                 .unwrap_or_else(|| module.clone());
             (
                 LoadedProject::load_with(
@@ -953,14 +987,19 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
                 title,
             )
         }
-        DocTarget::Standard { module } => {
-            (LoadedProject::standard_tree(standard), module, "std".to_owned())
-        }
+        DocTarget::Standard { module } => (
+            LoadedProject::standard_tree(standard),
+            module,
+            "std".to_owned(),
+        ),
         DocTarget::Directory { root } => {
             let title = root
                 .canonicalize()
                 .ok()
-                .and_then(|root| root.file_name().map(|name| name.to_string_lossy().into_owned()))
+                .and_then(|root| {
+                    root.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
                 .unwrap_or_default();
             (
                 LoadedProject::load_directory_with(
@@ -995,8 +1034,7 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
             } else {
                 ModuleOrigin::Own
             };
-            let modules =
-                report.documentation_of(|path| project.origin_of(path) == Some(wanted));
+            let modules = report.documentation_of(|path| project.origin_of(path) == Some(wanted));
             return write_doc_site(&directory, &title, &modules);
         }
         DocOutput::Text => report.documentation(&module).map(|doc| doc.render_text()),
@@ -1329,7 +1367,13 @@ fn run_tests(
     } else {
         print!(
             "{}",
-            render_report(&suite, &selected, &results, options.show_output, options.seed)
+            render_report(
+                &suite,
+                &selected,
+                &results,
+                options.show_output,
+                options.seed
+            )
         );
     }
     if results.iter().all(|result| result.failure.is_none()) {
@@ -1393,13 +1437,9 @@ fn deps_update(root: &Path, packages: Vec<String>) -> ExitCode {
 fn load_project(input: Input, standard: &StandardTree) -> Option<LoadedProject> {
     let loaded = match input {
         Input::File { path } => LoadedProject::single_file(path, standard),
-        Input::Project { root, entry } => LoadedProject::load_with(
-            root,
-            entry,
-            &FileSystemReader,
-            standard,
-            dependency_cache(),
-        ),
+        Input::Project { root, entry } => {
+            LoadedProject::load_with(root, entry, &FileSystemReader, standard, dependency_cache())
+        }
         Input::Directory { root } => LoadedProject::load_directory_with(
             root,
             &FileSystemReader,
@@ -1428,7 +1468,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command};
+    use super::{
+        Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command,
+    };
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -1448,7 +1490,13 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["doc", "--json", "--root", "service", "app/orders"])),
+            parse_command(arguments(&[
+                "doc",
+                "--json",
+                "--root",
+                "service",
+                "app/orders"
+            ])),
             Ok(Command::Doc {
                 target: DocTarget::Project {
                     root: PathBuf::from("service"),
@@ -1467,7 +1515,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["doc", "--html", "site", "--root", "service", "app"])),
+            parse_command(arguments(&[
+                "doc", "--html", "site", "--root", "service", "app"
+            ])),
             Ok(Command::Doc {
                 target: DocTarget::Project {
                     root: PathBuf::from("service"),
@@ -1512,7 +1562,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_command(arguments(&["trace", "show", "--all", "-", "--root", "svc", "app"])),
+            parse_command(arguments(&[
+                "trace", "show", "--all", "-", "--root", "svc", "app"
+            ])),
             Ok(Command::TraceShow {
                 trace: PathBuf::from("-"),
                 source: Some(Input::Project {
@@ -1552,8 +1604,14 @@ mod tests {
                 &["doc", "--root", "service"][..],
                 "doc --root requires a project directory and a module",
             ),
-            (&["doc", "a.chimi", "b.chimi"][..], "doc received unexpected arguments"),
-            (&["doc", "--html"][..], "doc --html requires an output directory"),
+            (
+                &["doc", "a.chimi", "b.chimi"][..],
+                "doc received unexpected arguments",
+            ),
+            (
+                &["doc", "--html"][..],
+                "doc --html requires an output directory",
+            ),
             (
                 &["doc", "--html", "site", "std/option"][..],
                 "doc --html writes the whole standard tree; name it as std",
@@ -1574,7 +1632,9 @@ mod tests {
     #[test]
     fn parses_lint_inputs() {
         assert_eq!(
-            parse_command(arguments(&["lint", "--json", "--root", "service", "app/main"])),
+            parse_command(arguments(&[
+                "lint", "--json", "--root", "service", "app/main"
+            ])),
             Ok(Command::Lint {
                 input: Input::Project {
                     root: PathBuf::from("service"),
@@ -1594,7 +1654,10 @@ mod tests {
         );
         let directory = std::env::temp_dir();
         assert_eq!(
-            parse_command(vec![OsString::from("lint"), directory.clone().into_os_string()]),
+            parse_command(vec![
+                OsString::from("lint"),
+                directory.clone().into_os_string()
+            ]),
             Ok(Command::Lint {
                 input: Input::Directory { root: directory },
                 output: DiagnosticOutput::Human,
@@ -1609,7 +1672,10 @@ mod tests {
                 &["lint", "--root", "service"][..],
                 "lint --root requires a project directory and a module",
             ),
-            (&["lint", "a.chimi", "b.chimi"][..], "lint received unexpected arguments"),
+            (
+                &["lint", "a.chimi", "b.chimi"][..],
+                "lint received unexpected arguments",
+            ),
         ] {
             assert_eq!(
                 parse_command(arguments(command)),

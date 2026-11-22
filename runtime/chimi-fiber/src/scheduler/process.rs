@@ -1455,7 +1455,10 @@ impl Scheduler {
             .incarnations
             .values()
             .map(|incarnation| {
-                (incarnation.membership.get(), self.tasks[&incarnation.task].carrier.0)
+                (
+                    incarnation.membership.get(),
+                    self.tasks[&incarnation.task].carrier.0,
+                )
             })
             .collect();
         homes.sort_unstable();
@@ -1695,9 +1698,7 @@ impl Scheduler {
             .tasks
             .iter()
             .filter(|(_, record)| {
-                record.parent.is_none()
-                    && record.process.is_none()
-                    && record.phase.is_live()
+                record.parent.is_none() && record.process.is_none() && record.phase.is_live()
             })
             .map(|(task, _)| *task)
             .collect();
@@ -2398,11 +2399,13 @@ impl Scheduler {
     /// which is forced, or a blocker already gone, whose plans resume.
     fn blocker_can_be_cleared(&self, blocker: Blocker) -> bool {
         match blocker {
-            Blocker::Incarnation(incarnation) => {
-                self.kernel.incarnations.get(&incarnation).is_none_or(|record| {
+            Blocker::Incarnation(incarnation) => self
+                .kernel
+                .incarnations
+                .get(&incarnation)
+                .is_none_or(|record| {
                     !matches!(self.tasks[&record.task].phase, TaskPhase::Draining(_))
-                })
-            }
+                }),
             Blocker::Supervisor(supervisor) => !self.kernel.supervisors.contains_key(&supervisor),
         }
     }

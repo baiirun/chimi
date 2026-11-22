@@ -681,7 +681,8 @@ impl ProjectTypeChecker {
     ) -> FailureRowId {
         let mut rows = Vec::new();
         for member in members {
-            let Some(row) = self.failure_member_row(module_id, member, value_position, generics) else {
+            let Some(row) = self.failure_member_row(module_id, member, value_position, generics)
+            else {
                 let found = match member {
                     TypeUse::Named { path, .. } => path
                         .iter()

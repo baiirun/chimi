@@ -120,14 +120,18 @@ impl Evaluator<'_> {
             return Control::Cancellation(None);
         }
         match (function, arguments.as_slice()) {
-            (StandardFunction::FsHostOpen, [RuntimeValue::Text(path)]) => Control::Success(
-                io_status(host_path(path).and_then(std::fs::File::open).and_then(|file| {
-                    if file.metadata()?.is_dir() {
-                        return Err(std::io::Error::from(std::io::ErrorKind::IsADirectory));
-                    }
-                    Ok(self.open_files.insert(file))
-                })),
-            ),
+            (StandardFunction::FsHostOpen, [RuntimeValue::Text(path)]) => {
+                Control::Success(io_status(
+                    host_path(path)
+                        .and_then(std::fs::File::open)
+                        .and_then(|file| {
+                            if file.metadata()?.is_dir() {
+                                return Err(std::io::Error::from(std::io::ErrorKind::IsADirectory));
+                            }
+                            Ok(self.open_files.insert(file))
+                        }),
+                ))
+            }
             (
                 StandardFunction::FsHostCreate,
                 [RuntimeValue::Text(path), RuntimeValue::Integer(mode)],
@@ -215,7 +219,9 @@ impl Evaluator<'_> {
                         tuple(vec![
                             RuntimeValue::Integer(0),
                             RuntimeValue::Integer(kind),
-                            RuntimeValue::Integer(i64::try_from(metadata.len()).unwrap_or(i64::MAX)),
+                            RuntimeValue::Integer(
+                                i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+                            ),
                             RuntimeValue::Integer(modified),
                             RuntimeValue::Text(String::new()),
                         ])
@@ -233,19 +239,21 @@ impl Evaluator<'_> {
                 })
             }
             (StandardFunction::FsHostList, [RuntimeValue::Text(path)]) => {
-                let names = host_path(path).and_then(std::fs::read_dir).and_then(|entries| {
-                    let mut names = Vec::new();
-                    for entry in entries {
-                        match entry?.file_name().into_string() {
-                            Ok(name) => names.push(name),
-                            Err(_) => {
-                                return Err(std::io::Error::other("a name is not UTF-8"));
+                let names = host_path(path)
+                    .and_then(std::fs::read_dir)
+                    .and_then(|entries| {
+                        let mut names = Vec::new();
+                        for entry in entries {
+                            match entry?.file_name().into_string() {
+                                Ok(name) => names.push(name),
+                                Err(_) => {
+                                    return Err(std::io::Error::other("a name is not UTF-8"));
+                                }
                             }
                         }
-                    }
-                    names.sort_unstable();
-                    Ok(names)
-                });
+                        names.sort_unstable();
+                        Ok(names)
+                    });
                 Control::Success(match names {
                     Ok(names) => tuple(vec![
                         RuntimeValue::Integer(0),
@@ -293,16 +301,14 @@ impl Evaluator<'_> {
                         .map(|metadata| i64::from(metadata.is_dir())),
                 ))
             }
-            (StandardFunction::FsHostTemporaryDirectory, []) => {
-                match make_temporary_directory() {
-                    Ok(path) => Control::Success(RuntimeValue::Text(path)),
-                    Err(error) => Control::Defect {
-                        message: format!("cannot create a temporary directory: {error}"),
-                        node: Some(call_node),
-                        cause: None,
-                    },
-                }
-            }
+            (StandardFunction::FsHostTemporaryDirectory, []) => match make_temporary_directory() {
+                Ok(path) => Control::Success(RuntimeValue::Text(path)),
+                Err(error) => Control::Defect {
+                    message: format!("cannot create a temporary directory: {error}"),
+                    node: Some(call_node),
+                    cause: None,
+                },
+            },
             (StandardFunction::FsTestRoot, [RuntimeValue::Text(root)]) => {
                 if root.starts_with('/') {
                     Control::Success(RuntimeValue::Text(root.clone()))

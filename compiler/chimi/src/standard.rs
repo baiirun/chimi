@@ -290,9 +290,7 @@ impl StandardType {
             | Self::Signals
             | Self::Network
             | Self::Commands
-            | Self::Terminal => {
-                StandardProperties::Opaque("a provider")
-            }
+            | Self::Terminal => StandardProperties::Opaque("a provider"),
             Self::ProcessAddress
             | Self::ProcessInbox
             | Self::ProcessSpec

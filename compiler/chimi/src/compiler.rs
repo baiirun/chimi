@@ -374,7 +374,10 @@ impl TypeReport {
     }
 
     /// The documentation of every module `include` accepts, in module order.
-    pub fn documentation_of(&self, include: impl Fn(&str) -> bool) -> Vec<crate::ModuleDocumentation> {
+    pub fn documentation_of(
+        &self,
+        include: impl Fn(&str) -> bool,
+    ) -> Vec<crate::ModuleDocumentation> {
         self.typed
             .resolved
             .semantic
@@ -387,7 +390,11 @@ impl TypeReport {
 
     /// The symbol named at `offset` in `module_path`, with every place its
     /// name is written.
-    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+    pub fn occurrences(
+        &self,
+        module_path: &str,
+        offset: usize,
+    ) -> Option<crate::SymbolOccurrences> {
         crate::occurrences::occurrences_at(&self.typed, module_path, offset)
     }
 

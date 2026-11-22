@@ -2487,7 +2487,11 @@ impl ProjectResolver {
     /// The module symbol `alias` names in this module, or `None` when it is
     /// not an alias or is ambiguous.
     fn alias_module_symbol(&self, module_index: usize, alias: &Name) -> Option<SymbolId> {
-        match self.modules[module_index].aliases.get(&alias.text).copied()? {
+        match self.modules[module_index]
+            .aliases
+            .get(&alias.text)
+            .copied()?
+        {
             AliasBinding::Module(target) => Some(
                 self.symbols
                     .iter()

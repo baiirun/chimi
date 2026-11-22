@@ -68,7 +68,11 @@ impl IncrementalTypeReport {
     /// The symbol whose name is at `offset` in `module_path`, with its
     /// declaration and every reference in the project (find references and
     /// rename), from this report's retained snapshot.
-    pub fn occurrences(&self, module_path: &str, offset: usize) -> Option<crate::SymbolOccurrences> {
+    pub fn occurrences(
+        &self,
+        module_path: &str,
+        offset: usize,
+    ) -> Option<crate::SymbolOccurrences> {
         crate::occurrences::occurrences_at(&self.types.typed, module_path, offset)
     }
 
@@ -111,7 +115,9 @@ impl IncrementalTypeReport {
             .iter()
             .map(|module| (module.source.file_id(), module.source.path()))
             .collect();
-        for finding in crate::lint::lint(resolved, |origin| origin == crate::compiler::ModuleOrigin::Own) {
+        for finding in crate::lint::lint(resolved, |origin| {
+            origin == crate::compiler::ModuleOrigin::Own
+        }) {
             if let Some(path) = paths.get(&finding.file_id()) {
                 findings.entry(*path).or_default().push(finding);
             }

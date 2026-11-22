@@ -103,7 +103,10 @@ impl Pins<'_> {
                 let kept = previous
                     .entries
                     .get(name)
-                    .filter(|locked| locked.source == *source && !moving.iter().any(|moved| moved == name.as_str()))
+                    .filter(|locked| {
+                        locked.source == *source
+                            && !moving.iter().any(|moved| moved == name.as_str())
+                    })
                     .map(|locked| locked.commit.clone());
                 let commit = match kept {
                     Some(commit) => commit,
@@ -133,7 +136,9 @@ impl Pins<'_> {
 pub enum PackageError {
     Manifest(crate::manifest::ManifestError),
     /// `--root` names a workspace, whose members are the packages.
-    RootIsWorkspace { manifest: PathBuf },
+    RootIsWorkspace {
+        manifest: PathBuf,
+    },
     DependencyMissing {
         manifest: PathBuf,
         name: PackageName,
@@ -172,29 +177,50 @@ pub enum PackageError {
         first: (PathBuf, String),
         second: (PathBuf, String),
     },
-    Cycle { packages: Vec<PackageName> },
+    Cycle {
+        packages: Vec<PackageName>,
+    },
     Lock(crate::manifest::ManifestError),
     /// A git dependency with no lock entry, or one for another source.
-    LockOutOfDate { manifest: PathBuf, name: PackageName },
+    LockOutOfDate {
+        manifest: PathBuf,
+        name: PackageName,
+    },
     Git {
         manifest: PathBuf,
         name: PackageName,
         error: GitError,
     },
     /// `chimi deps update <name>` names no git package of the workspace.
-    NotAGitDependency { name: String },
+    NotAGitDependency {
+        name: String,
+    },
     /// `chimi deps update` outside any package or workspace.
-    NoManifest { directory: PathBuf },
+    NoManifest {
+        directory: PathBuf,
+    },
     /// A package under a workspace directory that the workspace does not list.
-    UnlistedMember { package: PathBuf, workspace: PathBuf },
+    UnlistedMember {
+        package: PathBuf,
+        workspace: PathBuf,
+    },
     MemberMissing {
         workspace: PathBuf,
         member: PathBuf,
         source: std::io::Error,
     },
-    MemberNotAPackage { workspace: PathBuf, member: PathBuf },
-    MemberOutsideWorkspace { workspace: PathBuf, member: PathBuf },
-    MemberListedTwice { workspace: PathBuf, member: PathBuf },
+    MemberNotAPackage {
+        workspace: PathBuf,
+        member: PathBuf,
+    },
+    MemberOutsideWorkspace {
+        workspace: PathBuf,
+        member: PathBuf,
+    },
+    MemberListedTwice {
+        workspace: PathBuf,
+        member: PathBuf,
+    },
     DuplicateMember {
         name: PackageName,
         first: PathBuf,
@@ -289,16 +315,27 @@ impl fmt::Display for PackageError {
                 manifest,
                 name,
                 error,
-            } => write!(formatter, "{}: git dependency `{name}`: {error}", manifest.display()),
+            } => write!(
+                formatter,
+                "{}: git dependency `{name}`: {error}",
+                manifest.display()
+            ),
             Self::NoManifest { directory } => {
                 write!(formatter, "{} has no {MANIFEST_FILE}", directory.display())
             }
             Self::NotAGitDependency { name } => {
-                write!(formatter, "`{name}` is not a git dependency of the workspace")
+                write!(
+                    formatter,
+                    "`{name}` is not a git dependency of the workspace"
+                )
             }
             Self::Cycle { packages } => {
                 let names: Vec<&str> = packages.iter().map(PackageName::as_str).collect();
-                write!(formatter, "package dependency cycle: {}", names.join(" -> "))
+                write!(
+                    formatter,
+                    "package dependency cycle: {}",
+                    names.join(" -> ")
+                )
             }
             Self::MemberMissing {
                 workspace,
@@ -388,7 +425,11 @@ impl PackageGraph {
             return Ok(Discovered::Plain);
         };
         let lock = Lockfile::read(&found.workspace.join(LOCK_FILE)).map_err(PackageError::Lock)?;
-        let graph = Self::resolve(found.packages, &found.workspace, &mut Pins::Locked { lock, cache })?;
+        let graph = Self::resolve(
+            found.packages,
+            &found.workspace,
+            &mut Pins::Locked { lock, cache },
+        )?;
         Ok(if found.is_workspace {
             Discovered::Workspace(graph)
         } else {
@@ -415,8 +456,8 @@ impl PackageGraph {
             Manifest::Package(_) => workspace_root(root)?,
             Manifest::Workspace(_) => root.to_owned(),
         };
-        let found = Self::own_packages(&workspace, true)?
-            .expect("the workspace root holds a manifest");
+        let found =
+            Self::own_packages(&workspace, true)?.expect("the workspace root holds a manifest");
         let path = workspace.join(LOCK_FILE);
         let previous = Lockfile::read(&path).map_err(PackageError::Lock)?;
         let mut pins = Pins::Updating {
@@ -450,7 +491,10 @@ impl PackageGraph {
 
     /// The packages the command names at `root`, and the workspace they
     /// belong to; `None` without a manifest.
-    fn own_packages(root: &Path, workspace_allowed: bool) -> Result<Option<OwnPackages>, PackageError> {
+    fn own_packages(
+        root: &Path,
+        workspace_allowed: bool,
+    ) -> Result<Option<OwnPackages>, PackageError> {
         let manifest_path = root.join(MANIFEST_FILE);
         if !manifest_path.is_file() {
             return Ok(None);
@@ -468,13 +512,14 @@ impl PackageGraph {
                 let mut own: Vec<(PathBuf, PathBuf, PackageManifest)> = Vec::new();
                 for member in &workspace.members {
                     let requested = root.join(member);
-                    let directory = requested.canonicalize().map_err(|source| {
-                        PackageError::MemberMissing {
-                            workspace: manifest_path.clone(),
-                            member: requested.clone(),
-                            source,
-                        }
-                    })?;
+                    let directory =
+                        requested
+                            .canonicalize()
+                            .map_err(|source| PackageError::MemberMissing {
+                                workspace: manifest_path.clone(),
+                                member: requested.clone(),
+                                source,
+                            })?;
                     if !directory.starts_with(root) {
                         return Err(PackageError::MemberOutsideWorkspace {
                             workspace: manifest_path,
@@ -556,7 +601,11 @@ impl PackageGraph {
                 let (directory, git, boundary) = match &dependency.source {
                     DependencySource::Path(relative) => {
                         let importer = &graph.packages[index];
-                        let directory = existing(importer.root.join(relative), &importer.manifest, &dependency.name)?;
+                        let directory = existing(
+                            importer.root.join(relative),
+                            &importer.manifest,
+                            &dependency.name,
+                        )?;
                         let boundary = importer.boundary.clone();
                         if !directory.starts_with(boundary.directory()) {
                             return Err(match boundary {
@@ -566,12 +615,14 @@ impl PackageGraph {
                                     directory,
                                     workspace,
                                 },
-                                Boundary::Repository(repository) => PackageError::OutsideRepository {
-                                    manifest: importer_manifest,
-                                    name: dependency.name,
-                                    directory,
-                                    repository,
-                                },
+                                Boundary::Repository(repository) => {
+                                    PackageError::OutsideRepository {
+                                        manifest: importer_manifest,
+                                        name: dependency.name,
+                                        directory,
+                                        repository,
+                                    }
+                                }
                             });
                         }
                         (directory, None, boundary)
@@ -590,13 +641,14 @@ impl PackageGraph {
                             });
                         }
                         let commit = pins.commit(&dependency.name, source, &importer_manifest)?;
-                        let checkout = pins.cache().checkout(&source.url, &commit).map_err(|error| {
-                            PackageError::Git {
-                                manifest: importer_manifest.clone(),
-                                name: dependency.name.clone(),
-                                error,
-                            }
-                        })?;
+                        let checkout =
+                            pins.cache()
+                                .checkout(&source.url, &commit)
+                                .map_err(|error| PackageError::Git {
+                                    manifest: importer_manifest.clone(),
+                                    name: dependency.name.clone(),
+                                    error,
+                                })?;
                         let checkout = existing(checkout, &importer_manifest, &dependency.name)?;
                         let directory = existing(
                             checkout.join(source.directory.as_deref().unwrap_or_default()),
@@ -679,7 +731,9 @@ impl PackageGraph {
     }
 
     pub(crate) fn find_str(&self, name: &str) -> Option<&Package> {
-        self.packages.iter().find(|package| package.name.as_str() == name)
+        self.packages
+            .iter()
+            .find(|package| package.name.as_str() == name)
     }
 
     fn reject_cycles(&self) -> Result<(), PackageError> {
@@ -710,7 +764,9 @@ impl PackageGraph {
             states.insert(&package.name, Visit::Active);
             stack.push(package.name.clone());
             for dependency in &package.dependencies {
-                let next = graph.find(dependency).expect("every dependency is in the graph");
+                let next = graph
+                    .find(dependency)
+                    .expect("every dependency is in the graph");
                 visit(graph, next, states, stack)?;
             }
             stack.pop();
@@ -727,7 +783,11 @@ impl PackageGraph {
 
 /// `requested`, canonical, or the error naming the dependency that asked
 /// for it.
-fn existing(requested: PathBuf, manifest: &Path, name: &PackageName) -> Result<PathBuf, PackageError> {
+fn existing(
+    requested: PathBuf,
+    manifest: &Path,
+    name: &PackageName,
+) -> Result<PathBuf, PackageError> {
     requested
         .canonicalize()
         .map_err(|source| PackageError::DependencyMissing {

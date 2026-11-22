@@ -77,7 +77,11 @@ mod tests {
         let first: Vec<u64> = (0..3).map(|_| generator.next()).collect();
         assert_eq!(
             first,
-            [0x99ec_5f36_cb75_f2b4, 0xbf6e_1f78_4956_452a, 0x1a5f_849d_4933_e6e0]
+            [
+                0x99ec_5f36_cb75_f2b4,
+                0xbf6e_1f78_4956_452a,
+                0x1a5f_849d_4933_e6e0
+            ]
         );
     }
 

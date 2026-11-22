@@ -2155,7 +2155,11 @@ fn native_checkout_service_forces_the_phase_3_surface() {
         .output()
         .expect("run the checkout-service tests");
     let report = String::from_utf8_lossy(&tests.stdout);
-    assert!(tests.status.success(), "{report}{}", String::from_utf8_lossy(&tests.stderr));
+    assert!(
+        tests.status.success(),
+        "{report}{}",
+        String::from_utf8_lossy(&tests.stderr)
+    );
     assert!(report.ends_with("7 passed, 0 failed\n"), "{report}");
     std::fs::remove_dir_all(scratch).unwrap();
 }
@@ -4922,8 +4926,13 @@ fn native_releases_no_request_carries_are_done_before_the_carrier_idles() {
              Task.result(child)\n}}\n"
         ),
     );
-    let execution =
-        execute_native_with(&executable, &scratch, "idle-drain", "full", &["--clock=virtual"]);
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "idle-drain",
+        "full",
+        &["--clock=virtual"],
+    );
     assert!(
         execution.process.status.success(),
         "{}\n{}",

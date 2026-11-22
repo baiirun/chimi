@@ -53,7 +53,9 @@ impl Wakes {
     /// No pipes for one carrier, otherwise one per carrier.
     pub(super) fn new(carriers: u32) -> io::Result<Self> {
         let pipes = if carriers > 1 {
-            (0..carriers).map(|_| Pipe::open()).collect::<io::Result<_>>()?
+            (0..carriers)
+                .map(|_| Pipe::open())
+                .collect::<io::Result<_>>()?
         } else {
             Vec::new()
         };
@@ -78,7 +80,8 @@ impl Wakes {
     /// more than once since the last take is written once.
     pub(super) fn take(&mut self) -> Marked {
         let mut ends = Vec::new();
-        for ((pipe, marked), pending) in self.pipes.iter().zip(&mut self.marked).zip(&self.pending) {
+        for ((pipe, marked), pending) in self.pipes.iter().zip(&mut self.marked).zip(&self.pending)
+        {
             if std::mem::take(marked) {
                 ends.push((pipe.write, std::ptr::from_ref(pending)));
             }
@@ -411,7 +414,10 @@ mod tests {
         assert_eq!(marked.0.len(), 1, "two marks of one carrier write once");
         assert!(wakes.take().0.is_empty(), "the take cleared the mark");
         let fd = |carrier| wakes.read_fd(Carrier(carrier)).expect("a pipe");
-        assert!(!readable(fd(2)), "nothing is written before the take's write");
+        assert!(
+            !readable(fd(2)),
+            "nothing is written before the take's write"
+        );
         marked.write();
         assert!(readable(fd(2)));
         assert!(!readable(fd(0)) && !readable(fd(1)));
@@ -431,7 +437,10 @@ mod tests {
             test_hooks::OPENED.with(|opened| opened.borrow()[opened_before..].to_vec());
         assert_eq!(opened.len(), 4, "two pipes opened before the failure");
         let closed = test_hooks::CLOSED.with(|closed| closed.borrow().clone());
-        assert!(opened.iter().all(|fd| closed.contains(fd)), "each was closed");
+        assert!(
+            opened.iter().all(|fd| closed.contains(fd)),
+            "each was closed"
+        );
     }
 
     /// A wake written by another thread ends an idle carrier's spin before
@@ -455,7 +464,10 @@ mod tests {
             assert!(fds.spin(Duration::from_secs(30)), "the wake ended the spin");
         });
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(!fds.spin(Duration::from_millis(1)), "the spin cleared the flag");
+        assert!(
+            !fds.spin(Duration::from_millis(1)),
+            "the spin cleared the flag"
+        );
         assert!(!readable(fd), "the spin emptied the pipe");
     }
 
@@ -476,7 +488,10 @@ mod tests {
         assert!(!fds.spin(Duration::ZERO), "no budget, no spin");
         fds.settle();
         // SAFETY: as above.
-        assert!(!unsafe { &*pending }.load(Ordering::Acquire), "settle clears the flag");
+        assert!(
+            !unsafe { &*pending }.load(Ordering::Acquire),
+            "settle clears the flag"
+        );
     }
 
     /// A carrier spins only when every carrier can have a core.

@@ -325,7 +325,11 @@ impl Scheduler {
         let Some(root) = self.signals.root else {
             return self.signals.delivered;
         };
-        if self.tasks.get(&root).is_some_and(|record| record.phase.is_live()) {
+        if self
+            .tasks
+            .get(&root)
+            .is_some_and(|record| record.phase.is_live())
+        {
             return self.signals.delivered;
         }
         for timer in std::mem::take(&mut self.signals.user_timers) {
@@ -391,7 +395,10 @@ pub(super) fn wait_readable(fds: &[i32], timeout: Option<std::time::Duration>) {
         events: libc::POLLIN,
         revents: 0,
     }; 2];
-    assert!(fds.len() <= polls.len(), "at most the signal and wake pipes");
+    assert!(
+        fds.len() <= polls.len(),
+        "at most the signal and wake pipes"
+    );
     let polls = &mut polls[..fds.len()];
     for (poll, &fd) in polls.iter_mut().zip(fds) {
         poll.fd = fd;

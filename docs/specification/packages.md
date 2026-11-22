@@ -1,10 +1,9 @@
 # Packages and workspaces
 
-Status: implemented in part (T5, CHI-290). Packages, path dependencies,
-imports across packages, module origins, workspaces and the editor finding
-a file's package are implemented. Git dependencies, the lockfile and the
-cache (PR 4) are not yet; until then a git dependency fails with "git
-dependencies are not supported yet".
+Status: implemented (T5, CHI-290): packages, path and git dependencies,
+imports across packages, module origins, workspaces, the lockfile, the
+dependency cache and the editor finding a file's package. Listing packages
+in the build report is follow-up work (CHI-292).
 
 ## Purpose
 
@@ -153,7 +152,7 @@ members = ["app", "packages/shop_core", "packages/money"]
 
 ```toml
 # Written by `chimi deps update`. Commit this file.
-version = 1
+version = "1"
 
 [git.json_tools]
 url = "https://github.com/example/json_tools"
@@ -165,10 +164,17 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   each git package in the workspace's builds, the
   manifest's `url`, `rev` and `directory`, and the commit `rev` resolved to.
   Path packages are not locked: they are the repository's own source.
-- `chimi deps update` resolves the git dependencies that have no lock entry
+- `version` is a string, as the manifest subset has no numbers; a lockfile
+  of another version is an error rather than a guess.
+- `chimi deps update [--root <directory>] [<package>...]` works on the
+  whole workspace that holds the directory (the current one by default), so
+  the one lockfile covers every member's builds. It resolves the git
+  dependencies that have no lock entry
   or whose `url`, `rev` or `directory` changed, fetches them, and rewrites
   `chimi.lock` with entries sorted by name; `chimi deps update <name>` also
-  moves that package's pin to what its `rev` points to now. These are the
+  moves that package's pin to what its `rev` points to now, and naming a
+  package that is not a git dependency of the workspace is an error. It
+  prints each pin it adds, moves or drops. These are the
   only commands that write the lockfile or move a pinned commit.
 - `check`, `run`, `build`, `test`, `doc` and `lint` MUST NOT write the
   lockfile. A git dependency with no lock entry, or whose entry's `url`,
@@ -184,9 +190,14 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   `$CHIMI_CACHE` when set, otherwise `$XDG_CACHE_HOME/chimi`, otherwise
   `~/.cache/chimi`. A locked commit is checked out once into a directory named
   by its URL and commit, and never changes after that, so builds share it.
-- A build fetches a locked commit missing from the cache. `--offline` makes a
-  missing commit an error instead, naming the package, without touching the
-  network.
+- A build fetches a locked commit missing from the cache. `--offline`,
+  written before the command (`chimi --offline test .`), makes a missing
+  commit an error instead, naming the package, without touching the
+  network. `chimi deps update` always fetches, so it rejects `--offline`.
+- The language server never fetches: a git package no command has fetched
+  yet is reported as missing from the cache.
+- Revisions and URLs are passed to `git` as arguments, so a manifest MUST
+  NOT start either with `-`; `git` runs with the `ext::` transport off.
 - Fetched source is read only through the lockfile: a build MUST NOT take a
   commit from the cache that the lockfile does not name.
 
@@ -220,9 +231,9 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | Manifest | `chimi.toml`, `[package]` + `[dependencies]`, or `[workspace]` |
 | Lockfile | `chimi.lock` at the workspace root, written only by `chimi deps update` |
 | Cache | `$CHIMI_CACHE`, `$XDG_CACHE_HOME/chimi`, or `~/.cache/chimi` |
-| Commands | `chimi deps update`; `--offline` on commands that load a package |
+| Commands | `chimi deps update [--root <directory>] [<package>...]`; `chimi --offline <command>` for any command that loads a program |
 | Library | `LoadedProject::load` and `load_directory` read a manifest in the root; `ProjectSource::origin`; `project::package_root_of` |
-| Build report | `chimi.build.v1` lists each package with its source and commit |
+| Build report | `chimi.build.v1` lists each package with its source and commit (follow-up, CHI-292) |
 
 ## Implementation model
 
@@ -264,9 +275,13 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | The forcing program, a two-package workspace, runs, tests and lints clean | `cli.rs` `native_checkout_service_forces_the_phase_3_surface`; `programs/checkout-service` |
 | An unlisted package under a workspace fails | `project::tests::a_package_the_workspace_above_does_not_list_fails` |
 | A path dependency outside the workspace fails | `project::tests::a_dependency_outside_the_workspace_fails` |
-| A build uses the locked commit after the tag moves | added with PR 4 |
-| A stale lockfile fails the build and is not written | added with PR 4 |
-| `--offline` with a missing commit fails without fetching | added with PR 4 |
+| A build uses the locked commit after the tag moves; only a named update moves it | `tests/packages.rs` `a_build_uses_the_locked_commit_until_the_package_is_updated_by_name` |
+| A stale lockfile fails the build and is not written | `tests/packages.rs` `a_stale_lockfile_fails_the_build_and_is_not_written` |
+| `--offline` with a missing commit fails without fetching | `tests/packages.rs` `offline_a_missing_commit_fails_without_fetching` |
+| Two git sources for one package fail, naming both | `tests/packages.rs` `two_git_sources_for_one_package_fail_naming_both` |
+| A git package's `directory` stays inside its repository | `tests/packages.rs` `a_git_package_directory_must_stay_inside_its_repository` |
+| A member's update writes the workspace's one lockfile | `tests/packages.rs` `a_members_update_writes_the_one_lockfile_at_the_workspace_root` |
+| The lockfile reads back what it writes, and rejects anything else | `manifest::lock::tests` |
 
 Mutation lists: `scripts/mutation/packages_mutations.py`,
 `packages_editor_mutations.py` and `workspaces_mutations.py`.

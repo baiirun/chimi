@@ -1034,7 +1034,10 @@ mod tests {
     #[test]
     fn a_file_in_a_package_is_analyzed_with_its_package() {
         let fixture = Fixture::new("package");
-        fixture.write("chimi.toml", "[workspace]\nmembers = [\"app\", \"money\"]\n");
+        fixture.write(
+            "chimi.toml",
+            "[workspace]\nmembers = [\"app\", \"money\"]\n",
+        );
         fixture.write(
             "app/chimi.toml",
             "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n",
@@ -1054,7 +1057,10 @@ mod tests {
         let sets = workspace.analyze(&app);
         let published = |path: &DocumentPath| sets.iter().find(|set| set.path == *path);
         assert_eq!(published(&app).expect("app published").diagnostics, []);
-        assert!(published(&other).is_some(), "every module of the package is analyzed");
+        assert!(
+            published(&other).is_some(),
+            "every module of the package is analyzed"
+        );
         assert!(
             published(&money).is_none_or(|set| set.diagnostics.is_empty()),
             "a dependency is not linted: {sets:?}"
@@ -1070,9 +1076,15 @@ mod tests {
             "app/tools/run.chimi",
             "import tools/helper as Helper\n/// Doc.\npub fn value() -> Int { Helper.value() }\n",
         );
-        fixture.write("app/tools/helper.chimi", "/// Doc.\npub fn value() -> Int { 3 }\n");
+        fixture.write(
+            "app/tools/helper.chimi",
+            "/// Doc.\npub fn value() -> Int { 3 }\n",
+        );
         let sets = workspace.analyze(&tool);
-        let tool_set = sets.iter().find(|set| set.path == tool).expect("tool published");
+        let tool_set = sets
+            .iter()
+            .find(|set| set.path == tool)
+            .expect("tool published");
         assert_eq!(tool_set.diagnostics, [], "{sets:?}");
     }
 

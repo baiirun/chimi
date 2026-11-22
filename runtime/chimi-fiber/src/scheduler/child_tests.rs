@@ -522,7 +522,11 @@ unsafe extern "C" fn withdraw_a_child_wait(context: *mut c_void) -> ChimiFiberRe
 #[test]
 fn a_withdraw_wakes_a_child_wait_on_its_resource() {
     let mut child = shell("exec sleep 30");
-    let (outcome, seen) = run(withdraw_a_child_wait, process_abi::CLOCK_REAL, pid_context(&child));
+    let (outcome, seen) = run(
+        withdraw_a_child_wait,
+        process_abi::CLOCK_REAL,
+        pid_context(&child),
+    );
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen, [0, 1, i64::from(RESPONSE_PENDING)]);
     child.kill().unwrap();
@@ -548,7 +552,11 @@ unsafe extern "C" fn wait_after_a_withdraw(context: *mut c_void) -> ChimiFiberRe
 #[test]
 fn a_child_wait_on_a_withdrawn_key_answers_at_once() {
     let mut child = shell("exec sleep 5");
-    let (outcome, seen) = run(wait_after_a_withdraw, process_abi::CLOCK_REAL, pid_context(&child));
+    let (outcome, seen) = run(
+        wait_after_a_withdraw,
+        process_abi::CLOCK_REAL,
+        pid_context(&child),
+    );
     assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
     assert_eq!(seen, [i64::from(RESPONSE_PENDING), 1]);
     child.kill().unwrap();

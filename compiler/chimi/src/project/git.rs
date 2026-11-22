@@ -34,7 +34,10 @@ pub enum GitError {
     UnknownRevision { url: String, rev: String },
     /// `git` failed, or could not be started.
     Command { action: String, detail: String },
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for GitError {
@@ -109,8 +112,18 @@ impl GitCache {
             fetch_refs(&database, url)?;
             if commit_of(&database, commit)?.is_none() {
                 // A commit no branch or tag reaches any more.
-                git(&database, &["fetch", "--quiet", "--no-tags", "--end-of-options", url, commit])
-                    .map_err(|detail| command_error(format!("fetch {commit} from {url}"), detail))?;
+                git(
+                    &database,
+                    &[
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--end-of-options",
+                        url,
+                        commit,
+                    ],
+                )
+                .map_err(|detail| command_error(format!("fetch {commit} from {url}"), detail))?;
             }
         }
         // Written beside its final name and renamed into place, so a
@@ -130,7 +143,10 @@ impl GitCache {
         let _ = std::fs::remove_file(&index);
         if let Err(detail) = finished(written) {
             let _ = std::fs::remove_dir_all(&scratch);
-            return Err(command_error(format!("check out {commit} of {url}"), detail));
+            return Err(command_error(
+                format!("check out {commit} of {url}"),
+                detail,
+            ));
         }
         if std::fs::rename(&scratch, &checkout).is_err() {
             // Another build finished the same checkout first.
@@ -152,7 +168,10 @@ impl GitCache {
     /// The bare repository that collects `url`'s objects, created empty the
     /// first time.
     fn database(&self, url: &str) -> Result<PathBuf, GitError> {
-        let database = self.base()?.join("git/db").join(format!("{}.git", repository_key(url)));
+        let database = self
+            .base()?
+            .join("git/db")
+            .join(format!("{}.git", repository_key(url)));
         if !database.join("HEAD").is_file() {
             create_directory(&database)?;
             finished(
@@ -262,8 +281,14 @@ mod tests {
     fn a_repository_key_is_readable_and_unique_per_url() {
         let key = repository_key("https://github.com/example/json_tools.git");
         assert!(key.starts_with("json_tools-"), "{key}");
-        assert_eq!(key, repository_key("https://github.com/example/json_tools.git"));
-        assert_ne!(key, repository_key("https://github.com/other/json_tools.git"));
+        assert_eq!(
+            key,
+            repository_key("https://github.com/example/json_tools.git")
+        );
+        assert_ne!(
+            key,
+            repository_key("https://github.com/other/json_tools.git")
+        );
         assert!(repository_key("file:///tmp/a b/..").starts_with("-"));
     }
 }

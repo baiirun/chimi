@@ -138,7 +138,9 @@ impl FlowValue {
     fn take_sharing_of(&mut self, other: &Self) {
         let mut properties = self.properties;
         if properties.transferable == PropertyDerivation::ValueDependent {
-            properties.transferable = properties.transferable.combine(other.properties.transferable);
+            properties.transferable = properties
+                .transferable
+                .combine(other.properties.transferable);
         }
         if properties.shareable == PropertyDerivation::ValueDependent {
             properties.shareable = properties.shareable.combine(other.properties.shareable);
@@ -565,9 +567,11 @@ impl CapabilityChecker<'_> {
                     result.borrows.extend(receiver.carries.iter().copied());
                     // A receiver read out of a field, like `jobs.receiver`, carries
                     // nothing, so the event borrows the binding the field is read from.
-                    result
-                        .borrows
-                        .extend(self.field_root_binding(module_id, argument, environment));
+                    result.borrows.extend(self.field_root_binding(
+                        module_id,
+                        argument,
+                        environment,
+                    ));
                 }
                 result
             }
@@ -1248,15 +1252,13 @@ impl CapabilityChecker<'_> {
                     ProjectSymbolKind::StructConstructor | ProjectSymbolKind::EnumConstructor => {
                         true
                     }
-                    ProjectSymbolKind::BuiltinValue => match self
-                        .typed
-                        .resolved
-                        .standard_symbol(symbol)
-                    {
-                        Some(StandardSymbol::Constructor(_)) => true,
-                        Some(_) => false,
-                        None => matches!(declared.name.as_str(), "Success" | "Failure"),
-                    },
+                    ProjectSymbolKind::BuiltinValue => {
+                        match self.typed.resolved.standard_symbol(symbol) {
+                            Some(StandardSymbol::Constructor(_)) => true,
+                            Some(_) => false,
+                            None => matches!(declared.name.as_str(), "Success" | "Failure"),
+                        }
+                    }
                     _ => false,
                 }
             })

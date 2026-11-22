@@ -549,7 +549,11 @@ fn capture_defect_cancels_the_tasks_its_operation_started() {
             "}\n",
         )
     );
-    let run = chimi_test("capture-tasks", &source, &["--filter=tasks", "--show-output"]);
+    let run = chimi_test(
+        "capture-tasks",
+        &source,
+        &["--filter=tasks", "--show-output"],
+    );
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
     assert_eq!(
         run.stdout,
@@ -642,7 +646,11 @@ fn a_deadlock_inside_capture_defect_is_still_a_deadlock() {
     );
     let run = chimi_test("capture-deadlock", source, &["--json"]);
     assert_eq!(run.status, Some(1), "{}", run.stderr);
-    assert!(run.stdout.contains("\"kind\":\"deadlock\""), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("\"kind\":\"deadlock\""),
+        "{}",
+        run.stdout
+    );
 }
 
 const TEST_ONLY: &str = concat!(
@@ -674,7 +682,10 @@ fn a_test_only_operation_reachable_from_main_fails_the_build_but_not_the_tests()
         "but the program reaches it: main -> helper -> guarded -> Test.capture_defect; ",
         "call it only from `test` items and the helpers they use\n",
     );
-    for command in [&["build", "cases.chimi", "-o", "program"][..], &["run", "cases.chimi"]] {
+    for command in [
+        &["build", "cases.chimi", "-o", "program"][..],
+        &["run", "cases.chimi"],
+    ] {
         let run = chimi("test-only", TEST_ONLY, command);
         assert_eq!(run.status, Some(1), "{command:?}: {}", run.stdout);
         assert_eq!(run.stderr, expected, "{command:?}");
@@ -796,10 +807,22 @@ fn a_recorder_or_script_must_hold_shareable_values() {
     );
     let run = chimi_test("recorder-shareable", source, &[]);
     assert_eq!(run.status, Some(2), "{}", run.stdout);
-    let diagnostics: Vec<&str> = run.stderr.lines().filter(|line| line.contains("T4403")).collect();
+    let diagnostics: Vec<&str> = run
+        .stderr
+        .lines()
+        .filter(|line| line.contains("T4403"))
+        .collect();
     assert_eq!(diagnostics.len(), 2, "{}", run.stderr);
-    assert!(diagnostics[0].starts_with("cases.chimi:6:32: error[T4403] type: Test.record keeps"), "{}", run.stderr);
-    assert!(diagnostics[1].starts_with("cases.chimi:7:29: error[T4403] type: Test.script keeps"), "{}", run.stderr);
+    assert!(
+        diagnostics[0].starts_with("cases.chimi:6:32: error[T4403] type: Test.record keeps"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        diagnostics[1].starts_with("cases.chimi:7:29: error[T4403] type: Test.script keeps"),
+        "{}",
+        run.stderr
+    );
 }
 
 #[test]
@@ -815,7 +838,8 @@ fn a_recorder_reachable_from_main_fails_the_build() {
     let run = chimi("recorder-main", source, &["run", "cases.chimi"]);
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(
-        run.stderr.contains("error[T4401] execution-setup: `Test.record` is test-only"),
+        run.stderr
+            .contains("error[T4401] execution-setup: `Test.record` is test-only"),
         "{}",
         run.stderr
     );
@@ -901,10 +925,21 @@ test "a capacity below one defects" {
 fn a_test_mailbox_holds_what_is_sent_to_its_address() {
     let run = chimi_test("mailboxes", MAILBOXES, &[]);
     assert_eq!(run.status, Some(1), "{}{}", run.stdout, run.stderr);
-    assert!(run.stdout.contains("test main \"a full mailbox refuses and received frees it\" ... ok"), "{}", run.stdout);
-    assert!(run.stdout.contains("test main \"a process sends to a test address\" ... ok"), "{}", run.stdout);
     assert!(
-        run.stdout.contains("Test.mailbox: the capacity must be at least 1, not 0"),
+        run.stdout
+            .contains("test main \"a full mailbox refuses and received frees it\" ... ok"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("test main \"a process sends to a test address\" ... ok"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("Test.mailbox: the capacity must be at least 1, not 0"),
         "{}",
         run.stdout
     );
@@ -991,7 +1026,8 @@ fn a_mailbox_is_not_an_inbox_and_main_cannot_reach_one() {
     let run = chimi("mailbox-main", source, &["run", "cases.chimi"]);
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(
-        run.stderr.contains("error[T4401] execution-setup: `Test.mailbox` is test-only"),
+        run.stderr
+            .contains("error[T4401] execution-setup: `Test.mailbox` is test-only"),
         "{}",
         run.stderr
     );
@@ -1044,17 +1080,35 @@ const DRAWS_AT_SEED_0: &str = concat!(
 fn a_test_draws_the_same_numbers_alone_and_among_others_on_both_backends() {
     let all = both_backends("random-all", RANDOM, &["--show-output"]);
     assert!(all.stdout.contains(DRAWS_AT_SEED_0), "{}", all.stdout);
-    let alone = both_backends("random-alone", RANDOM, &["--show-output", "--filter=main \"draws\""]);
-    assert_eq!(alone.stdout, format!("{DRAWS_AT_SEED_0}\n1 passed, 0 failed\n"));
+    let alone = both_backends(
+        "random-alone",
+        RANDOM,
+        &["--show-output", "--filter=main \"draws\""],
+    );
+    assert_eq!(
+        alone.stdout,
+        format!("{DRAWS_AT_SEED_0}\n1 passed, 0 failed\n")
+    );
     let reseeded = both_backends("random-reseeded", RANDOM, &["--show-output", "--seed=1"]);
-    assert!(!reseeded.stdout.contains(DRAWS_AT_SEED_0), "{}", reseeded.stdout);
+    assert!(
+        !reseeded.stdout.contains(DRAWS_AT_SEED_0),
+        "{}",
+        reseeded.stdout
+    );
 }
 
 #[test]
 fn a_failure_names_the_seed_only_when_the_test_drew_numbers() {
-    let run = both_backends("random-seed-report", RANDOM, &["--seed=7", "--filter=fails"]);
+    let run = both_backends(
+        "random-seed-report",
+        RANDOM,
+        &["--seed=7", "--filter=fails"],
+    );
     assert_eq!(run.status, Some(1), "{}", run.stderr);
-    let after_draw = run.stdout.split("test main \"fails without a draw\"").collect::<Vec<_>>();
+    let after_draw = run
+        .stdout
+        .split("test main \"fails without a draw\"")
+        .collect::<Vec<_>>();
     assert!(
         after_draw[0].contains("  random seed: 7; replay with --seed=7\n"),
         "{}",
@@ -1062,7 +1116,11 @@ fn a_failure_names_the_seed_only_when_the_test_drew_numbers() {
     );
     assert!(!after_draw[1].contains("random seed"), "{}", run.stdout);
     let json = both_backends("random-seed-json", RANDOM, &["--seed=7", "--json"]);
-    assert!(json.stdout.lines().all(|line| line.contains("\"seed\":7")), "{}", json.stdout);
+    assert!(
+        json.stdout.lines().all(|line| line.contains("\"seed\":7")),
+        "{}",
+        json.stdout
+    );
 }
 
 #[test]
@@ -1090,8 +1148,18 @@ fn a_provided_random_source_replaces_the_seeded_one_and_an_empty_range_defects()
     );
     let run = both_backends("random-provided", source, &[]);
     assert_eq!(run.status, Some(1), "{}", run.stderr);
-    assert!(run.stdout.contains("test main \"uses the provided source\" ... ok\n"), "{}", run.stdout);
-    assert!(run.stdout.contains("    Random.int: the range 3..3 is empty\n"), "{}", run.stdout);
+    assert!(
+        run.stdout
+            .contains("test main \"uses the provided source\" ... ok\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("    Random.int: the range 3..3 is empty\n"),
+        "{}",
+        run.stdout
+    );
 }
 
 #[test]
@@ -1114,15 +1182,25 @@ fn main_gets_a_random_source_only_under_the_name_random() {
         .args(["build", "cases.chimi", "-o", "program"])
         .output()
         .expect("run chimi build");
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let program = Command::new(scratch.join("program")).output().expect("run the program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let program = Command::new(scratch.join("program"))
+        .output()
+        .expect("run the program");
     assert_eq!(String::from_utf8_lossy(&program.stdout), "True\n");
     std::fs::remove_dir_all(scratch).unwrap();
     let renamed = source.replace(
         "pub fn main() -> Int needs { console: Console, random: Random } {\n",
         "fn roll() -> Int needs { dice: Random } {\n  dice.next_int()\n}\n\npub fn main() -> Int {\n  let rolled = roll()\n",
     );
-    let run = chimi("random-main-renamed", &renamed, &["build", "cases.chimi", "-o", "program"]);
+    let run = chimi(
+        "random-main-renamed",
+        &renamed,
+        &["build", "cases.chimi", "-o", "program"],
+    );
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(run.stderr.contains("error[E5002]"), "{}", run.stderr);
 }
@@ -1162,14 +1240,18 @@ fn a_directory_input_runs_every_module_under_it() {
             "}\n",
         ),
     );
-    write("aardvark.chimi", "import std/test as Test\n\ntest \"first\" {\n  Test.assert(True, \"holds\")\n}\n");
+    write(
+        "aardvark.chimi",
+        "import std/test as Test\n\ntest \"first\" {\n  Test.assert(True, \"holds\")\n}\n",
+    );
     write(".hidden/broken.chimi", "this is not chimi\n");
     write("target/broken.chimi", "this is not chimi\n");
     write(".broken.chimi", "this is not chimi\n");
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(scratch.join("app"), scratch.join("alias")).unwrap();
-        std::os::unix::fs::symlink(scratch.join("aardvark.chimi"), scratch.join("link.chimi")).unwrap();
+        std::os::unix::fs::symlink(scratch.join("aardvark.chimi"), scratch.join("link.chimi"))
+            .unwrap();
     }
     for backend in ["--backend=native", "--backend=interpreter"] {
         let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -1272,7 +1354,13 @@ fn secret() -> Int {
 fn doc_comment_examples_run_as_tests_on_both_backends() {
     for backend in ["--backend=native", "--backend=interpreter"] {
         let run = chimi_test("doc-examples", DOCUMENTED, &[backend]);
-        assert_eq!(run.status, Some(1), "{backend}: {}{}", run.stdout, run.stderr);
+        assert_eq!(
+            run.status,
+            Some(1),
+            "{backend}: {}{}",
+            run.stdout,
+            run.stderr
+        );
         assert_eq!(
             run.stdout,
             concat!(
@@ -1289,7 +1377,11 @@ fn doc_comment_examples_run_as_tests_on_both_backends() {
             "{backend}"
         );
     }
-    let run = chimi_test("doc-examples-filter", DOCUMENTED, &["--filter=double example"]);
+    let run = chimi_test(
+        "doc-examples-filter",
+        DOCUMENTED,
+        &["--filter=double example"],
+    );
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
 }
 
@@ -1308,7 +1400,11 @@ fn a_doc_example_sees_only_public_items_and_chimi_check_reads_it() {
     assert!(run.stderr.contains(expected), "{}", run.stderr);
     // JSON names the documented module and offsets into its own text.
     let start = source.find("secret(), 1)").unwrap();
-    let run = chimi("doc-examples-json", &source, &["check", "--json", "cases.chimi"]);
+    let run = chimi(
+        "doc-examples-json",
+        &source,
+        &["check", "--json", "cases.chimi"],
+    );
     assert_eq!(run.status, Some(1), "{}", run.stdout);
     assert!(
         run.stdout.contains(&format!(
@@ -1374,7 +1470,10 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     std::fs::write(traces.join("stale.jsonl"), "").unwrap();
     let (status, stdout, stderr) = run(&["--trace=full", "--json"]);
     assert_eq!(status, Some(1), "{stdout}{stderr}");
-    assert!(!traces.join("stale.jsonl").exists(), "a traced run clears the last one");
+    assert!(
+        !traces.join("stale.jsonl").exists(),
+        "a traced run clears the last one"
+    );
     for name in names {
         let path = format!("\"trace\":\"target/chimi/cases/test/traces/{name}\"");
         assert!(stdout.contains(&path), "{path} in {stdout}");
@@ -1386,13 +1485,31 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
         let computation = format!("\"computation\":\"test \\\"{test}\\\"\"");
         let execution = format!("\"execution_id\":\"test-{index}\"");
         for line in lines {
-            assert!(line.contains(&computation) && line.contains(&execution), "{line}");
+            assert!(
+                line.contains(&computation) && line.contains(&execution),
+                "{line}"
+            );
         }
-        assert!(first.contains("\"event\":\"computation_started\""), "{first}");
-        assert!(last.contains("\"event\":\"computation_completed\""), "{last}");
-        assert!(lines.iter().any(|line| line.contains("\"event\":\"operation_started\"")));
+        assert!(
+            first.contains("\"event\":\"computation_started\""),
+            "{first}"
+        );
+        assert!(
+            last.contains("\"event\":\"computation_completed\""),
+            "{last}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("\"event\":\"operation_started\""))
+        );
     }
-    assert!(native[0].last().unwrap().contains("\"outcome\":\"success\""));
+    assert!(
+        native[0]
+            .last()
+            .unwrap()
+            .contains("\"outcome\":\"success\"")
+    );
     assert!(native[1].last().unwrap().contains("\"outcome\":\"defect\""));
 
     let (status, stdout, stderr) = run(&["--trace=full", "--json", "--backend=interpreter"]);
@@ -1412,7 +1529,11 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
     }));
     let (status, stdout, stderr) = run(&["--trace=boundaries", "--backend=interpreter"]);
     assert_eq!(status, Some(1), "{stdout}{stderr}");
-    assert_eq!(files(&names), boundaries, "both backends trace the same boundaries");
+    assert_eq!(
+        files(&names),
+        boundaries,
+        "both backends trace the same boundaries"
+    );
 
     std::fs::remove_dir_all(&traces).unwrap();
     for arguments in [&["--json"][..], &["--json", "--trace=off"]] {
@@ -1424,7 +1545,10 @@ fn trace_writes_one_telemetry_file_per_test_on_both_backends() {
 
     let (status, _, stderr) = run(&["--trace=some"]);
     assert_eq!(status, Some(2));
-    assert!(stderr.contains("--trace must be off, boundaries, or full"), "{stderr}");
+    assert!(
+        stderr.contains("--trace must be off, boundaries, or full"),
+        "{stderr}"
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -1467,9 +1591,18 @@ fn std_test_runs_the_standard_trees_examples() {
     for backend in ["--backend=native", "--backend=interpreter"] {
         let (status, stdout, stderr) = run(&["std", "test", backend]);
         assert_eq!(status, Some(1), "{stdout}{stderr}");
-        assert!(stdout.contains("test std/option \"unwrap_or example 1\" ... FAILED"), "{stdout}");
-        assert!(stdout.contains("test std/option \"map example 1\" ... ok"), "{stdout}");
-        assert!(stdout.contains("test std/cause \"context example 1\" ... ok"), "{stdout}");
+        assert!(
+            stdout.contains("test std/option \"unwrap_or example 1\" ... FAILED"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("test std/option \"map example 1\" ... ok"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("test std/cause \"context example 1\" ... ok"),
+            "{stdout}"
+        );
     }
     let (status, _, stderr) = run(&["std", "test", "cases.chimi"]);
     assert_eq!(status, Some(2));
@@ -1477,7 +1610,10 @@ fn std_test_runs_the_standard_trees_examples() {
     for arguments in [&["std", "check", "extra"][..], &["std", "build"]] {
         let (status, _, stderr) = run(arguments);
         assert_eq!(status, Some(2));
-        assert!(stderr.contains("std takes one subcommand: check or test"), "{stderr}");
+        assert!(
+            stderr.contains("std takes one subcommand: check or test"),
+            "{stderr}"
+        );
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }

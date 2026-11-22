@@ -31,7 +31,9 @@ impl Lockfile {
     pub(crate) fn read(path: &Path) -> Result<Self, ManifestError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
             Err(error) => {
                 return Err(ManifestError {
                     path: path.to_owned(),
@@ -53,7 +55,12 @@ impl Lockfile {
         for entry in &document.root.entries {
             match (entry.key.as_str(), &entry.value) {
                 ("version", Value::String(text)) => version = Some(text.as_str()),
-                _ => return Err((Some(entry.line), format!("unknown key `{}` outside any table", entry.key))),
+                _ => {
+                    return Err((
+                        Some(entry.line),
+                        format!("unknown key `{}` outside any table", entry.key),
+                    ));
+                }
             }
         }
         match version {
@@ -61,7 +68,9 @@ impl Lockfile {
             Some(other) => {
                 return Err((
                     None,
-                    format!("lockfile version \"{other}\" is not one this compiler reads (\"{VERSION}\")"),
+                    format!(
+                        "lockfile version \"{other}\" is not one this compiler reads (\"{VERSION}\")"
+                    ),
                 ));
             }
             None => return Err((None, "the lockfile needs `version = \"1\"`".to_owned())),
@@ -98,7 +107,10 @@ impl Lockfile {
             if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err((
                     Some(table.line),
-                    format!("[{}]: `commit` must be a full 40-digit commit id", table.name),
+                    format!(
+                        "[{}]: `commit` must be a full 40-digit commit id",
+                        table.name
+                    ),
                 ));
             }
             entries.insert(
@@ -121,7 +133,12 @@ impl Lockfile {
             "# Written by `chimi deps update`. Commit this file.\nversion = \"{VERSION}\"\n"
         );
         for (name, locked) in &self.entries {
-            let _ = write!(text, "\n[git.{name}]\nurl = {}\nrev = {}\n", quoted(&locked.source.url), quoted(&locked.source.rev));
+            let _ = write!(
+                text,
+                "\n[git.{name}]\nurl = {}\nrev = {}\n",
+                quoted(&locked.source.url),
+                quoted(&locked.source.rev)
+            );
             if let Some(directory) = &locked.source.directory {
                 let _ = writeln!(text, "directory = {}", quoted(directory));
             }
@@ -171,9 +188,13 @@ mod tests {
         let mut lock = Lockfile::default();
         for (name, locked) in [
             ("zed", pin("file:///z \"quoted\"\\", "main", None, 'a')),
-            ("json_tools", pin("https://example.com/json", "v0.3.0", Some("pkg"), 'b')),
+            (
+                "json_tools",
+                pin("https://example.com/json", "v0.3.0", Some("pkg"), 'b'),
+            ),
         ] {
-            lock.entries.insert(PackageName::parse(name).unwrap(), locked);
+            lock.entries
+                .insert(PackageName::parse(name).unwrap(), locked);
         }
         let text = lock.render();
         assert_eq!(
@@ -194,21 +215,49 @@ mod tests {
     fn rejects_what_it_cannot_read_naming_it() {
         let commit = "c".repeat(40);
         let entry = |extra: &str| {
-            format!("version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\ncommit = \"{commit}\"\n{extra}")
+            format!(
+                "version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\ncommit = \"{commit}\"\n{extra}"
+            )
         };
         let cases = [
-            (String::from("[git.a]\n"), "the lockfile needs `version = \"1\"`"),
-            (String::from("version = \"2\"\n"), "lockfile version \"2\" is not one"),
-            (String::from("version = \"1\"\nextra = \"x\"\n"), "2: unknown key `extra` outside"),
-            (entry("branch = \"x\"\n"), "6: unknown key `branch` in [git.a]"),
-            (String::from("version = \"1\"\n[path.a]\n"), "2: unknown table [path.a]"),
-            (String::from("version = \"1\"\n[git.A]\n"), "2: unknown table [git.A]"),
-            (String::from("version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\n"), "2: [git.a] needs `commit`"),
             (
-                String::from("version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\ncommit = \"abc\"\n"),
+                String::from("[git.a]\n"),
+                "the lockfile needs `version = \"1\"`",
+            ),
+            (
+                String::from("version = \"2\"\n"),
+                "lockfile version \"2\" is not one",
+            ),
+            (
+                String::from("version = \"1\"\nextra = \"x\"\n"),
+                "2: unknown key `extra` outside",
+            ),
+            (
+                entry("branch = \"x\"\n"),
+                "6: unknown key `branch` in [git.a]",
+            ),
+            (
+                String::from("version = \"1\"\n[path.a]\n"),
+                "2: unknown table [path.a]",
+            ),
+            (
+                String::from("version = \"1\"\n[git.A]\n"),
+                "2: unknown table [git.A]",
+            ),
+            (
+                String::from("version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\n"),
+                "2: [git.a] needs `commit`",
+            ),
+            (
+                String::from(
+                    "version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\ncommit = \"abc\"\n",
+                ),
                 "2: [git.a]: `commit` must be a full 40-digit commit id",
             ),
-            (format!("version = \"1\"\n[git.a]\nrev = \"r\"\ncommit = \"{commit}\"\n"), "2: [git.a] needs `url`"),
+            (
+                format!("version = \"1\"\n[git.a]\nrev = \"r\"\ncommit = \"{commit}\"\n"),
+                "2: [git.a] needs `url`",
+            ),
         ];
         for (text, expected) in cases {
             let (line, message) = Lockfile::parse(&text).expect_err(&text);
@@ -223,6 +272,9 @@ mod tests {
     #[test]
     fn a_missing_lockfile_is_empty() {
         let path = std::env::temp_dir().join(format!("chimi-no-lock-{}", std::process::id()));
-        assert_eq!(Lockfile::read(&path.join("chimi.lock")).unwrap(), Lockfile::default());
+        assert_eq!(
+            Lockfile::read(&path.join("chimi.lock")).unwrap(),
+            Lockfile::default()
+        );
     }
 }

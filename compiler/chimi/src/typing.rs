@@ -1571,8 +1571,7 @@ impl TypedProject {
     /// registry contract, which is written in the standard generics, so
     /// `Result` answers those rather than its source declaration's.
     fn type_generic_parameters(&self, owner: SymbolId) -> Vec<SymbolId> {
-        if self.resolved.standard_symbol(owner)
-            == Some(StandardSymbol::Type(StandardType::Result))
+        if self.resolved.standard_symbol(owner) == Some(StandardSymbol::Type(StandardType::Result))
         {
             return [StandardGeneric::ResultValue, StandardGeneric::ResultError]
                 .into_iter()
@@ -5357,7 +5356,11 @@ impl ProjectTypeChecker {
     /// Whether `failures` holds `variant` at two argument lists that disagree,
     /// as a row that raised both `W<Int>.Bad` and `W<Text>.Bad` does; poison
     /// (an argument the variant does not mention) agrees with any type.
-    fn variant_raised_at_several_arguments(&self, failures: FailureRowId, variant: SymbolId) -> bool {
+    fn variant_raised_at_several_arguments(
+        &self,
+        failures: FailureRowId,
+        variant: SymbolId,
+    ) -> bool {
         let lists = self.failure_rows[failures.raw() as usize]
             .variant_arguments
             .iter()
@@ -5374,9 +5377,10 @@ impl ProjectTypeChecker {
         lists.iter().any(|left| {
             lists.iter().any(|right| {
                 left.len() != right.len()
-                    || left.iter().zip(right).any(|(left, right)| {
-                        left != right && *left != poison && *right != poison
-                    })
+                    || left
+                        .iter()
+                        .zip(right)
+                        .any(|(left, right)| left != right && *left != poison && *right != poison)
             })
         })
     }
@@ -5418,7 +5422,9 @@ impl ProjectTypeChecker {
                 });
                 self.match_call_type(raised, contract.success, &mut substitution);
             } else {
-                substitution.values.extend(standard.iter().copied().zip(list));
+                substitution
+                    .values
+                    .extend(standard.iter().copied().zip(list));
             }
             let inputs = contract
                 .inputs
@@ -11179,12 +11185,12 @@ impl ProjectTypeChecker {
                 continue;
             }
             if let TypeUse::Named {
-                semantic_id,
-                path,
-                ..
+                semantic_id, path, ..
             } = argument
-                && let (Some(name), Some(generic)) =
-                    (path.last(), self.resolved_type_symbol(module_id, *semantic_id))
+                && let (Some(name), Some(generic)) = (
+                    path.last(),
+                    self.resolved_type_symbol(module_id, *semantic_id),
+                )
                 && self.resolved.symbol(generic).kind == ProjectSymbolKind::GenericParameter
             {
                 self.constrain_generic(module_id, generic, GenericKind::FailureRow, name);

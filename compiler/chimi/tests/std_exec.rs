@@ -328,7 +328,10 @@ test "a wait after release is Closed" {
     let started = Instant::now();
     let run = scratch.chimi(&["test", "cases.chimi", "--clock=real"]);
     assert_passed(&run, 7);
-    assert!(started.elapsed() < Duration::from_secs(20), "a sleep 30 child was waited out");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "a sleep 30 child was waited out"
+    );
     for file in ["left.pid", "cancelled.pid"] {
         let text = std::fs::read_to_string(scratch.0.join(file)).expect(file);
         let pid: i32 = text.trim().parse().expect("a pid");
@@ -395,7 +398,10 @@ test "a fake that fails to start" {
 }
 "#,
     );
-    for backend in [&["test", "cases.chimi"][..], &["test", "cases.chimi", "--backend=interpreter"][..]] {
+    for backend in [
+        &["test", "cases.chimi"][..],
+        &["test", "cases.chimi", "--backend=interpreter"][..],
+    ] {
         let run = Scratch::new("fake", &source).chimi(backend);
         assert_passed(&run, 2);
     }
@@ -414,8 +420,15 @@ fn main_gets_real_programs_by_declaring_the_need_and_nothing_else_does() {
     );
     let built = scratch.chimi(&["build", "cases.chimi", "-o", "runner"]);
     assert_eq!(built.status, Some(0), "{}{}", built.stdout, built.stderr);
-    let output = Command::new(scratch.0.join("runner")).output().expect("run the program");
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = Command::new(scratch.0.join("runner"))
+        .output()
+        .expect("run the program");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let from_main = Scratch::new(
         "from-main",
@@ -425,7 +438,10 @@ fn main_gets_real_programs_by_declaring_the_need_and_nothing_else_does() {
     assert_ne!(from_main.status, Some(0));
     assert!(from_main.stderr.contains("T4401"), "{}", from_main.stderr);
 
-    let unsupplied = run_tests("unsupplied", "test \"reaches out\" {\n  sh(\"exit 0\") |> Test.assert_equal(Status.Exited(0))\n}\n");
+    let unsupplied = run_tests(
+        "unsupplied",
+        "test \"reaches out\" {\n  sh(\"exit 0\") |> Test.assert_equal(Status.Exited(0))\n}\n",
+    );
     assert_ne!(unsupplied.status, Some(0));
     assert!(unsupplied.stderr.contains("T4400"), "{}", unsupplied.stderr);
 }
@@ -462,7 +478,12 @@ fn a_child_keeps_the_signals_its_parent_ignores() {
         .args(["-c", "trap '' HUP; exec ./runner"])
         .output()
         .expect("run the program");
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // Rejects a lookup that takes a directory on PATH for the program: a
@@ -481,7 +502,11 @@ test "a directory named like the program" {
         ),
     );
     std::fs::create_dir_all(scratch.0.join("bin/sh")).unwrap();
-    let path = format!("{}:{}", scratch.0.join("bin").display(), std::env::var("PATH").unwrap());
+    let path = format!(
+        "{}:{}",
+        scratch.0.join("bin").display(),
+        std::env::var("PATH").unwrap()
+    );
     let run = scratch.chimi_with(&["test", "cases.chimi", "--clock=real"], &[("PATH", path)]);
     assert_passed(&run, 1);
 }
@@ -541,7 +566,12 @@ fn run_main(scratch: &Scratch, input: &str) -> std::process::Output {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("run the program");
-    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
     child.wait_with_output().expect("wait for the program")
 }
 
@@ -565,7 +595,12 @@ fn standard_input_to_nothing_reads_nothing() {
 "#,
     );
     let output = run_main(&scratch, "hello\n");
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // Rejects a child that holds a descriptor of its parent's beyond the three
@@ -597,9 +632,18 @@ fn a_child_holds_only_its_standard_streams() {
             .expect("run a shell")
     };
     let control = shell("/bin/sh -c 'test -e /dev/fd/9'");
-    assert_eq!(control.status.code(), Some(0), "a shell's child holds descriptor 9");
+    assert_eq!(
+        control.status.code(),
+        Some(0),
+        "a shell's child holds descriptor 9"
+    );
     let output = shell("./runner");
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // Rejects a child that inherits the parent's blocked signals: the program is
@@ -631,7 +675,12 @@ fn a_child_starts_with_no_signal_blocked() {
         ])
         .output()
         .expect("run the program");
-    assert_eq!(blocked.status.code(), Some(0), "{}", String::from_utf8_lossy(&blocked.stderr));
+    assert_eq!(
+        blocked.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
 }
 
 // Rejects a capture that loses a stream, mixes them up, reads them one after
@@ -895,7 +944,9 @@ test "a fake input whose reader stopped" {
     );
     assert_ne!(unpiped.status, Some(0));
     assert!(
-        unpiped.stdout.contains("Exec: /bin/sh was started without Stdio.Pipe for stdout"),
+        unpiped
+            .stdout
+            .contains("Exec: /bin/sh was started without Stdio.Pipe for stdout"),
         "{}{}",
         unpiped.stdout,
         unpiped.stderr
@@ -1006,7 +1057,9 @@ test "other tasks run while a child is stopped" {
     );
     assert_ne!(negative.status, Some(0));
     assert!(
-        negative.stdout.contains("Exec: stop_within must not be negative, got -5ms"),
+        negative
+            .stdout
+            .contains("Exec: stop_within must not be negative, got -5ms"),
         "{}{}",
         negative.stdout,
         negative.stderr
@@ -1040,15 +1093,31 @@ fn a_stop_signal_during_a_stop_ends_the_program_by_it() {
         .expect("run the program");
     let started = Instant::now();
     while !scratch.0.join("released").exists() {
-        assert!(started.elapsed() < Duration::from_secs(10), "the program never reached its release");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the program never reached its release"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     std::thread::sleep(Duration::from_millis(300));
-    let sent = Command::new("kill").args(["-TERM", &runner.id().to_string()]).status().expect("run kill");
+    let sent = Command::new("kill")
+        .args(["-TERM", &runner.id().to_string()])
+        .status()
+        .expect("run kill");
     assert!(sent.success());
     let output = runner.wait_with_output().expect("wait for the program");
-    assert_eq!(output.status.signal(), Some(15), "{:?} {}", output.status, String::from_utf8_lossy(&output.stderr));
-    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
+    assert_eq!(
+        output.status.signal(),
+        Some(15),
+        "{:?} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(!exists(pid), "the child {pid} outlived the program");
 }
 
@@ -1074,9 +1143,19 @@ fn no_child_outlives_the_program() {
     );
     let output = run_main(&scratch, "");
     assert_ne!(output.status.code(), Some(0));
-    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
-    assert!(!exists(pid), "the child {pid} outlived the program's defect");
-    assert!(scratch.0.join("term.txt").exists(), "a defect in `use` skipped the graceful stop");
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        !exists(pid),
+        "the child {pid} outlived the program's defect"
+    );
+    assert!(
+        scratch.0.join("term.txt").exists(),
+        "a defect in `use` skipped the graceful stop"
+    );
 
     let scratch = build_main(
         "backstop_unscoped",
@@ -1089,8 +1168,20 @@ fn no_child_outlives_the_program() {
     );
     let started = std::time::Instant::now();
     let output = run_main(&scratch, "");
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(started.elapsed() < std::time::Duration::from_secs(10), "the runner waited out the child");
-    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid")).unwrap().trim().parse().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the runner waited out the child"
+    );
+    let pid: i32 = std::fs::read_to_string(scratch.0.join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(!exists(pid), "the held child {pid} outlived the program");
 }

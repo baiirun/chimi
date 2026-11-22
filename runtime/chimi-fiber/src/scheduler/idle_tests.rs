@@ -18,8 +18,11 @@ unsafe extern "C" {
 const SECOND: i64 = 1_000_000_000;
 
 fn virtual_kernel(carriers: u32) -> Scheduler {
-    let mut scheduler =
-        Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Full, ClockMode::Virtual));
+    let mut scheduler = Scheduler::with_options(SchedulerOptions::new(
+        64 * 1024,
+        TraceMode::Full,
+        ClockMode::Virtual,
+    ));
     scheduler.set_carriers(carriers);
     scheduler
 }
@@ -40,8 +43,7 @@ unsafe extern "C" fn sleeper(context: *mut std::ffi::c_void) -> ChimiFiberResult
     loop {
         request.status = 0;
         // SAFETY: a request block that outlives the call, on this fiber.
-        let command =
-            unsafe { chimi_fiber_request((&raw mut request).cast(), ptr::null()) };
+        let command = unsafe { chimi_fiber_request((&raw mut request).cast(), ptr::null()) };
         if command == ChimiFiberCommand::Cancel {
             return ChimiFiberResult {
                 state: ChimiFiberState::Cancelled as u32,
@@ -117,7 +119,10 @@ fn a_deadlock_is_reported_only_once_every_carrier_is_idle() {
     let Idle::Deadlock(parked) = round_robin(&mut scheduler) else {
         panic!("the parked task can never wake");
     };
-    assert_eq!(parked.iter().map(|parked| parked.task).collect::<Vec<_>>(), [stuck]);
+    assert_eq!(
+        parked.iter().map(|parked| parked.task).collect::<Vec<_>>(),
+        [stuck]
+    );
     assert_eq!(scheduler.now(), Instant::from_nanos(4 * SECOND));
     assert!(succeeded(&scheduler, sleeper));
 }
@@ -131,10 +136,15 @@ fn carrier_zero_waits_for_a_carrier_running_a_fiber() {
     let mut scheduler = virtual_kernel(2);
     let sleeper = start_sleeper(&mut scheduler, 1, 5 * SECOND);
     let mut resumes = 0;
-    let runnable = scheduler.next_runnable(&mut resumes).expect("the sleeper's first step");
+    let runnable = scheduler
+        .next_runnable(&mut resumes)
+        .expect("the sleeper's first step");
     assert!(scheduler.ready.is_empty() && scheduler.jobs.is_empty());
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 runs a fiber");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "carrier 1 runs a fiber"
+    );
     scheduler.enter_carrier(Carrier(1));
     let event = resume_fiber(runnable.fiber, runnable.command);
     scheduler.complete(runnable, event);
@@ -142,11 +152,17 @@ fn carrier_zero_waits_for_a_carrier_running_a_fiber() {
     // A parked carrier taking the kernel again is no longer parked.
     scheduler.enter_carrier(Carrier(1));
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 is back");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "carrier 1 is back"
+    );
     scheduler.enter_carrier(Carrier(1));
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "time jumps once it parks");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Continue),
+        "time jumps once it parks"
+    );
     assert_eq!(scheduler.now(), Instant::from_nanos(5 * SECOND));
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
     assert!(succeeded(&scheduler, sleeper));
@@ -167,11 +183,17 @@ fn carrier_zero_waits_while_another_carrier_has_work() {
     assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)));
     scheduler.enter_carrier(Carrier(0));
     scheduler.wake(woken).expect("wake");
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "a ready task on carrier 1");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "a ready task on carrier 1"
+    );
     let Idle::Deadlock(parked) = round_robin(&mut scheduler) else {
         panic!("the woken task parks again for good");
     };
-    assert_eq!(parked.iter().map(|parked| parked.task).collect::<Vec<_>>(), [woken]);
+    assert_eq!(
+        parked.iter().map(|parked| parked.task).collect::<Vec<_>>(),
+        [woken]
+    );
     scheduler.cancel(None, woken).expect("cancel");
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
 
@@ -184,7 +206,10 @@ fn carrier_zero_waits_while_another_carrier_has_work() {
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, parked).expect("cancel");
     assert!(!scheduler.jobs.is_empty(), "the unwind waits for carrier 1");
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "a job on carrier 1");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "a job on carrier 1"
+    );
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
     assert_eq!(
         scheduler.tasks.get(&parked).map(|record| record.phase),
@@ -199,14 +224,23 @@ fn the_last_carrier_to_park_wakes_carrier_zero() {
     let mut scheduler = virtual_kernel(3);
     let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
     scheduler.enter_carrier(Carrier(1));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     assert!(!readable(zero), "carrier 2 has not parked");
     scheduler.enter_carrier(Carrier(2));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     assert!(readable(zero), "the last to park woke carrier 0");
     signal::drain(zero);
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Done(Idle::Quiescent)));
+    assert!(matches!(
+        scheduler.idle_step(),
+        IdleStep::Done(Idle::Quiescent)
+    ));
 }
 
 /// An idle carrier other than 0 fires a timer already due, which may give
@@ -248,9 +282,15 @@ fn an_idle_carrier_fires_due_timers_and_leaves_descriptors_to_carrier_zero() {
     };
     scheduler.handle_io_wait(task, &mut io);
     assert_eq!(io.status, RESPONSE_PENDING);
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 parks");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "carrier 1 parks"
+    );
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Io(_)), "carrier 0 waits on it");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Io(_)),
+        "carrier 0 waits on it"
+    );
     scheduler.clear_io_wait(task);
     drop(scheduler);
     // SAFETY: the test opened both ends and closes each once.
@@ -273,7 +313,9 @@ fn carrier_zero_waiting_for_others_sleeps_until_the_earliest_timer() {
         .start_root(chimi_fixture_generated_many_parks)
         .expect("task");
     scheduler.drive();
-    let soon = scheduler.now().saturating_add(std::time::Duration::from_millis(5));
+    let soon = scheduler
+        .now()
+        .saturating_add(std::time::Duration::from_millis(5));
     scheduler.start_wake_timer(task, soon).expect("timer");
     let IdleStep::Sleep(wait, _) = scheduler.idle_step() else {
         panic!("a timer is pending, so carrier 0 sleeps until it");
@@ -298,9 +340,15 @@ fn the_last_carrier_to_park_wakes_carrier_zero_with_a_timer_pending() {
     scheduler.drive();
     signal::drain(zero);
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     scheduler.enter_carrier(Carrier(1));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     assert!(readable(zero), "the last to park woke carrier 0");
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
     assert!(succeeded(&scheduler, sleeper));
@@ -358,20 +406,32 @@ fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     assert_eq!(io.status, RESPONSE_PENDING);
     assert!(matches!(scheduler.idle_step(), IdleStep::Io(_)));
     scheduler.begin_host_operation();
-    assert!(matches!(scheduler.idle_step(), IdleStep::Park(_)), "carrier 1 still runs");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Park(_)),
+        "carrier 1 still runs"
+    );
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     // Parked, but handed a task it has not run yet: still not idle.
     scheduler.enter_carrier(Carrier(1));
     let parker = scheduler
         .start_root(chimi_fixture_generated_many_parks)
         .expect("task");
     scheduler.drive();
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     scheduler.enter_carrier(Carrier(0));
     scheduler.wake(parker).expect("wake");
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)), "carrier 1 has a task");
+    assert!(
+        matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)),
+        "carrier 1 has a task"
+    );
     // Waiting for the others, carrier 0 still runs its own due timer.
     let own = scheduler
         .start_root(chimi_fixture_generated_many_parks)
@@ -379,19 +439,31 @@ fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     scheduler.drive();
     let now = scheduler.now();
     scheduler.start_wake_timer(own, now).expect("timer");
-    assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "its own timer fired");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Continue),
+        "its own timer fired"
+    );
     scheduler.drive();
     // Once carrier 1 has run its task and parked, the host is served.
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Park(_)
+    ));
     scheduler.enter_carrier(Carrier(0));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Done(Idle::AwaitingHost)));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Done(Idle::AwaitingHost)
+    ));
     let zero = scheduler.wakes.read_fd(Carrier(0)).expect("a wake pipe");
     signal::drain(zero);
     scheduler.enter_carrier(Carrier(1));
     scheduler.with(Scheduler::end_host_operation);
-    assert!(readable(zero), "an operation ended on carrier 1 wakes carrier 0");
+    assert!(
+        readable(zero),
+        "an operation ended on carrier 1 wakes carrier 0"
+    );
     scheduler.clear_io_wait(task);
     drop(scheduler);
     // SAFETY: the test opened both ends and closes each once.
@@ -408,7 +480,12 @@ fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(3);
     let fds: Vec<i32> = (0..3)
-        .map(|carrier| scheduler.wakes.read_fd(Carrier(carrier)).expect("a wake pipe"))
+        .map(|carrier| {
+            scheduler
+                .wakes
+                .read_fd(Carrier(carrier))
+                .expect("a wake pipe")
+        })
         .collect();
     let late = start_sleeper(&mut scheduler, 2, 0);
     scheduler.enter_carrier(Carrier(0));
@@ -419,12 +496,21 @@ fn the_end_of_a_run_wakes_every_other_carrier_and_each_leaves() {
         scheduler.enter_carrier(Carrier(carrier));
         run_carrier(&mut scheduler);
         assert!(matches!(scheduler.idle_step(), IdleStep::Exit));
-        assert!(!scheduler.parked[carrier as usize], "it left without parking");
+        assert!(
+            !scheduler.parked[carrier as usize],
+            "it left without parking"
+        );
     }
-    assert!(succeeded(&scheduler, late), "a carrier runs what it has before it leaves");
+    assert!(
+        succeeded(&scheduler, late),
+        "a carrier runs what it has before it leaves"
+    );
     scheduler.enter_carrier(Carrier(0));
     scheduler.begin_run(late);
-    assert_eq!(scheduler.run_end, None, "the next run starts the carriers again");
+    assert_eq!(
+        scheduler.run_end, None,
+        "the next run starts the carriers again"
+    );
 }
 
 /// The root's last idle step ends the run in the hold that sees it finish,
@@ -457,7 +543,12 @@ fn a_finished_or_parked_root_ends_the_run_for_every_carrier() {
     scheduler.drive();
     signal::drain(one);
     assert!(matches!(
-        scheduler.with(|kernel| kernel.root_step(parked, Idle::Stalled(Vec::new()), 1, &mut deadlock)),
+        scheduler.with(|kernel| kernel.root_step(
+            parked,
+            Idle::Stalled(Vec::new()),
+            1,
+            &mut deadlock
+        )),
         process_abi::RootStep::Parked
     ));
     assert!(
@@ -494,10 +585,15 @@ fn a_carrier_leaving_a_finished_run_checks_it_holds_no_fiber() {
     scheduler.enter_carrier(Carrier(0));
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
     scheduler.enter_carrier(Carrier(2));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Exit), "carrier 2 holds none");
+    assert!(
+        matches!(scheduler.with(Scheduler::idle_step), IdleStep::Exit),
+        "carrier 2 holds none"
+    );
     scheduler.enter_carrier(Carrier(1));
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.idle_step()));
-    let message = caught.err().and_then(|panic| panic.downcast::<String>().ok());
+    let message = caught
+        .err()
+        .and_then(|panic| panic.downcast::<String>().ok());
     assert!(
         message.is_some_and(|message| message.contains("holding its fiber on carrier 1")),
         "carrier 1 still holds a fiber"
@@ -507,7 +603,10 @@ fn a_carrier_leaving_a_finished_run_checks_it_holds_no_fiber() {
     scheduler.cancel(None, left).expect("cancel");
     scheduler.drive();
     assert!(!holds_fiber(&scheduler, left));
-    assert!(matches!(scheduler.idle_step(), IdleStep::Exit), "carrier 1 holds none now");
+    assert!(
+        matches!(scheduler.idle_step(), IdleStep::Exit),
+        "carrier 1 holds none now"
+    );
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, own).expect("cancel");
 }
@@ -520,11 +619,16 @@ fn a_carrier_leaving_a_finished_run_checks_it_owes_no_job() {
     let ended = start_parked(&mut scheduler, 1);
     scheduler.enter_carrier(Carrier(0));
     scheduler.cancel(None, ended).expect("cancel");
-    assert!(!scheduler.jobs.is_empty_for(Carrier(1)), "carrier 1 owes the unwind");
+    assert!(
+        !scheduler.jobs.is_empty_for(Carrier(1)),
+        "carrier 1 owes the unwind"
+    );
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Finished));
     scheduler.enter_carrier(Carrier(1));
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.idle_step()));
-    let message = caught.err().and_then(|panic| panic.downcast::<String>().ok());
+    let message = caught
+        .err()
+        .and_then(|panic| panic.downcast::<String>().ok());
     assert!(message.is_some_and(|message| message.contains("left a job on carrier 1")));
     scheduler.drive();
     assert!(scheduler.jobs.is_empty() && !holds_fiber(&scheduler, ended));
@@ -540,7 +644,10 @@ fn a_carrier_leaving_a_parked_run_keeps_its_fibers() {
     scheduler.enter_carrier(Carrier(0));
     scheduler.with(|kernel| kernel.stop_carriers(RunEnd::Parked));
     scheduler.enter_carrier(Carrier(1));
-    assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Exit));
+    assert!(matches!(
+        scheduler.with(Scheduler::idle_step),
+        IdleStep::Exit
+    ));
     assert!(holds_fiber(&scheduler, kept));
     scheduler.cancel(None, kept).expect("cancel");
 }
@@ -555,11 +662,17 @@ fn entering_a_fiber_clears_its_parked_request() {
     let task = start_sleeper(&mut scheduler, 1, 5 * SECOND);
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
-    assert!(!scheduler.tasks[&task].request.is_null(), "parked on its sleep");
+    assert!(
+        !scheduler.tasks[&task].request.is_null(),
+        "parked on its sleep"
+    );
     scheduler.wake(task).expect("wake");
     let runnable = scheduler.prepare_run(task).expect("runnable");
     assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Running);
-    assert!(scheduler.tasks[&task].request.is_null(), "no request while it runs");
+    assert!(
+        scheduler.tasks[&task].request.is_null(),
+        "no request while it runs"
+    );
     let event = resume_fiber(runnable.fiber, runnable.command);
     scheduler.complete(runnable, event);
     scheduler.cancel(None, task).expect("cancel");
@@ -601,7 +714,11 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-unsafe extern "C" fn take_test_release(_context: *mut std::ffi::c_void, kind: *mut u32, id: *mut u64) -> bool {
+unsafe extern "C" fn take_test_release(
+    _context: *mut std::ffi::c_void,
+    kind: *mut u32,
+    id: *mut u64,
+) -> bool {
     HOST_RELEASES.with(|queue| match queue.borrow_mut().pop() {
         Some((taken_kind, taken_id)) => {
             // SAFETY: the scheduler passes two writable outputs.
@@ -630,8 +747,14 @@ fn a_carrier_drains_its_host_releases_before_it_waits() {
         scheduler.drive();
         assert!(succeeded(&scheduler, done));
         HOST_RELEASES.with(|queue| queue.borrow_mut().push((REQUEST_TASK_RELEASE, done.0)));
-        assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "carrier {carrier}");
+        assert!(
+            matches!(scheduler.idle_step(), IdleStep::Continue),
+            "carrier {carrier}"
+        );
         assert!(HOST_RELEASES.with(|queue| queue.borrow().is_empty()));
-        assert!(!scheduler.tasks.contains_key(&done), "the release removed the ended task");
+        assert!(
+            !scheduler.tasks.contains_key(&done),
+            "the release removed the ended task"
+        );
     }
 }

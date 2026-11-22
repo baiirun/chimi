@@ -133,7 +133,9 @@ fn read_all_joins_the_chunks_and_stops_past_the_limit() {
     );
     assert_eq!(
         outcome,
-        rendered(r#"[Result.Ok("hello, world"), Result.Err(StreamError.TooLarge(5)), Result.Ok("12345")]"#)
+        rendered(
+            r#"[Result.Ok("hello, world"), Result.Err(StreamError.TooLarge(5)), Result.Ok("12345")]"#
+        )
     );
 }
 
@@ -340,7 +342,9 @@ fn a_pipe_whose_writer_task_ends_without_closing_aborts() {
 // Rejects a producer failure that overtakes the chunks written before it, and streams that reopen: the reader sees `a`, `b`, `Broke`, then the end; a finished stream reads `None` again; a write after `close` fails with `Closed`; and stopping twice is harmless.
 #[test]
 fn a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed() {
-    let outcome = run_virtual("a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed", r#"pub enum Job {
+    let outcome = run_virtual(
+        "a_producer_failure_comes_after_its_chunks_and_closed_streams_stay_closed",
+        r#"pub enum Job {
   Broke
 }
 
@@ -369,14 +373,22 @@ pub fn main() -> Text needs { clock: Clock.Clock } {
   Stream.stop(reader)
   Debug.render((reads, whole, after, closed, Result.capture(fn() { Stream.read(reader) })))
 }
-"#);
-    assert_eq!(outcome, rendered(r#"([Result.Ok(Some(Bytes(61))), Result.Ok(Some(Bytes(62))), Result.Err(Job.Broke), Result.Ok(None)], Result.Ok("z"), Result.Ok(None), Result.Err(StreamError.Closed), Result.Err(StreamError.Aborted))"#));
+"#,
+    );
+    assert_eq!(
+        outcome,
+        rendered(
+            r#"([Result.Ok(Some(Bytes(61))), Result.Ok(Some(Bytes(62))), Result.Err(Job.Broke), Result.Ok(None)], Result.Ok("z"), Result.Ok(None), Result.Err(StreamError.Closed), Result.Err(StreamError.Aborted))"#
+        )
+    );
 }
 
 // Rejects a host reader that hands out an empty chunk: of empty, `x`, empty, only `x` comes back before the end.
 #[test]
 fn a_host_reader_skips_empty_chunks() {
-    let outcome = run_virtual("a_host_reader_skips_empty_chunks", r#"pub fn main() -> Text {
+    let outcome = run_virtual(
+        "a_host_reader_skips_empty_chunks",
+        r#"pub fn main() -> Text {
   let made = Channel.bounded(4)
   let feed = made.sender
   let chunks = made.receiver
@@ -395,14 +407,20 @@ fn a_host_reader_skips_empty_chunks() {
   }, fn() { Void })
   Debug.render((filled, Result.capture(fn() { [Stream.read(host), Stream.read(host)] })))
 }
-"#);
-    assert_eq!(outcome, rendered(r#"(Result.Ok(Void), Result.Ok([Some(Bytes(78)), None]))"#));
+"#,
+    );
+    assert_eq!(
+        outcome,
+        rendered(r#"(Result.Ok(Void), Result.Ok([Some(Bytes(78)), None]))"#)
+    );
 }
 
 // Rejects a `read_all` that leaves its reader running: past the limit of 3 bytes it fails with `TooLarge(3)`, and the endless producer's next write fails with `Closed` (logged 1) instead of parking forever.
 #[test]
 fn read_all_stops_an_endless_producer_past_the_limit() {
-    let outcome = run_virtual("read_all_stops_an_endless_producer_past_the_limit", r#"fn log_closed(log: Channel.Sender<Int>, outcome: Result.Result<Void, StreamError>) -> Void {
+    let outcome = run_virtual(
+        "read_all_stops_an_endless_producer_past_the_limit",
+        r#"fn log_closed(log: Channel.Sender<Int>, outcome: Result.Result<Void, StreamError>) -> Void {
   case outcome {
     Result.Result.Err(StreamError.Closed) -> {
       let _ = Result.capture(fn() { Channel.send(log, 1) })
@@ -432,6 +450,10 @@ pub fn main() -> Text {
   }
   Debug.render((all, closed))
 }
-"#);
-    assert_eq!(outcome, rendered(r#"(Result.Err(StreamError.TooLarge(3)), 1)"#));
+"#,
+    );
+    assert_eq!(
+        outcome,
+        rendered(r#"(Result.Err(StreamError.TooLarge(3)), 1)"#)
+    );
 }
