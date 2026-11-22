@@ -16,6 +16,8 @@ error propagation is written up in
   settings watch, and a heartbeat timer, and reports on a broadcast.
 - `checkout/fakes.chimi`: deterministic stand-ins for the services a checkout
   calls. They wait on the clock like network calls and fail by rule.
+  `Fakes.all` returns all five as one provider record, which `main` and the
+  tests supply with `using`.
 - `service/main.chimi`: starts two workers and an audit task, submits seven
   orders, pauses and resumes the workers, and prints the report.
 - `checkout/order_test.chimi`: `chimi test` cases that pin the timing of

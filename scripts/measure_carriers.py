@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measures programs on 1, 2, 4 ... carriers (parallel-scheduler.md, step 3 PR 6).
 
-Three measurements, each at every carrier count given:
+These measurements, each at every carrier count given:
 
 - The performance lab's PG04, PG05 and PG08 (`chimi-process-lab performance
   --carriers <n>`), the gates whose workload runs under the real clock.
@@ -14,6 +14,9 @@ Three measurements, each at every carrier count given:
 - Serial messaging, `scripts/carriers/app/ping_pong.chimi`: ns per round
   trip between main and two echo processes, the difference between two sizes
   divided by the difference in rounds, so process start cancels out.
+- Parallel messaging, `scripts/carriers/app/pairs.chimi`: eight client and
+  echo pairs exchange --pair-rounds round trips each at once. At a carrier
+  count that divides 8 each pair is on one carrier. The wall time.
 
 Every timing is the median of --samples runs after one unmeasured run, and
 every run must end with its expected outcome. Usage, from the repository
@@ -134,6 +137,7 @@ def main():
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--fan-out-size", type=int, default=2_000_000)
     parser.add_argument("--list-size", type=int, default=20_000_000)
+    parser.add_argument("--pair-rounds", type=int, default=20_000)
     options = parser.parse_args()
     counts = [int(count) for count in options.carriers.split(",")]
 
@@ -142,8 +146,10 @@ def main():
         scratch = Path(directory)
         fan_out = scratch / "fan_out"
         ping_pong = scratch / "ping_pong"
+        pairs = scratch / "pairs"
         build(options.chimi, "app/fan_out", fan_out)
         build(options.chimi, "app/ping_pong", ping_pong)
+        build(options.chimi, "app/pairs", pairs)
         for carriers in counts:
             row = {}
             row["fan_out_count_ms"] = median_time(
@@ -159,6 +165,9 @@ def main():
             small = median_time(ping_pong, carriers, ["10000"], 10_000, options.samples, scratch)
             large = median_time(ping_pong, carriers, ["100000"], 100_000, options.samples, scratch)
             row["ping_pong_ns_per_round_trip"] = (large - small) / 90_000
+            row["pairs_ms"] = median_time(
+                pairs, carriers, [str(options.pair_rounds)],
+                8 * options.pair_rounds, options.samples, scratch) / 1e6
             if options.lab:
                 row.update(lab_gates(options.lab, carriers))
             results["rows"][carriers] = row
