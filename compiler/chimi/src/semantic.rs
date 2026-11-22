@@ -435,6 +435,9 @@ pub(crate) enum ModuleDeclarationKind {
     /// `[pub] native type Name<...>`: an opaque type with no fields or
     /// constructors, bound to a runtime type of the operation registry.
     NativeType,
+    /// `[pub] type Name = Type`: another name for `annotation`, the same type
+    /// as what it names. It takes no generic parameters.
+    TypeAlias,
     /// `[pub] process name <identifier>: <Message>`: a module-level
     /// `Process.Address<Message>` with named routing. `annotation` holds the message
     /// type; there is no initializer.
@@ -1202,6 +1205,11 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
+                NodeKind::TypeAliasDeclaration => {
+                    if let Some(declaration) = lowerer.lower_type_alias(&node) {
+                        declarations.push(declaration);
+                    }
+                }
                 NodeKind::TestDeclaration => {
                     if let Some(declaration) = lowerer.lower_test(&node, &declarations) {
                         declarations.push(declaration);
@@ -1611,6 +1619,46 @@ impl ProjectLowerer {
         Some(ModuleDeclaration {
             semantic_id: self.allocate_semantic_id(),
             kind: ModuleDeclarationKind::ProcessName,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: None,
+            body: None,
+            annotation,
+            test: false,
+        })
+    }
+
+    /// Lowers `[pub] type Name = Type`. Ensures: an alias with generic parameters
+    /// is `L2130` and names no type, so its parameters report nothing further.
+    fn lower_type_alias(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .nth(1)
+            .map(|token| name_from(&token))?;
+        let generic = direct_child(node, NodeKind::GenericParameters);
+        if let Some(parameters) = &generic {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Lowering,
+                "L2130",
+                FileId::new(0),
+                significant_range(parameters),
+                "a type alias takes no type parameters; declare a generic struct or enum instead",
+            ));
+        }
+        let annotation = direct_child(node, NodeKind::Type)
+            .filter(|_| generic.is_none())
+            .map(|type_node| self.lower_type(&type_node));
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::TypeAlias,
             public: node
                 .child_tokens()
                 .iter()

@@ -248,6 +248,8 @@ pub(crate) enum NodeKind {
     InterfaceDeclaration,
     /// `[pub] native type Name<...>`: an opaque type the runtime represents.
     NativeTypeDeclaration,
+    /// `[pub] type Name = Type`: another name for an existing type.
+    TypeAliasDeclaration,
     Field,
     Variant,
     NamedTypeField,
@@ -330,6 +332,7 @@ impl NodeKind {
             Self::EnumDeclaration => "enum_declaration",
             Self::InterfaceDeclaration => "interface_declaration",
             Self::NativeTypeDeclaration => "native_type_declaration",
+            Self::TypeAliasDeclaration => "type_alias_declaration",
             Self::Field => "field",
             Self::Variant => "variant",
             Self::NamedTypeField => "named_type_field",
@@ -1444,6 +1447,9 @@ impl<'source> Parser<'source> {
                 TokenKind::Identifier if self.native_declaration_starts_at(self.position) => {
                     self.parse_declaration()
                 }
+                TokenKind::Identifier if self.type_alias_starts_at(self.position) => {
+                    self.parse_type_alias()
+                }
                 TokenKind::Const => self.parse_const_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
                 _ => {
@@ -1538,9 +1544,10 @@ impl<'source> Parser<'source> {
             Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
             Some((NodeKind::TestDeclaration, _)) => self.parse_test_declaration(),
             Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
+            Some((NodeKind::TypeAliasDeclaration, _)) => self.parse_type_alias(),
             _ => self.error_and_bump(
-                "expected `struct`, `enum`, `interface`, `fn`, `const`, or `process name` after \
-                 `pub`",
+                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, or `process name` \
+                 after `pub`",
             ),
         }
     }
@@ -1564,6 +1571,9 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Identifier if self.native_type_starts_at(index) => {
                 Some((NodeKind::NativeTypeDeclaration, TokenKind::Identifier))
+            }
+            TokenKind::Identifier if self.type_alias_starts_at(index) => {
+                Some((NodeKind::TypeAliasDeclaration, TokenKind::Identifier))
             }
             TokenKind::Identifier if self.process_name_starts_at(index) => {
                 Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
@@ -1792,6 +1802,33 @@ impl<'source> Parser<'source> {
             && text_at(index) == Some("native")
             && self.kind_at(index + 1) == TokenKind::Identifier
             && text_at(index + 1) == Some("type")
+    }
+
+    /// Whether `type Name` starts at significant token `index`. `type` is read
+    /// only there, so a value or module named `type` is unaffected.
+    fn type_alias_starts_at(&self, index: usize) -> bool {
+        self.kind_at(index) == TokenKind::Identifier
+            && self
+                .significant
+                .get(index)
+                .is_some_and(|raw| &*self.tokens[*raw].text == "type")
+            && self.kind_at(index + 1) == TokenKind::Identifier
+    }
+
+    /// Parses `[pub] type Name<...> = Type`. Requires: `type_alias_starts_at`
+    /// holds after the optional `pub`. Ensures: one `TypeAliasDeclaration` with
+    /// the aliased `Type` as its only child type; generic parameters are kept for
+    /// lowering to report.
+    fn parse_type_alias(&mut self) {
+        self.start(NodeKind::TypeAliasDeclaration);
+        self.parse_visibility();
+        self.bump();
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.expect(TokenKind::Equal);
+        self.skip_newlines();
+        self.parse_type();
+        self.finish();
     }
 
     fn native_declaration_starts_at(&self, index: usize) -> bool {
