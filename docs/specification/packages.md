@@ -226,6 +226,9 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 - A build of a package keeps its intermediate files under the workspace
   root's `target/chimi/`, whatever the current directory; a plain project
   keeps them under the current directory's `target/`, as before.
+- Native builds that share an artifact directory (`target/chimi/<name>/`)
+  take turns: each holds the directory's `.build-lock` until it has linked,
+  so two builds started in one place never link each other's files.
 - The language server finds the package of an open file by walking up to the
   nearest `chimi.toml`, with the same function the commands use, and resolves
   imports as a build would.

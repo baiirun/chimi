@@ -205,6 +205,7 @@ pub fn build_application(
     artifact_directory: &Path,
     packages: Vec<crate::project::BuiltPackage>,
 ) -> Result<NativeBuildReport, String> {
+    let _lock = lock_artifact_directory(artifact_directory)?;
     let artifact = build_to_path(program, artifact_directory, executable_path)?;
     let dynamic_dependencies = dynamic_dependencies(executable_path)?;
     let manifest_path = artifact_directory.join("build.json");
@@ -234,7 +235,27 @@ pub fn build_executable(
     program: &BackendProgram,
     output_directory: &Path,
 ) -> Result<NativeArtifact, String> {
+    let _lock = lock_artifact_directory(output_directory)?;
     build_to_path(program, output_directory, &output_directory.join("program"))
+}
+
+/// Holds `directory` for one build until the returned file is dropped. Builds
+/// of different programs to one directory (two `chimi build`s run in the same
+/// place, or parallel tests) write the same intermediate files, so without
+/// the lock one build can replace `program_data.o` or the runtime archive
+/// while another links them.
+fn lock_artifact_directory(directory: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("create native artifact directory: {error}"))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join(".build-lock"))
+        .map_err(|error| format!("open native build lock: {error}"))?;
+    lock.lock()
+        .map_err(|error| format!("lock native artifact directory: {error}"))?;
+    Ok(lock)
 }
 
 fn build_to_path(
