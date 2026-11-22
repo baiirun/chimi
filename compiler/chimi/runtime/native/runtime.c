@@ -63,6 +63,8 @@ __attribute__((weak)) size_t chimi_scheduler_peak_task_records(void) { return 0;
 __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
+/* Without the fiber archive no time passes. */
+__attribute__((weak)) int64_t chimi_fiber_now(void) { return 0; }
 
 typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN, VALUE_LIST, VALUE_RECORD,
                VALUE_CONSTRUCTED, VALUE_CALLABLE, VALUE_MAP, VALUE_JSON_NUMBER, VALUE_TASK,
@@ -2688,6 +2690,16 @@ static void float_text(double value, char *output);
    under the kernel lock, so this lock is taken after the kernel's. */
 static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* The Unix time at the execution clock's origin: `--clock-start` under the
+   virtual clock, and under the real clock the host's wall time when the
+   computation starts, just before the scheduler takes its origin. */
+static int64_t start_unix_nanos(const ChimiRuntime *runtime) {
+  if (runtime->virtual_clock) return runtime->clock_start;
+  struct timespec host;
+  clock_gettime(CLOCK_REALTIME, &host);
+  return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;
+}
+
 static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_id,
                        uint64_t span, int64_t parent, const char *operation,
                        const ChimiControl *outcome) {
@@ -2706,7 +2718,11 @@ static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_i
          "\"source_start\":%u,\"source_end\":%u,\"operation\":",
          node_id, node->origin, origin->semantic_id, origin->file_id, origin->start, origin->end);
   json_string(output, operation); fputs(",\"attributes\":{", output);
-  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); }
+  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); fputc(',', output); }
+  bool started = strcmp(event, "computation_started") == 0;
+  /* The computation starts at the clock's origin, before the scheduler runs. */
+  fprintf(output, "\"time_ns\":%" PRId64, started ? INT64_C(0) : chimi_fiber_now());
+  if (started) fprintf(output, ",\"start_unix_ns\":%" PRId64, start_unix_nanos(runtime));
   fputs("}}\n", output);
   pthread_mutex_unlock(&trace_lock);
 }
@@ -2729,7 +2745,8 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
   json_string(output, CHIMI_STRINGS[CHIMI_SYMBOLS[callable->requirement].name]);
   fprintf(output, ",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
           callable->requirement, callable->interface_symbol); json_string(output, callable->name);
-  fprintf(output, ",\"method_semantic_id\":%u}}\n", callable->method);
+  fprintf(output, ",\"method_semantic_id\":%u,\"time_ns\":%" PRId64 "}}\n", callable->method,
+          chimi_fiber_now());
   pthread_mutex_unlock(&trace_lock);
 }
 
