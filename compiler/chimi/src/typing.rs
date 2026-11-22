@@ -8467,11 +8467,12 @@ impl ProjectTypeChecker {
         let mut names = Vec::new();
         let mut seen = HashSet::new();
         for input in &contract.inputs {
-            self.collect_row_peels(*input, parameter, &mut names, &mut seen);
+            self.collect_row_peels(*input, parameter, true, &mut names, &mut seen);
         }
-        // A returned function that takes a name off `R` (`-> fn(fn() -> T needs
-        // R + { name: I }) -> T needs R`) is the signature's own.
-        self.collect_row_peels(contract.success, parameter, &mut names, &mut seen);
+        // A returned function whose parameter's type takes a name off `R`
+        // (`-> fn(fn() -> T needs R + { name: I }) -> T needs R`) is the
+        // signature's own.
+        self.collect_row_peels(contract.success, parameter, false, &mut names, &mut seen);
         let own = &self.needs_rows[contract.needs.raw() as usize];
         if own.parameters.contains(&parameter) {
             names.retain(|name| !own.entries.iter().any(|need| &need.lexical_name == name));
@@ -8549,41 +8550,47 @@ impl ProjectTypeChecker {
         })
     }
 
+    /// Adds the names a function type in `type_id` writes beside `parameter`
+    /// in its own needs row, where matching an argument there peels them off:
+    /// a type in input position (`input`), such as a parameter's callback or
+    /// a returned function's parameter. A returned function's own needs row
+    /// is a result row, so it takes nothing off.
     fn collect_row_peels(
         &self,
         type_id: TypeId,
         parameter: SymbolId,
+        input: bool,
         names: &mut Vec<String>,
-        seen: &mut HashSet<TypeId>,
+        seen: &mut HashSet<(TypeId, bool)>,
     ) {
-        if !seen.insert(type_id) {
+        if !seen.insert((type_id, input)) {
             return;
         }
         match &self.types[type_id.raw() as usize] {
             CanonicalType::Function(contract)
             | CanonicalType::PolymorphicFunction { contract, .. } => {
                 let row = &self.needs_rows[contract.needs.raw() as usize];
-                if row.parameters.contains(&parameter) {
+                if input && row.parameters.contains(&parameter) {
                     names.extend(row.entries.iter().map(|need| need.lexical_name.clone()));
                 }
-                for input in &contract.inputs {
-                    self.collect_row_peels(*input, parameter, names, seen);
+                for argument in &contract.inputs {
+                    self.collect_row_peels(*argument, parameter, !input, names, seen);
                 }
-                self.collect_row_peels(contract.success, parameter, names, seen);
+                self.collect_row_peels(contract.success, parameter, input, names, seen);
             }
             CanonicalType::Named { arguments, .. } => {
                 for argument in arguments {
-                    self.collect_row_peels(*argument, parameter, names, seen);
+                    self.collect_row_peels(*argument, parameter, input, names, seen);
                 }
             }
             CanonicalType::Record(fields) => {
                 for field in fields {
-                    self.collect_row_peels(field.type_id, parameter, names, seen);
+                    self.collect_row_peels(field.type_id, parameter, input, names, seen);
                 }
             }
             CanonicalType::Tuple(elements) => {
                 for element in elements {
-                    self.collect_row_peels(*element, parameter, names, seen);
+                    self.collect_row_peels(*element, parameter, input, names, seen);
                 }
             }
             _ => {}

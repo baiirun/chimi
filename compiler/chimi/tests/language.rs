@@ -13996,3 +13996,32 @@ pub fn main() -> Text { both(fn() { hello }, plain) }
         "\"outcome\":\"success\",\"value\":\"fixed x ; plain\""
     );
 }
+
+// A returned function's own needs row is a result row: a decorator that adds
+// a need to its callback's row takes nothing off it, so the callback may need
+// the added name too and both share the caller's provider.
+#[test]
+fn a_decorator_whose_result_adds_a_need_takes_nothing_off_the_row() {
+    let source = r#"
+interface Clock {
+  now: fn() -> Text
+}
+
+fn stamp() -> Text needs { clock: Clock } { clock.now() }
+
+fn timed<R>(handle: fn(Text) -> Text needs R) -> fn(Text) -> Text needs R + { clock: Clock } {
+  fn(req) { "${stamp()} ${handle(req)}" }
+}
+
+fn handler(req: Text) -> Text needs { clock: Clock } { "${req}@${stamp()}" }
+
+pub fn main() -> Text {
+  let h = timed(handler)
+  h("r") using { clock: { now: fn() { "t0" } } }
+}
+"#;
+    assert_eq!(
+        run_both("row-lacks-decorator", source),
+        "\"outcome\":\"success\",\"value\":\"t0 r@t0\""
+    );
+}

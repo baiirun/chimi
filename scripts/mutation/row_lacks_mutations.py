@@ -32,8 +32,16 @@ MUTATIONS = [
         "        if false {\n            self.check_row_lacks(",
     )]),
     mutant("a returned function takes nothing off the row", [(
-        "        self.collect_row_peels(contract.success, parameter, &mut names, &mut seen);\n        let own",
-        "        let own",
+        "        self.collect_row_peels(contract.success, parameter, false, &mut names, &mut seen);\n",
+        "",
+    )]),
+    mutant("a returned function's own row takes names off", [(
+        "                if input && row.parameters.contains(&parameter) {",
+        "                if row.parameters.contains(&parameter) {",
+    )]),
+    mutant("an input's input counts as an input", [(
+        "                    self.collect_row_peels(*argument, parameter, !input, names, seen);",
+        "                    self.collect_row_peels(*argument, parameter, input, names, seen);",
     )]),
     mutant("a forwarded name is still lacked", [(
         "            names.retain(|name| !own.entries.iter().any(|need| &need.lexical_name == name));\n",
@@ -52,7 +60,7 @@ MUTATIONS = [
         "                        .find(|_| false)",
     )]),
     mutant("peels are read from the parameter's own row only", [(
-        "                for input in &contract.inputs {\n                    self.collect_row_peels(*input, parameter, names, seen);\n                }\n                self.collect_row_peels(contract.success, parameter, names, seen);",
+        "                for argument in &contract.inputs {\n                    self.collect_row_peels(*argument, parameter, !input, names, seen);\n                }\n                self.collect_row_peels(contract.success, parameter, input, names, seen);",
         "                let _ = seen;",
     )]),
 ]

@@ -754,9 +754,12 @@ there peels `greeter` off `R`, so `R` lacks `greeter`.
   the same way and is checked the same way. A generic caller keeps the name
   off its own row by writing it beside the row in a parameter's type, as
   `k: fn() -> Text needs Q + { greeter: Greeter }`.
-- Every function type in a signature counts, however deep: a parameter that
-  is a callback returning a callback, or a returned function, takes off its
-  row what its own function types write beside it.
+- Every function type in input position counts, however deep: a callback
+  parameter, a callback that a callback returns, and a returned function's
+  parameter each take off a row what they write beside it. A returned
+  function's own needs row is a result row and takes nothing off, so
+  `timed<R>(handle: fn(Text) -> Text needs R) -> fn(Text) -> Text needs R + { clock: Clock }`
+  may wrap a handler that also needs `clock`.
 - A function's result row (`needs R + { clock: Clock }` on `retry`) takes
   nothing off `R`: a callback that also needs `clock` shares the caller's
   provider with the function, as one need. When the result row writes a name
