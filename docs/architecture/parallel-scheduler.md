@@ -1258,6 +1258,20 @@ the gates measure, so it goes first.
          three vectors indexed by carrier (`ReadyQueues`, `Jobs`,
          `parked`). The wake marks stay in `Wakes` beside the pipes they
          write. No behaviour change.
+       - 4d-6b, tasks: measured and changed. A task table with one map per
+         carrier, each record filed under its home and looked up in the
+         current carrier's map first, cost 5.6% more instructions on pairs
+         with one carrier (callgrind, 2000 rounds: 659 to 696 million),
+         even with the fast path inlined: every lookup goes through one
+         more indirection and bounds check, and a step does dozens. That
+         breaks the plan's rule that a split costs nothing measurable on
+         one carrier. So the task table stays one map, and 4e protects it
+         by rule rather than by partition: inserting or removing a record
+         takes every lock (start and release already do), so the map's
+         structure is read-only under a shard lock, and a record is
+         written only under its home carrier's lock or every lock. The
+         same rule fits the incarnation and channel tables, so 4d-6c is
+         not needed either; 4e's guard types carry the rule.
 5. **4e: a lock per shard.** A request whose state is all in its own
    carrier's shard takes only that shard's lock: a send to a local
    mailbox, a receive, a channel operation on a local channel, a yield or
