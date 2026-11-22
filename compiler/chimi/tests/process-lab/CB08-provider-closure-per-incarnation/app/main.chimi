@@ -30,7 +30,9 @@ pub enum Message {
   Crash
 }
 
-fn serve(inbox: Inbox<Message>) -> Void needs { store: Store } {
+fn serve(inbox: Inbox<Message>) -> Void needs {
+  store: Store
+} {
   loop reads = 0 {
     case Process.receive(inbox) {
       Message.Read(reply) -> {
@@ -41,7 +43,7 @@ fn serve(inbox: Inbox<Message>) -> Void needs { store: Store } {
         case left {
           0 -> break reads
           _ -> {
-            let garbage = Config(left, left)
+            let garbage = Config { base: left, offset: left }
             garbage.base - 1
           }
         }
@@ -53,7 +55,9 @@ fn serve(inbox: Inbox<Message>) -> Void needs { store: Store } {
 
 pub process name reader: Message
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -70,13 +74,15 @@ fn read(address: Address<Message>) -> Int {
   reply_value(Channel.receive(replies.receiver))
 }
 
-pub fn main() -> Int needs { clock: Clock } {
-  let config = Config(100, 23)
+pub fn main() -> Int needs {
+  clock: Clock
+} {
+  let config = Config { base: 100, offset: 23 }
   let store = { read: fn() -> Int { config.base + config.offset } }
   let spec = Process.spec(serve, 2, Duration.seconds(1)) using { store: store }
   let member = spec
-    |> Process.register(reader)
-    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  |> Process.register(reader)
+  |> Supervisor.process(Supervisor.Restart.OnDefect)
   let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(1, Duration.seconds(30))))
   let before = read(reader)
   Process.send(reader, Message.Crash)

@@ -26,10 +26,10 @@ struct Tally {
 }
 
 fn sum(values: List<Int>) -> Int {
-  loop state = Tally(values, 0) {
+  loop state = Tally { rest: values, total: 0 } {
     case state.rest {
       [] -> break state.total
-      [first, ..rest] -> Tally(rest, state.total + first)
+      [first, ..rest] -> Tally { rest: rest, total: state.total + first }
     }
   }
 }
@@ -75,7 +75,9 @@ fn received(value: Receive<Int>) -> Int {
   }
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let managed = Supervisor.start_process(root, Process.spec(summing, 1, Duration.seconds(1)), Supervisor.Restart.Never)
   let reports = Channel.bounded(1)

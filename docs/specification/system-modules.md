@@ -40,6 +40,8 @@ Each one has a **fixed need name**, listed with it in the registry
 | `std/net.Network` | `network` | `std/net.system` ([network modules](network-modules.md#stdnet)) |
 | `std/exec.Commands` | `commands` | `std/exec.system` |
 | `std/terminal.Terminal` | `terminal` | `std/terminal.host` |
+| `std/log.Log` | `log` | `std/log.host` ([observability modules](observability.md#stdlog)) |
+| `std/metrics.Metrics` | `metrics` | `std/metrics.host` ([observability modules](observability.md#stdmetrics)) |
 
 Rules:
 

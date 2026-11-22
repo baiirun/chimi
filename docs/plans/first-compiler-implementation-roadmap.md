@@ -123,7 +123,7 @@ struct Answer {
 }
 
 pub fn main() {
-  Answer(42)
+  Answer { value: 42 }
 }
 ```
 

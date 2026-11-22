@@ -31,7 +31,7 @@ const CODEGEN_IDENTITY: &str = "cranelift-0.131.3";
 const CODEGEN_SETTINGS: &str = "is_pic=true;debug=false";
 const C_SETTINGS: &str = "cc:-std=c11,-O2;debug=false";
 const NATIVE_LOWERING_REVISION: &str = "fiber-runtime-abi-v5-process-kernel;direct-integer-loop-v1";
-const RUNTIME_ABI_VERSION: u32 = 55;
+const RUNTIME_ABI_VERSION: u32 = 57;
 const FIBER_RUNTIME_ABI_VERSION: u32 = chimi_fiber::ABI_VERSION;
 static CACHE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -83,6 +83,9 @@ pub struct NativeBuildReport {
     pub cache_hits: Vec<String>,
     pub cache_misses: Vec<String>,
     pub prebuilt: Vec<String>,
+    /// Each package the build read, with where its source came from; empty
+    /// for a project with no manifest.
+    pub packages: Vec<crate::project::BuiltPackage>,
 }
 
 impl NativeBuildReport {
@@ -164,6 +167,32 @@ impl NativeBuildReport {
         output.push_str("],\"prebuilt\":[");
         write_strings(&mut output, &self.prebuilt);
         output.push_str("]}");
+        output.push_str(",\"packages\":[");
+        for (index, package) in self.packages.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            output.push_str("{\"name\":");
+            write_json_string(&mut output, &package.name);
+            output.push_str(",\"own\":");
+            output.push_str(if package.own { "true" } else { "false" });
+            match &package.source {
+                crate::project::BuiltSource::Path(directory) => {
+                    output.push_str(",\"source\":{\"path\":");
+                    write_path(&mut output, directory);
+                }
+                crate::project::BuiltSource::Git { url, rev, commit } => {
+                    output.push_str(",\"source\":{\"git\":");
+                    write_json_string(&mut output, url);
+                    output.push_str(",\"rev\":");
+                    write_json_string(&mut output, rev);
+                    output.push_str(",\"commit\":");
+                    write_json_string(&mut output, commit);
+                }
+            }
+            output.push_str("}}");
+        }
+        output.push(']');
         output.push_str("}\n");
         output
     }
@@ -174,6 +203,7 @@ pub fn build_application(
     standard: &crate::project::StandardTree,
     executable_path: &Path,
     artifact_directory: &Path,
+    packages: Vec<crate::project::BuiltPackage>,
 ) -> Result<NativeBuildReport, String> {
     let artifact = build_to_path(program, artifact_directory, executable_path)?;
     let dynamic_dependencies = dynamic_dependencies(executable_path)?;
@@ -193,6 +223,7 @@ pub fn build_application(
         cache_hits: artifact.cache_hits,
         cache_misses: artifact.cache_misses,
         prebuilt: artifact.prebuilt,
+        packages,
     };
     std::fs::write(&manifest_path, report.render_json())
         .map_err(|error| format!("write native build manifest: {error}"))?;

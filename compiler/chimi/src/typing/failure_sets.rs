@@ -736,6 +736,17 @@ impl ProjectTypeChecker {
             return Some(FailureRowId::new(0));
         }
         let kind = self.resolved.symbol(symbol).kind;
+        // An alias of a failure set is that set, after `errors` as anywhere else.
+        if kind == ProjectSymbolKind::TypeAlias {
+            let TypeUse::Named { arguments, .. } = member else {
+                unreachable!("checked above");
+            };
+            let aliased = self.alias_use_type(module_id, symbol, name, arguments);
+            if aliased == TypeId::new(0) {
+                return Some(FailureRowId::new(0));
+            }
+            return self.failure_set_of(aliased);
+        }
         if kind == ProjectSymbolKind::GenericParameter {
             self.constrain_generic(module_id, symbol, GenericKind::FailureRow, name);
             if value_position {

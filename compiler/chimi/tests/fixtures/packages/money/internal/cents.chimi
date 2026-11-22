@@ -1,0 +1,4 @@
+/// The sum of two amounts in cents.
+pub fn sum(left: Int, right: Int) -> Int {
+  left + right
+}

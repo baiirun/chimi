@@ -3,5 +3,5 @@ struct Answer {
 }
 
 pub fn main() {
-  Answer("forty-two")
+  Answer { value: "forty-two" }
 }

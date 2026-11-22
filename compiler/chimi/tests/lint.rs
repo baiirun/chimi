@@ -70,6 +70,23 @@ fn clean_code_has_no_findings() {
     );
 }
 
+// A combined import line is checked binding by binding: the members used, the
+// alias not.
+#[test]
+fn a_combined_import_reports_its_unused_alias() {
+    let path = scratch_file(
+        "combined",
+        "import std/map as Map.{Map}\n\n/// Doc.\npub fn sized(map: Map<Int, Int>) -> Int {\n  0\n}\n",
+    );
+    let output = chimi(&["lint", &path]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("{path}:1:19: warning[unused-import] lint: the module alias Map is never used\n")
+    );
+}
+
 #[test]
 fn a_qualified_name_uses_its_import() {
     // `Order.by` uses the alias `Order`; `Shape.Circle` in a type position

@@ -6,8 +6,7 @@
 // does not fit.
 import std/debug as Debug
 import std/decimal as Decimal
-import std/json as Json
-import std/json.{ConversionError, Number, Value}
+import std/json as Json.{ConversionError, Number, Value}
 import std/test as Test
 
 fn number(text: Text) -> Number {

@@ -1,4 +1,4 @@
-use crate::compiler::{ProjectPathError, ProjectSource};
+use crate::compiler::{ModuleOrigin, ProjectPathError, ProjectSource};
 use crate::diagnostic::Diagnostic;
 use crate::ids::{FileId, TextRange};
 use crate::json::write_json_string;
@@ -10,11 +10,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod git;
+mod packages;
+pub(crate) use git::is_commit_id;
+pub use git::{GitCache, GitError, Network};
+pub use packages::PackageError;
+use packages::{Discovered, PackageGraph};
+
 #[derive(Debug)]
 pub struct LoadedProject {
     modules: Vec<ProjectSource>,
     /// Each doc example module's path and the module it documents.
     examples: Vec<(String, String)>,
+    /// The packages of a package build, whose rules doc examples follow too.
+    packages: Option<PackageGraph>,
 }
 
 /// Where a build reads `std/` modules from: the tree embedded in the compiler,
@@ -112,7 +121,10 @@ fn read_standard_module(
 fn standard_module_paths(directory: &Path) -> Result<Vec<String>, ProjectLoadError> {
     let paths = module_paths_under(directory, |_| true)
         .map_err(|(path, source)| ProjectLoadError::ReadStandardDirectory { path, source })?;
-    Ok(paths.into_iter().map(|path| format!("std/{path}")).collect())
+    Ok(paths
+        .into_iter()
+        .map(|path| format!("std/{path}"))
+        .collect())
 }
 
 /// The path from `directory` of each `.chimi` file under it, without the
@@ -171,9 +183,10 @@ impl LoadedProject {
                 })
                 .collect();
             return Ok(Self {
-            modules,
-            examples: Vec::new(),
-        });
+                modules,
+                examples: Vec::new(),
+                packages: None,
+            });
         };
         let mut modules = Vec::new();
         for module_path in standard_module_paths(directory)? {
@@ -186,6 +199,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: None,
         })
     }
 
@@ -206,6 +220,7 @@ impl LoadedProject {
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: None,
         })
     }
 
@@ -214,18 +229,21 @@ impl LoadedProject {
         entry_module: impl Into<String>,
         standard: &StandardTree,
     ) -> Result<Self, ProjectLoadError> {
-        Self::load_with(root, entry_module, &FileSystemReader, standard)
+        let cache = GitCache::from_environment(Network::Allowed);
+        Self::load_with(root, entry_module, &FileSystemReader, standard, &cache)
     }
 
     /// Loads a project like [`LoadedProject::load`], taking module text from `reader`.
     ///
     /// Ensures: module discovery, validation, and errors match `load`; only
-    /// where text comes from differs. Paths are still canonicalized on disk.
+    /// where text comes from, and where git packages come from, differ.
+    /// Paths are still canonicalized on disk.
     pub fn load_with(
         root: impl AsRef<Path>,
         entry_module: impl Into<String>,
         reader: &dyn SourceReader,
         standard: &StandardTree,
+        cache: &GitCache,
     ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
@@ -241,6 +259,10 @@ impl LoadedProject {
         let entry_module = entry_module.into();
         validate_module_path(entry_module.clone())?;
         let mut loader = Loader {
+            packages: match PackageGraph::discover(&root, false, cache)? {
+                Discovered::Plain => None,
+                Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
+            },
             root,
             reader,
             states: HashMap::new(),
@@ -248,12 +270,13 @@ impl LoadedProject {
             stack: Vec::new(),
             modules: Vec::new(),
         };
-        loader.load_module(&entry_module)?;
+        loader.load_module(&entry_module, None)?;
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: loader.packages,
         })
     }
 
@@ -261,10 +284,24 @@ impl LoadedProject {
     /// `.chimi` file is a module named by its path from `root`, loaded with its
     /// imports. Hidden files and directories, `target` (where builds write),
     /// and symbolic links are skipped. A file whose path is not a valid module
-    /// path is an error, as an import of it would be.
+    /// path is an error, as an import of it would be. When `root` is a
+    /// package, its modules are named `<package>/<path>`, and directories
+    /// holding another package's manifest are skipped.
     pub fn load_directory(
         root: impl AsRef<Path>,
         standard: &StandardTree,
+    ) -> Result<Self, ProjectLoadError> {
+        let cache = GitCache::from_environment(Network::Allowed);
+        Self::load_directory_with(root, &FileSystemReader, standard, &cache)
+    }
+
+    /// Loads a directory like [`LoadedProject::load_directory`], taking module
+    /// text from `reader`. Which modules exist is still read from disk.
+    pub fn load_directory_with(
+        root: impl AsRef<Path>,
+        reader: &dyn SourceReader,
+        standard: &StandardTree,
+        cache: &GitCache,
     ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
@@ -276,10 +313,28 @@ impl LoadedProject {
         if !root.is_dir() {
             return Err(ProjectLoadError::RootNotDirectory { path: root });
         }
-        let module_paths = module_paths_under(&root, |name| {
-            !name.starts_with('.') && name != "target"
-        })
-        .map_err(|(path, source)| ProjectLoadError::ReadDirectory { path, source })?;
+        let packages = match PackageGraph::discover(&root, true, cache)? {
+            Discovered::Plain => None,
+            Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
+        };
+        let module_paths = match &packages {
+            None => own_module_paths(&root)?,
+            Some(graph) => {
+                let mut paths = Vec::new();
+                for package in graph.own() {
+                    let name = package.name.as_str();
+                    paths.extend(
+                        own_module_paths(&package.root)?
+                            .into_iter()
+                            .filter(|path| {
+                                nested_manifest(&package.root, &package.root.join(path)).is_none()
+                            })
+                            .map(|path| format!("{name}/{path}")),
+                    );
+                }
+                paths
+            }
+        };
         if module_paths.is_empty() {
             return Err(ProjectLoadError::NoModules {
                 path: requested_root.to_owned(),
@@ -287,20 +342,22 @@ impl LoadedProject {
         }
         let mut loader = Loader {
             root,
-            reader: &FileSystemReader,
+            packages,
+            reader,
             states: HashMap::new(),
             files: HashMap::new(),
             stack: Vec::new(),
             modules: Vec::new(),
         };
         for module_path in &module_paths {
-            loader.load_module(module_path)?;
+            loader.load_module(module_path, None)?;
         }
         let mut modules = loader.modules;
         standard.add_imported_modules(&mut modules)?;
         Ok(Self {
             modules,
             examples: Vec::new(),
+            packages: loader.packages,
         })
     }
 
@@ -336,7 +393,14 @@ impl LoadedProject {
         let documented: Vec<ProjectSource> = self
             .modules
             .iter()
-            .filter(|module| module.module_path().starts_with("std/") == standard_modules)
+            .filter(|module| {
+                let wanted = if standard_modules {
+                    ModuleOrigin::Standard
+                } else {
+                    ModuleOrigin::Own
+                };
+                module.origin() == wanted
+            })
             .cloned()
             .collect();
         for module in documented {
@@ -351,6 +415,13 @@ impl LoadedProject {
                 let source = SourceSnapshot::from_text(module.source().path(), example.text);
                 let source = ProjectSource::parsed(path.clone(), source)
                     .map_err(ProjectLoadError::InvalidModule)?;
+                if let Some(graph) = &self.packages {
+                    for import in imports(&source) {
+                        if !import.starts_with("std/") {
+                            check_import(graph, &import, &path)?;
+                        }
+                    }
+                }
                 self.modules.push(source);
                 added.push((path, module.module_path().to_owned()));
             }
@@ -358,6 +429,39 @@ impl LoadedProject {
         standard.add_imported_modules(&mut self.modules)?;
         self.examples.extend(added.iter().cloned());
         Ok(added)
+    }
+
+    /// Where the loaded module `module_path` comes from, if it is loaded.
+    pub fn origin_of(&self, module_path: &str) -> Option<ModuleOrigin> {
+        self.modules
+            .iter()
+            .find(|module| module.module_path() == module_path)
+            .map(ProjectSource::origin)
+    }
+
+    /// The packages this project read, the command's own first, for the
+    /// build report; empty without a manifest.
+    pub fn built_packages(&self) -> Vec<BuiltPackage> {
+        let Some(graph) = &self.packages else {
+            return Vec::new();
+        };
+        let mut packages: Vec<BuiltPackage> = graph
+            .packages()
+            .map(|package| BuiltPackage {
+                name: package.name.to_string(),
+                own: package.own,
+                source: match &package.git {
+                    Some(locked) => BuiltSource::Git {
+                        url: locked.source.url.clone(),
+                        rev: locked.source.rev.clone(),
+                        commit: locked.commit.clone(),
+                    },
+                    None => BuiltSource::Path(package.root.clone()),
+                },
+            })
+            .collect();
+        packages.sort_by(|left, right| (!left.own, &left.name).cmp(&(!right.own, &right.name)));
+        packages
     }
 
     pub fn sources(&self) -> Vec<ProjectSource> {
@@ -405,7 +509,11 @@ impl LoadedProject {
                 return None;
             }
             let position = index.position(offset, PositionEncoding::Utf16);
-            Some(format!("{path}:{}:{}", position.line + 1, position.character + 1))
+            Some(format!(
+                "{path}:{}:{}",
+                position.line + 1,
+                position.character + 1
+            ))
         }
     }
 
@@ -485,11 +593,7 @@ impl LoadedProject {
     }
 }
 
-fn write_json_diagnostic(
-    output: &mut String,
-    diagnostic: &Diagnostic,
-    sources: &[JsonSource],
-) {
+fn write_json_diagnostic(output: &mut String, diagnostic: &Diagnostic, sources: &[JsonSource]) {
     output.push_str("{\"stage\":");
     write_json_string(output, &diagnostic.stage().to_string());
     output.push_str(",\"code\":");
@@ -533,12 +637,7 @@ struct JsonSource {
     documented: Option<(String, Arc<str>)>,
 }
 
-fn write_json_span(
-    output: &mut String,
-    file_id: FileId,
-    range: TextRange,
-    sources: &[JsonSource],
-) {
+fn write_json_span(output: &mut String, file_id: FileId, range: TextRange, sources: &[JsonSource]) {
     let json = sources
         .get(file_id.raw() as usize)
         .expect("diagnostic file ID belongs to the loaded project");
@@ -635,6 +734,43 @@ pub enum ProjectLoadError {
     ImportCycle {
         modules: Vec<String>,
     },
+    Package(PackageError),
+    WriteLock {
+        path: PathBuf,
+        source: io::Error,
+    },
+    /// The entry module of a package build is not one of its own modules.
+    NotInEntryPackage {
+        module: String,
+        package: String,
+    },
+    /// An import whose first segment names no package of the build.
+    UnknownPackage {
+        module: String,
+        importer: String,
+    },
+    /// An import of a package in the build that the importer's manifest
+    /// does not list.
+    NotADependency {
+        module: String,
+        importer: String,
+        manifest: PathBuf,
+    },
+    /// `import money`: a package is not a module.
+    PackageIsNotAModule {
+        module: String,
+        importer: String,
+    },
+    InternalModule {
+        module: String,
+        importer: String,
+    },
+    /// A module path that reaches into a subdirectory holding another
+    /// package's manifest.
+    NestedPackage {
+        module: String,
+        manifest: PathBuf,
+    },
 }
 
 impl fmt::Display for ProjectLoadError {
@@ -659,7 +795,11 @@ impl fmt::Display for ProjectLoadError {
                 write!(formatter, "no .chimi modules under {}", path.display())
             }
             Self::ReadDirectory { path, source } => {
-                write!(formatter, "cannot read directory {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "cannot read directory {}: {source}",
+                    path.display()
+                )
             }
             Self::ReadStandardDirectory { path, source } => write!(
                 formatter,
@@ -693,11 +833,63 @@ impl fmt::Display for ProjectLoadError {
             Self::ImportCycle { modules } => {
                 write!(formatter, "import cycle: {}", modules.join(" -> "))
             }
+            Self::Package(error) => error.fmt(formatter),
+            Self::WriteLock { path, source } => {
+                write!(formatter, "cannot write {}: {source}", path.display())
+            }
+            Self::NotInEntryPackage { module, package } => write!(
+                formatter,
+                "module {module} is not in package {package}: its modules are named \
+                 {package}/<path>"
+            ),
+            Self::UnknownPackage { module, importer } => write!(
+                formatter,
+                "module {importer} imports {module}, but no package `{}` is in the build",
+                first_segment(module)
+            ),
+            Self::NotADependency {
+                module,
+                importer,
+                manifest,
+            } => write!(
+                formatter,
+                "module {importer} imports {module}, but `{}` is not a dependency of `{}` \
+                 ({})",
+                first_segment(module),
+                first_segment(importer),
+                manifest.display()
+            ),
+            Self::PackageIsNotAModule { module, importer } => write!(
+                formatter,
+                "module {importer} imports {module}, which is a package, not a module; \
+                 name one of its modules, as {module}/<path>"
+            ),
+            Self::InternalModule { module, importer } => write!(
+                formatter,
+                "module {importer} imports {module}, but `internal/` modules are private \
+                 to package `{}`",
+                first_segment(module)
+            ),
+            Self::NestedPackage { module, manifest } => write!(
+                formatter,
+                "module {module} is inside another package ({})",
+                manifest.display()
+            ),
         }
     }
 }
 
 impl std::error::Error for ProjectLoadError {}
+
+impl From<PackageError> for ProjectLoadError {
+    fn from(error: PackageError) -> Self {
+        Self::Package(error)
+    }
+}
+
+fn first_segment(module_path: &str) -> &str {
+    module_path.split('/').next().unwrap_or(module_path)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LoadState {
@@ -707,6 +899,9 @@ enum LoadState {
 
 struct Loader<'reader> {
     root: PathBuf,
+    /// `None` for a project with no manifest, whose module paths are plain
+    /// paths from `root`.
+    packages: Option<PackageGraph>,
     reader: &'reader dyn SourceReader,
     states: HashMap<String, LoadState>,
     files: HashMap<PathBuf, String>,
@@ -715,8 +910,15 @@ struct Loader<'reader> {
 }
 
 impl Loader<'_> {
-    fn load_module(&mut self, module_path: &str) -> Result<(), ProjectLoadError> {
+    /// Loads `module_path`, which `importer` imports, or which the command
+    /// asked for when `importer` is `None`, and everything it imports.
+    fn load_module(
+        &mut self,
+        module_path: &str,
+        importer: Option<&str>,
+    ) -> Result<(), ProjectLoadError> {
         validate_module_path(module_path.to_owned())?;
+        let target = self.locate(module_path, importer)?;
         match self.states.get(module_path) {
             Some(LoadState::Loaded) => return Ok(()),
             Some(LoadState::Loading) => {
@@ -732,7 +934,12 @@ impl Loader<'_> {
             None => {}
         }
 
-        let requested_path = self.root.join(module_path).with_extension("chimi");
+        let Located {
+            root,
+            relative,
+            origin,
+        } = target;
+        let requested_path = root.join(relative).with_extension("chimi");
         let path =
             requested_path
                 .canonicalize()
@@ -741,11 +948,19 @@ impl Loader<'_> {
                     path: requested_path,
                     source,
                 })?;
-        if !path.starts_with(&self.root) {
+        if !path.starts_with(&root) {
             return Err(ProjectLoadError::PathEscapesRoot {
                 module: module_path.to_owned(),
                 path,
-                root: self.root.clone(),
+                root,
+            });
+        }
+        if self.packages.is_some()
+            && let Some(manifest) = nested_manifest(&root, &path)
+        {
+            return Err(ProjectLoadError::NestedPackage {
+                module: module_path.to_owned(),
+                manifest,
             });
         }
         if let Some(prior_module) = self.files.get(&path) {
@@ -770,7 +985,8 @@ impl Loader<'_> {
             })?;
         let source = SourceSnapshot::from_text(path.clone(), text);
         let module = ProjectSource::parsed(module_path, source)
-            .expect("loaded module paths were validated before filesystem access");
+            .expect("loaded module paths were validated before filesystem access")
+            .with_origin(origin);
         let imports = imports(&module);
 
         self.states
@@ -780,7 +996,7 @@ impl Loader<'_> {
         // workspace; `add_imported_modules` adds them once the workspace is loaded.
         for import in imports {
             if !import.starts_with("std/") {
-                self.load_module(&import)?;
+                self.load_module(&import, Some(module_path))?;
             }
         }
         let popped = self.stack.pop();
@@ -790,6 +1006,300 @@ impl Loader<'_> {
         self.modules.push(module);
         Ok(())
     }
+}
+
+/// A package in a build report (packages.md, "Interfaces").
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltPackage {
+    pub name: String,
+    /// The package the command named, or a member of the workspace it named.
+    pub own: bool,
+    pub source: BuiltSource,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuiltSource {
+    /// A package of the workspace, or a path package inside a fetched one,
+    /// by its directory.
+    Path(PathBuf),
+    /// A fetched package at the commit the lockfile pins.
+    Git {
+        url: String,
+        rev: String,
+        commit: String,
+    },
+}
+
+/// One package's pin as `chimi deps update` moved it.
+#[derive(Debug, Eq, PartialEq)]
+pub enum PinChange {
+    Added {
+        name: String,
+        rev: String,
+        commit: String,
+    },
+    Moved {
+        name: String,
+        rev: String,
+        from: String,
+        to: String,
+    },
+    Removed {
+        name: String,
+    },
+}
+
+impl fmt::Display for PinChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let short = |commit: &str| commit[..12.min(commit.len())].to_owned();
+        match self {
+            Self::Added { name, rev, commit } => {
+                write!(formatter, "locked {name} at {} ({rev})", short(commit))
+            }
+            Self::Moved {
+                name,
+                rev,
+                from,
+                to,
+            } => {
+                write!(
+                    formatter,
+                    "moved {name} from {} to {} ({rev})",
+                    short(from),
+                    short(to)
+                )
+            }
+            Self::Removed { name } => write!(formatter, "removed {name}"),
+        }
+    }
+}
+
+/// `chimi deps update` (packages.md, "Lockfile"): pins every git package of
+/// the workspace that holds `root`, moving only pins whose manifest source
+/// changed, pins that are missing, and the pins of the packages in `moving`;
+/// then rewrites `chimi.lock` when anything changed. Returns the changes, by
+/// package name.
+pub fn update_dependencies(
+    root: impl AsRef<Path>,
+    moving: Vec<String>,
+    cache: &GitCache,
+) -> Result<Vec<PinChange>, ProjectLoadError> {
+    let requested = root.as_ref();
+    let root = requested
+        .canonicalize()
+        .map_err(|source| ProjectLoadError::ReadRoot {
+            path: requested.to_owned(),
+            source,
+        })?;
+    let update = PackageGraph::update(&root, moving, cache)?;
+    let mut changes = Vec::new();
+    for (package, locked) in &update.next.entries {
+        let name = package.to_string();
+        let rev = locked.source.rev.clone();
+        match update.previous.entries.get(package) {
+            None => changes.push(PinChange::Added {
+                name,
+                rev,
+                commit: locked.commit.clone(),
+            }),
+            Some(prior) if prior.commit != locked.commit => changes.push(PinChange::Moved {
+                name,
+                rev,
+                from: prior.commit.clone(),
+                to: locked.commit.clone(),
+            }),
+            Some(_) => {}
+        }
+    }
+    for name in update.previous.entries.keys() {
+        if !update.next.entries.contains_key(name) {
+            changes.push(PinChange::Removed {
+                name: name.to_string(),
+            });
+        }
+    }
+    let text = update.next.render();
+    let unchanged = match std::fs::read_to_string(&update.path) {
+        Ok(existing) => existing == text,
+        // No lockfile and no git package: nothing to write.
+        Err(_) => update.next.entries.is_empty(),
+    };
+    if !unchanged {
+        // Renamed into place, so a crash never leaves half a lockfile.
+        let scratch = update
+            .path
+            .with_extension(format!("lock.{}", std::process::id()));
+        std::fs::write(&scratch, text)
+            .and_then(|()| std::fs::rename(&scratch, &update.path))
+            .map_err(|source| {
+                let _ = std::fs::remove_file(&scratch);
+                ProjectLoadError::WriteLock {
+                    path: update.path.clone(),
+                    source,
+                }
+            })?;
+    }
+    Ok(changes)
+}
+
+/// The directory of the package that holds the file `path`: the nearest
+/// directory above it with a `chimi.toml` that is a `[package]`. `None` when
+/// the nearest manifest is a workspace's, or there is none. Editors use it to
+/// find an open file's package as `--root` names one.
+pub fn package_root_of(path: &Path) -> Option<PathBuf> {
+    let directory = path
+        .ancestors()
+        .skip(1)
+        .find(|directory| directory.join(crate::manifest::MANIFEST_FILE).is_file())?;
+    match crate::manifest::Manifest::read(&directory.join(crate::manifest::MANIFEST_FILE)) {
+        Ok(crate::manifest::Manifest::Workspace(_)) => None,
+        // An unreadable manifest still marks a package; loading it reports
+        // the manifest's error.
+        Ok(crate::manifest::Manifest::Package(_)) | Err(_) => Some(directory.to_owned()),
+    }
+}
+
+/// The directory whose `target/` holds the build artifacts of the project at
+/// `root`: the workspace root for a package or a workspace (packages.md,
+/// "Workspaces"), and `None` for a plain project or a file, whose artifacts
+/// stay under the current directory.
+pub fn workspace_root_of(root: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    match crate::manifest::Manifest::read(&root.join(crate::manifest::MANIFEST_FILE)).ok()? {
+        crate::manifest::Manifest::Workspace(_) => Some(root),
+        crate::manifest::Manifest::Package(_) => packages::workspace_root(&root).ok(),
+    }
+}
+
+/// The path of each `.chimi` file under `root` that `chimi test <directory>`
+/// loads, skipping hidden entries and `target`.
+fn own_module_paths(root: &Path) -> Result<Vec<String>, ProjectLoadError> {
+    module_paths_under(root, |name| !name.starts_with('.') && name != "target")
+        .map_err(|(path, source)| ProjectLoadError::ReadDirectory { path, source })
+}
+
+/// Where a module's file is: a path relative to a directory it must stay in.
+struct Located {
+    root: PathBuf,
+    relative: PathBuf,
+    origin: ModuleOrigin,
+}
+
+impl Loader<'_> {
+    /// Where `module_path` lives, after checking that `importer` may import
+    /// it ([`check_import`]).
+    fn locate(
+        &self,
+        module_path: &str,
+        importer: Option<&str>,
+    ) -> Result<Located, ProjectLoadError> {
+        let Some(graph) = &self.packages else {
+            return Ok(Located {
+                root: self.root.clone(),
+                relative: PathBuf::from(module_path),
+                origin: ModuleOrigin::Own,
+            });
+        };
+        let (first, rest) = module_path.split_once('/').unwrap_or((module_path, ""));
+        let Some(importer) = importer else {
+            let Some(entry) = graph
+                .own()
+                .find(|package| package.name.as_str() == first)
+                .filter(|_| !rest.is_empty())
+            else {
+                return Err(ProjectLoadError::NotInEntryPackage {
+                    module: module_path.to_owned(),
+                    package: graph
+                        .own()
+                        .next()
+                        .expect("a package build has an own package")
+                        .name
+                        .to_string(),
+                });
+            };
+            return Ok(Located {
+                root: entry.root.clone(),
+                relative: PathBuf::from(rest),
+                origin: ModuleOrigin::Own,
+            });
+        };
+        let target = check_import(graph, module_path, importer)?;
+        Ok(Located {
+            root: target.root.clone(),
+            relative: PathBuf::from(rest),
+            origin: if target.own {
+                ModuleOrigin::Own
+            } else {
+                ModuleOrigin::Dependency
+            },
+        })
+    }
+}
+
+/// The package `module_path` names, after checking that the module
+/// `importer` may import it (packages.md, "Imports across packages"): its
+/// first segment names the importer's own package or one of its
+/// dependencies, it names a module rather than a package, and it is not
+/// another package's `internal/` module.
+fn check_import<'graph>(
+    graph: &'graph PackageGraph,
+    module_path: &str,
+    importer: &str,
+) -> Result<&'graph packages::Package, ProjectLoadError> {
+    let (first, rest) = module_path.split_once('/').unwrap_or((module_path, ""));
+    let importing = graph
+        .find_str(first_segment(importer))
+        .expect("a loaded module belongs to a package of the build");
+    let edge_error = |make: fn(String, String) -> ProjectLoadError| {
+        make(module_path.to_owned(), importer.to_owned())
+    };
+    let target = if first == importing.name.as_str() {
+        importing
+    } else if importing
+        .dependencies
+        .iter()
+        .any(|dependency| dependency.as_str() == first)
+    {
+        graph
+            .find_str(first)
+            .expect("every dependency is in the graph")
+    } else if first == "std" {
+        // `import std/...` never reaches here; only a bare `import std` does.
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::PackageIsNotAModule { module, importer }
+        }));
+    } else if graph.find_str(first).is_some() {
+        return Err(ProjectLoadError::NotADependency {
+            module: module_path.to_owned(),
+            importer: importer.to_owned(),
+            manifest: importing.manifest.clone(),
+        });
+    } else {
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::UnknownPackage { module, importer }
+        }));
+    };
+    if rest.is_empty() {
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::PackageIsNotAModule { module, importer }
+        }));
+    }
+    if target.name != importing.name && rest.starts_with("internal/") {
+        return Err(edge_error(|module, importer| {
+            ProjectLoadError::InternalModule { module, importer }
+        }));
+    }
+    Ok(target)
+}
+
+/// The manifest of a package nested in the one at `root` that holds the
+/// file `path`, if any: a `chimi.toml` in a directory between them.
+fn nested_manifest(root: &Path, path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .take_while(|directory| *directory != root)
+        .map(|directory| directory.join(crate::manifest::MANIFEST_FILE))
+        .find(|manifest| manifest.is_file())
 }
 
 fn imports(module: &ProjectSource) -> Vec<String> {
@@ -817,7 +1327,10 @@ fn validate_module_path(module_path: String) -> Result<(), ProjectLoadError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadedProject, ProjectLoadError, SourceReader, StandardTree};
+    use super::{
+        GitCache, LoadedProject, ModuleOrigin, Network, ProjectLoadError, SourceReader,
+        StandardTree,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -968,6 +1481,502 @@ mod tests {
         assert!(error.to_string().contains("real and alias"));
     }
 
+    /// One workspace member: its directory, manifest and `(file, text)` modules.
+    type Member<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+    /// A workspace at the fixture root listing `members`.
+    fn workspace(members: &[Member<'_>]) -> TestDirectory {
+        let fixture = TestDirectory::new();
+        let listed: Vec<String> = members
+            .iter()
+            .map(|(directory, _, _)| format!("\"{directory}\""))
+            .collect();
+        fixture.write(
+            "chimi.toml",
+            &format!("[workspace]\nmembers = [{}]\n", listed.join(", ")),
+        );
+        for (directory, manifest, files) in members {
+            fixture.write(&format!("{directory}/chimi.toml"), manifest);
+            for (file, text) in *files {
+                fixture.write(&format!("{directory}/{file}"), text);
+            }
+        }
+        fixture
+    }
+
+    const APP: &str =
+        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n";
+    const MONEY: &str = "[package]\nname = \"money\"\n";
+
+    fn load_app(fixture: &TestDirectory) -> Result<LoadedProject, ProjectLoadError> {
+        LoadedProject::load(
+            fixture.path().join("app"),
+            "app/main",
+            &StandardTree::embedded(),
+        )
+    }
+
+    #[test]
+    fn a_package_imports_its_own_modules_and_its_dependencies_by_package_name() {
+        let fixture = workspace(&[
+            (
+                "app",
+                APP,
+                &[
+                    (
+                        "main.chimi",
+                        "import app/total as Total\npub fn main() -> Int { Total.value() }",
+                    ),
+                    (
+                        "total.chimi",
+                        "import money/amount as Amount\npub fn value() -> Int { Amount.value() }",
+                    ),
+                ],
+            ),
+            (
+                "money",
+                MONEY,
+                &[
+                    (
+                        "amount.chimi",
+                        "import money/internal/cents as Cents\npub fn value() -> Int { Cents.value() }",
+                    ),
+                    ("internal/cents.chimi", "pub fn value() -> Int { 42 }"),
+                ],
+            ),
+        ]);
+        let project = load_app(&fixture).unwrap();
+        let mut modules: Vec<_> = project
+            .sources()
+            .iter()
+            .map(|source| (source.module_path().to_owned(), source.origin()))
+            .collect();
+        modules.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            modules,
+            [
+                ("app/main".to_owned(), ModuleOrigin::Own),
+                ("app/total".to_owned(), ModuleOrigin::Own),
+                ("money/amount".to_owned(), ModuleOrigin::Dependency),
+                ("money/internal/cents".to_owned(), ModuleOrigin::Dependency),
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_that_break_a_package_boundary_fail_naming_it() {
+        let rounding = "[package]\nname = \"rounding\"\n";
+        let money_with_rounding =
+            "[package]\nname = \"money\"\n[dependencies]\nrounding = { path = \"../rounding\" }\n";
+        let cases: [(&str, &str, &str); 6] = [
+            (
+                "import rounding/even as Even\npub fn main() -> Int { 0 }",
+                "module app/main imports rounding/even, but `rounding` is not a dependency of `app`",
+                "NotADependency",
+            ),
+            (
+                "import nowhere/thing as Thing\npub fn main() -> Int { 0 }",
+                "module app/main imports nowhere/thing, but no package `nowhere` is in the build",
+                "UnknownPackage",
+            ),
+            (
+                "import money as Money\npub fn main() -> Int { 0 }",
+                "module app/main imports money, which is a package, not a module",
+                "PackageIsNotAModule",
+            ),
+            (
+                "import money/internal/cents as Cents\npub fn main() -> Int { 0 }",
+                "module app/main imports money/internal/cents, but `internal/` modules are private to package `money`",
+                "InternalModule",
+            ),
+            (
+                "import std as Std\npub fn main() -> Int { 0 }",
+                "module app/main imports std, which is a package, not a module",
+                "PackageIsNotAModule",
+            ),
+            (
+                "import main as Main\npub fn main() -> Int { 0 }",
+                "module app/main imports main, but no package `main` is in the build",
+                "UnknownPackage",
+            ),
+        ];
+        for (main, message, variant) in cases {
+            let fixture = workspace(&[
+                ("app", APP, &[("main.chimi", main)]),
+                (
+                    "money",
+                    money_with_rounding,
+                    &[("internal/cents.chimi", "pub fn value() -> Int { 1 }")],
+                ),
+                (
+                    "rounding",
+                    rounding,
+                    &[("even.chimi", "pub fn value() -> Int { 1 }")],
+                ),
+            ]);
+            let error = load_app(&fixture).expect_err(main).to_string();
+            assert!(error.starts_with(message), "{variant}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_entry_module_of_a_package_is_one_of_its_own() {
+        let fixture = workspace(&[
+            ("app", APP, &[("main.chimi", "pub fn main() -> Int { 0 }")]),
+            ("money", MONEY, &[]),
+        ]);
+        let error = LoadedProject::load(
+            fixture.path().join("app"),
+            "main",
+            &StandardTree::embedded(),
+        )
+        .expect_err("plain entry path in a package");
+        assert!(
+            matches!(error, ProjectLoadError::NotInEntryPackage { .. }),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "module main is not in package app: its modules are named app/<path>"
+        );
+        let error = LoadedProject::load(
+            fixture.path().join("app"),
+            "money/amount",
+            &StandardTree::embedded(),
+        )
+        .expect_err("a dependency's module as the entry");
+        assert!(
+            matches!(error, ProjectLoadError::NotInEntryPackage { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_module_path_cannot_reach_into_a_nested_package() {
+        let fixture = workspace(&[
+            (
+                "app",
+                APP,
+                &[(
+                    "main.chimi",
+                    "import app/inner/x as X\npub fn main() -> Int { 0 }",
+                )],
+            ),
+            ("money", MONEY, &[]),
+        ]);
+        fixture.write("app/inner/chimi.toml", "[package]\nname = \"inner\"\n");
+        fixture.write("app/inner/x.chimi", "pub fn value() -> Int { 1 }");
+        let error = load_app(&fixture).expect_err("nested package");
+        assert!(
+            matches!(error, ProjectLoadError::NestedPackage { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_package_directory_loads_its_own_modules_named_by_the_package() {
+        let fixture = workspace(&[
+            (
+                "app",
+                APP,
+                &[(
+                    "main.chimi",
+                    "import money/amount as Amount\npub fn main() -> Int { Amount.value() }",
+                )],
+            ),
+            (
+                "money",
+                MONEY,
+                &[("amount.chimi", "pub fn value() -> Int { 1 }")],
+            ),
+        ]);
+        fixture.write("app/inner/chimi.toml", "[package]\nname = \"inner\"\n");
+        fixture.write("app/inner/x.chimi", "pub fn value() -> Int { 1 }");
+        let project =
+            LoadedProject::load_directory(fixture.path().join("app"), &StandardTree::embedded())
+                .unwrap();
+        let mut modules: Vec<_> = project
+            .sources()
+            .iter()
+            .map(|source| source.module_path().to_owned())
+            .collect();
+        modules.sort();
+        assert_eq!(modules, ["app/main", "money/amount"]);
+    }
+
+    #[test]
+    fn the_package_graph_rejects_bad_dependencies_naming_both_ends() {
+        let cases: [(&[(&str, &str)], &str); 7] = [
+            (
+                &[
+                    (
+                        "app",
+                        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../cash\" }\n",
+                    ),
+                    ("cash", MONEY),
+                ],
+                "",
+            ),
+            (
+                &[
+                    (
+                        "app",
+                        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../cash\" }\n",
+                    ),
+                    ("cash", "[package]\nname = \"cash\"\n"),
+                ],
+                "dependency `money` names the package `cash`",
+            ),
+            (
+                &[(
+                    "app",
+                    "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../missing\" }\n",
+                )],
+                "dependency `money` at",
+            ),
+            (
+                &[(
+                    "app",
+                    "[package]\nname = \"app\"\n[dependencies]\nmoney = { git = \"https://example.com/m\", rev = \"v1\" }\n",
+                )],
+                "git dependency `money`: chimi.lock is out of date; run `chimi deps update`",
+            ),
+            (
+                &[
+                    (
+                        "app",
+                        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n",
+                    ),
+                    (
+                        "money",
+                        "[package]\nname = \"money\"\n[dependencies]\napp = { path = \"../app\" }\n",
+                    ),
+                ],
+                "package dependency cycle: app -> money -> app",
+            ),
+            (
+                &[
+                    (
+                        "app",
+                        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\nbank = { path = \"../bank\" }\n",
+                    ),
+                    ("money", MONEY),
+                    (
+                        "bank",
+                        "[package]\nname = \"bank\"\n[dependencies]\nmoney = { path = \"../other/money\" }\n",
+                    ),
+                    ("other/money", MONEY),
+                ],
+                "package `money` has two sources: {root}/money (from {root}/app/chimi.toml) and {root}/other/money (from {root}/bank/chimi.toml)",
+            ),
+            (
+                &[
+                    (
+                        "app",
+                        "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../cash\" }\n",
+                    ),
+                    ("cash", "[workspace]\nmembers = []\n"),
+                ],
+                "has no chimi.toml with a [package]",
+            ),
+        ];
+        for (packages, message) in cases {
+            let members: Vec<Member<'_>> = packages
+                .iter()
+                .map(|(directory, manifest)| (*directory, *manifest, &[][..]))
+                .collect();
+            let fixture = workspace(&members);
+            fixture.write("app/main.chimi", "pub fn main() -> Int { 0 }");
+            let result = load_app(&fixture);
+            if message.is_empty() {
+                // `money` from a directory named `cash` is fine: the
+                // manifest, not the directory, names a package.
+                result.expect("a dependency's directory may have any name");
+                continue;
+            }
+            let error = result.expect_err(message).to_string();
+            let root = fixture.path().canonicalize().unwrap();
+            let message = message.replace("{root}", &root.display().to_string());
+            assert!(error.contains(&message), "{message}: {error}");
+        }
+    }
+
+    #[test]
+    fn doc_examples_follow_the_package_boundary() {
+        let rounding = "[package]\nname = \"rounding\"\n";
+        let money_with_rounding =
+            "[package]\nname = \"money\"\n[dependencies]\nrounding = { path = \"../rounding\" }\n";
+        for (import, allowed) in [
+            ("import money/amount as Amount", true),
+            ("import rounding/even as Even", false),
+            ("import money/internal/cents as Cents", false),
+        ] {
+            let main = format!(
+                "/// ```chimi\n/// {import}\n/// pub fn main() -> Int {{ 0 }}\n/// ```\npub fn main() -> Int {{ 0 }}\n"
+            );
+            let fixture = workspace(&[
+                ("app", APP, &[("main.chimi", main.as_str())]),
+                (
+                    "money",
+                    money_with_rounding,
+                    &[
+                        ("amount.chimi", "pub fn value() -> Int { 1 }"),
+                        ("internal/cents.chimi", "pub fn value() -> Int { 1 }"),
+                    ],
+                ),
+                (
+                    "rounding",
+                    rounding,
+                    &[("even.chimi", "pub fn value() -> Int { 1 }")],
+                ),
+            ]);
+            let mut project = load_app(&fixture).unwrap();
+            let result = project.add_doc_examples(&StandardTree::embedded());
+            assert_eq!(result.is_ok(), allowed, "{import}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_dependency_outside_the_workspace_fails() {
+        let fixture = TestDirectory::new();
+        fixture.write("shop/chimi.toml", "[workspace]\nmembers = [\"app\"]\n");
+        fixture.write(
+            "shop/app/chimi.toml",
+            APP.replace("../money", "../../money").as_str(),
+        );
+        fixture.write("shop/app/main.chimi", "pub fn main() -> Int { 0 }");
+        fixture.write("money/chimi.toml", MONEY);
+        let error = LoadedProject::load(
+            fixture.path().join("shop/app"),
+            "app/main",
+            &StandardTree::embedded(),
+        )
+        .expect_err("escaping path dependency")
+        .to_string();
+        assert!(error.contains("is outside the workspace"), "{error}");
+    }
+
+    #[test]
+    fn a_package_the_workspace_above_does_not_list_fails() {
+        let fixture = TestDirectory::new();
+        fixture.write("chimi.toml", "[workspace]\nmembers = [\"other\"]\n");
+        fixture.write("app/chimi.toml", MONEY.replace("money", "app").as_str());
+        fixture.write("app/main.chimi", "pub fn main() -> Int { 0 }");
+        let error = load_app(&fixture).expect_err("unlisted member").to_string();
+        assert!(error.contains("but not one of its members"), "{error}");
+    }
+
+    #[test]
+    fn a_workspace_directory_loads_every_members_modules_as_its_own() {
+        let fixture = workspace(&[
+            (
+                "app",
+                APP,
+                &[(
+                    "main.chimi",
+                    "import money/amount as Amount\npub fn main() -> Int { Amount.value() }",
+                )],
+            ),
+            (
+                "money",
+                MONEY,
+                &[
+                    ("amount.chimi", "pub fn value() -> Int { 1 }"),
+                    ("extra.chimi", "pub fn value() -> Int { 2 }"),
+                ],
+            ),
+        ]);
+        let origins = |project: &LoadedProject| {
+            let mut modules: Vec<_> = project
+                .sources()
+                .iter()
+                .map(|source| (source.module_path().to_owned(), source.origin()))
+                .collect();
+            modules.sort_by(|left, right| left.0.cmp(&right.0));
+            modules
+        };
+        let whole =
+            LoadedProject::load_directory(fixture.path(), &StandardTree::embedded()).unwrap();
+        assert_eq!(
+            origins(&whole),
+            [
+                ("app/main".to_owned(), ModuleOrigin::Own),
+                ("money/amount".to_owned(), ModuleOrigin::Own),
+                // No member imports it; a workspace loads it all the same.
+                ("money/extra".to_owned(), ModuleOrigin::Own),
+            ]
+        );
+        let app =
+            LoadedProject::load_directory(fixture.path().join("app"), &StandardTree::embedded())
+                .unwrap();
+        assert_eq!(
+            origins(&app)[1],
+            ("money/amount".to_owned(), ModuleOrigin::Dependency)
+        );
+    }
+
+    #[test]
+    fn a_workspace_rejects_bad_members() {
+        type Files<'a> = &'a [(&'a str, &'a str)];
+        let cases: [(&str, Files<'_>, &str); 4] = [
+            (
+                "[workspace]\nmembers = [\"one\", \"./one\"]\n",
+                &[("one/chimi.toml", MONEY)],
+                "is listed twice",
+            ),
+            ("[workspace]\nmembers = [\"gone\"]\n", &[], "member "),
+            (
+                "[workspace]\nmembers = [\"plain\"]\n",
+                &[("plain/main.chimi", "pub fn main() -> Int { 0 }")],
+                "has no chimi.toml with a [package]",
+            ),
+            (
+                "[workspace]\nmembers = [\"one\", \"two\"]\n",
+                &[("one/chimi.toml", MONEY), ("two/chimi.toml", MONEY)],
+                "are both named `money`",
+            ),
+        ];
+        for (manifest, files, message) in cases {
+            let fixture = TestDirectory::new();
+            fixture.write("chimi.toml", manifest);
+            for (path, text) in files {
+                fixture.write(path, text);
+            }
+            let error = LoadedProject::load_directory(fixture.path(), &StandardTree::embedded())
+                .expect_err(message)
+                .to_string();
+            assert!(error.contains(message), "{message}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_workspace_member_outside_the_workspace_fails() {
+        let fixture = TestDirectory::new();
+        fixture.write("shop/chimi.toml", "[workspace]\nmembers = [\"../money\"]\n");
+        fixture.write("money/chimi.toml", MONEY);
+        fixture.write("money/amount.chimi", "pub fn value() -> Int { 1 }");
+        let error =
+            LoadedProject::load_directory(fixture.path().join("shop"), &StandardTree::embedded())
+                .expect_err("member outside")
+                .to_string();
+        assert!(
+            error.contains("is outside the workspace directory"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_workspace_root_is_not_a_package() {
+        let fixture = workspace(&[("app", APP, &[])]);
+        let error = LoadedProject::load(fixture.path(), "app/main", &StandardTree::embedded())
+            .expect_err("workspace root")
+            .to_string();
+        assert!(
+            error.contains("is a workspace; pass one of its member packages"),
+            "{error}"
+        );
+    }
+
     struct Overlay {
         path: PathBuf,
         text: &'static str,
@@ -995,9 +2004,14 @@ mod tests {
             text: "import lib/answer as Answer\npub fn main() -> Int { Answer.value() }",
         };
 
-        let project =
-            LoadedProject::load_with(fixture.path(), "app", &overlay, &StandardTree::embedded())
-                .unwrap();
+        let project = LoadedProject::load_with(
+            fixture.path(),
+            "app",
+            &overlay,
+            &StandardTree::embedded(),
+            &GitCache::from_environment(Network::Offline),
+        )
+        .unwrap();
 
         let modules = project
             .sources()

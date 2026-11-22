@@ -184,6 +184,12 @@ pub(crate) enum StandardType {
     /// stream is a terminal and its size; the runner closes `main`'s
     /// `terminal` need.
     Terminal,
+    /// `std/log.Log`: the capability to write log entries; the runner closes
+    /// `main`'s `log` need.
+    Log,
+    /// `std/metrics.Metrics`: the capability to record metrics; the runner
+    /// closes `main`'s `metrics` need.
+    Metrics,
 }
 
 impl StandardType {
@@ -274,6 +280,8 @@ impl StandardType {
             Self::Network => "Network",
             Self::Commands => "Commands",
             Self::Terminal => "Terminal",
+            Self::Log => "Log",
+            Self::Metrics => "Metrics",
         }
     }
 
@@ -290,7 +298,9 @@ impl StandardType {
             | Self::Signals
             | Self::Network
             | Self::Commands
-            | Self::Terminal => {
+            | Self::Terminal
+            | Self::Log
+            | Self::Metrics => {
                 StandardProperties::Opaque("a provider")
             }
             Self::ProcessAddress
@@ -656,6 +666,12 @@ pub(crate) enum StandardFunction {
     // `std/signal`'s host core, which only its runner provider calls.
     SignalHostInstall,
     SignalHostWait,
+    // `std/log`'s host core, which only its runner provider calls.
+    LogHostMinimumLevel,
+    LogHostWrite,
+    // `std/metrics`'s host core, which only its runner provider calls.
+    MetricsHostEnabled,
+    MetricsHostRecord,
 }
 
 impl StandardFunction {
@@ -974,6 +990,8 @@ impl StandardFunction {
             | Self::FsHostTemporaryDirectory
             | Self::FsTestRoot => None,
             Self::SignalHostInstall | Self::SignalHostWait => None,
+            Self::LogHostMinimumLevel | Self::LogHostWrite => None,
+            Self::MetricsHostEnabled | Self::MetricsHostRecord => None,
         }
     }
 
@@ -1182,6 +1200,10 @@ impl StandardFunction {
             Self::FsTestRoot => "test_root",
             Self::SignalHostInstall => "host_install",
             Self::SignalHostWait => "host_wait",
+            Self::LogHostMinimumLevel => "host_minimum_level",
+            Self::LogHostWrite => "host_write",
+            Self::MetricsHostEnabled => "host_enabled",
+            Self::MetricsHostRecord => "host_record",
         }
     }
 
@@ -1582,6 +1604,8 @@ impl StandardConstructor {
             | StandardType::Network
             | StandardType::Commands
             | StandardType::Terminal
+            | StandardType::Log
+            | StandardType::Metrics
             | StandardType::Instant
             | StandardType::Timestamp
             | StandardType::SelectEvent

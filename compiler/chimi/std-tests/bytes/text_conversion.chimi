@@ -1,8 +1,7 @@
 // Bytes.to_text and to_text_lossy: a round trip through from_text, the offset
 // of the first invalid sequence, and one U+FFFD per maximal invalid subpart
 // (truncated, overlong, surrogate, past U+10FFFF, and stray bytes).
-import std/bytes as Bytes
-import std/bytes.{Bytes, DecodeError}
+import std/bytes as Bytes.{Bytes, DecodeError}
 import std/debug as Debug
 import std/list as List
 import std/test as Test

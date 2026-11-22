@@ -10,11 +10,11 @@
 
 use chimi::diagnostic::{Diagnostic, DiagnosticStage, Severity};
 use chimi::line_index::{LineIndex, LinePosition, PositionEncoding};
-use chimi::project::{LoadedProject, SourceReader, StandardTree};
+use chimi::project::{GitCache, LoadedProject, Network, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
-    Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
+    ModuleOrigin, Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -42,11 +42,14 @@ impl DocumentPath {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentVersion(pub i32);
 
-/// A project the editor configured explicitly, because Chimi has no manifest.
+/// A project the editor analyzes: one it configured with a root and an entry
+/// module, or a package found from an open file's `chimi.toml`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectConfig {
     root: PathBuf,
-    entry_module: String,
+    /// `None` for a package, whose every module is analyzed, as
+    /// `chimi test <package>` loads it.
+    entry_module: Option<String>,
 }
 
 impl ProjectConfig {
@@ -54,8 +57,16 @@ impl ProjectConfig {
     pub fn new(root: impl AsRef<Path>, entry_module: impl Into<String>) -> io::Result<Self> {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
-            entry_module: entry_module.into(),
+            entry_module: Some(entry_module.into()),
         })
+    }
+
+    /// The package in `root`, found from a file's manifest.
+    fn package(root: PathBuf) -> Self {
+        Self {
+            root,
+            entry_module: None,
+        }
     }
 }
 
@@ -389,6 +400,9 @@ impl Workspace {
     /// of `path`, and every other previously published file is cleared.
     pub fn analyze(&mut self, path: &DocumentPath) -> Vec<FileDiagnostics> {
         let mut sets = BTreeMap::new();
+        // The file's own package is a project too, so the deepest root wins
+        // whether it is configured or a package, nested packages included.
+        self.add_package_project_for(path);
         let reached = match self.configured_project_for(path) {
             Some(index) => self.analyze_configured(index, path, &mut sets),
             None => false,
@@ -675,6 +689,19 @@ impl Workspace {
             .map(|(index, _)| index)
     }
 
+    /// Adds the project of the package holding `path` on first use, unless a
+    /// project already has its root (packages.md, "Commands").
+    fn add_package_project_for(&mut self, path: &DocumentPath) {
+        let Some(root) = chimi::project::package_root_of(path.as_path())
+            .and_then(|root| root.canonicalize().ok())
+        else {
+            return;
+        };
+        if !self.projects.iter().any(|project| project.root == root) {
+            self.projects.push(ProjectConfig::package(root));
+        }
+    }
+
     /// Analyzes a configured project into `sets` and reports whether it reached `path`.
     fn analyze_configured(
         &mut self,
@@ -683,12 +710,25 @@ impl Workspace {
         sets: &mut BTreeMap<DocumentPath, FileDiagnostics>,
     ) -> bool {
         let project = &self.projects[index];
-        let loaded = LoadedProject::load_with(
-            &project.root,
-            project.entry_module.clone(),
-            &OpenBuffers(&self.documents),
-            &StandardTree::embedded(),
-        );
+        let reader = OpenBuffers(&self.documents);
+        // The editor never fetches: a git package a build has not fetched
+        // yet is reported, not downloaded while the user types.
+        let cache = GitCache::from_environment(Network::Offline);
+        let loaded = match &project.entry_module {
+            Some(entry) => LoadedProject::load_with(
+                &project.root,
+                entry.clone(),
+                &reader,
+                &StandardTree::embedded(),
+                &cache,
+            ),
+            None => LoadedProject::load_directory_with(
+                &project.root,
+                &reader,
+                &StandardTree::embedded(),
+                &cache,
+            ),
+        };
         let analysis = self
             .analyses
             .entry(ProjectKey::Configured(index))
@@ -715,6 +755,19 @@ impl Workspace {
             let document = DocumentPath(module.source_path().to_owned());
             let open = self.documents.get(&document);
             let lines = analyzed_lines(open, module.source_text());
+            // A dependency's file is published only by its own package's
+            // analysis, which lints it; publishing it from here too would
+            // make its warnings come and go with whichever package ran last.
+            if module.origin() != ModuleOrigin::Own {
+                modules.insert(
+                    document,
+                    AnalyzedModule {
+                        module_path: module.module_path().to_owned(),
+                        lines,
+                    },
+                );
+                continue;
+            }
             let findings = lint.get(module.source_path()).into_iter().flatten();
             let diagnostics = module
                 .diagnostics()
@@ -986,6 +1039,74 @@ mod tests {
             .expect("lib republished");
         assert_eq!(lib_after.version, Some(DocumentVersion(2)));
         assert!(lib_after.diagnostics.is_empty());
+    }
+
+    /// Guards packages.md "Commands": a file in a package with no configured
+    /// project is analyzed in its package, so imports by package name resolve
+    /// and a dependency's modules are neither linted nor reported on.
+    #[test]
+    fn a_file_in_a_package_is_analyzed_with_its_package() {
+        let fixture = Fixture::new("package");
+        fixture.write(
+            "chimi.toml",
+            "[workspace]\nmembers = [\"app\", \"money\"]\n",
+        );
+        fixture.write(
+            "app/chimi.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n",
+        );
+        fixture.write("money/chimi.toml", "[package]\nname = \"money\"\n");
+        let money = fixture.write(
+            "money/amount.chimi",
+            "/// Doc.\npub fn value() -> Int { 1 }\nfn unused() -> Int { 0 }\n",
+        );
+        let app = fixture.write(
+            "app/main.chimi",
+            "import money/amount as Amount\n/// Doc.\npub fn main() -> Int { Amount.value() }\n",
+        );
+        let other = fixture.write("app/other.chimi", "/// Doc.\npub fn value() -> Int { 2 }\n");
+        let mut workspace = Workspace::new(Vec::new(), PositionEncoding::Utf16);
+
+        let sets = workspace.analyze(&app);
+        let published = |path: &DocumentPath| sets.iter().find(|set| set.path == *path);
+        assert_eq!(published(&app).expect("app published").diagnostics, []);
+        assert!(
+            published(&other).is_some(),
+            "every module of the package is analyzed"
+        );
+        assert!(
+            published(&money).is_none(),
+            "a dependency's file is left to its own package: {sets:?}"
+        );
+
+        // Its own package lints it, and the app's next analysis leaves those
+        // warnings alone instead of clearing them.
+        let sets = workspace.analyze(&money);
+        let money_set = sets.iter().find(|set| set.path == money).expect("money published");
+        assert_eq!(money_set.diagnostics.len(), 1, "{sets:?}");
+        let sets = workspace.analyze(&app);
+        assert!(sets.iter().all(|set| set.path != money), "{sets:?}");
+
+        // A package nested in `app` is its own project, not a single file.
+        fixture.write(
+            "chimi.toml",
+            "[workspace]\nmembers = [\"app\", \"money\", \"app/tools\"]\n",
+        );
+        fixture.write("app/tools/chimi.toml", "[package]\nname = \"tools\"\n");
+        let tool = fixture.write(
+            "app/tools/run.chimi",
+            "import tools/helper as Helper\n/// Doc.\npub fn value() -> Int { Helper.value() }\n",
+        );
+        fixture.write(
+            "app/tools/helper.chimi",
+            "/// Doc.\npub fn value() -> Int { 3 }\n",
+        );
+        let sets = workspace.analyze(&tool);
+        let tool_set = sets
+            .iter()
+            .find(|set| set.path == tool)
+            .expect("tool published");
+        assert_eq!(tool_set.diagnostics, [], "{sets:?}");
     }
 
     /// Lint findings reach the editor as warnings once the project compiles,

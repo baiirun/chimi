@@ -1,12 +1,8 @@
-import app/checkout as Checkout
-import app/checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
+import checkout/order as Checkout.{FraudError, Order, PaymentError, Receipt, Services, ShippingError, StockError}
 import std/broadcast as Broadcast
-import std/channel as Channel
-import std/channel.{Receive, Receiver, Sender}
+import std/channel as Channel.{Receive, Receiver, Sender}
 import std/clock as Clock
-import std/clock.{Clock}
-import std/duration as Duration
-import std/duration.{Duration}
+import std/duration as Duration.{Duration}
 import std/list as List
 import std/result.{Result}
 import std/select as Select
@@ -40,7 +36,7 @@ pub struct Outcome {
 
 /// Settings that pause or resume the workers.
 pub fn settings(paused: Bool) -> Settings {
-  Settings(paused)
+  Settings { paused: paused }
 }
 
 /// The order an outcome is for.
@@ -75,14 +71,7 @@ fn report(events: Broadcast.Publisher<Event>, event: Event) -> Void {
   }
 }
 
-fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast.Publisher<Event>) -> Void needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast.Publisher<Event>) -> Void needs Services {
   let started = Clock.now()
   let deadline = Clock.add(started, Duration.milliseconds(order_budget_ms))
   let result = Checkout.run(order, deadline)
@@ -90,7 +79,11 @@ fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast
     Result.Ok(_) -> Event.Completed(name, Checkout.id(order), Checkout.cents(order))
     Result.Err(_) -> Event.Rejected(name, Checkout.id(order))
   }
-  Channel.send(outcomes, Outcome(Checkout.id(order), Clock.since(started), result))
+  Channel.send(outcomes, Outcome {
+    order: Checkout.id(order),
+    took: Clock.since(started),
+    result: result,
+  })
   report(events, event)
 }
 
@@ -101,14 +94,7 @@ pub fn work(
   settings: Watch.Subscription<Settings>,
   outcomes: Sender<Outcome>,
   events: Broadcast.Publisher<Event>,
-) -> Int needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+) -> Int needs Services {
   loop state = (False, True, 0) {
     let (paused, following, handled) = state
     // A drained watch is always ready, so it leaves the list once it drains;

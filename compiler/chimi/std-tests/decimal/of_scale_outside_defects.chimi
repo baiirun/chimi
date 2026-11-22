@@ -1,6 +1,5 @@
 // Decimal.of takes scales 0 through 38; any other is a broken precondition.
-import std/decimal as Decimal
-import std/decimal.{Decimal}
+import std/decimal as Decimal.{Decimal}
 import std/test as Test
 
 fn run() -> Decimal {

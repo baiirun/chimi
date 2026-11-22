@@ -15,7 +15,7 @@ enum Status {
 
 fn run() -> Text {
   Debug.render_indented({
-    items: [Money(1)],
+    items: [Money { cents: 1 }],
     status: Status.Declined("x"),
     pending: [Status.Pending],
     empty: [],

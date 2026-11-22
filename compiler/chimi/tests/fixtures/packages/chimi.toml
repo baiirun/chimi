@@ -1,0 +1,3 @@
+# A workspace of three packages: app depends on money, which depends on rounding.
+[workspace]
+members = ["app", "money", "rounding"]

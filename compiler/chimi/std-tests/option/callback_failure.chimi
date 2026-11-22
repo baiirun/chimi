@@ -1,8 +1,7 @@
 // A callback's failure leaves Option.map unchanged: it joins the caller's
 // row instead of entering the returned Option.
 import std/option as Option
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Refusal {

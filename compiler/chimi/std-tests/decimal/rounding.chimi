@@ -1,8 +1,7 @@
 // Decimal.divide: every rounding mode at a tie and on each side of it, for
 // both signs, and the scale alignment of dividend, divisor, and result.
 import std/debug as Debug
-import std/decimal as Decimal
-import std/decimal.{Rounding}
+import std/decimal as Decimal.{Rounding}
 import std/list as List
 import std/test as Test
 

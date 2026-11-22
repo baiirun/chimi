@@ -1,6 +1,5 @@
 // Bytes.from_int defects one past the largest value of an unsigned layout.
-import std/bytes as Bytes
-import std/bytes.{Bytes, IntLayout}
+import std/bytes as Bytes.{Bytes, IntLayout}
 import std/test as Test
 
 fn run() -> Bytes {

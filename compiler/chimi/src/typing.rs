@@ -9,7 +9,7 @@ use crate::semantic::{
     ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
     RequirementTermUse, TypeUse, UnaryOperator,
 };
-use crate::semantic::{BindingKind, CaseOrigin};
+use crate::semantic::{BindingKind, CallForm, CaseOrigin};
 use crate::standard::{
     DurationUnitRole, StandardConstant, StandardConstructor, StandardFunction, StandardGeneric,
     StandardGenericKind, StandardSymbol, StandardType,
@@ -17,6 +17,7 @@ use crate::standard::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod aliases;
 mod clock;
 mod combinators;
 mod constants;
@@ -24,6 +25,7 @@ pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
 mod select;
+mod struct_literals;
 
 mod properties;
 
@@ -462,6 +464,14 @@ impl TypeFormatter<'_> {
 
     pub(crate) fn format_contract_result(&self, contract: &CallableContract) -> String {
         let mut result = self.format_type(contract.success);
+        result.push_str(&self.format_contract_rows(contract));
+        result
+    }
+
+    /// A contract's `errors` and `needs` rows, each with its leading space, or
+    /// nothing for empty rows.
+    fn format_contract_rows(&self, contract: &CallableContract) -> String {
+        let mut result = String::new();
         let failures = &self.failure_rows[contract.failures.raw() as usize];
         if !failures.variants.is_empty() || !failures.parameters.is_empty() {
             result.push_str(" errors ");
@@ -780,6 +790,12 @@ impl TypedProject {
         self.formatter().format_contract_result(contract)
     }
 
+    /// A contract's `errors` and `needs` rows, as `format_contract_result`
+    /// writes them after the success type.
+    pub(crate) fn format_contract_rows(&self, contract: &CallableContract) -> String {
+        self.formatter().format_contract_rows(contract)
+    }
+
     pub(crate) fn format_type(&self, id: TypeId) -> String {
         self.formatter().format_type(id)
     }
@@ -879,6 +895,174 @@ impl TypedProject {
                     ),
                 ));
             }
+        }
+    }
+
+    /// A written `needs` clause is complete (decisions.md, 2026-11-22): every
+    /// need a function's body reaches, through calls too and runner-closed ones
+    /// included, must be listed. A function with no clause keeps its needs
+    /// inferred. One `T4204` per unlisted need, at the function's name, and one
+    /// `T4103` for a name the body reaches with two interfaces. `main` is not
+    /// told to list a need the runner does not close: E5002 reports that.
+    fn validate_written_needs(&mut self, body_modules: &HashSet<ModuleId>) {
+        let mut findings = Vec::new();
+        for module_id in body_modules {
+            let module = &self.resolved.semantic.modules[module_id.raw() as usize];
+            for declaration in &module.declarations {
+                let Some(signature) = &declaration.function else {
+                    continue;
+                };
+                if declaration.kind != ModuleDeclarationKind::Function
+                    || declaration.body.is_none()
+                    || signature.requirements.terms.is_empty()
+                {
+                    continue;
+                }
+                let Some(symbol) = self.resolved.symbols.iter().find(|symbol| {
+                    symbol.module_id == Some(module.id)
+                        && symbol.semantic_id == Some(declaration.semantic_id)
+                        && symbol.kind == ProjectSymbolKind::Function
+                }) else {
+                    continue;
+                };
+                let Some(contract) = self.contracts.get(&symbol.id) else {
+                    continue;
+                };
+                let mut written: Vec<String> = Vec::new();
+                for term in &signature.requirements.terms {
+                    match term {
+                        RequirementTermUse::Field { name, .. } => written.push(name.text.clone()),
+                        RequirementTermUse::Variable { semantic_id, .. }
+                        | RequirementTermUse::Group { semantic_id, .. } => {
+                            written.extend(self.written_group_or_row(
+                                module.id,
+                                *semantic_id,
+                                term,
+                            ));
+                        }
+                    }
+                }
+                let written: Vec<&str> = written.iter().map(String::as_str).collect();
+                let row = &self.needs_rows[contract.needs.raw() as usize];
+                // `main`'s root check (E5002) already reports a need the runner
+                // does not close, which listing it would not fix.
+                let is_main = declaration.public && declaration.name.text == "main";
+                let mut conflicted: Vec<&str> = Vec::new();
+                for need in &row.entries {
+                    // Rows keep one entry per name and interface, so two entries
+                    // under one name are a conflict to report, not two to add.
+                    let others: Vec<&Need> = row
+                        .entries
+                        .iter()
+                        .filter(|other| {
+                            other.lexical_name == need.lexical_name
+                                && other.interface != need.interface
+                        })
+                        .collect();
+                    if !others.is_empty() {
+                        if !conflicted.contains(&need.lexical_name.as_str()) {
+                            conflicted.push(&need.lexical_name);
+                            let interfaces = std::iter::once(need)
+                                .chain(others)
+                                .map(|entry| format!("`{}`", self.format_type(entry.interface)))
+                                .collect::<Vec<_>>()
+                                .join(" and ");
+                            findings.push((
+                                module.source.file_id(),
+                                declaration.name.range,
+                                "T4103",
+                                format!(
+                                    "{} reaches the need `{}` as {interfaces}; one name needs \
+                                     one interface",
+                                    declaration.name.text, need.lexical_name
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
+                    if need.explained
+                        || written.contains(&need.lexical_name.as_str())
+                        || (is_main && !self.runner_closes(need))
+                        || matches!(
+                            self.types[self.resolve_type_id(need.interface).raw() as usize],
+                            CanonicalType::Poison
+                        )
+                    {
+                        continue;
+                    }
+                    findings.push((
+                        module.source.file_id(),
+                        declaration.name.range,
+                        "T4204",
+                        format!(
+                            "{} writes its needs, so the list must be complete: add `{}: {}`, \
+                             which its body reaches",
+                            declaration.name.text,
+                            need.lexical_name,
+                            self.format_type(need.interface)
+                        ),
+                    ));
+                }
+                for parameter in &row.parameters {
+                    let parameter = self.resolved.symbol(*parameter);
+                    let owned = parameter.module_id == Some(module.id)
+                        && parameter.semantic_id == Some(declaration.semantic_id);
+                    if owned && !written.contains(&parameter.name.as_str()) {
+                        findings.push((
+                            module.source.file_id(),
+                            declaration.name.range,
+                            "T4204",
+                            format!(
+                                "{} writes its needs, so the list must be complete: add the \
+                                 row `{}`, which its body reaches",
+                                declaration.name.text, parameter.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for (file_id, range, code, message) in findings {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Type,
+                code,
+                file_id,
+                range,
+                message,
+            ));
+        }
+    }
+
+    /// The names a `Variable` or `Group` term writes: a group's entries, or the
+    /// generic row parameter's own name.
+    fn written_group_or_row(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        term: &RequirementTermUse,
+    ) -> Vec<String> {
+        let resolved = self
+            .resolved
+            .reference_resolution(module_id, semantic_id, Namespace::Type);
+        if let Some(ReferenceResolution::Resolved(symbol)) = resolved {
+            let symbol = self.resolved.symbol(symbol);
+            if symbol.kind == ProjectSymbolKind::NeedsGroup {
+                return crate::resolution::needs_group_declaration(&self.resolved.semantic, symbol)
+                    .map(|row| {
+                        row.terms
+                            .iter()
+                            .filter_map(|term| match term {
+                                RequirementTermUse::Field { name, .. } => Some(name.text.clone()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+        }
+        match term {
+            RequirementTermUse::Variable { name, .. } => vec![name.text.clone()],
+            _ => Vec::new(),
         }
     }
 
@@ -1537,6 +1721,15 @@ struct ProjectTypeChecker {
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
     bounded_inference_variables: HashSet<u32>,
+    /// Needs groups being expanded, so a group reached again through one of its
+    /// own entries' function types is reported (`T4104`, once per group)
+    /// instead of recursing.
+    expanding_groups: HashSet<SymbolId>,
+    cyclic_groups: HashSet<SymbolId>,
+    /// The type each type alias names, once lowered.
+    alias_types: HashMap<SymbolId, TypeId>,
+    /// Aliases whose type is being lowered, so a cycle of aliases stops.
+    aliases_in_progress: HashSet<SymbolId>,
 }
 
 #[derive(Clone, Debug)]
@@ -1756,6 +1949,8 @@ impl ProjectTypeChecker {
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
             generic_requirements: HashMap::new(),
             property_checks: Vec::new(),
             expression_site: None,
@@ -1773,6 +1968,8 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            alias_types: HashMap::new(),
+            aliases_in_progress: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -2795,6 +2992,10 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
+            alias_types: HashMap::new(),
+            aliases_in_progress: HashSet::new(),
         }
     }
 
@@ -2907,6 +3108,7 @@ impl ProjectTypeChecker {
         typed.expression_value_properties = capability_report.expression_properties;
         typed.diagnostics.extend(capability_report.diagnostics);
         typed.validate_closed_roots();
+        typed.validate_written_needs(body_modules);
         typed.validate_test_roots();
         typed.diagnostics.sort_by_key(|diagnostic| {
             (
@@ -3093,12 +3295,20 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), declared);
                 }
             }
+            ModuleDeclarationKind::TypeAlias => self.check_type_alias(module_id, declaration),
             ModuleDeclarationKind::ProcessName => {
                 if let Some(annotation) = &declaration.annotation {
                     let message = self.lower_value_type(module_id, annotation, &generic_symbols);
                     let address = self.process_name_type(message);
                     self.declaration_types
                         .insert((module_id, declaration.semantic_id), address);
+                }
+            }
+            // Lowered for its own diagnostics (an entry named twice is `T4103`);
+            // each use expands it again where the clause is lowered.
+            ModuleDeclarationKind::NeedsGroup => {
+                if let Some(row) = &declaration.needs_group {
+                    self.lower_needs_row(module_id, row, &generic_symbols);
                 }
             }
         }
@@ -3237,7 +3447,9 @@ impl ProjectTypeChecker {
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
-            | ModuleDeclarationKind::ProcessName => false,
+            | ModuleDeclarationKind::TypeAlias
+            | ModuleDeclarationKind::ProcessName
+            | ModuleDeclarationKind::NeedsGroup => false,
         }
     }
 
@@ -3591,6 +3803,9 @@ impl ProjectTypeChecker {
                         failures: FailureRowId::new(0),
                         needs,
                     }
+                } else if self.is_struct_constructor(symbol) {
+                    self.reject_constructor_value(module_id, symbol, expression_range(expression));
+                    self.poison_expression_fact()
                 } else if self.is_builtin_value(symbol, "Success")
                     || self.is_builtin_value(symbol, "Failure")
                 {
@@ -3668,11 +3883,55 @@ impl ProjectTypeChecker {
                 callee,
                 arguments,
                 range,
+                form,
                 ..
             } => {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
-                let labelled_order =
-                    self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
+                // Lowering orders a literal by the written name alone, so the
+                // name must still resolve to the module's own struct here: a
+                // local or parameter of that name is not one.
+                let builds_own_struct = |checker: &Self| {
+                    callee_symbol.is_some_and(|symbol| {
+                        checker.is_struct_constructor(symbol)
+                            && checker.resolved.symbol(symbol).module_id == Some(module_id)
+                    })
+                };
+                if *form == (CallForm::Fields { ordered: false })
+                    || (*form == (CallForm::Fields { ordered: true }) && !builds_own_struct(self))
+                {
+                    return self.infer_unordered_fields(
+                        module_id,
+                        callee,
+                        callee_symbol,
+                        arguments,
+                        generics,
+                        bindings,
+                    );
+                }
+                let directly_named = matches!(
+                    callee.as_ref(),
+                    ModuleExpression::Name { .. } | ModuleExpression::Select { .. }
+                );
+                if *form == CallForm::Positional
+                    && directly_named
+                    && let Some(constructor) =
+                        callee_symbol.filter(|symbol| self.is_struct_constructor(*symbol))
+                    && arguments.iter().all(|argument| argument.label.is_none())
+                {
+                    self.reject_positional_construction(
+                        module_id, constructor, callee, arguments, *range,
+                    );
+                    // The construction is rejected as written; its arity and
+                    // field types are not checked again.
+                    return self.infer_rejected_fields(module_id, arguments, generics, bindings);
+                }
+                let labelled_order = self.reject_argument_labels(
+                    module_id,
+                    callee,
+                    callee_symbol,
+                    arguments,
+                    *range,
+                );
                 self.reject_empty_event_list(module_id, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
@@ -5106,10 +5365,44 @@ impl ProjectTypeChecker {
                 }
             }
             Pattern::Constructor {
-                arguments, range, ..
-            } => self.normalize_constructor_pattern(
-                module_id, pattern, arguments, *range, expected, context, bindings,
-            ),
+                arguments,
+                range,
+                form,
+                ..
+            } => {
+                if *form == (CallForm::Fields { ordered: false }) {
+                    self.reject_unordered_field_pattern(module_id, pattern, *range);
+                    for argument in arguments {
+                        self.normalize_pattern(
+                            module_id,
+                            argument,
+                            TypeId::new(0),
+                            PatternContext {
+                                nested: true,
+                                ..context
+                            },
+                            bindings,
+                        );
+                    }
+                    // The rejected pattern covers its whole constructor, as a
+                    // pattern with the wrong field count does, so the rejection
+                    // causes no coverage follow-ons.
+                    let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+                        return MatchPattern::Wildcard;
+                    };
+                    let arity = self.fields.get(&constructor).map_or(0, Vec::len);
+                    return MatchPattern::Constructor {
+                        tag: MatchTag::EnumVariant(constructor),
+                        fields: vec![MatchPattern::Wildcard; arity],
+                    };
+                }
+                if *form == CallForm::Positional {
+                    self.reject_positional_struct_pattern(module_id, pattern, arguments, *range);
+                }
+                self.normalize_constructor_pattern(
+                    module_id, pattern, arguments, *range, expected, context, bindings,
+                )
+            }
         }
     }
 
@@ -6660,7 +6953,22 @@ impl ProjectTypeChecker {
                     MatchTag::Rejected(_) => "_".to_owned(),
                     MatchTag::Tuple(_) => String::new(),
                 };
-                if fields.is_empty() {
+                let struct_fields = match tag {
+                    MatchTag::EnumVariant(symbol) if self.is_struct_constructor(*symbol) => {
+                        self.fields.get(symbol)
+                    }
+                    _ => None,
+                };
+                if let Some(declared) = struct_fields {
+                    struct_literals::braced(
+                        &name,
+                        declared
+                            .iter()
+                            .zip(join(fields))
+                            .map(|(field, pattern)| format!("{}: {pattern}", field.name))
+                            .collect(),
+                    )
+                } else if fields.is_empty() {
                     name
                 } else {
                     format!("{name}({})", join(fields).join(", "))
@@ -8344,6 +8652,11 @@ impl ProjectTypeChecker {
                     (Some(_), Some(symbol)) if self.is_failure_variant(symbol) => {
                         self.variant_failure_set_type(symbol)
                     }
+                    (Some(name), Some(symbol))
+                        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::TypeAlias =>
+                    {
+                        self.alias_use_type(module_id, symbol, name, arguments)
+                    }
                     (Some(name), Some(symbol)) => {
                         let kind = self.resolved.symbol(symbol).kind;
                         if kind == ProjectSymbolKind::GenericParameter {
@@ -8564,49 +8877,41 @@ impl ProjectTypeChecker {
         let mut parameters = Vec::new();
         for term in &row.terms {
             match term {
-                RequirementTermUse::Variable { name, .. } => {
+                RequirementTermUse::Variable { semantic_id, name } => {
                     if let Some(symbol) = generics.get(&name.text).copied() {
                         self.constrain_generic(module_id, symbol, GenericKind::NeedsRow, name);
                         parameters.push(symbol);
+                    } else {
+                        self.expand_needs_group(module_id, *semantic_id, name, &mut entries);
                     }
+                }
+                RequirementTermUse::Group { semantic_id, path } => {
+                    self.expand_needs_group(module_id, *semantic_id, &path[1], &mut entries);
                 }
                 RequirementTermUse::Field {
                     semantic_id,
                     name,
                     interface,
                 } => {
-                    let Some(requirement) = self.find_symbol(
-                        module_id,
-                        Some(*semantic_id),
-                        ProjectSymbolKind::Requirement,
-                        &name.text,
-                    ) else {
+                    // A name an earlier term bound has no symbol of its own here.
+                    let Some(requirement) = self
+                        .find_symbol(
+                            module_id,
+                            Some(*semantic_id),
+                            ProjectSymbolKind::Requirement,
+                            &name.text,
+                        )
+                        .or_else(|| {
+                            entries
+                                .iter()
+                                .find(|entry| entry.lexical_name == name.text)
+                                .map(|entry| entry.requirement)
+                        })
+                    else {
                         continue;
                     };
                     let interface = self.lower_value_type(module_id, interface, generics);
-                    if let Some(existing) = entries
-                        .iter()
-                        .find(|entry: &&Need| entry.lexical_name == name.text)
-                    {
-                        if existing.interface != interface {
-                            self.type_error(
-                                module_id,
-                                "T4103",
-                                name,
-                                format!(
-                                    "requirement `{}` names incompatible interface types",
-                                    name.text
-                                ),
-                            );
-                        }
-                        continue;
-                    }
-                    entries.push(Need {
-                        requirement,
-                        lexical_name: name.text.clone(),
-                        interface,
-                        explained: false,
-                    });
+                    self.add_need(module_id, &mut entries, requirement, name, interface);
                 }
             }
         }
@@ -8617,6 +8922,128 @@ impl ProjectTypeChecker {
             entries,
             parameters,
         })
+    }
+
+    /// Adds one need to a row being lowered; a second entry under the same name
+    /// must name the same interface (`T4103`).
+    fn add_need(
+        &mut self,
+        module_id: ModuleId,
+        entries: &mut Vec<Need>,
+        requirement: SymbolId,
+        name: &crate::semantic::Name,
+        interface: TypeId,
+    ) {
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry: &&Need| entry.lexical_name == name.text)
+        {
+            if existing.interface != interface {
+                self.type_error(
+                    module_id,
+                    "T4103",
+                    name,
+                    format!(
+                        "requirement `{}` names incompatible interface types",
+                        name.text
+                    ),
+                );
+            }
+            return;
+        }
+        entries.push(Need {
+            requirement,
+            lexical_name: name.text.clone(),
+            interface,
+            explained: false,
+        });
+    }
+
+    /// A needs group written in a clause is only a name for its entries
+    /// (decisions.md, 2026-11-22): each entry is added as if written there, its
+    /// interface read in the group's own module, and bound in the body to the
+    /// requirement resolution gave the term. A conflict with another term is
+    /// reported at the term (`at`); one inside the group is its declaration's.
+    fn expand_needs_group(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        at: &crate::semantic::Name,
+        entries: &mut Vec<Need>,
+    ) {
+        let Some(group) = self.resolved_type_symbol(module_id, semantic_id) else {
+            return;
+        };
+        let group_symbol = self.resolved.symbol(group).clone();
+        if group_symbol.kind != ProjectSymbolKind::NeedsGroup {
+            return;
+        }
+        let Some(group_module) = group_symbol.module_id else {
+            return;
+        };
+        let Some(row) =
+            crate::resolution::needs_group_declaration(&self.resolved.semantic, &group_symbol)
+                .cloned()
+        else {
+            return;
+        };
+        if !self.expanding_groups.insert(group) {
+            if !self.cyclic_groups.insert(group) {
+                return;
+            }
+            self.type_error(
+                module_id,
+                "T4104",
+                at,
+                format!(
+                    "needs group `{}` reaches itself through an entry's function type",
+                    group_symbol.name
+                ),
+            );
+            return;
+        }
+        let no_generics = HashMap::new();
+        let mut group_entries: Vec<(SymbolId, String, TypeId)> = Vec::new();
+        for term in &row.terms {
+            let RequirementTermUse::Field {
+                semantic_id: entry_id,
+                name,
+                interface,
+            } = term
+            else {
+                continue;
+            };
+            let requirement = self
+                .find_symbol(
+                    module_id,
+                    Some(semantic_id),
+                    ProjectSymbolKind::Requirement,
+                    &name.text,
+                )
+                .or_else(|| {
+                    self.find_symbol(
+                        group_module,
+                        Some(*entry_id),
+                        ProjectSymbolKind::Requirement,
+                        &name.text,
+                    )
+                });
+            let Some(requirement) = requirement else {
+                continue;
+            };
+            let interface = self.lower_value_type(group_module, interface, &no_generics);
+            if !group_entries.iter().any(|(_, entry, _)| *entry == name.text) {
+                group_entries.push((requirement, name.text.clone(), interface));
+            }
+        }
+        self.expanding_groups.remove(&group);
+        for (requirement, text, interface) in group_entries {
+            let name = crate::semantic::Name {
+                text,
+                range: at.range,
+            };
+            self.add_need(module_id, entries, requirement, &name, interface);
+        }
     }
 
     fn builtin_type(&mut self, name: &str) -> TypeId {
@@ -9189,6 +9616,7 @@ impl ProjectTypeChecker {
         callee: &ModuleExpression,
         callee_symbol: Option<SymbolId>,
         arguments: &[crate::semantic::CallArgument],
+        range: TextRange,
     ) -> Option<Vec<usize>> {
         let first_label = arguments
             .iter()
@@ -9231,6 +9659,44 @@ impl ProjectTypeChecker {
             .source
             .text();
         let slice = |range: TextRange| &source[range.start() as usize..range.end() as usize];
+        // A struct is built by field name: the labels already name the fields,
+        // so braces in place of the parentheses are the fix.
+        if callee_symbol.is_some_and(|symbol| self.is_struct_constructor(symbol)) {
+            let labelled = arguments
+                .iter()
+                .map(|argument| {
+                    argument
+                        .label
+                        .as_ref()
+                        .map(|label| format!("{}: {}", label.text, slice(argument.value.range())))
+                })
+                .collect::<Option<Vec<_>>>();
+            let mut diagnostic = Diagnostic::error(
+                DiagnosticStage::Type,
+                "T4216",
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .source
+                    .file_id(),
+                range,
+                format!(
+                    "a struct is built by field name in braces: `{} {{ field: value, ... }}`",
+                    slice(callee.range())
+                ),
+            );
+            if let Some(labelled) = labelled
+                && range.start() == callee.range().start()
+            {
+                let literal = format!("{} {{ {} }}", slice(callee.range()), labelled.join(", "));
+                let literal = if struct_literals::in_case_subject(source, range) {
+                    format!("({literal})")
+                } else {
+                    literal
+                };
+                diagnostic = diagnostic.with_fix(range, literal);
+            }
+            self.push_type_diagnostic(diagnostic);
+            return order;
+        }
         let message = match &order {
             Some(order) => format!(
                 "Chimi arguments are positional; write `{}({})`",
@@ -11111,6 +11577,8 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
             ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
+            ModuleDeclarationKind::NeedsGroup => ProjectSymbolKind::NeedsGroup,
+            ModuleDeclarationKind::TypeAlias => ProjectSymbolKind::TypeAlias,
         };
         self.find_symbol(
             module_id,

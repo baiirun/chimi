@@ -248,6 +248,8 @@ pub(crate) enum NodeKind {
     InterfaceDeclaration,
     /// `[pub] native type Name<...>`: an opaque type the runtime represents.
     NativeTypeDeclaration,
+    /// `[pub] type Name = Type`: another name for an existing type.
+    TypeAliasDeclaration,
     Field,
     Variant,
     NamedTypeField,
@@ -272,6 +274,10 @@ pub(crate) enum NodeKind {
     /// `[pub] process name <identifier>: <Message>`. `process` and `name` are
     /// contextual words, recognised only at module item position.
     ProcessNameDeclaration,
+    /// `[pub] needs <Name> { <name>: <Interface>, ... }`: a named group of needs.
+    NeedsGroupDeclaration,
+    /// `Alias.Group` naming another module's needs group inside a needs clause.
+    RequirementGroupName,
     /// `test "<name>" { <block> }`. `test` is a contextual word, recognised only at
     /// module item position when a text literal follows it.
     TestDeclaration,
@@ -298,6 +304,8 @@ pub(crate) enum NodeKind {
     ListExpression,
     RecordExpression,
     RecordField,
+    /// `field: pattern` inside a struct pattern `Name { field: pattern, .. }`.
+    FieldPattern,
     BlockExpression,
     BlockItem,
     CaseExpression,
@@ -330,6 +338,7 @@ impl NodeKind {
             Self::EnumDeclaration => "enum_declaration",
             Self::InterfaceDeclaration => "interface_declaration",
             Self::NativeTypeDeclaration => "native_type_declaration",
+            Self::TypeAliasDeclaration => "type_alias_declaration",
             Self::Field => "field",
             Self::Variant => "variant",
             Self::NamedTypeField => "named_type_field",
@@ -350,6 +359,8 @@ impl NodeKind {
             Self::LetBinding => "let_binding",
             Self::ConstDeclaration => "const_declaration",
             Self::ProcessNameDeclaration => "process_name_declaration",
+            Self::NeedsGroupDeclaration => "needs_group_declaration",
+            Self::RequirementGroupName => "requirement_group_name",
             Self::TestDeclaration => "test_declaration",
             Self::InterpolatedText => "interpolated_text",
             Self::UsingExpression => "using_expression",
@@ -370,6 +381,7 @@ impl NodeKind {
             Self::ListExpression => "list_expression",
             Self::RecordExpression => "record_expression",
             Self::RecordField => "record_field",
+            Self::FieldPattern => "field_pattern",
             Self::BlockExpression => "block_expression",
             Self::BlockItem => "block_item",
             Self::CaseExpression => "case_expression",
@@ -1400,6 +1412,12 @@ struct Parser<'source> {
     next_raw: usize,
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
+    /// Whether `Name { field: value }` may be read as a struct literal here. It
+    /// is not in a `case` subject, where the `{` opens arms that may start with
+    /// a typed binding `name: Type`; brackets around an expression allow it
+    /// again. A block cannot start with `name:`, so the start value of a `loop`
+    /// and a clause guard before a function body may end in a struct literal.
+    struct_literals: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -1421,7 +1439,34 @@ impl<'source> Parser<'source> {
             next_raw: 0,
             events: Vec::new(),
             diagnostics,
+            struct_literals: true,
         }
+    }
+
+    /// Runs `parse` with struct literals allowed or not, then restores the
+    /// surrounding setting.
+    fn with_struct_literals(&mut self, allowed: bool, parse: impl FnOnce(&mut Self)) {
+        let surrounding = std::mem::replace(&mut self.struct_literals, allowed);
+        parse(self);
+        self.struct_literals = surrounding;
+    }
+
+    /// Whether the `{` at the current position starts the fields of a struct
+    /// literal: `{` followed, after any line breaks, by `field:`, `..` or the
+    /// `}` of a struct with no fields. Empty braces are no block or record, so
+    /// `Name {}` is never anything else.
+    fn at_struct_fields(&self) -> bool {
+        if !self.struct_literals || !self.at(TokenKind::LeftBrace) {
+            return false;
+        }
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        self.kind_at(position) == TokenKind::DotDot
+            || self.kind_at(position) == TokenKind::RightBrace
+            || (self.kind_at(position) == TokenKind::Identifier
+                && self.kind_at(position + 1) == TokenKind::Colon)
     }
 
     fn parse(mut self) -> ParseResult {
@@ -1431,9 +1476,11 @@ impl<'source> Parser<'source> {
             let before = self.position;
             match self.kind() {
                 TokenKind::Import => self.parse_import(),
-                TokenKind::Pub | TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
-                    self.parse_declaration()
-                }
+                TokenKind::Pub
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Needs => self.parse_declaration(),
                 TokenKind::Identifier if self.process_name_starts_at(self.position) => {
                     self.parse_process_name_declaration()
                 }
@@ -1443,6 +1490,9 @@ impl<'source> Parser<'source> {
                 TokenKind::Fn if self.fn_starts_declaration() => self.parse_declaration(),
                 TokenKind::Identifier if self.native_declaration_starts_at(self.position) => {
                     self.parse_declaration()
+                }
+                TokenKind::Identifier if self.type_alias_starts_at(self.position) => {
+                    self.parse_type_alias()
                 }
                 TokenKind::Const => self.parse_const_declaration(),
                 TokenKind::Let => self.parse_let_binding(),
@@ -1482,31 +1532,39 @@ impl<'source> Parser<'source> {
             self.bump();
             self.expect(TokenKind::Identifier);
             self.finish();
-        } else if self.at(TokenKind::Dot) {
-            self.start(NodeKind::ImportMembers);
-            self.bump();
-            self.expect(TokenKind::LeftBrace);
-            self.skip_newlines();
-            if self.at(TokenKind::RightBrace) {
-                self.error_at_current("member imports must name at least one type or constructor");
-            } else {
-                self.parse_import_member();
-                while self.accept(TokenKind::Comma) {
-                    self.skip_newlines();
-                    if self.at(TokenKind::RightBrace) {
-                        break;
-                    }
-                    self.parse_import_member();
-                }
+            // `import std/clock as Clock.{Clock, Instant}` binds both at once.
+            if self.at(TokenKind::Dot) {
+                self.parse_import_members();
             }
-            self.skip_newlines();
-            self.expect(TokenKind::RightBrace);
-            self.finish();
+        } else if self.at(TokenKind::Dot) {
+            self.parse_import_members();
         } else {
             self.error_at_current(
                 "module imports require an explicit alias with `as` or an explicit member list",
             );
         }
+        self.finish();
+    }
+
+    fn parse_import_members(&mut self) {
+        self.start(NodeKind::ImportMembers);
+        self.bump();
+        self.expect(TokenKind::LeftBrace);
+        self.skip_newlines();
+        if self.at(TokenKind::RightBrace) {
+            self.error_at_current("member imports must name at least one type or constructor");
+        } else {
+            self.parse_import_member();
+            while self.accept(TokenKind::Comma) {
+                self.skip_newlines();
+                if self.at(TokenKind::RightBrace) {
+                    break;
+                }
+                self.parse_import_member();
+            }
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
         self.finish();
     }
 
@@ -1528,11 +1586,13 @@ impl<'source> Parser<'source> {
             Some((NodeKind::FunctionDeclaration, TokenKind::Fn)) => self.parse_function(),
             Some((NodeKind::ConstDeclaration, TokenKind::Const)) => self.parse_const_declaration(),
             Some((NodeKind::ProcessNameDeclaration, _)) => self.parse_process_name_declaration(),
+            Some((NodeKind::NeedsGroupDeclaration, _)) => self.parse_needs_group_declaration(),
             Some((NodeKind::TestDeclaration, _)) => self.parse_test_declaration(),
             Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
+            Some((NodeKind::TypeAliasDeclaration, _)) => self.parse_type_alias(),
             _ => self.error_and_bump(
-                "expected `struct`, `enum`, `interface`, `fn`, `const`, or `process name` after \
-                 `pub`",
+                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, `needs`, or `process name` \
+                 after `pub`",
             ),
         }
     }
@@ -1551,11 +1611,15 @@ impl<'source> Parser<'source> {
             TokenKind::Interface => Some((NodeKind::InterfaceDeclaration, TokenKind::Interface)),
             TokenKind::Fn => Some((NodeKind::FunctionDeclaration, TokenKind::Fn)),
             TokenKind::Const => Some((NodeKind::ConstDeclaration, TokenKind::Const)),
+            TokenKind::Needs => Some((NodeKind::NeedsGroupDeclaration, TokenKind::Needs)),
             TokenKind::Identifier if self.native_starts_at(index) => {
                 Some((NodeKind::FunctionDeclaration, TokenKind::Fn))
             }
             TokenKind::Identifier if self.native_type_starts_at(index) => {
                 Some((NodeKind::NativeTypeDeclaration, TokenKind::Identifier))
+            }
+            TokenKind::Identifier if self.type_alias_starts_at(index) => {
+                Some((NodeKind::TypeAliasDeclaration, TokenKind::Identifier))
             }
             TokenKind::Identifier if self.process_name_starts_at(index) => {
                 Some((NodeKind::ProcessNameDeclaration, TokenKind::Identifier))
@@ -1784,6 +1848,33 @@ impl<'source> Parser<'source> {
             && text_at(index) == Some("native")
             && self.kind_at(index + 1) == TokenKind::Identifier
             && text_at(index + 1) == Some("type")
+    }
+
+    /// Whether `type Name` starts at significant token `index`. `type` is read
+    /// only there, so a value or module named `type` is unaffected.
+    fn type_alias_starts_at(&self, index: usize) -> bool {
+        self.kind_at(index) == TokenKind::Identifier
+            && self
+                .significant
+                .get(index)
+                .is_some_and(|raw| &*self.tokens[*raw].text == "type")
+            && self.kind_at(index + 1) == TokenKind::Identifier
+    }
+
+    /// Parses `[pub] type Name<...> = Type`. Requires: `type_alias_starts_at`
+    /// holds after the optional `pub`. Ensures: one `TypeAliasDeclaration` with
+    /// the aliased `Type` as its only child type; generic parameters are kept for
+    /// lowering to report.
+    fn parse_type_alias(&mut self) {
+        self.start(NodeKind::TypeAliasDeclaration);
+        self.parse_visibility();
+        self.bump();
+        self.expect(TokenKind::Identifier);
+        self.parse_optional_generic_parameters();
+        self.expect(TokenKind::Equal);
+        self.skip_newlines();
+        self.parse_type();
+        self.finish();
     }
 
     fn native_declaration_starts_at(&self, index: usize) -> bool {
@@ -2055,9 +2146,21 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_requirement_atom(&mut self) {
+        if self.at(TokenKind::Identifier) && self.kind_at(self.position + 1) == TokenKind::Dot {
+            self.start(NodeKind::RequirementGroupName);
+            self.bump();
+            self.bump();
+            self.expect(TokenKind::Identifier);
+            self.finish();
+            return;
+        }
         if self.accept(TokenKind::Identifier) {
             return;
         }
+        self.parse_requirement_atom_record();
+    }
+
+    fn parse_requirement_atom_record(&mut self) {
         self.start(NodeKind::RequirementRecord);
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();
@@ -2113,6 +2216,17 @@ impl<'source> Parser<'source> {
 
     /// Parses `[pub] process name <identifier>: <type>`.
     /// Requires: `process_name_starts_at` holds after the optional `pub`.
+    /// Parses `[pub] needs <Name> { <name>: <Interface>, ... }`.
+    fn parse_needs_group_declaration(&mut self) {
+        self.start(NodeKind::NeedsGroupDeclaration);
+        self.parse_visibility();
+        self.expect(TokenKind::Needs);
+        self.expect(TokenKind::Identifier);
+        self.skip_newlines();
+        self.parse_requirement_atom_record();
+        self.finish();
+    }
+
     fn parse_process_name_declaration(&mut self) {
         self.start(NodeKind::ProcessNameDeclaration);
         self.parse_visibility();
@@ -2458,6 +2572,8 @@ impl<'source> Parser<'source> {
 
     fn parse_postfix(&mut self) {
         let marker = self.placeholder();
+        // A struct literal's `{` follows a name or a qualified name only.
+        let mut names_a_type = self.at(TokenKind::Identifier);
         self.parse_primary();
         let mut wrapped = false;
         loop {
@@ -2474,7 +2590,15 @@ impl<'source> Parser<'source> {
                     self.complete(marker, NodeKind::PostfixExpression);
                     wrapped = true;
                 }
-                self.parse_call_suffix();
+                names_a_type = false;
+                self.with_struct_literals(true, Self::parse_call_suffix);
+            } else if names_a_type && self.at_struct_fields() {
+                if !wrapped {
+                    self.complete(marker, NodeKind::PostfixExpression);
+                    wrapped = true;
+                }
+                names_a_type = false;
+                self.parse_struct_fields();
             } else {
                 break;
             }
@@ -2533,14 +2657,16 @@ impl<'source> Parser<'source> {
                 self.bump();
                 self.finish();
             }
-            TokenKind::TextStart => self.parse_interpolated_text(),
-            TokenKind::LeftParen => self.parse_parenthesized(),
-            TokenKind::LeftBracket => self.parse_list(),
-            TokenKind::LeftBrace => self.parse_brace_expression(),
-            TokenKind::Case => self.parse_case(),
-            TokenKind::Loop => self.parse_loop(),
+            TokenKind::TextStart => {
+                self.with_struct_literals(true, Self::parse_interpolated_text);
+            }
+            TokenKind::LeftParen => self.with_struct_literals(true, Self::parse_parenthesized),
+            TokenKind::LeftBracket => self.with_struct_literals(true, Self::parse_list),
+            TokenKind::LeftBrace => self.with_struct_literals(true, Self::parse_brace_expression),
+            TokenKind::Case => self.with_struct_literals(true, Self::parse_case),
+            TokenKind::Loop => self.with_struct_literals(true, Self::parse_loop),
             TokenKind::Break => self.parse_break(),
-            TokenKind::Fn => self.parse_function_expression(),
+            TokenKind::Fn => self.with_struct_literals(true, Self::parse_function_expression),
             TokenKind::If => self.parse_unsupported_if(),
             _ => self.missing(TokenKind::Identifier, "expression"),
         }
@@ -2815,6 +2941,24 @@ impl<'source> Parser<'source> {
     /// Parses a record literal or a record update `{ ..base, field: value }`.
     /// Ensures: a leading `..base` is a `RecordSpread` child; a spread anywhere else is
     /// `S1001` and is still parsed as a `RecordSpread` so lowering sees the base.
+    /// The braces of a struct literal: a record's fields, or none for a struct
+    /// without fields (`Marker {}`).
+    fn parse_struct_fields(&mut self) {
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) != TokenKind::RightBrace {
+            self.parse_record();
+            return;
+        }
+        self.start(NodeKind::RecordExpression);
+        self.bump();
+        self.skip_newlines();
+        self.bump();
+        self.finish();
+    }
+
     fn parse_record(&mut self) {
         self.start(NodeKind::RecordExpression);
         let open = self.position;
@@ -2987,11 +3131,13 @@ impl<'source> Parser<'source> {
     fn parse_case(&mut self) {
         self.start(NodeKind::CaseExpression);
         self.bump();
-        self.parse_expression();
-        while self.accept(TokenKind::Comma) {
-            self.skip_newlines();
-            self.parse_expression();
-        }
+        self.with_struct_literals(false, |parser| {
+            parser.parse_expression();
+            while parser.accept(TokenKind::Comma) {
+                parser.skip_newlines();
+                parser.parse_expression();
+            }
+        });
         self.skip_newlines();
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();
@@ -3067,7 +3213,9 @@ impl<'source> Parser<'source> {
                     while self.accept(TokenKind::Dot) {
                         self.expect(TokenKind::Identifier);
                     }
-                    if self.accept(TokenKind::LeftParen) {
+                    if self.at(TokenKind::LeftBrace) {
+                        self.parse_struct_pattern_fields();
+                    } else if self.accept(TokenKind::LeftParen) {
                         self.skip_newlines();
                         if !self.at(TokenKind::RightParen) {
                             self.parse_pattern();
@@ -3101,6 +3249,35 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses the braces of a struct pattern `Name { field: pattern, .. }`.
+    /// Ensures: each `field: pattern` is a `FieldPattern` node holding the field
+    /// name and one `Pattern`; a `..` that matches the other fields is a direct
+    /// token. Lowering reports a misplaced or repeated `..`.
+    fn parse_struct_pattern_fields(&mut self) {
+        self.bump();
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            if self.at(TokenKind::DotDot) {
+                self.bump();
+            } else if self.at(TokenKind::Identifier) {
+                self.start(NodeKind::FieldPattern);
+                self.bump();
+                self.expect(TokenKind::Colon);
+                self.parse_pattern();
+                self.finish();
+            } else {
+                self.error_at_current("expected `field: pattern` or `..` in a struct pattern");
+                break;
+            }
+            if !self.accept(TokenKind::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
+    }
+
     /// Parses `: Type` after a binding name. A colon in a pattern always introduces a
     /// type; a colon followed by anything else is a labelled pattern, which is `S1001`
     /// because patterns are positional. The labelled pattern is still parsed so the
@@ -3114,7 +3291,7 @@ impl<'source> Parser<'source> {
             self.parse_type();
         } else {
             self.error_at_current(
-                "patterns are positional, as construction is; a colon in a pattern introduces a type, not a field label",
+                "a colon after a name in a pattern introduces a type; a struct's fields are matched by name in braces, `Name { field: pattern }`, and a variant's payload by position",
             );
             self.parse_pattern();
         }
@@ -3249,6 +3426,7 @@ impl<'source> Parser<'source> {
                 | TokenKind::Fn
                 | TokenKind::Let
                 | TokenKind::Const
+                | TokenKind::Needs
         )
     }
 
@@ -3576,7 +3754,6 @@ mod tests {
         assert_eq!(
             root_kinds,
             [
-                NodeKind::ImportDeclaration,
                 NodeKind::ImportDeclaration,
                 NodeKind::StructDeclaration,
                 NodeKind::EnumDeclaration,

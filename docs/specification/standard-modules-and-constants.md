@@ -49,10 +49,10 @@ pub struct Duration {
   nanoseconds: Int
 }
 
-pub const zero = Duration(0)
+pub const zero = Duration { nanoseconds: 0 }
 
 pub fn seconds(count: Int) -> Duration {
-  Duration(count * 1_000_000_000)
+  Duration { nanoseconds: count * 1_000_000_000 }
 }
 ```
 
@@ -361,9 +361,10 @@ a runtime one.
 
 - The standard tree MAY ship C bindings, for example `std/crypto` over a
   vendored hashing library.
-- A **vendored module** is a module of a package that the workspace manifest
-  lists as vendored and grants `native`. Packages and manifests are gap T5,
-  so until T5 exists only the standard tree can declare bindings.
+- No other package may declare bindings. Packages (T5, `packages.md`) carry
+  Chimi source only (decisions.md, 2026-11-22), so the vendored modules with a
+  `native` grant that this section once planned are deferred until a real
+  program needs one.
 - Application modules MUST NOT declare bindings (`N3101`), and a grant MUST
   NOT apply to a workspace's own application modules.
 
@@ -846,7 +847,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `S1102` | syntax | A `native fn` with a body, or `native` on a declaration other than `fn` or `type` |
 | `S1103` | syntax | `const` inside a block |
 | `L2101` | lowering | A module-level `let`; carries an edit to `const` |
-| `N3101` | name | A `native` declaration outside the standard tree or a vendored module with a `native` grant |
+| `N3101` | name | A `native` declaration outside the standard tree |
 | `N3102` | name | A workspace module whose path starts with `std/` |
 | `N3103` | name | An import of `std/internal/...` from outside the standard tree |
 | `N3104` | name | A `native fn` or `native type` with no registered operation or type |
@@ -878,7 +879,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `pub native fn write_stdout(...)` in `std/io` | `N3106` |
 | Importing `std/io` and naming `IO.system_console` | private symbol |
 | Root needs `Console`; runner supplies `std/io.system_console` | runs; trace shows host boundary |
-| `pub const zero = Duration(0)` used as `Duration.zero` from another module | compiles; value loaded from program data |
+| `pub const zero = Duration { nanoseconds: 0 }` used as `Duration.zero` from another module | compiles; value loaded from program data |
 | `import std/duration.{zero}` | member imports cannot bind values |
 | `let limit = 32` at module level | `L2101` with an edit to `const` |
 | `const limit = 32` inside a function body | `S1103` |
@@ -904,7 +905,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `"state: ${state}"` where `state` is an enum | `T4325` suggesting `Debug.render` |
 | `"${load(path)}"` where `load` returns `Text` and can fail | compiles; the failure joins the enclosing row |
 | `Debug.render(PaymentError.Declined("card"))` | `PaymentError.Declined("card")` |
-| `Debug.render(Money(2500))` | `Money { cents: 2500 }` |
+| `Debug.render(Money { cents: 2500 })` | `Money { cents: 2500 }` |
 | `Debug.render({ charge: fake_charge })` | `{ charge: <fn fake_charge> }` |
 | `Debug.render(receiver)` | `<Receiver>` |
 | A 1 MiB list escaping `main` as a failure payload | runner output truncated at 4096 bytes |

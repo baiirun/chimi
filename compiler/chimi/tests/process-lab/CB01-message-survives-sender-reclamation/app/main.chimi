@@ -26,10 +26,10 @@ struct Sum {
 }
 
 fn sum(values: List<Int>) -> Int {
-  loop state = Sum(values, 0) {
+  loop state = Sum { rest: values, total: 0 } {
     case state.rest {
       [] -> break state.total
-      [first, ..rest] -> Sum(rest, state.total + first)
+      [first, ..rest] -> Sum { rest: rest, total: state.total + first }
     }
   }
 }
@@ -151,7 +151,9 @@ fn numbers(base: Int) -> List<Int> {
   ]
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -169,10 +171,12 @@ fn ask(address: Address<Message>) -> Int {
   reply_value(received)
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let member = Process.spec(add_up, 1, Duration.seconds(1))
-    |> Process.register(summer)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(summer)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let passes = loop pass = 0 {
     case pass {

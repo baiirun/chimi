@@ -5,7 +5,7 @@ use crate::syntax::{
     self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind, ParseResult,
     StructDeclarationSyntax, SyntaxNode, SyntaxToken, TextEscape, TokenKind, TypedSyntaxNode,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -400,11 +400,14 @@ fn name_from(token: &SyntaxToken<'_>) -> Name {
     }
 }
 
+pub(crate) use crate::compiler::ModuleOrigin;
+
 #[derive(Debug)]
 pub(crate) struct ModuleSource {
     pub(crate) path: String,
     pub(crate) source: SourceSnapshot,
     pub(crate) syntax: Option<Arc<ParseResult>>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -432,10 +435,16 @@ pub(crate) enum ModuleDeclarationKind {
     /// `[pub] native type Name<...>`: an opaque type with no fields or
     /// constructors, bound to a runtime type of the operation registry.
     NativeType,
+    /// `[pub] type Name = Type`: another name for `annotation`, the same type
+    /// as what it names. It takes no generic parameters.
+    TypeAlias,
     /// `[pub] process name <identifier>: <Message>`: a module-level
     /// `Process.Address<Message>` with named routing. `annotation` holds the message
     /// type; there is no initializer.
     ProcessName,
+    /// `[pub] needs Name { ... }`: a name for a set of needs, written alone or
+    /// with `+` in a needs clause. `needs_group` holds its entries.
+    NeedsGroup,
 }
 
 #[derive(Clone, Debug)]
@@ -455,6 +464,8 @@ pub(crate) struct ModuleDeclaration {
     /// `name` is [`test_symbol_name`] of the test's name, which no source can spell,
     /// so code cannot reference it.
     pub(crate) test: bool,
+    /// A needs group's entries; `None` for every other declaration.
+    pub(crate) needs_group: Option<RequirementRowUse>,
 }
 
 /// The symbol name a test item's function carries: `test "<name>"`. It contains a
@@ -553,9 +564,16 @@ pub(crate) struct RequirementRowUse {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RequirementTermUse {
+    /// A bare name: a generic row parameter, or a needs group of this module or
+    /// member-imported. Resolution decides which.
     Variable {
         semantic_id: SemanticId,
         name: Name,
+    },
+    /// `Alias.Group`: another module's needs group.
+    Group {
+        semantic_id: SemanticId,
+        path: Vec<Name>,
     },
     Field {
         semantic_id: SemanticId,
@@ -585,13 +603,18 @@ pub(crate) enum Pattern {
         literal: PatternLiteral,
         range: TextRange,
     },
-    /// `None`, `Circle(radius)`, or `Value.Text(schema)`: a constructor path and its
-    /// payload patterns by position.
+    /// `None`, `Circle(radius)`, `Value.Text(schema)` or `Money { cents: c }`:
+    /// a constructor path and its payload patterns. With `Positional` or
+    /// `Fields { ordered: true }` the arguments are by position (lowering put a
+    /// struct pattern's fields in declaration order); with `Fields { ordered:
+    /// false }` they are the written field patterns, already reported for a
+    /// struct of the module.
     Constructor {
         semantic_id: SemanticId,
         path: Vec<Name>,
         arguments: Vec<Pattern>,
         range: TextRange,
+        form: CallForm,
     },
     /// `name: Type` or `_: Type`. Over an ordinary value the type is an annotation;
     /// over a failure-set value it selects the members of that type.
@@ -734,6 +757,7 @@ pub(crate) enum ModuleExpression {
         callee: Box<Self>,
         arguments: Vec<CallArgument>,
         range: TextRange,
+        form: CallForm,
     },
     List {
         semantic_id: SemanticId,
@@ -905,6 +929,19 @@ impl ModuleExpression {
     }
 }
 
+/// How a call was written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallForm {
+    /// `f(a, b)`, or the call a pipeline makes.
+    Positional,
+    /// `Name { field: value, ... }`. When `ordered`, lowering found `Name` among
+    /// its module's structs with every field named once, and the arguments are
+    /// the field values in declaration order with no labels. Otherwise the
+    /// arguments keep their labels in source order: for a struct of the module,
+    /// lowering has reported why, and typing reports any other callee.
+    Fields { ordered: bool },
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CallArgument {
     pub(crate) label: Option<Name>,
@@ -1023,6 +1060,7 @@ pub(crate) struct SemanticModule {
     pub(crate) imports: Vec<ModuleImport>,
     pub(crate) declarations: Vec<ModuleDeclaration>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) origin: ModuleOrigin,
 }
 
 #[derive(Debug)]
@@ -1067,6 +1105,7 @@ pub(crate) fn lower_project(mut inputs: Vec<ModuleSource>) -> SemanticProject {
                 input.path,
                 input.source,
                 syntax,
+                input.origin,
             )
         })
         .collect();
@@ -1078,22 +1117,31 @@ pub(crate) fn lower_module(
     path: String,
     mut source: SourceSnapshot,
     syntax: Arc<ParseResult>,
+    origin: ModuleOrigin,
 ) -> Arc<SemanticModule> {
     source.assign_file_id(FileId::new(id.raw()));
-    Arc::new(ProjectLowerer::lower(id, path, source, syntax))
+    let mut module = ProjectLowerer::lower(id, path, source, syntax);
+    // A dependency's tests are its own package's concern: `chimi test` runs
+    // only the entry package's (packages.md, "Commands").
+    if origin == ModuleOrigin::Dependency {
+        module.declarations.retain(|declaration| !declaration.test);
+    }
+    module.origin = origin;
+    Arc::new(module)
 }
 
 pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
     let mut lowerer = ProjectLowerer {
         next_semantic_id: 0,
         diagnostics: Vec::new(),
+        struct_fields: HashMap::new(),
     };
     parsed
         .root()
         .child_nodes()
         .into_iter()
         .filter(|node| node.kind() == NodeKind::ImportDeclaration)
-        .map(|node| lowerer.lower_import(&node))
+        .flat_map(|node| lowerer.lower_import(&node))
         .collect()
 }
 
@@ -1101,6 +1149,9 @@ struct ProjectLowerer {
     next_semantic_id: u32,
     /// Literal diagnostics (`S1002`, `S1003`), with a placeholder file id until the module is done.
     diagnostics: Vec<Diagnostic>,
+    /// The field names of each struct the module declares, in declaration order,
+    /// so a struct literal can lower to its constructor call.
+    struct_fields: HashMap<String, Vec<String>>,
 }
 
 impl ProjectLowerer {
@@ -1115,6 +1166,7 @@ impl ProjectLowerer {
         let mut lowerer = Self {
             next_semantic_id: 0,
             diagnostics: Vec::new(),
+            struct_fields: struct_field_names(&root),
         };
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
@@ -1170,7 +1222,7 @@ impl ProjectLowerer {
             }
             let node = node.clone();
             match node.kind() {
-                NodeKind::ImportDeclaration => imports.push(lowerer.lower_import(&node)),
+                NodeKind::ImportDeclaration => imports.extend(lowerer.lower_import(&node)),
                 NodeKind::StructDeclaration
                 | NodeKind::EnumDeclaration
                 | NodeKind::InterfaceDeclaration
@@ -1186,6 +1238,16 @@ impl ProjectLowerer {
                 }
                 NodeKind::ProcessNameDeclaration => {
                     if let Some(declaration) = lowerer.lower_process_name(&node) {
+                        declarations.push(declaration);
+                    }
+                }
+                NodeKind::NeedsGroupDeclaration => {
+                    if let Some(declaration) = lowerer.lower_needs_group(&node) {
+                        declarations.push(declaration);
+                    }
+                }
+                NodeKind::TypeAliasDeclaration => {
+                    if let Some(declaration) = lowerer.lower_type_alias(&node) {
                         declarations.push(declaration);
                     }
                 }
@@ -1235,10 +1297,14 @@ impl ProjectLowerer {
             imports,
             declarations,
             diagnostics,
+            origin: ModuleOrigin::Own,
         }
     }
 
-    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> ModuleImport {
+    /// One import line lowers to one binding per form it writes: the combined
+    /// `import std/clock as Clock.{Clock, Instant}` gives an alias and a member
+    /// binding with the same path and range, exactly as the two-line form does.
+    fn lower_import(&mut self, node: &SyntaxNode<'_>) -> Vec<ModuleImport> {
         let path = node
             .child_tokens()
             .into_iter()
@@ -1246,10 +1312,11 @@ impl ProjectLowerer {
             .map(|token| token.text().to_owned())
             .collect::<Vec<_>>()
             .join("/");
-        let binding = node
+        let range = significant_range(node);
+        let bindings: Vec<ImportBinding> = node
             .child_nodes()
             .into_iter()
-            .find_map(|child| match child.kind() {
+            .filter_map(|child| match child.kind() {
                 NodeKind::ImportAlias => direct_identifier(&child).map(ImportBinding::Alias),
                 NodeKind::ImportMembers => Some(ImportBinding::Members(
                     child
@@ -1261,12 +1328,20 @@ impl ProjectLowerer {
                 )),
                 _ => None,
             })
-            .unwrap_or(ImportBinding::Missing);
-        ModuleImport {
-            path,
-            binding,
-            range: significant_range(node),
-        }
+            .collect();
+        let bindings = if bindings.is_empty() {
+            vec![ImportBinding::Missing]
+        } else {
+            bindings
+        };
+        bindings
+            .into_iter()
+            .map(|binding| ModuleImport {
+                path: path.clone(),
+                binding,
+                range,
+            })
+            .collect()
     }
 
     fn lower_module_declaration(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
@@ -1328,6 +1403,7 @@ impl ProjectLowerer {
             body,
             annotation: None,
             test: false,
+            needs_group: None,
         })
     }
 
@@ -1400,6 +1476,7 @@ impl ProjectLowerer {
             body: Some(body),
             annotation: None,
             test: false,
+            needs_group: None,
         })
     }
 
@@ -1568,6 +1645,34 @@ impl ProjectLowerer {
             body,
             annotation,
             test: false,
+            needs_group: None,
+        })
+    }
+
+    /// Lowers a `NeedsGroupDeclaration`, `[pub] needs Name { ... }`.
+    fn lower_needs_group(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = direct_identifier(node)?;
+        // The group's own name is the node's identifier; only its record is entries.
+        let mut row = self.lower_requirement_row(node);
+        row.terms
+            .retain(|term| matches!(term, RequirementTermUse::Field { .. }));
+        let needs_group = Some(row);
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::NeedsGroup,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: None,
+            body: None,
+            annotation: None,
+            test: false,
+            needs_group,
         })
     }
 
@@ -1596,6 +1701,48 @@ impl ProjectLowerer {
             function: None,
             body: None,
             annotation,
+            test: false,
+            needs_group: None,
+        })
+    }
+
+    /// Lowers `[pub] type Name = Type`. Ensures: an alias with generic parameters
+    /// is `L2130` and names no type, so its parameters report nothing further.
+    fn lower_type_alias(&mut self, node: &SyntaxNode<'_>) -> Option<ModuleDeclaration> {
+        let name = node
+            .child_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+            .nth(1)
+            .map(|token| name_from(&token))?;
+        let generic = direct_child(node, NodeKind::GenericParameters);
+        if let Some(parameters) = &generic {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Lowering,
+                "L2130",
+                FileId::new(0),
+                significant_range(parameters),
+                "a type alias takes no type parameters; declare a generic struct or enum instead",
+            ));
+        }
+        let annotation = direct_child(node, NodeKind::Type)
+            .filter(|_| generic.is_none())
+            .map(|type_node| self.lower_type(&type_node));
+        Some(ModuleDeclaration {
+            semantic_id: self.allocate_semantic_id(),
+            kind: ModuleDeclarationKind::TypeAlias,
+            public: node
+                .child_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Pub),
+            name,
+            generic_parameters: Vec::new(),
+            fields: Vec::new(),
+            variants: Vec::new(),
+            function: None,
+            body: None,
+            annotation,
+            needs_group: None,
             test: false,
         })
     }
@@ -1694,6 +1841,7 @@ impl ProjectLowerer {
             body,
             annotation: None,
             test: true,
+            needs_group: None,
         })
     }
 
@@ -1912,6 +2060,24 @@ impl ProjectLowerer {
                 name: name_from(&token),
             })
             .collect::<Vec<_>>();
+        for group in node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::RequirementGroupName)
+        {
+            let path: Vec<Name> = group
+                .child_tokens()
+                .into_iter()
+                .filter(|token| token.kind() == TokenKind::Identifier && !token.is_missing())
+                .map(|token| name_from(&token))
+                .collect();
+            if path.len() == 2 {
+                terms.push(RequirementTermUse::Group {
+                    semantic_id: self.allocate_semantic_id(),
+                    path,
+                });
+            }
+        }
         for record in node
             .child_nodes()
             .into_iter()
@@ -2225,12 +2391,205 @@ impl ProjectLowerer {
                         callee: Box::new(expression),
                         arguments,
                         range: significant_range(node),
+                        form: CallForm::Positional,
                     };
+                }
+                NodeKind::RecordExpression => {
+                    expression = self.lower_struct_literal(
+                        expression,
+                        &suffix,
+                        suffix_semantic_id,
+                        significant_range(node),
+                    );
                 }
                 _ => {}
             }
         }
         expression
+    }
+
+    /// Lowers `callee { field: value, ... }`. Ensures: for a struct of this
+    /// module with every field named once, the constructor call with the values
+    /// in declaration order, inside a block that first binds them in source
+    /// order when the two orders differ, so evaluation follows the source. A
+    /// missing field is `T4215`, an unknown one `T4205`, a repeated one `T4211`,
+    /// and `..base` is `S1001`; any other callee keeps its labelled arguments
+    /// for typing to report.
+    fn lower_struct_literal(
+        &mut self,
+        callee: ModuleExpression,
+        fields: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+        range: TextRange,
+    ) -> ModuleExpression {
+        if let Some(spread) = direct_child(fields, NodeKind::RecordSpread) {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Syntax,
+                "S1001",
+                FileId::new(0),
+                significant_range(&spread),
+                "a struct literal names every field; to copy a value with some fields \
+                 changed, write a record update `{ ..base, field: value }`",
+            ));
+            return ModuleExpression::Empty { semantic_id, range };
+        }
+        let written = fields
+            .child_nodes()
+            .into_iter()
+            .filter(|field| field.kind() == NodeKind::RecordField)
+            .filter_map(|field| {
+                let name = direct_identifier(&field)?;
+                let value = self.lower_expression(&direct_expression_child(&field)?);
+                Some((name, value))
+            })
+            .collect::<Vec<_>>();
+        let declared = match &callee {
+            ModuleExpression::Name { name, .. } => self.struct_fields.get(&name.text).cloned(),
+            _ => None,
+        };
+        let order = declared.and_then(|declared| {
+            let struct_name = match &callee {
+                ModuleExpression::Name { name, .. } => name.text.clone(),
+                _ => String::new(),
+            };
+            self.struct_field_order(&struct_name, &declared, &written, range)
+        });
+        let Some(order) = order else {
+            return ModuleExpression::Call {
+                semantic_id,
+                callee: Box::new(callee),
+                arguments: written
+                    .into_iter()
+                    .map(|(name, value)| CallArgument {
+                        label: Some(name),
+                        value,
+                    })
+                    .collect(),
+                range,
+                form: CallForm::Fields { ordered: false },
+            };
+        };
+        if order.iter().enumerate().all(|(index, source)| index == *source) {
+            return ModuleExpression::Call {
+                semantic_id,
+                callee: Box::new(callee),
+                arguments: written
+                    .into_iter()
+                    .map(|(_, value)| CallArgument { label: None, value })
+                    .collect(),
+                range,
+                form: CallForm::Fields { ordered: true },
+            };
+        }
+        let names = written
+            .iter()
+            .map(|(name, _)| Name {
+                text: format!("{GENERATED_NAME_PREFIX}{}", name.text),
+                range: name.range,
+            })
+            .collect::<Vec<_>>();
+        let arguments = order
+            .iter()
+            .map(|source| CallArgument {
+                label: None,
+                value: ModuleExpression::Name {
+                    semantic_id: self.allocate_semantic_id(),
+                    name: names[*source].clone(),
+                },
+            })
+            .collect();
+        let mut items = names
+            .into_iter()
+            .zip(written)
+            .map(|(name, (_, value))| ModuleBlockItem::Binding {
+                name,
+                type_use: None,
+                value,
+            })
+            .collect::<Vec<_>>();
+        items.push(ModuleBlockItem::Expression(ModuleExpression::Call {
+            semantic_id: self.allocate_semantic_id(),
+            callee: Box::new(callee),
+            arguments,
+            range,
+            form: CallForm::Fields { ordered: true },
+        }));
+        ModuleExpression::Block {
+            semantic_id,
+            items,
+            range,
+        }
+    }
+
+    /// For each field of `declared`, the index of the written field that gives
+    /// it, or `None` after reporting why there is no such order.
+    fn struct_field_order(
+        &mut self,
+        struct_name: &str,
+        declared: &[String],
+        written: &[(Name, ModuleExpression)],
+        range: TextRange,
+    ) -> Option<Vec<usize>> {
+        let mut valid = true;
+        for (index, (name, _)) in written.iter().enumerate() {
+            if written[..index].iter().any(|(earlier, _)| earlier.text == name.text) {
+                self.type_error(
+                    "T4211",
+                    name.range,
+                    format!("field `{}` is named more than once", name.text),
+                );
+                valid = false;
+            } else if !declared.contains(&name.text) {
+                self.type_error(
+                    "T4205",
+                    name.range,
+                    format!("`{struct_name}` has no field `{}`", name.text),
+                );
+                valid = false;
+            }
+        }
+        let missing = declared
+            .iter()
+            .filter(|field| !written.iter().any(|(name, _)| name.text == **field))
+            .map(|field| format!("`{field}`"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let (noun, list) = if missing.len() == 1 {
+                ("field", missing[0].clone())
+            } else {
+                ("fields", missing.join(", "))
+            };
+            self.type_error(
+                "T4215",
+                range,
+                format!("`{struct_name}` needs every field; add {noun} {list}"),
+            );
+            valid = false;
+        }
+        if !valid {
+            return None;
+        }
+        Some(
+            declared
+                .iter()
+                .map(|field| {
+                    written
+                        .iter()
+                        .position(|(name, _)| name.text == *field)
+                        .expect("every declared field is written")
+                })
+                .collect(),
+        )
+    }
+
+    fn type_error(&mut self, code: &'static str, range: TextRange, message: String) {
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            code,
+            FileId::new(0),
+            range,
+            message,
+        ));
     }
 
     fn lower_binary(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
@@ -2296,7 +2655,10 @@ impl ProjectLowerer {
                 (
                     None,
                     ModuleExpression::Call {
-                        callee, arguments, ..
+                        callee,
+                        arguments,
+                        form: CallForm::Positional,
+                        ..
                     },
                 ) => insert_pipeline_subject(semantic_id, left, *callee, arguments, range),
                 // `x |> f` is exactly the call `f(x)`.
@@ -2887,6 +3249,9 @@ impl ProjectLowerer {
             }
             TokenKind::Void => PatternLiteral::Void,
             _ => {
+                if tokens.iter().any(|token| token.kind() == TokenKind::LeftBrace) {
+                    return self.lower_struct_pattern(semantic_id, node, identifiers, range);
+                }
                 let applied = tokens
                     .iter()
                     .any(|token| token.kind() == TokenKind::LeftParen);
@@ -2910,6 +3275,7 @@ impl ProjectLowerer {
                             .map(|child| self.lower_pattern(child))
                             .collect(),
                         range,
+                        form: CallForm::Positional,
                     },
                 };
             }
@@ -2919,6 +3285,161 @@ impl ProjectLowerer {
             literal,
             range,
         }
+    }
+
+    /// Lowers `Name { field: pattern, .. }`. For a struct of this module with
+    /// every field named once (or the rest matched by a final `..`), the
+    /// result is the positional constructor pattern in declaration order, with
+    /// `_` for each field `..` covers. Otherwise the field patterns stay in
+    /// source order under `Fields { ordered: false }`, after reporting why for
+    /// a struct of the module; typing reports any other name.
+    fn lower_struct_pattern(
+        &mut self,
+        semantic_id: SemanticId,
+        node: &SyntaxNode<'_>,
+        path: Vec<Name>,
+        range: TextRange,
+    ) -> Pattern {
+        let written = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::FieldPattern)
+            .filter_map(|field| {
+                let name = direct_identifier(&field)?;
+                let pattern = match direct_child(&field, NodeKind::Pattern) {
+                    Some(pattern) => self.lower_pattern(&pattern),
+                    None => Pattern::Wildcard {
+                        semantic_id: self.allocate_semantic_id(),
+                        range: name.range,
+                    },
+                };
+                Some((name, pattern))
+            })
+            .collect::<Vec<_>>();
+        let rests = significant_child_tokens(node)
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::DotDot)
+            .collect::<Vec<_>>();
+        let last_part = node
+            .descendant_tokens()
+            .into_iter()
+            .rfind(|token| {
+                !matches!(
+                    token.kind(),
+                    TokenKind::Whitespace
+                        | TokenKind::Newline
+                        | TokenKind::Comment
+                        | TokenKind::Comma
+                        | TokenKind::RightBrace
+                )
+            });
+        let mut rest = !rests.is_empty();
+        if rests.len() > 1
+            || rests
+                .first()
+                .is_some_and(|first| last_part.is_none_or(|last| last.range() != first.range()))
+        {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Syntax,
+                "S1001",
+                FileId::new(0),
+                rests.last().map_or(range, |token| token.range()),
+                "`..` matches the other fields once, after the fields a struct pattern names",
+            ));
+            rest = true;
+        }
+        let declared = match path.as_slice() {
+            [name] => self.struct_fields.get(&name.text).cloned(),
+            _ => None,
+        };
+        let order = declared.as_ref().and_then(|declared| {
+            let struct_name = path[0].text.clone();
+            self.struct_pattern_order(&struct_name, declared, &written, rest, range)
+        });
+        let Some(order) = order else {
+            return Pattern::Constructor {
+                semantic_id,
+                path,
+                arguments: written.into_iter().map(|(_, pattern)| pattern).collect(),
+                range,
+                form: CallForm::Fields { ordered: false },
+            };
+        };
+        let mut written = written.into_iter().map(Some).collect::<Vec<_>>();
+        let arguments = order
+            .into_iter()
+            .map(|source| match source.and_then(|index| written[index].take()) {
+                Some((_, pattern)) => pattern,
+                None => Pattern::Wildcard {
+                    semantic_id: self.allocate_semantic_id(),
+                    range,
+                },
+            })
+            .collect();
+        Pattern::Constructor {
+            semantic_id,
+            path,
+            arguments,
+            range,
+            form: CallForm::Fields { ordered: true },
+        }
+    }
+
+    /// For each field of `declared`, the index of the written field pattern
+    /// that matches it, or `None` where `..` covers it; `None` overall after
+    /// reporting a repeated, unknown or (without `..`) missing field.
+    fn struct_pattern_order(
+        &mut self,
+        struct_name: &str,
+        declared: &[String],
+        written: &[(Name, Pattern)],
+        rest: bool,
+        range: TextRange,
+    ) -> Option<Vec<Option<usize>>> {
+        let mut valid = true;
+        for (index, (name, _)) in written.iter().enumerate() {
+            if written[..index].iter().any(|(earlier, _)| earlier.text == name.text) {
+                self.type_error(
+                    "T4211",
+                    name.range,
+                    format!("field `{}` is named more than once", name.text),
+                );
+                valid = false;
+            } else if !declared.contains(&name.text) {
+                self.type_error(
+                    "T4205",
+                    name.range,
+                    format!("`{struct_name}` has no field `{}`", name.text),
+                );
+                valid = false;
+            }
+        }
+        let missing = declared
+            .iter()
+            .filter(|field| !written.iter().any(|(name, _)| name.text == **field))
+            .map(|field| format!("`{field}`"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() && !rest {
+            let (noun, list) = if missing.len() == 1 {
+                ("field", missing[0].clone())
+            } else {
+                ("fields", missing.join(", "))
+            };
+            self.type_error(
+                "T4215",
+                range,
+                format!(
+                    "a `{struct_name}` pattern names every field or ends with `..`; add {noun} {list}, or `..`"
+                ),
+            );
+            valid = false;
+        }
+        valid.then(|| {
+            declared
+                .iter()
+                .map(|field| written.iter().position(|(name, _)| name.text == *field))
+                .collect()
+        })
     }
 
     /// Splits list elements around the first rest element. A further rest is `L2021`;
@@ -3078,6 +3599,24 @@ fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<Synta
         .find(|child| child.kind() == kind)
 }
 
+/// The field names of each struct declared at the top of `root`, in order.
+fn struct_field_names(root: &SyntaxNode<'_>) -> HashMap<String, Vec<String>> {
+    root.child_nodes()
+        .into_iter()
+        .filter(|node| node.kind() == NodeKind::StructDeclaration)
+        .filter_map(|node| {
+            let name = direct_token_after(&node, TokenKind::Struct, TokenKind::Identifier)?;
+            let fields = node
+                .child_nodes()
+                .into_iter()
+                .filter(|field| field.kind() == NodeKind::Field)
+                .filter_map(|field| direct_identifier(&field).map(|name| name.text))
+                .collect();
+            Some((name.text().to_owned(), fields))
+        })
+        .collect()
+}
+
 fn direct_identifier(node: &SyntaxNode<'_>) -> Option<Name> {
     node.child_tokens()
         .into_iter()
@@ -3171,6 +3710,7 @@ fn insert_pipeline_subject(
         callee: Box::new(callee),
         arguments: piped,
         range,
+        form: CallForm::Positional,
     }
 }
 

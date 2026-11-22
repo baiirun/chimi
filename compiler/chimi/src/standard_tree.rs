@@ -44,7 +44,9 @@ pub(crate) fn standard_module(
     text: impl Into<std::sync::Arc<str>>,
 ) -> ProjectSource {
     let source = SourceSnapshot::from_text(source_path(module_path), text);
-    ProjectSource::parsed(module_path, source).expect("standard module paths are valid")
+    ProjectSource::parsed(module_path, source)
+        .expect("standard module paths are valid")
+        .with_origin(crate::compiler::ModuleOrigin::Standard)
 }
 
 fn source_path(module_path: &str) -> String {

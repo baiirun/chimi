@@ -8,6 +8,7 @@
 #include "chimi_fiber.h"
 
 #include <inttypes.h>
+#include <float.h>
 #include <math.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -285,6 +286,13 @@ struct ChimiRuntime {
   FILE *telemetry;
   FILE *outcome;
   uint32_t max_line_bytes;
+  /* std/log: the least severe level written (0 debug .. 3 error), and the
+     file named by --log-file, or NULL for standard error. */
+  int64_t log_level;
+  FILE *log_file;
+  /* std/metrics: the file named by --metrics-file, written at exit, or NULL
+     when nothing is recorded. */
+  FILE *metrics_file;
   /* The telemetry stream's next sequence number. It and
      trace_events_constructed change only under trace_lock, which an emitter
      holds for a whole event, so events from several carriers come out whole
@@ -6844,10 +6852,15 @@ typedef struct {
   ConsoleQueue *queue;
 } ConsoleStream;
 
-static ConsoleQueue console_queues[2];
-static ConsoleStream console_streams[2] = {
+enum { CONSOLE_STREAM_COUNT = 3 };
+static ConsoleQueue console_queues[CONSOLE_STREAM_COUNT];
+/* Standard output, standard error, and std/log's --log-file (fd -1 when
+   there is none), which is written like the other two so a slow reader never
+   blocks a carrier and its lines never tear or interleave. */
+static ConsoleStream console_streams[CONSOLE_STREAM_COUNT] = {
   {.fd = STDOUT_FILENO, .name = "stdout"},
   {.fd = STDERR_FILENO, .name = "stderr"},
+  {.fd = -1, .name = "log"},
 };
 /* Guards both streams and queues, since a task on any carrier writes lines.
    A writer holds it except while it parks. console_drain_all runs at exit,
@@ -6874,19 +6887,24 @@ enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
 
 static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
   if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
-  stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
-  stream->queue = &console_queues[stream->fd == STDOUT_FILENO ? 0 : 1];
+  size_t index = (size_t)(stream - console_streams);
+  if (!stream->file) stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
+  stream->queue = &console_queues[index];
   struct stat status;
   bool known = fstat(stream->fd, &status) == 0;
   stream->socket = known && S_ISSOCK(status.st_mode);
   stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !S_ISREG(status.st_mode)
     ? CONSOLE_QUEUED : CONSOLE_DIRECT;
-  if (stream->mode == CONSOLE_QUEUED && stream->fd == STDERR_FILENO) {
-    ConsoleStream *output = &console_streams[0];
+  /* A stream naming the same open file as an earlier one shares its queue. */
+  for (size_t earlier = 0; stream->mode == CONSOLE_QUEUED && earlier < index; ++earlier) {
+    ConsoleStream *other_stream = &console_streams[earlier];
     struct stat other;
-    if (console_mode(runtime, output) == CONSOLE_QUEUED && fstat(output->fd, &other) == 0 &&
-        other.st_dev == status.st_dev && other.st_ino == status.st_ino)
-      stream->queue = output->queue;
+    if (other_stream->fd >= 0 && console_mode(runtime, other_stream) == CONSOLE_QUEUED &&
+        fstat(other_stream->fd, &other) == 0 && other.st_dev == status.st_dev &&
+        other.st_ino == status.st_ino) {
+      stream->queue = other_stream->queue;
+      break;
+    }
   }
   return stream->mode;
 }
@@ -6958,7 +6976,7 @@ static void console_drain_blocking(const ConsoleStream *stream) {
 static void console_drain_all(void) {
   bool entered = !console_lock_held;
   if (entered) console_enter();
-  for (size_t index = 0; index < 2; ++index)
+  for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
     if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
   if (entered) console_leave();
 }
@@ -7003,10 +7021,15 @@ static int console_write_line_locked(const ChimiRuntime *runtime, ConsoleStream 
                                      const char *text, size_t length) {
   if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
     errno = 0;
-    if (fwrite(text, 1, length, stream->file) != length || fputc('\n', stream->file) == EOF ||
-        fflush(stream->file) != 0)
-      return errno ? errno : EIO;
-    return 0;
+    /* The newline goes out even after a short write, so a later line never
+       joins a broken one. */
+    bool written = fwrite(text, 1, length, stream->file) == length;
+    written = fputc('\n', stream->file) != EOF && written;
+    written = fflush(stream->file) == 0 && written;
+    if (written) return 0;
+    int error = errno ? errno : EIO;
+    clearerr(stream->file);
+    return error;
   }
   ConsoleQueue *queue = stream->queue;
   /* A body ending under a terminal cancel must not park (CHI-265), and must
@@ -7065,6 +7088,325 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
     ChimiValue *fields[] = {text_value(stream->name), text_value(strerror(written))};
     return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
   }
+  return runtime->cancel ? cancelled() : success(void_value());
+}
+
+/* std/log's host core. host_write gets the message and fields already encoded
+   as JSON and writes one line, `{"time":..,"level":..,"message":..,"fields":..}`,
+   whole: to the --log-file file, or to standard error through the console
+   queue, so log lines and the program's own write_error lines never
+   interleave. A line that cannot be written is lost: logging never fails. */
+static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                          ChimiValue **arguments, uint32_t argument_count,
+                                          uint32_t call_node) {
+  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    return success(integer_value(runtime->log_level));
+  }
+  if (argument_count != 3 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
+      arguments[2]->kind != VALUE_TEXT)
+    return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
+  static const char *const names[] = {"debug", "info", "warn", "error"};
+  int64_t level = arguments[0]->as.integer;
+  const char *name = names[level < 0 ? 0 : level > 3 ? 3 : level];
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t seconds = (int64_t)now.tv_sec, millis = (int64_t)now.tv_nsec / 1000000;
+  int64_t days = seconds / 86400, of_day = seconds % 86400;
+  if (of_day < 0) { of_day += 86400; days -= 1; }
+  int64_t year, month, day;
+  civil_from_days(days, &year, &month, &day);
+  char time[64];
+  snprintf(time, sizeof time, "%04" PRId64 "-%02" PRId64 "-%02" PRId64 "T%02" PRId64 ":%02" PRId64 ":%02" PRId64,
+           year, month, day, of_day / 3600, of_day / 60 % 60, of_day % 60);
+  size_t message_length = arguments[1]->as.text.length, fields_length = arguments[2]->as.text.length;
+  size_t capacity = 128 + message_length + fields_length;
+  char *line = malloc(capacity);
+  if (!line) exhausted_memory();
+  int head = snprintf(line, capacity, "{\"time\":\"%s.%03" PRId64 "Z\",\"level\":\"%s\",\"message\":", time,
+                      millis, name);
+  size_t length = (size_t)head;
+  memcpy(line + length, arguments[1]->as.text.bytes, message_length);
+  length += message_length;
+  memcpy(line + length, ",\"fields\":", 10);
+  length += 10;
+  memcpy(line + length, arguments[2]->as.text.bytes, fields_length);
+  length += fields_length;
+  line[length++] = '}';
+  ConsoleStream *stream = &console_streams[runtime->log_file ? 2 : 1];
+  int written = console_write_line(runtime, stream, line, length);
+  free(line);
+  if (written < 0) return cancelled();
+  return runtime->cancel ? cancelled() : success(void_value());
+}
+
+/* std/metrics' host core: one aggregate per name and label set, written as
+   one JSON document to the --metrics-file file when the program ends. The
+   name and labels arrive encoded as JSON (std/metrics.host), so they are
+   keys as they are and are written as they are. It matches the reference
+   interpreter's MetricsAggregate (host_operations.rs) byte for byte. Every
+   carrier records into the one aggregate under metrics_lock. */
+#define CHIMI_METRIC_SERIES_PER_NAME 1000
+#define CHIMI_METRIC_BOUND_COUNT 15
+
+static const double metric_bounds[CHIMI_METRIC_BOUND_COUNT] = {
+  0.0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+};
+
+typedef struct {
+  char *name;
+  size_t name_length;
+  char *labels;
+  size_t labels_length;
+  int64_t kind;
+  /* A count's total, a gauge's last value, an observation's count and sum. */
+  int64_t total;
+  double last;
+  uint64_t count;
+  double sum;
+  uint64_t buckets[CHIMI_METRIC_BOUND_COUNT + 1];
+} MetricSeries;
+
+typedef struct {
+  char *name;
+  size_t name_length;
+  /* The kind the name was first recorded with, and its label sets so far. */
+  int64_t kind;
+  size_t series;
+} MetricName;
+
+/* Open-addressed tables of index + 1 into the arrays, 0 for an empty slot,
+   kept at most half full. */
+typedef struct {
+  size_t *slots;
+  size_t capacity;
+} MetricTable;
+
+static pthread_mutex_t metrics_lock = PTHREAD_MUTEX_INITIALIZER;
+static MetricSeries *metric_series;
+static size_t metric_series_count, metric_series_capacity;
+static MetricName *metric_names;
+static size_t metric_name_count, metric_name_capacity;
+static MetricTable metric_series_table, metric_name_table;
+static uint64_t metric_dropped_label_sets, metric_dropped_kind_conflicts;
+
+static uint64_t metric_hash(const char *name, size_t name_length, const char *labels, size_t labels_length) {
+  uint64_t hash = UINT64_C(14695981039346656037);
+  for (size_t i = 0; i < name_length; ++i) hash = (hash ^ (unsigned char)name[i]) * UINT64_C(1099511628211);
+  hash = (hash ^ 0xff) * UINT64_C(1099511628211);
+  for (size_t i = 0; i < labels_length; ++i) hash = (hash ^ (unsigned char)labels[i]) * UINT64_C(1099511628211);
+  return hash;
+}
+
+static char *metric_copy(const char *bytes, size_t length) {
+  char *copy = malloc(length ? length : 1);
+  if (!copy) exhausted_memory();
+  memcpy(copy, bytes, length);
+  return copy;
+}
+
+static bool metric_series_is(const MetricSeries *series, const char *name, size_t name_length, const char *labels,
+                             size_t labels_length) {
+  return series->name_length == name_length && series->labels_length == labels_length &&
+         memcmp(series->name, name, name_length) == 0 && memcmp(series->labels, labels, labels_length) == 0;
+}
+
+/* The slot holding the entry `matches` accepts, or the empty slot it goes in. */
+static size_t *metric_slot(MetricTable *table, uint64_t hash, bool (*matches)(size_t, const void *),
+                           const void *key) {
+  size_t mask = table->capacity - 1;
+  for (size_t at = (size_t)hash & mask;; at = (at + 1) & mask)
+    if (table->slots[at] == 0 || matches(table->slots[at] - 1, key)) return &table->slots[at];
+}
+
+typedef struct {
+  const char *name;
+  size_t name_length;
+  const char *labels;
+  size_t labels_length;
+} MetricKey;
+
+static bool metric_series_matches(size_t index, const void *key) {
+  const MetricKey *metric = key;
+  return metric_series_is(&metric_series[index], metric->name, metric->name_length, metric->labels,
+                          metric->labels_length);
+}
+
+static bool metric_name_matches(size_t index, const void *key) {
+  const MetricKey *metric = key;
+  return metric_names[index].name_length == metric->name_length &&
+         memcmp(metric_names[index].name, metric->name, metric->name_length) == 0;
+}
+
+/* Makes room for one more entry, rehashing every entry `hash_of` keys. */
+static void metric_table_reserve(MetricTable *table, size_t count, uint64_t (*hash_of)(size_t)) {
+  if ((count + 1) * 2 <= table->capacity) return;
+  size_t capacity = table->capacity ? table->capacity * 2 : 64;
+  size_t *slots = calloc(capacity, sizeof(*slots));
+  if (!slots) exhausted_memory();
+  for (size_t index = 0; index < count; ++index) {
+    size_t at = (size_t)hash_of(index) & (capacity - 1);
+    while (slots[at] != 0) at = (at + 1) & (capacity - 1);
+    slots[at] = index + 1;
+  }
+  free(table->slots);
+  table->slots = slots;
+  table->capacity = capacity;
+}
+
+static uint64_t metric_series_hash(size_t index) {
+  const MetricSeries *series = &metric_series[index];
+  return metric_hash(series->name, series->name_length, series->labels, series->labels_length);
+}
+
+static uint64_t metric_name_hash(size_t index) {
+  return metric_hash(metric_names[index].name, metric_names[index].name_length, "", 0);
+}
+
+/* Adds one measurement; the caller holds metrics_lock. */
+static void metrics_record(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
+                           size_t labels_length) {
+  MetricKey key = {name, name_length, labels, labels_length};
+  metric_table_reserve(&metric_name_table, metric_name_count, metric_name_hash);
+  size_t *name_slot = metric_slot(&metric_name_table, metric_hash(name, name_length, "", 0), metric_name_matches, &key);
+  if (*name_slot == 0) {
+    if (metric_name_count == metric_name_capacity) {
+      metric_name_capacity = metric_name_capacity ? metric_name_capacity * 2 : 16;
+      metric_names = realloc(metric_names, metric_name_capacity * sizeof(*metric_names));
+      if (!metric_names) exhausted_memory();
+    }
+    metric_names[metric_name_count] = (MetricName){metric_copy(name, name_length), name_length, kind, 0};
+    *name_slot = ++metric_name_count;
+  }
+  MetricName *metric = &metric_names[*name_slot - 1];
+  if (metric->kind != kind) {
+    ++metric_dropped_kind_conflicts;
+    return;
+  }
+  metric_table_reserve(&metric_series_table, metric_series_count, metric_series_hash);
+  uint64_t hash = metric_hash(name, name_length, labels, labels_length);
+  size_t *series_slot = metric_slot(&metric_series_table, hash, metric_series_matches, &key);
+  if (*series_slot == 0) {
+    if (metric->series == CHIMI_METRIC_SERIES_PER_NAME) {
+      ++metric_dropped_label_sets;
+      return;
+    }
+    ++metric->series;
+    if (metric_series_count == metric_series_capacity) {
+      metric_series_capacity = metric_series_capacity ? metric_series_capacity * 2 : 16;
+      metric_series = realloc(metric_series, metric_series_capacity * sizeof(*metric_series));
+      if (!metric_series) exhausted_memory();
+    }
+    metric_series[metric_series_count] = (MetricSeries){
+      .name = metric_copy(name, name_length), .name_length = name_length,
+      .labels = metric_copy(labels, labels_length), .labels_length = labels_length, .kind = kind,
+    };
+    *series_slot = ++metric_series_count;
+  }
+  MetricSeries *series = &metric_series[*series_slot - 1];
+  switch (kind) {
+    case 0: {
+      /* A count's value is a whole, non-negative number (std/metrics.count). */
+      int64_t by = value >= 9223372036854775807.0 ? INT64_MAX : (int64_t)value;
+      series->total = series->total > INT64_MAX - by ? INT64_MAX : series->total + by;
+      break;
+    }
+    case 1: series->last = value; break;
+    default: {
+      ++series->count;
+      /* A sum past the largest Float saturates there, so it stays finite. */
+      double sum = series->sum + value;
+      series->sum = isfinite(sum) ? sum : sum > 0 ? DBL_MAX : -DBL_MAX;
+      size_t bucket = 0;
+      while (bucket < CHIMI_METRIC_BOUND_COUNT && !(value <= metric_bounds[bucket])) ++bucket;
+      ++series->buckets[bucket];
+      break;
+    }
+  }
+}
+
+/* Adds one measurement from any carrier. */
+static void metrics_add(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
+                        size_t labels_length) {
+  pthread_mutex_lock(&metrics_lock);
+  metrics_record(kind, name, name_length, value, labels, labels_length);
+  pthread_mutex_unlock(&metrics_lock);
+}
+
+/* Name order, then label order, comparing bytes as Rust's String does. */
+static int metric_bytes_order(const char *left, size_t left_length, const char *right, size_t right_length) {
+  int order = memcmp(left, right, left_length < right_length ? left_length : right_length);
+  if (order != 0) return order;
+  return left_length < right_length ? -1 : left_length > right_length ? 1 : 0;
+}
+
+static int metric_series_order(const void *left, const void *right) {
+  const MetricSeries *a = &metric_series[*(const size_t *)left], *b = &metric_series[*(const size_t *)right];
+  int order = metric_bytes_order(a->name, a->name_length, b->name, b->name_length);
+  return order != 0 ? order : metric_bytes_order(a->labels, a->labels_length, b->labels, b->labels_length);
+}
+
+static bool close_output(FILE *output);
+
+/* Writes the metrics document; true when the write failed. */
+static bool write_metrics(FILE *output) {
+  if (!output) return false;
+  pthread_mutex_lock(&metrics_lock);
+  size_t *order = malloc((metric_series_count ? metric_series_count : 1) * sizeof(*order));
+  if (!order) exhausted_memory();
+  for (size_t index = 0; index < metric_series_count; ++index) order[index] = index;
+  qsort(order, metric_series_count, sizeof(*order), metric_series_order);
+  fputs("{\"schema\":\"chimi.metrics.v1\",\"metrics\":[", output);
+  char number[40];
+  for (size_t index = 0; index < metric_series_count; ++index) {
+    const MetricSeries *series = &metric_series[order[index]];
+    if (index > 0) fputc(',', output);
+    fputs("{\"name\":", output);
+    fwrite(series->name, 1, series->name_length, output);
+    fputs(",\"labels\":", output);
+    fwrite(series->labels, 1, series->labels_length, output);
+    switch (series->kind) {
+      case 0: fprintf(output, ",\"kind\":\"count\",\"value\":%" PRId64 "}", series->total); break;
+      case 1:
+        float_text(series->last, number);
+        fprintf(output, ",\"kind\":\"gauge\",\"value\":%s}", number);
+        break;
+      default:
+        float_text(series->sum, number);
+        fprintf(output, ",\"kind\":\"observe\",\"count\":%" PRIu64 ",\"sum\":%s,\"bounds\":[", series->count, number);
+        for (size_t bound = 0; bound < CHIMI_METRIC_BOUND_COUNT; ++bound) {
+          float_text(metric_bounds[bound], number);
+          fprintf(output, "%s%s", bound ? "," : "", number);
+        }
+        fputs("],\"bucket_counts\":[", output);
+        for (size_t bucket = 0; bucket <= CHIMI_METRIC_BOUND_COUNT; ++bucket)
+          fprintf(output, "%s%" PRIu64, bucket ? "," : "", series->buckets[bucket]);
+        fputs("]}", output);
+        break;
+    }
+  }
+  fprintf(output, "],\"dropped\":{\"label_sets\":%" PRIu64 ",\"kind_conflicts\":%" PRIu64 "}}\n",
+          metric_dropped_label_sets, metric_dropped_kind_conflicts);
+  pthread_mutex_unlock(&metrics_lock);
+  free(order);
+  return close_output(output);
+}
+
+static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                              ChimiValue **arguments, uint32_t argument_count,
+                                              uint32_t call_node) {
+  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    return success(boolean_value(runtime->metrics_file != NULL));
+  }
+  if (argument_count != 4 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
+      arguments[2]->kind != VALUE_FLOAT || arguments[3]->kind != VALUE_TEXT)
+    return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
+  if (runtime->metrics_file)
+    metrics_add(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
+                arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);
   return runtime->cancel ? cancelled() : success(void_value());
 }
 
@@ -11094,6 +11436,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_fs_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
+    return invoke_log_operation(runtime, intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD)
+    return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -13136,6 +13482,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .computation = CHIMI_COMPUTATION,
     .silent = true,
     .max_line_bytes = 1024 * 1024,
+    .log_level = 1,
     .next_span = 2,
     .carriers = 1,
   };
@@ -13146,6 +13493,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
+  const char *log_path = NULL;
+  const char *metrics_path = NULL;
   decode_constants();
   if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
@@ -13241,6 +13590,19 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       }
       runtime.max_line_bytes = (uint32_t)value;
     }
+    else if (strncmp(argv[index], "--log-level=", 12) == 0) {
+      const char *level = argv[index] + 12;
+      if (strcmp(level, "debug") == 0) runtime.log_level = 0;
+      else if (strcmp(level, "info") == 0) runtime.log_level = 1;
+      else if (strcmp(level, "warn") == 0) runtime.log_level = 2;
+      else if (strcmp(level, "error") == 0) runtime.log_level = 3;
+      else {
+        fputs("--log-level requires debug, info, warn or error\n", stderr);
+        return 64;
+      }
+    }
+    else if (strncmp(argv[index], "--log-file=", 11) == 0) log_path = argv[index] + 11;
+    else if (strncmp(argv[index], "--metrics-file=", 15) == 0) metrics_path = argv[index] + 15;
     else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
       benchmark_repeats = (uint32_t)strtoul(argv[index] + 20, NULL, 10);
     else { fprintf(stderr, "unknown Chimi runtime argument: %s\n", argv[index]); return 64; }
@@ -13290,6 +13652,21 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fputs("profile, memory report, telemetry, and runner outcome require distinct files\n", stderr);
     return 64;
   }
+  if (log_path && ((telemetry_path && strcmp(log_path, telemetry_path) == 0) ||
+                   (outcome_path && strcmp(log_path, outcome_path) == 0) ||
+                   (memory_report_path && strcmp(log_path, memory_report_path) == 0) ||
+                   (profile_path && strcmp(log_path, profile_path) == 0))) {
+    fputs("the log file must be distinct from the runner's report files\n", stderr);
+    return 64;
+  }
+  if (metrics_path && ((telemetry_path && strcmp(metrics_path, telemetry_path) == 0) ||
+                       (outcome_path && strcmp(metrics_path, outcome_path) == 0) ||
+                       (memory_report_path && strcmp(metrics_path, memory_report_path) == 0) ||
+                       (profile_path && strcmp(metrics_path, profile_path) == 0) ||
+                       (log_path && strcmp(metrics_path, log_path) == 0))) {
+    fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
+    return 64;
+  }
   if (profile_path && benchmark_repeats) {
     fputs("--profile-file cannot be combined with --benchmark-repeats\n", stderr);
     return 64;
@@ -13312,6 +13689,60 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (runtime.telemetry) fclose(runtime.telemetry);
       return 74;
     }
+  }
+  if (log_path) {
+    /* Appended to, unlike the runner's reports: a log outlives one run. */
+    runtime.log_file = open_report(log_path, "a");
+    if (!runtime.log_file) {
+      fprintf(stderr, "cannot open log file %s: %s\n", log_path, strerror(errno));
+      if (runtime.telemetry) fclose(runtime.telemetry);
+      if (runtime.outcome) fclose(runtime.outcome);
+      return 74;
+    }
+    /* The same file under another spelling (`./out.json`) is still a clash. */
+    struct stat log_status, report_status;
+    FILE *reports[] = {runtime.telemetry, runtime.outcome};
+    for (size_t report = 0; report < 2; ++report)
+      if (reports[report] && fstat(fileno(runtime.log_file), &log_status) == 0 &&
+          fstat(fileno(reports[report]), &report_status) == 0 && log_status.st_dev == report_status.st_dev &&
+          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {
+        fputs("the log file must be distinct from the runner's report files\n", stderr);
+        return 64;
+      }
+    console_streams[2].fd = fileno(runtime.log_file);
+    console_streams[2].file = runtime.log_file;
+  }
+  if (metrics_path) {
+    /* Compared before opening, since opening empties the file: the same file
+       under another spelling is still a clash. */
+    struct stat metrics_status, open_status;
+    FILE *opened[] = {runtime.telemetry, runtime.outcome, runtime.log_file};
+    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))
+      for (size_t file = 0; file < 3; ++file)
+        if (opened[file] && fstat(fileno(opened[file]), &open_status) == 0 &&
+            metrics_status.st_dev == open_status.st_dev && metrics_status.st_ino == open_status.st_ino) {
+          fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
+          return 64;
+        }
+    runtime.metrics_file = open_report(metrics_path, "w");
+    if (!runtime.metrics_file) {
+      fprintf(stderr, "cannot open metrics file %s: %s\n", metrics_path, strerror(errno));
+      if (runtime.telemetry) fclose(runtime.telemetry);
+      if (runtime.outcome) fclose(runtime.outcome);
+      if (runtime.log_file) fclose(runtime.log_file);
+      return 74;
+    }
+    /* The memory report and profile are opened only at exit, so their
+       spellings are compared with the file just opened. */
+    const char *later[] = {memory_report_path, profile_path};
+    struct stat opened_status;
+    for (size_t file = 0; file < 2; ++file)
+      if (later[file] && stat(later[file], &open_status) == 0 &&
+          fstat(fileno(runtime.metrics_file), &opened_status) == 0 && !S_ISCHR(opened_status.st_mode) &&
+          open_status.st_dev == opened_status.st_dev && open_status.st_ino == opened_status.st_ino) {
+        fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
+        return 64;
+      }
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
@@ -13356,6 +13787,8 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
     bool write_failed = write_memory_report(memory_report_path, &runtime);
     write_failed = write_profile(profile_path) || write_failed;
+    write_failed = write_metrics(runtime.metrics_file) || write_failed;
+    runtime.metrics_file = NULL;
     write_failed = close_output(runtime.telemetry) || write_failed;
     runtime.telemetry = NULL;
     write_failed = close_output(runtime.outcome) || write_failed;
@@ -13379,10 +13812,17 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* Lines whose writers were cancelled while they waited (CHI-266). */
   console_drain_all();
   release_binding_handles();
+  /* A log line already went out whole; a failed close loses nothing the
+     program could act on. */
+  if (runtime.log_file) {
+    console_streams[2].fd = -1;
+    fclose(runtime.log_file);
+  }
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);
   write_failed = write_profile(profile_path) || write_failed;
+  write_failed = write_metrics(runtime.metrics_file) || write_failed;
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;

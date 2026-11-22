@@ -17,8 +17,7 @@ uses in clause bodies are reported as ordinary type mismatches, not `T4281`.
 Tuple patterns, and irrefutable patterns in `let` and `loop` state positions,
 are implemented (`prog show ts-5be727`).
 
-The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples use
-positional construction. Examples that call standard-library modules beyond
+The words MUST, MUST NOT, SHOULD, and MAY are normative. Examples that call standard-library modules beyond
 today's `std/io`, `std/json`, `std/map`, `std/task`, and `std/channel` use the
 names from the [standard library sketches](../plans/standard-library-sketches/).
 
@@ -40,8 +39,9 @@ This document depends on:
   order are the rules `case` already has.
 - Clauses dispatch on values. Chimi has no overloading by type or by arity: one
   name in a module is one function with one contract.
-- Patterns stay positional, like construction. The one place source names
-  fields is where fields are already named: access and update.
+- A pattern mirrors construction: enum variant and tuple patterns are
+  positional, and a struct pattern names its fields in braces, as a struct
+  literal does (CHI-291).
 - Matching a list costs no more than indexing it. No pattern copies a list.
 
 ## Multi-clause functions
@@ -334,7 +334,7 @@ fn sum(numbers: List<Int>) -> Int {
 | Typed binding | `count: Int`, `error: FileError` | see [Typed bindings](#typed-bindings-and-failure-type-patterns) |
 | Literal | `0`, `-1`, `"orders"`, `True` | an equal value |
 | Enum variant | `Circle(radius)`, `Value.Text(schema)`, `None` | that variant, then its payload by position |
-| Struct | `Money(cents)` | every value of the struct, then its fields by position |
+| Struct | `Money { cents: cents }`, `Money { cents: 0, .. }` | every value of the struct, then the named fields |
 | Tuple | `(key, value)` | every tuple of that arity, then its elements by position |
 | List | `[]`, `[a, b]`, `[first, ..rest]`, `[.., last]` | lists of the stated lengths, then elements by position |
 | Alias | `[first, ..] as whole` | what the inner pattern matches; also binds the whole value |
@@ -351,9 +351,9 @@ General rules:
 - Bindings are visible in the guard and the body of their clause or arm.
 - Patterns are pure. Matching never calls user code, needs a dependency, or
   fails.
-- A labelled pattern such as `Money(cents: 2500)` is a syntax error (`S1001`)
-  whose message says that patterns are positional, as construction is. A colon
-  inside a pattern always introduces a type.
+- A labelled pattern in parentheses such as `Money(cents: 2500)` is a syntax
+  error (`S1001`) whose message points to the braces. A colon after a name in
+  a pattern introduces a type; inside struct braces it follows a field name.
 
 ### Literal patterns
 
@@ -375,13 +375,23 @@ splitting is a `std/text` function.
 
 ### Struct patterns
 
-A struct pattern names the struct and lists one pattern per field in
-declaration order, like construction. A struct has one shape, so a struct
-pattern whose field patterns are irrefutable is irrefutable.
+A struct pattern names the struct and, in braces, a pattern for each field by
+name, in any order, as a struct literal does: `Money { currency: c, cents: 0 }`.
+It names every field once, or ends with `..` to match the fields it leaves out
+(`Money { cents: 0, .. }`, or `Money { .. }` for any value). A missing field
+without `..` is `T4215`, a field the struct does not declare `T4205`, a field
+named twice `T4211`, and a `..` that is not last or appears twice `S1001`.
+A struct has one shape, so a struct pattern whose field patterns are
+irrefutable is irrefutable. A witness in a coverage error is written the same
+way: `free(Money { cents: 1 })` is not matched.
+
+The positional form `Money(cents)` is `T4216`, with an edit to
+`Money { cents: cents }`. Braces after an enum variant are `T4217`: a
+variant's payload is matched by position.
 
 Struct patterns are valid only where the struct's fields are visible: inside
 its defining module. Elsewhere they are `E_PRIVATE_STRUCT_CONSTRUCTOR`, for the
-same reason external construction is. A wrong field count is `T4230`.
+same reason external construction is.
 
 ### Tuple patterns
 
@@ -670,10 +680,10 @@ instead of a ten-argument construction.
 
 ### Why update names fields
 
-Construction is positional because a constructor call is a call, and Chimi
-calls have no labels. An update is not a call. It changes some fields and keeps
-the rest, so it must say which fields change. Field names are already the
-identity for access (`state.records`). Update uses that same identity.
+An update changes some fields and keeps the rest, so it must say which fields
+change. Field names are already the identity for access (`state.records`) and
+for building a struct (`Summary { records: 0, ... }`). Update uses that same
+identity.
 
 A positional update such as `Config(..base, jobs)`, which the CLI sketch
 wrote, would make the reader count declaration positions to find which field
@@ -681,8 +691,9 @@ changes. A reordered declaration would then silently change another field when
 the types agree. Naming the field turns that mistake into a type error.
 
 The rule is: parentheses are positional and braces are named. Anonymous
-records, `using` providers, and updates use `name: value` inside braces. Calls,
-construction, and patterns never use labels inside parentheses.
+records, `using` providers, struct literals, and updates use `name: value`
+inside braces, and so do struct patterns. Calls, enum variant construction,
+and variant patterns never use labels inside parentheses.
 
 ### Rules
 
@@ -826,7 +837,11 @@ specifications, so this document uses `T4280`–`T4284` and `L2020`–`L2023`:
 | TP-02 | `let Some(value) = lookup(key)` | `T4231`; witness `None` |
 | TP-03 | Tuple pattern of arity 3 against a pair | `T4230` |
 | TP-04 | Struct pattern for a struct from another module | `E_PRIVATE_STRUCT_CONSTRUCTOR` |
-| TP-05 | `Money(cents: 2500)` as a pattern | `S1001`; message says patterns are positional |
+| TP-05 | `Money(cents: 2500)` as a pattern | `S1001`; message points to `Name { field: pattern }` |
+| TP-05a | `Money { currency: c, cents: 0 }` | Compiles; fields matched by name in any order |
+| TP-05b | `Money { cents: 0 }` for a struct with two fields | `T4215`; add the field or `..` |
+| TP-05c | `Money(cents)` as a pattern | `T4216`; the fix writes `Money { cents: cents }` |
+| TP-05d | `Shape.Circle { radius: r }` | `T4217`; a variant's payload is positional |
 | TP-06 | `-1` literal pattern | Compiles; matches negative one |
 | TP-07 | `"é"` against a decomposed `"é"` | Runtime: no match |
 | TP-08 | A block whose last item is `let x = 1` or `let (a, b) = pair` | `L2023` |

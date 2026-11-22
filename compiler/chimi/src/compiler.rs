@@ -25,6 +25,20 @@ pub struct ProjectSource {
     module_path: String,
     source: SourceSnapshot,
     syntax: Option<Arc<ParseResult>>,
+    origin: ModuleOrigin,
+}
+
+/// Where a module of a build comes from. Lint, `chimi doc --html`, doc
+/// examples and `chimi test` cover only [`ModuleOrigin::Own`] modules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModuleOrigin {
+    /// The entry package's, or a project's with no manifest.
+    #[default]
+    Own,
+    /// A package the entry package depends on, directly or not.
+    Dependency,
+    /// The standard tree.
+    Standard,
 }
 
 impl ProjectSource {
@@ -40,6 +54,7 @@ impl ProjectSource {
             module_path,
             source,
             syntax: None,
+            origin: ModuleOrigin::Own,
         })
     }
 
@@ -54,6 +69,15 @@ impl ProjectSource {
 
     pub fn module_path(&self) -> &str {
         &self.module_path
+    }
+
+    pub fn origin(&self) -> ModuleOrigin {
+        self.origin
+    }
+
+    pub(crate) fn with_origin(mut self, origin: ModuleOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     pub(crate) fn source(&self) -> &SourceSnapshot {
@@ -371,8 +395,8 @@ impl TypeReport {
     /// `include_standard` for the `std/` modules as well. Each is a warning
     /// whose code names its rule.
     pub fn lint(&self, include_standard: bool) -> Vec<Diagnostic> {
-        crate::lint::lint(&self.typed.resolved, |module_path| {
-            include_standard || !module_path.starts_with("std/")
+        crate::lint::lint(&self.typed.resolved, |origin| {
+            origin == ModuleOrigin::Own || (include_standard && origin == ModuleOrigin::Standard)
         })
     }
 }
@@ -758,6 +782,7 @@ fn lower_project_sources(mut sources: Vec<ProjectSource>) -> semantic::SemanticP
                 path: source.module_path,
                 source: source.source,
                 syntax: source.syntax,
+                origin: source.origin,
             })
             .collect(),
     )
@@ -916,7 +941,7 @@ mod tests {
         let text = concat!(
             "struct Answer { value: Int }\n",
             "struct Other { value: Int }\n",
-            "pub fn main() { Answer(42) }\n",
+            "pub fn main() { Answer { value: 42 } }\n",
         );
         let report = Compiler::check(source(text));
 
@@ -1660,9 +1685,9 @@ mod tests {
                 "struct Box<A> { value: A }\n",
                 "enum Maybe<A> { Some(value: A), None }\n",
                 "const provider = { value: 7, label: \"seven\" }\n",
-                "fn make_money() -> Money { Money(\"m-1\", 2500) }\n",
-                "fn boxed_int() -> Box<Int> { Box(1) }\n",
-                "fn boxed_text() -> Box<Text> { Box(\"text\") }\n",
+                "fn make_money() -> Money { Money { id: \"m-1\", cents: 2500 } }\n",
+                "fn boxed_int() -> Box<Int> { Box { value: 1 } }\n",
+                "fn boxed_text() -> Box<Text> { Box { value: \"text\" } }\n",
                 "fn maybe_int() -> Maybe<Int> { Some(1) }\n",
                 "fn read_money(value: Money) -> Int { value.cents }\n",
                 "fn read_record() -> Int { provider.value }\n",
@@ -1708,7 +1733,7 @@ mod tests {
                 "struct Money { cents: Int }\n",
                 "fn identity(value: Int) -> Int { value }\n",
                 "fn wrong_arity() -> Money { Money(1, 2) }\n",
-                "fn wrong_field_type() -> Money { Money(\"many\") }\n",
+                "fn wrong_field_type() -> Money { Money { cents: \"many\" } }\n",
                 "fn mixed_list() -> List<Int> { [1, \"two\"] }\n",
                 "fn wrong_call_arity() -> Int { identity() }\n",
             ),
@@ -1720,7 +1745,7 @@ mod tests {
                 .iter()
                 .map(Diagnostic::code)
                 .collect::<Vec<_>>(),
-            ["T4202", "T4203", "T4203", "T4202"]
+            ["T4216", "T4203", "T4203", "T4202"]
         );
         assert!(
             report
@@ -1731,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn positional_construction_fills_fields_in_declaration_order() {
+    fn named_construction_fills_fields_in_declaration_order() {
         let report = Compiler::run_project(
             vec![module(
                 "app/main",
@@ -1739,7 +1764,7 @@ mod tests {
                 concat!(
                     "struct Payment { id: Text, cents: Int }\n",
                     "enum Charge { Settled(payment: Payment, attempts: Int) }\n",
-                    "pub fn main() -> Charge { Settled(Payment(\"p-1\", 2500), 3) }\n",
+                    "pub fn main() -> Charge { Settled(Payment { id: \"p-1\", cents: 2500 }, 3) }\n",
                 ),
             )],
             ExecutionConfig::new("positional-construction").unwrap(),
@@ -1778,15 +1803,15 @@ mod tests {
     }
 
     #[test]
-    fn positional_construction_rejects_wrong_order_and_arity() {
+    fn struct_literals_reject_wrong_types_missing_and_unknown_fields() {
         let report = Compiler::type_project(vec![module(
-            "expressions/positional",
-            "positional.chimi",
+            "expressions/named",
+            "named.chimi",
             concat!(
                 "struct Payment { id: Text, cents: Int }\n",
-                "fn swapped() -> Payment { Payment(2500, \"p-1\") }\n",
-                "fn missing() -> Payment { Payment(\"p-1\") }\n",
-                "fn extra() -> Payment { Payment(\"p-1\", 2500, 3) }\n",
+                "fn swapped() -> Payment { Payment { id: 2500, cents: \"p-1\" } }\n",
+                "fn missing() -> Payment { Payment { id: \"p-1\" } }\n",
+                "fn extra() -> Payment { Payment { id: \"p-1\", cents: 2500, tip: 3 } }\n",
             ),
         )]);
 
@@ -1795,12 +1820,11 @@ mod tests {
             .iter()
             .map(Diagnostic::code)
             .collect::<Vec<_>>();
-        assert!(codes.contains(&"T4203"), "{codes:?}");
-        assert_eq!(codes.iter().filter(|code| **code == "T4202").count(), 2);
+        assert_eq!(codes, ["T4215", "T4205", "T4203", "T4203"], "{codes:?}");
     }
 
     #[test]
-    fn labelled_arguments_are_rejected_with_the_positional_form() {
+    fn labelled_arguments_are_rejected_and_struct_labels_become_braces() {
         let text = concat!(
             "struct Payment { id: Text, cents: Int }\n",
             "fn identity(value: Int) -> Int { value }\n",
@@ -1820,12 +1844,12 @@ mod tests {
             diagnostics,
             [
                 (
-                    "T4210",
-                    "Chimi arguments are positional; write `Payment(\"p-1\", 2500)`"
+                    "T4216",
+                    "a struct is built by field name in braces: `Payment { field: value, ... }`"
                 ),
                 (
-                    "T4210",
-                    "Chimi arguments are positional; pass `Payment` fields in declaration order (id, cents)"
+                    "T4216",
+                    "a struct is built by field name in braces: `Payment { field: value, ... }`"
                 ),
                 (
                     "T4210",
@@ -1834,8 +1858,12 @@ mod tests {
             ],
             "a recognised constructor rewrite must not cascade into type errors"
         );
-        let label = text.find("cents: 2500").unwrap() as u32;
-        assert_eq!(report.diagnostics()[0].range().start(), label);
+        let call = text.find("Payment(cents: 2500").unwrap() as u32;
+        assert_eq!(report.diagnostics()[0].range().start(), call);
+        assert_eq!(
+            report.diagnostics()[0].fixes().first().map(|fix| fix.replacement()),
+            Some("Payment { cents: 2500, id: \"p-1\" }")
+        );
     }
 
     #[test]
@@ -1997,20 +2025,20 @@ mod tests {
                 "fn recover_declined(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Declined(_reason)) -> Receipt(\"fallback\")\n",
+                "    Failure(Declined(_reason)) -> Receipt { id: \"fallback\" }\n",
                 "  }\n",
                 "}\n",
                 "fn recover_all(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(_error) -> Receipt(\"fallback\")\n",
+                "    Failure(_error) -> Receipt { id: \"fallback\" }\n",
                 "  }\n",
                 "}\n",
                 "fn guarded_recovery(mode: Int) -> Receipt {\n",
                 "  case operation(mode) {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Declined(_reason)) if True -> Receipt(\"declined\")\n",
-                "    Failure(Offline) -> Receipt(\"offline\")\n",
+                "    Failure(Declined(_reason)) if True -> Receipt { id: \"declined\" }\n",
+                "    Failure(Offline) -> Receipt { id: \"offline\" }\n",
                 "  }\n",
                 "}\n",
                 "fn remap(mode: Int) -> Receipt {\n",
@@ -2063,7 +2091,7 @@ mod tests {
                 "  fn() {\n",
                 "    case operation() {\n",
                 "      Success(receipt) -> receipt\n",
-                "      Failure(Declined(reason)) -> Receipt(reason)\n",
+                "      Failure(Declined(reason)) -> Receipt { id: reason }\n",
                 "    }\n",
                 "  }\n",
                 "}\n",
@@ -2071,7 +2099,7 @@ mod tests {
                 "  fn() {\n",
                 "    case operation() {\n",
                 "      Success(receipt) -> receipt\n",
-                "      Failure(Declined(reason)) if True -> Receipt(reason)\n",
+                "      Failure(Declined(reason)) if True -> Receipt { id: reason }\n",
                 "    }\n",
                 "  }\n",
                 "}\n",
@@ -2162,7 +2190,7 @@ mod tests {
                     "  fn() {\n",
                     "    case operation() {\n",
                     "      Success(receipt) -> receipt\n",
-                    "      Failure(Declined(reason)) -> Receipt(reason)\n",
+                    "      Failure(Declined(reason)) -> Receipt { id: reason }\n",
                     "    }\n",
                     "  }\n",
                     "}\n",
@@ -2202,13 +2230,13 @@ mod tests {
                     "  fn() {\n",
                     "    case operation() {\n",
                     "      Success(receipt) -> receipt\n",
-                    "      Failure(Declined(reason)) -> Receipt(reason)\n",
+                    "      Failure(Declined(reason)) -> Receipt { id: reason }\n",
                     "    }\n",
                     "  }\n",
                     "}\n",
                     "fn operation() -> Receipt {\n",
                     "  let _crash = 1 / 0\n",
-                    "  Receipt(\"unreachable\")\n",
+                    "  Receipt { id: \"unreachable\" }\n",
                     "}\n",
                     "pub fn main() -> Receipt {\n",
                     "  let configured = operation |> recover_declined\n",
@@ -2249,7 +2277,7 @@ mod tests {
             "fn recover_declined<E>(operation: fn() -> Receipt errors E) {\n",
             "  case operation() {\n",
             "    Success(receipt) -> receipt\n",
-            "    Failure(Declined(reason)) -> Receipt(reason)\n",
+            "    Failure(Declined(reason)) -> Receipt { id: reason }\n",
             "  }\n",
             "}\n",
             "fn operation() -> Receipt { Failure(Offline()) }\n",
@@ -2285,7 +2313,7 @@ mod tests {
                 "enum PaymentError { Declined(reason: Text), Offline }\n",
                 "fn operation() -> Receipt { Failure(Declined(\"no\")) }\n",
                 "fn raw_case() -> Receipt {\n",
-                "  case operation() { _ -> Receipt(\"raw\") }\n",
+                "  case operation() { _ -> Receipt { id: \"raw\" } }\n",
                 "}\n",
                 "fn incomplete() -> Receipt {\n",
                 "  case operation() {\n",
@@ -2295,20 +2323,20 @@ mod tests {
                 "fn impossible() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(Offline) -> Receipt(\"offline\")\n",
+                "    Failure(Offline) -> Receipt { id: \"offline\" }\n",
                 "  }\n",
                 "}\n",
                 "fn invalid_pattern() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(True) -> Receipt(\"invalid\")\n",
+                "    Failure(True) -> Receipt { id: \"invalid\" }\n",
                 "  }\n",
                 "}\n",
                 "fn unreachable_outcome() -> Receipt {\n",
                 "  case operation() {\n",
                 "    Success(receipt) -> receipt\n",
-                "    Failure(_error) -> Receipt(\"fallback\")\n",
-                "    Failure(Declined(_reason)) -> Receipt(\"duplicate\")\n",
+                "    Failure(_error) -> Receipt { id: \"fallback\" }\n",
+                "    Failure(Declined(_reason)) -> Receipt { id: \"duplicate\" }\n",
                 "  }\n",
                 "}\n",
                 "fn bad_failure() -> Int { Failure(1) }\n",
@@ -2631,7 +2659,7 @@ mod tests {
                 "basic_core.chimi",
                 concat!(
                     "struct Answer { value: Int }\n",
-                    "fn make(value: Int) -> Answer { Answer(value) }\n",
+                    "fn make(value: Int) -> Answer { Answer { value: value } }\n",
                     "pub fn main() -> Answer {\n",
                     "  let answer = make(42)\n",
                     "  answer\n",
@@ -2726,8 +2754,8 @@ mod tests {
                     "  let increment = fn(value: Int) -> Int { value + 1 }\n",
                     "  let configured_read = read using { source: provider }\n",
                     "  case maybe(configured_read()) {\n",
-                    "    Success(value) -> Answer(value |> increment)\n",
-                    "    Failure(Failed) -> Answer(-1)\n",
+                    "    Success(value) -> Answer { value: value |> increment }\n",
+                    "    Failure(Failed) -> Answer { value: -1 }\n",
                     "  }\n",
                     "}\n",
                 ),
@@ -3413,12 +3441,12 @@ pub fn main(counts: Map<Text, Int>) -> Map<Text, Int> { Map.put(counts, \"key\",
                     "enum Tree {{\n  Leaf\n  Node(left: Tree, right: Tree)\n}}\n",
                     "struct Pair {{ tree: Tree, levels: Int }}\n",
                     "fn grown(depth: Int) -> Pair {{\n",
-                    "  loop state = {{ left: depth, pair: Pair(Leaf, 0) }} {{\n",
+                    "  loop state = {{ left: depth, pair: Pair {{ tree: Leaf, levels: 0 }} }} {{\n",
                     "    case state.left {{\n",
                     "      0 -> break state.pair\n",
                     "      _ -> {{\n",
                     "        left: state.left - 1,\n",
-                    "        pair: Pair(Node(state.pair.tree, state.pair.tree), state.pair.levels + 1),\n",
+                    "        pair: Pair {{ tree: Node(state.pair.tree, state.pair.tree), levels: state.pair.levels + 1 }},\n",
                     "      }}\n",
                     "    }}\n",
                     "  }}\n",

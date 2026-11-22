@@ -2,8 +2,7 @@
 // (never choosing one), invalid numbers and escapes, and nesting past 128
 // levels, each with the same message and byte offset on both backends.
 import std/debug as Debug
-import std/json as Json
-import std/json.{DecodeError}
+import std/json as Json.{DecodeError}
 import std/text as Text
 import std/test as Test
 

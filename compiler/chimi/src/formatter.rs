@@ -22,7 +22,11 @@ impl FormatReport {
             };
         }
 
-        let formatted = crate::doc_examples::format_examples(&format_parse(&parsed), |code| {
+        // Joining split imports edits the source, so the result is parsed again.
+        let joined = join_split_imports(source.text(), &parsed)
+            .map(|text| parse(&SourceSnapshot::from_text(source.path(), text)));
+        let parsed = joined.as_ref().unwrap_or(&parsed);
+        let formatted = crate::doc_examples::format_examples(&format_parse(parsed), |code| {
             let example = SourceSnapshot::from_text(source.path(), code.to_owned());
             let parsed = parse(&example);
             parsed.diagnostics().is_empty().then(|| format_parse(&parsed))
@@ -62,6 +66,149 @@ impl FormatReport {
         }
         output
     }
+}
+
+/// One file-scope import line, as the import join sees it.
+struct ImportLine {
+    path: String,
+    alias: Option<String>,
+    members: Option<Vec<String>>,
+    /// The import's own text, from `import` to its last token.
+    text: std::ops::Range<usize>,
+    /// The whole line or lines it fills, with the newline that ends it.
+    lines: std::ops::Range<usize>,
+    /// False when a comment or other code shares its lines.
+    joinable: bool,
+}
+
+/// Joins `import p as A` with `import p.{T}` into `import p as A.{T}`
+/// (decisions.md 2026-11-22), at the first of the lines. A path is joined only
+/// when it has exactly one alias-only import, at least one member-only import,
+/// no combined import already, no member named twice (the conflict stays
+/// visible), and no comment from its first import line to its last. Returns
+/// `None` when nothing is joined.
+fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
+    let lines: Vec<ImportLine> = parsed
+        .root()
+        .child_nodes()
+        .into_iter()
+        .filter(|node| node.kind() == NodeKind::ImportDeclaration)
+        .filter_map(|node| import_line(source, &node))
+        .collect();
+    let comments: Vec<usize> = parsed
+        .root()
+        .descendant_tokens()
+        .into_iter()
+        .filter(|token| token.kind() == TokenKind::Comment)
+        .map(|token| token.range().start() as usize)
+        .collect();
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let mut seen_paths: Vec<&str> = Vec::new();
+    for line in &lines {
+        if seen_paths.contains(&line.path.as_str()) {
+            continue;
+        }
+        seen_paths.push(&line.path);
+        let same_path: Vec<&ImportLine> =
+            lines.iter().filter(|other| other.path == line.path).collect();
+        let aliases: Vec<&&ImportLine> = same_path
+            .iter()
+            .filter(|other| other.alias.is_some())
+            .collect();
+        let member_lines: Vec<&&ImportLine> =
+            same_path.iter().filter(|other| other.members.is_some()).collect();
+        let [alias_line] = aliases.as_slice() else {
+            continue;
+        };
+        if member_lines.is_empty()
+            || alias_line.members.is_some()
+            || same_path.iter().any(|other| !other.joinable)
+        {
+            continue;
+        }
+        let span = same_path[0].lines.start..same_path[same_path.len() - 1].lines.end;
+        if comments.iter().any(|offset| span.contains(offset)) {
+            continue;
+        }
+        let members: Vec<&str> = member_lines
+            .iter()
+            .flat_map(|other| other.members.iter().flatten())
+            .map(String::as_str)
+            .collect();
+        if (1..members.len()).any(|index| members[..index].contains(&members[index])) {
+            continue;
+        }
+        let alias = alias_line.alias.as_deref().unwrap_or_default();
+        let joined = format!("import {} as {alias}.{{{}}}", line.path, members.join(", "));
+        edits.push((same_path[0].text.clone(), joined));
+        for other in &same_path[1..] {
+            edits.push((other.lines.clone(), String::new()));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut text = source.to_owned();
+    for (range, replacement) in edits {
+        text.replace_range(range, &replacement);
+    }
+    Some(text)
+}
+
+fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<ImportLine> {
+    let tokens = node.descendant_tokens();
+    if tokens.iter().any(|token| token.is_missing()) {
+        return None;
+    }
+    let significant: Vec<_> = tokens
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Whitespace | TokenKind::Newline | TokenKind::End
+            )
+        })
+        .collect();
+    let start = significant.first()?.range().start() as usize;
+    let end = significant.last()?.range().end() as usize;
+    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[end..]
+        .find('\n')
+        .map_or(source.len(), |index| end + index + 1);
+    // Another item or a trailing comment on the same line keeps it as written.
+    let joinable = source[line_start..start].trim().is_empty()
+        && source[end..line_end].trim().is_empty()
+        && !tokens.iter().any(|token| token.kind() == TokenKind::Comment);
+    let mut path = Vec::new();
+    let mut alias = None;
+    let mut members = None;
+    for child in node.child_nodes() {
+        let names: Vec<String> = child
+            .descendant_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier)
+            .map(|token| token.text().to_owned())
+            .collect();
+        match child.kind() {
+            NodeKind::ImportAlias => alias = names.into_iter().next(),
+            NodeKind::ImportMembers => members = Some(names),
+            _ => {}
+        }
+    }
+    for token in node.child_tokens() {
+        if token.kind() == TokenKind::Identifier {
+            path.push(token.text().to_owned());
+        }
+    }
+    Some(ImportLine {
+        path: path.join("/"),
+        alias,
+        members,
+        text: start..end,
+        lines: line_start..line_end,
+        joinable,
+    })
 }
 
 fn format_parse(parsed: &ParseResult) -> String {
@@ -161,8 +308,12 @@ fn format_parse(parsed: &ParseResult) -> String {
             }
         }
         // A record type is written on one line, like the type it sits in, and so
-        // is a short record or record update.
-        if is_record_type_syntax(token) || in_short_record(token) || in_short_lambda(token) {
+        // are a short record or record update and a type alias.
+        if is_record_type_syntax(token)
+            || in_short_record(token)
+            || in_short_lambda(token)
+            || token_has_ancestor(token, &[NodeKind::TypeAliasDeclaration])
+        {
             match kind {
                 TokenKind::Newline => {
                     writer.space();
@@ -185,7 +336,12 @@ fn format_parse(parsed: &ParseResult) -> String {
                 }
                 TokenKind::RightBrace => {
                     writer.trim_space();
-                    writer.write(" }");
+                    // A struct without fields is written `Marker {}`.
+                    if writer.line().ends_with('{') {
+                        writer.write("}");
+                    } else {
+                        writer.write(" }");
+                    }
                     previous = Some(kind);
                     saw_newline = false;
                     continue;
@@ -235,8 +391,11 @@ fn format_parse(parsed: &ParseResult) -> String {
                     next == Some(TokenKind::LeftBrace) && is_requirement_syntax(token);
                 let continues_header = next_significant_token(&tokens, index + 1)
                     .is_some_and(|next| opens_header_body(&next));
+                // A struct pattern's `}` continues its arm, clause or binding.
+                let ends_pattern = token.parent().kind() == NodeKind::Pattern;
                 if !continues_requirement
                     && !continues_header
+                    && !ends_pattern
                     && !matches!(
                         next,
                         Some(TokenKind::Comma | TokenKind::RightParen | TokenKind::Using)
@@ -404,7 +563,8 @@ fn should_join_line(previous: Option<TokenKind>, next: Option<SyntaxToken<'_>>) 
     let Some(next) = next else {
         return false;
     };
-    next.kind() == TokenKind::Needs
+    // A signature's `needs` continues its line; a needs group item starts its own.
+    next.kind() == TokenKind::Needs && next.parent().kind() != NodeKind::NeedsGroupDeclaration
         || next.kind() == TokenKind::LeftBrace
             && matches!(
                 previous,
@@ -454,7 +614,9 @@ const SHORT_RECORD_WIDTH: usize = 60;
 fn in_short_record(token: &SyntaxToken<'_>) -> bool {
     let mut node = Some(token.parent());
     while let Some(current) = node {
-        if current.kind() == NodeKind::RecordExpression && is_short_record(&current) {
+        if (current.kind() == NodeKind::RecordExpression || is_struct_pattern(&current))
+            && is_short_record(&current)
+        {
             return true;
         }
         node = current.parent();
@@ -493,6 +655,15 @@ fn is_short_lambda(function: &crate::syntax::SyntaxNode<'_>) -> bool {
     true
 }
 
+/// Whether `node` is a struct pattern, `Name { field: pattern, .. }`.
+fn is_struct_pattern(node: &crate::syntax::SyntaxNode<'_>) -> bool {
+    node.kind() == NodeKind::Pattern
+        && node
+            .child_tokens()
+            .iter()
+            .any(|token| token.kind() == TokenKind::LeftBrace)
+}
+
 fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
     let mut width = 0_usize;
     for token in record.descendant_tokens() {
@@ -502,7 +673,7 @@ fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
             TokenKind::LeftBrace | TokenKind::RightBrace
                 if !matches!(
                     token.parent().kind(),
-                    NodeKind::RecordExpression | NodeKind::RecordType
+                    NodeKind::RecordExpression | NodeKind::RecordType | NodeKind::Pattern
                 ) && !in_short_lambda(&token) =>
             {
                 return false;
@@ -602,10 +773,12 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     // A type argument list's `>` is written tight, so the word after it, as in
     // `fn(T) -> Option<U> errors E`, needs its own space.
     // A record type's `}` before a signature's `errors` or `needs`, as in
-    // `-> { status: Status } needs { ... }`, needs one too.
+    // `-> { status: Status } needs { ... }`, needs one too, as does a struct pattern's
+    // `}` before a guard or an alias, as in `Money { cents: c, .. } if c > 0`.
     (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
-        || previous == TokenKind::RightBrace && matches!(current, TokenKind::Errors | TokenKind::Needs)
+        || previous == TokenKind::RightBrace
+            && matches!(current, TokenKind::Errors | TokenKind::Needs | TokenKind::If | TokenKind::As)
 }
 
 const fn word_kind(kind: TokenKind) -> bool {

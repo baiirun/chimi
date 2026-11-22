@@ -12,8 +12,7 @@
 /// Retry cannot check that.
 
 import std/clock as Clock
-import std/schedule as Schedule
-import std/schedule.{Schedule}
+import std/schedule as Schedule.{Schedule}
 
 // 1. Public types.
 
@@ -32,7 +31,7 @@ pub struct Policy<E> {
 ///
 /// Cost: O(1).
 pub fn policy<E>(schedule: Schedule, retryable: fn(E) -> Bool) -> Policy<E> {
-  Policy(schedule, retryable)
+  Policy { schedule: schedule, retryable: retryable }
 }
 
 // 3. Running.

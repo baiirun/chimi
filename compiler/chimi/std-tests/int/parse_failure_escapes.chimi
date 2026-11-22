@@ -1,9 +1,7 @@
 // A failing Int.parse is an expected failure of its source-declared
 // ParseError enum.
-import std/int as Int
-import std/int.{ParseError}
-import std/result as Result
-import std/result.{Err}
+import std/int as Int.{ParseError}
+import std/result as Result.{Err}
 import std/test as Test
 
 fn run() -> Int {

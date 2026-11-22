@@ -508,6 +508,10 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     test_only("std/fs.test_root", 1, StandardFunction::FsTestRoot),
     host("std/signal.host_install", 0, StandardFunction::SignalHostInstall),
     host("std/signal.host_wait", 1, StandardFunction::SignalHostWait),
+    host("std/log.host_minimum_level", 0, StandardFunction::LogHostMinimumLevel),
+    host("std/log.host_write", 3, StandardFunction::LogHostWrite),
+    host("std/metrics.host_enabled", 0, StandardFunction::MetricsHostEnabled),
+    host("std/metrics.host_record", 4, StandardFunction::MetricsHostRecord),
 ];
 
 /// A capability the runner closes on `main` with a provider written in the
@@ -552,6 +556,16 @@ pub(crate) const RUNNER_PROVIDERS: &[RunnerProvider] = &[
         interface: StandardType::Network,
         need: "network",
         provider: "std/net.system",
+    },
+    RunnerProvider {
+        interface: StandardType::Log,
+        need: "log",
+        provider: "std/log.host",
+    },
+    RunnerProvider {
+        interface: StandardType::Metrics,
+        need: "metrics",
+        provider: "std/metrics.host",
     },
 ];
 
@@ -618,6 +632,8 @@ pub(crate) const RUNTIME_KNOWN: &[RuntimeKnownDeclaration] = &[
     known_interface("std/net.Network", StandardType::Network),
     known_interface("std/exec.Commands", StandardType::Commands),
     known_interface("std/terminal.Terminal", StandardType::Terminal),
+    known_interface("std/log.Log", StandardType::Log),
+    known_interface("std/metrics.Metrics", StandardType::Metrics),
     native_type("std/exec.Builder", StandardType::BindingHandle),
     native_type("std/exec.Process", StandardType::BindingHandle),
     native_type("std/exec.Pipe", StandardType::BindingHandle),

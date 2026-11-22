@@ -25,7 +25,8 @@ production runtime architecture or the complete future Chimi language.
 The kernel specifies:
 
 - files, modules, imports, visibility, and name identity;
-- nominal structs, closed enums, anonymous records, and core value types;
+- nominal structs, closed enums, anonymous records, type aliases, and core
+  value types;
 - functions, generics, expressions, blocks, pipelines, and pattern matching;
 - success, expected-failure, and dependency-needs channels;
 - structural dependency interfaces and provision with `using`;
@@ -33,7 +34,7 @@ The kernel specifies:
 - lossless parsing, semantic lowering, diagnostics, formatting, inspection, and
   frontend performance obligations.
 
-It does not specify aliases, newtypes, nullability, exceptions, standalone
+It does not specify newtypes, nullability, exceptions, standalone
 conditionals, macros, mutation, resource ownership, structured concurrency,
 supervision, durability, a permanent backend, an artifact format, package
 management, deployment, or interoperability.
@@ -67,7 +68,7 @@ The parser MUST consume the entire file even when the source is malformed.
 Each source file defines one module. Its workspace-relative path is its stable
 module identity. Source files MUST NOT contain module headers.
 
-A module's items are imports, `struct`, `enum`, `interface`, and `fn`
+A module's items are imports, `struct`, `enum`, `interface`, `type`, and `fn`
 declarations, and `const` and `pub const` declarations. A module-level `let`
 is rejected with `L2101`, whose edit replaces `let` with `const`; see
 [standard modules and constants](standard-modules-and-constants.md). An expression at file scope is not a module
@@ -99,6 +100,22 @@ import billing/money.{Money, NegativeAmount}
 Member imports MUST NOT bind functions. Bare module imports and wildcard member
 imports are invalid.
 
+One import line MAY bind the alias and members together, with the member list
+after the alias:
+
+<!-- chimi: fragment -->
+```chimi
+import billing/money as BillingMoney.{Money, NegativeAmount}
+```
+
+It means exactly the two lines `import billing/money as BillingMoney` and
+`import billing/money.{Money, NegativeAmount}`: the alias stays required and
+written, and the members follow the member-import rules above. An unknown
+module on such a line is reported once. The formatter joins a module's
+alias-only import and its member-only imports into this form, at the first of
+those lines, unless one of them carries a comment or shares its line with
+other code (decisions.md, 2026-11-22).
+
 Imports MUST NOT form a cycle. The project loader rejects a cycle while reading
 modules from disk, and the compiler rejects one among sources it is given with
 `E_IMPORT_CYCLE` at the import that closes it, listing the path, as in
@@ -109,9 +126,9 @@ external reference carries a stable module-qualified symbol identity even when
 an explicit member import permits an unqualified source spelling.
 
 Declarations are private unless prefixed with `pub`. Publishing a struct
-exposes its nominal type but does not expose its fields or implicit constructor.
+exposes its nominal type but does not expose its fields or its struct literal.
 External construction and field access therefore use public module functions.
-Calling the implicit constructor from another module is
+A struct literal of another module's struct is
 `E_PRIVATE_STRUCT_CONSTRUCTOR`, and reading a field there is
 `E_PRIVATE_STRUCT_FIELD`.
 Publishing an enum exposes its variants as constructors.
@@ -129,14 +146,43 @@ struct Money {
 }
 ```
 
-Fields have declared types. Construction is positional: `Money(2500)` MUST
-supply exactly one value per field, in declaration order, each compatible with
-its field's type. Call and construction arguments carry no labels; a labelled
-argument such as `Money(cents: 2500)` is a type error. Field order is therefore
-part of a struct's public shape: reordering fields is a breaking change for
-every construction site. Field names remain the identity for field access
-(`value.cents`). Struct representation is all-or-nothing; the kernel has no
-per-field visibility modifiers.
+Fields have declared types. A struct is built by field name, in braces:
+
+<!-- chimi: fragment -->
+```chimi
+Money { cents: 2500 }
+```
+
+A struct literal MUST name every field exactly once, in any order, each with a
+value compatible with the field's type. A missing field is `T4215`, a field
+the struct does not declare is `T4205`, and a field named twice is `T4211`.
+The values evaluate in source order, left to right, whatever the declaration
+order. Field names are the identity for construction as for access
+(`value.cents`), so reordering a struct's fields changes no construction site.
+`..base` inside a struct literal is `S1001`; a copy with some fields changed is
+a [record update](patterns-and-function-clauses.md#record-update),
+`{ ..base, cents: 0 }`. A struct without fields is built with empty braces,
+`Marker {}`.
+
+Positional construction such as `Money(2500)` is `T4216`, whose fix writes the
+struct literal (in parentheses when the call is a `case` subject), and so is a
+labelled call such as `Money(cents: 2500)`. A struct's constructor is not a function value: `let make = Money` and
+`value |> Money` are `T4216` too; write `fn(cents) { Money { cents: cents } }`.
+Braces with field names after anything that is not a struct of the module,
+such as an enum variant, a function, a field, or a local or parameter that
+shares a struct's name, are `T4217`. Another module's struct is
+`E_PRIVATE_STRUCT_CONSTRUCTOR`, since its fields are private to its module;
+a member import binds the struct's type but no constructor, so a bare
+imported name before braces does not resolve as a value. Function calls and enum variant
+constructors stay positional.
+
+A struct literal after a bare name or a qualified name is read as one wherever
+an expression is, except in a `case` subject, where `{` opens the arms and
+an arm may start with a typed binding `name: Type`. There it needs
+parentheses: `case (Money { cents: 0 }) == total { ... }`.
+
+Struct representation is all-or-nothing; the kernel has no per-field
+visibility modifiers.
 
 ### Enums
 
@@ -151,7 +197,7 @@ enum PaymentError {
 ```
 
 Each variant is a constructor. Construction is positional in the variant's
-declared field order, as for structs: `PaymentError.Declined("card")`. Payload
+declared field order: `PaymentError.Declined("card")`. Payload
 field order is part of the enum's public shape. Variant patterns MUST use the
 declared payload arity and match payload fields by the same position.
 
@@ -161,9 +207,10 @@ expressions and patterns: `PaymentError.GatewayUnavailable`, `None`,
 `PaymentError.GatewayUnavailable()` is accepted as the same value. The
 formatter keeps whichever form the source uses, because it works on syntax
 alone and cannot tell a fieldless variant from a zero-argument call; a linter
-MAY suggest the bare form. A struct or variant constructor with fields is
-a function of its fields, so `let make = Some` and `value |> Some` are valid
-and `make(value)` constructs as `Some(value)` does.
+MAY suggest the bare form. A variant constructor with fields is a function
+of its fields, so `let make = Some` and `value |> Some` are valid and
+`make(value)` constructs as `Some(value)` does. A struct's constructor is not;
+see [Structs](#structs).
 
 ### Anonymous records
 
@@ -195,7 +242,49 @@ also that type's only value, written `Void`, as
 [core data](core-data-and-operators.md#void) specifies. An empty block is
 invalid and MUST NOT stand in for completion.
 
-Aliases and newtype-like declarations are not part of the first kernel.
+### Type aliases
+
+`type` gives an existing type another name:
+
+<!-- chimi: check -->
+```chimi
+pub type Settings = { max_headers: Int, max_body_bytes: Int }
+
+enum StockError {
+  OutOfStock
+}
+
+enum PaymentError {
+  Declined
+}
+
+type CheckoutError = StockError | PaymentError
+```
+
+An alias is the same type as what it names, not a new nominal type: a
+`Settings` parameter accepts any record with exactly those fields, and a value
+of type `Settings` is a `{ max_headers: Int, max_body_bytes: Int }`. An alias
+of a failure set is that set wherever the set may be written, in an ordinary
+type position and after `errors` in a function type alike, so
+`fn() -> Int errors CheckoutError` is `fn() -> Int errors StockError |
+PaymentError`. An alias of any other type after `errors` is `T4102`.
+
+- An alias may be used anywhere in its module, above its declaration
+  included, and `pub type` publishes it like any other type: through the
+  module alias (`Http.Settings`) or a member import. Using a private alias
+  from another module is `E_PRIVATE_SYMBOL`.
+- An alias MUST NOT reach itself through aliases alone (`T4361`), as in
+  `type Wrapped = Option<Wrapped>`, including through a function type's
+  `needs` row: an alias names a type that already
+  exists, so a recursive type is a struct or enum. A struct or enum in
+  between ends the chain, so `type Tree = { root: Node }` with a `Node` field
+  of type `List<Tree>` is valid.
+- An alias takes no type parameters (`L2130`), and a use of one takes no type
+  arguments (`T4362`). Declare a generic struct or enum instead.
+- `chimi doc` shows a signature with the alias names it was written with.
+  Diagnostics and hover show the type the alias names.
+
+Newtype-like declarations are not part of the first kernel.
 
 ## Generics
 
@@ -518,6 +607,52 @@ fn checkout(cart: Cart) needs {
 Each need has a lexical name and an interface type. Composition unions
 compatible needs. Reusing one name with incompatible interface types is a
 diagnostic.
+
+A function with no `needs` clause has its needs inferred from its body. A
+written clause is complete (decisions.md, 2026-11-22): every need the body
+reaches, directly or through the functions it calls, MUST be listed, and so
+MUST a runner-closed need such as `clock: Clock` or `console: Console`. A need
+the clause leaves out is `T4204` at the function's name, naming the entry to
+add. A name the body reaches with two interfaces, including a written entry
+whose interface differs from the reached one, is `T4103` there instead. On
+`main`, only a runner-closed need is `T4204`; any other unclosed need is the
+root check's `E5002`, since listing it would not supply it. A need a `using` in the body supplies is not reached, and a row parameter
+the clause writes (`needs R + { clock: Clock }`) covers whatever binds it. The
+clause MAY list a need the body does not reach; the contract then still
+carries it.
+
+A module MAY name a set of needs with a needs group (G24, decisions.md
+2026-11-22):
+
+<!-- chimi: fragment -->
+```chimi
+pub needs Shop {
+  inventory: Inventory,
+  clock: Clock,
+}
+
+fn handle(order: Order) -> Void needs Shop + { log: Log } {
+  inventory.reserve(order)
+}
+```
+
+A group is only a name for its entries. A needs clause writes it alone or
+combined with `+`, like a generic row parameter; another module names it
+through its alias (`needs Checkout.Shop`) or a member import, as for a type,
+and a private group stays in its module. The body binds each entry by name, as
+if the clause had written it, and inference, `using`, the root check and the
+complete-needs rule all work entry by entry; an entry's interface is read in
+the group's own module. Terms that name the same need combine, so two groups
+may share `clock: Clock`, but one name with two interfaces is `T4103`. A name
+that is neither a generic row parameter nor a group (`needs Inventory`) is
+`E_UNRESOLVED_TYPE`; inside a function, its own generic row parameter takes
+the name first, as generics do for types. A group's entries are written
+fields only: a group does not include another group yet. A group is not a
+type, so writing one where a type goes (`fn f(x: Shop)`) is
+`E_UNRESOLVED_TYPE`. An entry whose function type needs its own group, directly
+or through another group, is `T4104` at that clause. A report about a group's
+entry from a function that uses it, such as `T4103` or a parameter with an
+entry's name, points at the group in that function's clause.
 
 An `interface` is a structural record of function contracts:
 

@@ -1014,7 +1014,7 @@ fn native_channel_send_recovers_a_struct_through_a_variant_pattern() {
             "pub fn main() -> Int {\n",
             "  let channel = Channel.bounded(1)\n",
             "  Channel.close(channel.completion)\n",
-            "  push(channel.sender, Order(7))\n",
+            "  push(channel.sender, Order { id: 7 })\n",
             "}\n",
         ),
     )
@@ -2100,8 +2100,8 @@ fn native_checkout_service_forces_the_phase_3_surface() {
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
         .args(["build", "--root"])
-        .arg(&root)
-        .args(["app/main", "-o"])
+        .arg(root.join("service"))
+        .args(["service/main", "-o"])
         .arg(&executable)
         .output()
         .expect("build the checkout-service forcing program");
@@ -2146,11 +2146,12 @@ fn native_checkout_service_forces_the_phase_3_surface() {
         );
     }
 
+    // The whole workspace: both packages' tests, of which only `checkout`
+    // has any.
     let tests = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(&scratch)
-        .args(["test", "--root"])
+        .arg("test")
         .arg(&root)
-        .arg("app/checkout_test")
         .output()
         .expect("run the checkout-service tests");
     let report = String::from_utf8_lossy(&tests.stdout);
@@ -3158,7 +3159,7 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi: check and run received unexpected arguments\n",
             "usage: chimi --version | chimi format <path> | chimi doc [--json] <path> | ",
             "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
-            "chimi doc --html <directory> (<path> | --root <project-dir> <module> | std) | ",
+            "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
             "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
             "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | ",
             "chimi inspect <path> <byte-offset> | ",
@@ -3168,12 +3169,14 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi check [--json] --root <project-dir> <entry-module> | ",
             "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
-            "[-o <executable>] [--target <triple>] | chimi test [<path> | --root <project-dir> <module>] [--filter=<text>] ",
+            "[-o <executable>] [--target <triple>] | chimi test [<path> | <directory> | --root <project-dir> <module>] [--filter=<text>] ",
             "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
             "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
             "[--trace=off|boundaries|full] | ",
-            "chimi std check | chimi std test [<test option>...]; a compiler developer may put ",
-            "--std-dir <directory> before inspect, check, run, build, test, std check, or std test\n"
+            "chimi std check | chimi std test [<test option>...] | ",
+            "chimi deps update [--root <directory>] [<package>...]; --offline before a command that ",
+            "loads a program uses only the dependency cache; a compiler developer may put ",
+            "--std-dir <directory> first, before inspect, check, run, build, test, std check, or std test\n"
         )
     );
 }
@@ -4438,10 +4441,10 @@ fn native_marking_work_is_linear_in_the_nesting_depth_a_loop_builds() {
                 "enum Nest {{\n  Leaf\n  Wrap(children: List<Nest>)\n}}\n",
                 "struct Build {{ depth: Int, nest: Nest }}\n",
                 "pub fn main() -> Bool {{\n",
-                "  let built = loop state = Build({depth}, Leaf) {{\n",
+                "  let built = loop state = Build {{ depth: {depth}, nest: Leaf }} {{\n",
                 "    case state.depth {{\n",
                 "      0 -> break state.nest\n",
-                "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+                "      _ -> Build {{ depth: state.depth - 1, nest: Wrap([state.nest]) }}\n",
                 "    }}\n",
                 "  }}\n",
                 "  built != Leaf\n",
@@ -5061,7 +5064,7 @@ fn native_task_result_can_be_read_on_every_pass_of_a_loop() {
             "  b: Text,\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  let child = Task.start(fn() -> Answer { Answer(40, \"two\") })\n",
+            "  let child = Task.start(fn() -> Answer { Answer { a: 40, b: \"two\" } })\n",
             "  loop state = { pass: 0, sum: 0 } {\n",
             "    case state.pass {\n",
             "      1000 -> break state.sum\n",
@@ -5109,7 +5112,7 @@ fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
             "    case state.left {\n",
             "      0 -> break state.made\n",
             "      _ -> {\n",
-            "        let garbage = Reply(Text.append(\"xx\", \"xxx\"), [state.left, state.left, state.left])\n",
+            "        let garbage = Reply { label: Text.append(\"xx\", \"xxx\"), values: [state.left, state.left, state.left] }\n",
             "        { left: state.left - 1, made: state.made + List.length(garbage.values) }\n",
             "      }\n",
             "    }\n",
@@ -5120,7 +5123,7 @@ fn native_a_value_a_finished_task_put_on_a_channel_survives_its_heap() {
             "  let sender = channel.sender\n",
             "  let base = 40\n",
             "  let child = Task.start(fn() -> Int {\n",
-            "    Channel.send(sender, Reply(Text.append(\"re\", \"ply\"), [base, base + 1, base + 2]))\n",
+            "    Channel.send(sender, Reply { label: Text.append(\"re\", \"ply\"), values: [base, base + 1, base + 2] })\n",
             "    1\n",
             "  })\n",
             "  let finished = Task.result(child)\n",
@@ -5543,13 +5546,13 @@ fn native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect() {
             "}\n",
             "struct Round { left: Int, total: Int }\n",
             "pub fn main() -> Int {\n",
-            "  loop state = Round(2, 0) {\n",
+            "  loop state = Round { left: 2, total: 0 } {\n",
             "    case state.left {\n",
             "      0 -> break state.total\n",
             "      _ -> {\n",
             "        let items = build(20000, [])\n",
             "        let child = Task.start(fn() -> Int { List.length(items) })\n",
-            "        Round(state.left - 1, state.total + Task.result(child))\n",
+            "        Round { left: state.left - 1, total: state.total + Task.result(child) }\n",
             "      }\n",
             "    }\n",
             "  }\n",
@@ -5598,10 +5601,10 @@ fn native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect() {
             "    Some(text) -> Int.parse(text)\n",
             "    None -> 0\n",
             "  }\n",
-            "  loop state = Round(2, 0) {\n",
+            "  loop state = Round { left: 2, total: 0 } {\n",
             "    case state.left {\n",
             "      0 -> break state.total\n",
-            "      _ -> Round(state.left - 1, state.total + List.length(build(depth, [])))\n",
+            "      _ -> Round { left: state.left - 1, total: state.total + List.length(build(depth, [])) }\n",
             "    }\n",
             "  }\n",
             "}\n",
@@ -5668,18 +5671,18 @@ fn native_tasks_capture_render_encode_and_send_deeply_nested_values() {
             "struct Hold { depth: Int, holder: Holder }\n",
             "struct JsonBuild { depth: Int, value: Json.Value }\n",
             "fn nested(depth: Int) -> Nest {\n",
-            "  loop state = Build(depth, Leaf) {\n",
+            "  loop state = Build { depth: depth, nest: Leaf } {\n",
             "    case state.depth {\n",
             "      0 -> break state.nest\n",
-            "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+            "      _ -> Build { depth: state.depth - 1, nest: Wrap([state.nest]) }\n",
             "    }\n",
             "  }\n",
             "}\n",
             "fn json_nested(depth: Int) -> Json.Value {\n",
-            "  loop state = JsonBuild(depth, Json.Value.Null) {\n",
+            "  loop state = JsonBuild { depth: depth, value: Json.Value.Null } {\n",
             "    case state.depth {\n",
             "      0 -> break state.value\n",
-            "      _ -> JsonBuild(state.depth - 1, Json.Value.Array([state.value]))\n",
+            "      _ -> JsonBuild { depth: state.depth - 1, value: Json.Value.Array([state.value]) }\n",
             "    }\n",
             "  }\n",
             "}\n",
@@ -5716,10 +5719,10 @@ fn native_tasks_capture_render_encode_and_send_deeply_nested_values() {
             "  Channel.close(reply_completion)\n",
             "  let numbers = Channel.bounded(1)\n",
             "  let number_sender = numbers.sender\n",
-            "  let held = loop state = Hold(100000, Bottom(numbers.receiver)) {\n",
+            "  let held = loop state = Hold { depth: 100000, holder: Bottom(numbers.receiver) } {\n",
             "    case state.depth {\n",
             "      0 -> break state.holder\n",
-            "      _ -> Hold(state.depth - 1, Around([state.holder]))\n",
+            "      _ -> Hold { depth: state.depth - 1, holder: Around([state.holder]) }\n",
             "    }\n",
             "  }\n",
             "  let reader = Task.start(fn() -> Int { innermost(held) })\n",
@@ -5834,7 +5837,7 @@ fn native_a_queued_message_survives_the_senders_later_passes() {
             "    case count {\n",
             "      100 -> break count\n",
             "      _ -> {\n",
-            "        Channel.send(sender, Message(count + 1, \"job\"))\n",
+            "        Channel.send(sender, Message { value: count + 1, label: \"job\" })\n",
             "        count + 1\n",
             "      }\n",
             "    }\n",
@@ -6139,7 +6142,7 @@ fn tally_program(step: &str) -> String {
             "}}\n",
             "{step}\n",
             "pub fn main() -> Int {{\n",
-            "  loop state = (0, Tally(0, 0, 0)) {{\n",
+            "  loop state = (0, Tally {{ a: 0, b: 0, other: 0 }}) {{\n",
             "    let (i, tally) = state\n",
             "    case i {{\n",
             "      2000 -> break tally.a + 10 * tally.b + 100 * tally.other\n",
@@ -6216,7 +6219,7 @@ fn native_record_update_allocates_what_the_written_out_constructor_allocates() {
         json_u64_field(&report, "scoped_total_allocated_bytes")
     };
     let update = measure("update", "{ ..tally, b: tally.b + 1 }");
-    let constructor = measure("constructor", "Tally(tally.a, tally.b + 1, tally.other)");
+    let constructor = measure("constructor", "Tally { a: tally.a, b: tally.b + 1, other: tally.other }");
     assert_eq!(
         update, constructor,
         "update {update} bytes, constructor {constructor} bytes"

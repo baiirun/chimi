@@ -325,6 +325,47 @@ impl Evaluator<'_> {
                 node: Some(call_node),
                 cause: None,
             },
+            (StandardFunction::LogHostMinimumLevel, []) => {
+                Control::Success(RuntimeValue::Integer(self.config.log_level))
+            }
+            (
+                StandardFunction::LogHostWrite,
+                [
+                    RuntimeValue::Integer(level),
+                    RuntimeValue::Text(message),
+                    RuntimeValue::Text(fields),
+                ],
+            ) => {
+                let line = log_line(*level, message, fields);
+                match &self.config.log_file {
+                    None => self.application_stderr.push_str(&line),
+                    // A log line that cannot be written is lost, as on the
+                    // native runner: logging never fails the program.
+                    Some(path) => {
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut file| file.write_all(line.as_bytes()));
+                    }
+                }
+                Control::Success(RuntimeValue::Void)
+            }
+            (StandardFunction::MetricsHostEnabled, []) => {
+                Control::Success(RuntimeValue::Boolean(self.config.metrics_file.is_some()))
+            }
+            (
+                StandardFunction::MetricsHostRecord,
+                [
+                    RuntimeValue::Integer(kind),
+                    RuntimeValue::Text(name),
+                    RuntimeValue::Float(value),
+                    RuntimeValue::Text(labels),
+                ],
+            ) => {
+                self.metrics.record(*kind, name, *value, labels);
+                Control::Success(RuntimeValue::Void)
+            }
             (_, []) => self.invoke_environment_operation(function, call_node),
             _ => self.intrinsic_shape_defect(function, call_node),
         }
@@ -400,4 +441,177 @@ fn make_temporary_directory() -> std::io::Result<String> {
         }
     }
     Err(std::io::Error::other("no free temporary directory name"))
+}
+
+/// One `std/log` line as the runner writes it: the wall-clock time, the level,
+/// then the message and fields `std/log` already encoded as JSON.
+fn log_line(level: i64, message: &str, fields: &str) -> String {
+    let level = match level {
+        0 => "debug",
+        1 => "info",
+        2 => "warn",
+        _ => "error",
+    };
+    // Milliseconds since the epoch, negative before 1970, as the native
+    // runtime reads CLOCK_REALTIME.
+    let millis = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
+        Err(before) => -i64::try_from(before.duration().as_millis()).unwrap_or(i64::MAX),
+    };
+    format!(
+        "{{\"time\":\"{}\",\"level\":\"{level}\",\"message\":{message},\"fields\":{fields}}}\n",
+        utc_millis(millis)
+    )
+}
+
+/// RFC 3339 UTC with milliseconds, `2026-11-22T06:00:00.000Z`, by the proleptic
+/// Gregorian calendar.
+fn utc_millis(millis_since_epoch: i64) -> String {
+    let seconds = millis_since_epoch.div_euclid(1000);
+    let millis = millis_since_epoch.rem_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
+    // civil_from_days (Howard Hinnant), as the native runtime's timestamp text.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        of_day / 3600,
+        of_day / 60 % 60,
+        of_day % 60
+    )
+}
+
+#[cfg(test)]
+mod log_line_tests {
+    #[test]
+    fn utc_millis_follows_the_calendar() {
+        assert_eq!(super::utc_millis(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(super::utc_millis(951_782_400_007), "2000-02-29T00:00:00.007Z");
+        assert_eq!(super::utc_millis(1_795_327_200_250), "2026-11-22T06:00:00.250Z");
+        assert_eq!(super::utc_millis(-750), "1969-12-31T23:59:59.250Z");
+        assert_eq!(super::utc_millis(10_000_000_000_250), "2286-11-20T17:46:40.250Z");
+    }
+}
+
+/// Most label sets one metric name keeps; a measurement with a further one is
+/// dropped and counted, so a label holding an id cannot grow without bound.
+pub(super) const METRIC_SERIES_PER_NAME: usize = 1000;
+
+/// Upper bounds of an observed metric's histogram buckets, in seconds when the
+/// value is a duration (OpenTelemetry's default boundaries).
+pub(super) const METRIC_BOUNDS: [f64; 15] = [
+    0.0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+];
+
+#[derive(Clone, Debug)]
+enum Series {
+    Count(i64),
+    Gauge(f64),
+    Observe { count: u64, sum: f64, buckets: [u64; METRIC_BOUNDS.len() + 1] },
+}
+
+/// What the runner's `std/metrics` provider has recorded: one aggregate per
+/// name and label set, in name and then label order.
+#[derive(Default)]
+pub(super) struct MetricsAggregate {
+    /// The kind code each name was first recorded with.
+    kinds: std::collections::BTreeMap<String, i64>,
+    series: std::collections::BTreeMap<(String, String), Series>,
+    series_per_name: std::collections::BTreeMap<String, usize>,
+    dropped_label_sets: u64,
+    dropped_kind_conflicts: u64,
+}
+
+impl MetricsAggregate {
+    /// Adds one measurement: `kind` 0 count, 1 gauge, 2 observe; `name` is the
+    /// metric's name as a JSON string and `labels` the label set as a JSON
+    /// object, together its key.
+    pub(super) fn record(&mut self, kind: i64, name: &str, value: f64, labels: &str) {
+        if *self.kinds.entry(name.to_owned()).or_insert(kind) != kind {
+            self.dropped_kind_conflicts += 1;
+            return;
+        }
+        let key = (name.to_owned(), labels.to_owned());
+        if !self.series.contains_key(&key) {
+            let count = self.series_per_name.entry(name.to_owned()).or_default();
+            if *count == METRIC_SERIES_PER_NAME {
+                self.dropped_label_sets += 1;
+                return;
+            }
+            *count += 1;
+            let empty = match kind {
+                0 => Series::Count(0),
+                1 => Series::Gauge(0.0),
+                _ => Series::Observe {
+                    count: 0,
+                    sum: 0.0,
+                    buckets: [0; METRIC_BOUNDS.len() + 1],
+                },
+            };
+            self.series.insert(key.clone(), empty);
+        }
+        match self.series.get_mut(&key).expect("the series was just made") {
+            // A count's value is a whole, non-negative number (std/metrics.count).
+            Series::Count(total) => *total = total.saturating_add(value as i64),
+            Series::Gauge(last) => *last = value,
+            Series::Observe { count, sum, buckets } => {
+                *count += 1;
+                // A sum past the largest Float saturates there, so it stays finite.
+                let total = *sum + value;
+                *sum = if total.is_finite() { total } else { f64::MAX.copysign(total) };
+                let bucket = METRIC_BOUNDS
+                    .iter()
+                    .position(|bound| value <= *bound)
+                    .unwrap_or(METRIC_BOUNDS.len());
+                buckets[bucket] += 1;
+            }
+        }
+    }
+
+    /// The metrics file: one JSON document, as the native runtime writes it.
+    pub(super) fn render(&self) -> String {
+        let series = self
+            .series
+            .iter()
+            .map(|((metric, labels), series)| {
+                let head = format!("{{\"name\":{metric},\"labels\":{labels},");
+                match series {
+                    Series::Count(total) => {
+                        format!("{head}\"kind\":\"count\",\"value\":{total}}}")
+                    }
+                    Series::Gauge(last) => format!(
+                        "{head}\"kind\":\"gauge\",\"value\":{}}}",
+                        crate::numeric::render_float(*last)
+                    ),
+                    Series::Observe { count, sum, buckets } => format!(
+                        "{head}\"kind\":\"observe\",\"count\":{count},\"sum\":{},\"bounds\":[{}],\"bucket_counts\":[{}]}}",
+                        crate::numeric::render_float(*sum),
+                        METRIC_BOUNDS
+                            .iter()
+                            .map(|bound| crate::numeric::render_float(*bound))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        buckets
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    ),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"schema\":\"chimi.metrics.v1\",\"metrics\":[{series}],\"dropped\":{{\"label_sets\":{},\"kind_conflicts\":{}}}}}\n",
+            self.dropped_label_sets, self.dropped_kind_conflicts
+        )
+    }
 }

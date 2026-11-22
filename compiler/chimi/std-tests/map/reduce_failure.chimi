@@ -2,8 +2,7 @@
 // key order, with the state reached so far in its payload: "c" and "d" would
 // both fail, and "c" escapes after "a" and "b" were added.
 import std/map as Map
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Rejected {

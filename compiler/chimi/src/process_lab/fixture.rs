@@ -640,6 +640,7 @@ pub(super) fn build_entry(root: &Path, entry: &str, scratch: &Path) -> Result<Pa
         &StandardTree::embedded(),
         &executable,
         &scratch.join("artifacts"),
+        Vec::new(),
     )
     .map_err(|error| format!("native build failed: {error}"))?;
     Ok(executable)

@@ -1,5 +1,4 @@
-import modules/money as Money
-import modules/money.{Money}
+import modules/money as Money.{Money}
 
 pub struct Box<Value> {
   value: Value,
@@ -17,5 +16,5 @@ interface Payment<Receipt> {
 }
 
 pub fn main() {
-  Box(42)
+  Box { value: 42 }
 }

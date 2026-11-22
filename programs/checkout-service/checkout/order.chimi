@@ -3,12 +3,10 @@ import std/clock.{Clock, Instant}
 import std/debug as Debug
 import std/duration as Duration
 import std/list as List
-import std/result as Result
-import std/result.{Result}
+import std/result as Result.{Result}
 import std/retry as Retry
 import std/schedule as Schedule
-import std/task as Task
-import std/task.{Timeout}
+import std/task as Task.{Timeout}
 
 // One checkout: reserve stock and score fraud at once, charge the card with
 // a per-attempt timeout and backoff, ask two carriers for a quote and take
@@ -92,9 +90,19 @@ pub interface Notifier {
   sms: fn(Order) -> Void errors NotifyError
 }
 
+/// Everything a checkout reaches: the five services and the clock.
+pub needs Services {
+  inventory: Inventory,
+  fraud: Fraud,
+  payments: Payments,
+  carriers: Carriers,
+  notifier: Notifier,
+  clock: Clock,
+}
+
 /// An order for `sku` at `cents`.
 pub fn order(id: Int, sku: Text, cents: Int) -> Order {
-  Order(id, sku, cents)
+  Order { id: id, sku: sku, cents: cents }
 }
 
 /// The order's id.
@@ -114,7 +122,7 @@ pub fn cents(order: Order) -> Int {
 
 /// A hold on stock of `sku`.
 pub fn reservation(sku: Text, hold: Int) -> Reservation {
-  Reservation(sku, hold)
+  Reservation { sku: sku, hold: hold }
 }
 
 /// A one-line summary of a receipt for the log.
@@ -209,32 +217,24 @@ fn notify(order: Order) -> Int needs {
   })
 }
 
-fn checkout(order: Order) -> Receipt needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+fn checkout(order: Order) -> Receipt needs Services {
   let reservation = fn() { checks(order) }
   |> Cause.context("checking order ${order.id}")
   let charged = fn() { charge(order) }
   |> Cause.context("charging order ${order.id}")
   let carrier = ship(order)
-  Receipt(order.id, reservation.hold, charged, carrier, notify(order))
+  Receipt {
+    order: order.id,
+    hold: reservation.hold,
+    charge: charged,
+    carrier: carrier,
+    notified: notify(order),
+  }
 }
 
 /// Runs one checkout under `deadline` and stores its outcome, so a worker can
 /// send it on as a value.
-pub fn run(order: Order, deadline: Instant) needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+pub fn run(order: Order, deadline: Instant) needs Services {
   let bounded = fn() {
     fn() { checkout(order) }
     |> Task.deadline(deadline)
