@@ -84,6 +84,30 @@ fn an_idle_carrier_takes_a_started_task_from_a_sleeping_carrier() {
     assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled), "its unwind ran at its new home");
 }
 
+/// A steal that leaves the sleeping carrier other work keeps its wake: the
+/// mark is its only way to learn of that work.
+#[test]
+fn a_steal_that_leaves_work_behind_keeps_the_wake() {
+    let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+    let mut scheduler = virtual_kernel(3);
+    let task = start_parked(&mut scheduler, 2);
+    park(&mut scheduler, 1);
+    park(&mut scheduler, 2);
+    scheduler.enter_carrier(Carrier(0));
+    clear_wakes(&mut scheduler);
+    scheduler.wake(task).expect("wake");
+    let child = scheduler
+        .start_child(task, chimi_fixture_generated_many_parks)
+        .expect("child");
+    scheduler.drive();
+    assert_eq!(scheduler.tasks[&task].carrier, Carrier(0), "the started task was taken");
+    assert_eq!(scheduler.ready.front(Carrier(2)), Some(child), "the new child waits at home");
+    assert!(woken(&scheduler, 2), "carrier 2 is woken for it");
+    scheduler.enter_carrier(Carrier(2));
+    scheduler.drive();
+    scheduler.cancel(None, task).expect("cancel");
+}
+
 /// A carrier that is awake runs its own ready task: nothing is taken from it.
 #[test]
 fn a_carrier_that_is_awake_keeps_its_ready_task() {

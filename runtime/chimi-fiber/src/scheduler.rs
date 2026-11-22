@@ -545,7 +545,8 @@ impl TaskPhase {
 }
 
 /// The carrier thread a fiber runs on: the one that last resumed it, until
-/// the kernel moves it (`Scheduler::rehome`) while it is not running. A
+/// the kernel moves it (`Scheduler::move_home`, when a carrier steals it)
+/// while it is not running. A
 /// fiber keeps no thread's state across a park (parallel-scheduler.md,
 /// "Runtime state by owner", rules), so a moved fiber may resume on any
 /// thread, once; the check catches a carrier that resumes a fiber the
@@ -1545,7 +1546,7 @@ impl Scheduler {
         }
     }
 
-    /// Takes the oldest ready task of a carrier that is parked, its home
+    /// Takes the front ready task of a carrier that is parked, its home
     /// asleep, when that task has run before, and makes the current carrier
     /// its home: a hand-off to a sleeping carrier (a message's receiver, a
     /// member asked to stop) runs here at once instead of waiting for the

@@ -187,11 +187,11 @@ fn run_hoppers(clock: ClockMode, carriers: u32, per_carrier: u32, hops_each: usi
     }
 }
 
-/// Fibers homed on four carriers run on four threads under virtual time,
-/// each staying on its own thread, and the run ends with every carrier
-/// joined, again and again.
+/// Fibers homed on four carriers start on four threads under virtual time
+/// (a carrier may take one from a sleeping carrier after a park), and the
+/// run ends with every carrier joined, again and again.
 #[test]
-fn fibers_on_four_carrier_threads_stay_on_their_thread() {
+fn fibers_on_four_carrier_threads_start_on_their_threads() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     under_watchdog(Duration::from_secs(60), || {
         for _ in 0..40 {

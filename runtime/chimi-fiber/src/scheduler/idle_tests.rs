@@ -382,7 +382,7 @@ fn carrier_zero_serves_descriptors_while_others_run_and_the_host_after() {
     scheduler.start_wake_timer(own, now).expect("timer");
     assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "its own timer fired");
     scheduler.drive();
-    // Once carrier 1 has run its task and parked, the host is served.
+    // Once carrier 1 has parked again with nothing left, the host is served.
     scheduler.enter_carrier(Carrier(1));
     scheduler.drive();
     assert!(matches!(scheduler.with(Scheduler::idle_step), IdleStep::Park(_)));

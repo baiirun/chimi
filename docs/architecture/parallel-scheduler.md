@@ -1145,8 +1145,8 @@ the gates measure, so it goes first.
        0 never sets its parked flag, so it is never a victim; it can steal.
      - Only a task that has run before is taken. A task that never ran is
        new work, and taking it would pull a fan-out onto the carrier that
-       started it. A front entry that never ran stops the search at that
-       carrier.
+       started it. A carrier whose front entry never ran is skipped, and
+       the search goes on to the next one.
      - "Parked" is the flag `park_step` sets and the carrier's next kernel
        access clears. It covers the 50 µs spin before the block, so a
        spinning carrier can be stolen from; it then finds nothing and parks
