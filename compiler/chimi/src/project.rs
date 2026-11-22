@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 mod git;
 mod packages;
+pub(crate) use git::is_commit_id;
 pub use git::{GitCache, GitError, Network};
 pub use packages::PackageError;
 use packages::{Discovered, PackageGraph};
@@ -1077,10 +1078,19 @@ pub fn update_dependencies(
         Err(_) => update.next.entries.is_empty(),
     };
     if !unchanged {
-        std::fs::write(&update.path, text).map_err(|source| ProjectLoadError::WriteLock {
-            path: update.path.clone(),
-            source,
-        })?;
+        // Renamed into place, so a crash never leaves half a lockfile.
+        let scratch = update
+            .path
+            .with_extension(format!("lock.{}", std::process::id()));
+        std::fs::write(&scratch, text)
+            .and_then(|()| std::fs::rename(&scratch, &update.path))
+            .map_err(|source| {
+                let _ = std::fs::remove_file(&scratch);
+                ProjectLoadError::WriteLock {
+                    path: update.path.clone(),
+                    source,
+                }
+            })?;
     }
     Ok(changes)
 }

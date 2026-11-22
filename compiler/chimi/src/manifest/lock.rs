@@ -104,11 +104,11 @@ impl Lockfile {
                     .ok_or_else(|| (Some(table.line), format!("[{}] needs `{key}`", table.name)))
             };
             let commit = required("commit")?;
-            if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            if !crate::project::is_commit_id(&commit) {
                 return Err((
                     Some(table.line),
                     format!(
-                        "[{}]: `commit` must be a full 40-digit commit id",
+                        "[{}]: `commit` must be a full 40-digit lowercase commit id",
                         table.name
                     ),
                 ));
@@ -252,7 +252,7 @@ mod tests {
                 String::from(
                     "version = \"1\"\n[git.a]\nurl = \"u\"\nrev = \"r\"\ncommit = \"abc\"\n",
                 ),
-                "2: [git.a]: `commit` must be a full 40-digit commit id",
+                "2: [git.a]: `commit` must be a full 40-digit lowercase commit id",
             ),
             (
                 format!("version = \"1\"\n[git.a]\nrev = \"r\"\ncommit = \"{commit}\"\n"),

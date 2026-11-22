@@ -7,6 +7,10 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Makes each scratch checkout's name unique within the process.
+static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the cache may fetch, as `--offline` says.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +90,9 @@ impl GitCache {
     pub(crate) fn resolve(&self, url: &str, rev: &str) -> Result<String, GitError> {
         let database = self.database(url)?;
         fetch_refs(&database, url)?;
+        if is_commit_id(rev) && commit_of(&database, rev)?.is_none() {
+            fetch_commit(&database, url, rev)?;
+        }
         commit_of(&database, rev)?.ok_or_else(|| GitError::UnknownRevision {
             url: url.to_owned(),
             rev: rev.to_owned(),
@@ -101,37 +108,35 @@ impl GitCache {
         if checkout.is_dir() {
             return Ok(checkout);
         }
+        let not_cached = || GitError::NotCached {
+            url: url.to_owned(),
+            commit: commit.to_owned(),
+        };
+        // Offline, a repository the cache has never seen is not created.
+        if self.network == Network::Offline && !self.database_path(url)?.join("HEAD").is_file() {
+            return Err(not_cached());
+        }
         let database = self.database(url)?;
         if commit_of(&database, commit)?.as_deref() != Some(commit) {
             if self.network == Network::Offline {
-                return Err(GitError::NotCached {
-                    url: url.to_owned(),
-                    commit: commit.to_owned(),
-                });
+                return Err(not_cached());
             }
             fetch_refs(&database, url)?;
             if commit_of(&database, commit)?.is_none() {
-                // A commit no branch or tag reaches any more.
-                git(
-                    &database,
-                    &[
-                        "fetch",
-                        "--quiet",
-                        "--no-tags",
-                        "--end-of-options",
-                        url,
-                        commit,
-                    ],
-                )
-                .map_err(|detail| command_error(format!("fetch {commit} from {url}"), detail))?;
+                fetch_commit(&database, url, commit)?;
             }
         }
         // Written beside its final name and renamed into place, so a
         // checkout is either complete or absent, even when two builds race.
-        let scratch = base.join(format!(".{commit}.{}", std::process::id()));
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        );
+        let scratch = base.join(format!(".{commit}.{unique}"));
         let _ = std::fs::remove_dir_all(&scratch);
         create_directory(&scratch)?;
-        let index = base.join(format!(".{commit}.{}.index", std::process::id()));
+        let index = base.join(format!(".{commit}.{unique}.index"));
         let written = Command::new("git")
             .arg("--git-dir")
             .arg(&database)
@@ -161,6 +166,13 @@ impl GitCache {
         Ok(checkout)
     }
 
+    fn database_path(&self, url: &str) -> Result<PathBuf, GitError> {
+        Ok(self
+            .base()?
+            .join("git/db")
+            .join(format!("{}.git", repository_key(url))))
+    }
+
     fn base(&self) -> Result<&Path, GitError> {
         self.directory.as_deref().ok_or(GitError::NoCacheDirectory)
     }
@@ -168,10 +180,7 @@ impl GitCache {
     /// The bare repository that collects `url`'s objects, created empty the
     /// first time.
     fn database(&self, url: &str) -> Result<PathBuf, GitError> {
-        let database = self
-            .base()?
-            .join("git/db")
-            .join(format!("{}.git", repository_key(url)));
+        let database = self.database_path(url)?;
         if !database.join("HEAD").is_file() {
             create_directory(&database)?;
             finished(
@@ -203,6 +212,31 @@ fn fetch_refs(database: &Path, url: &str) -> Result<(), GitError> {
     )
     .map(drop)
     .map_err(|detail| command_error(format!("fetch {url}"), detail))
+}
+
+/// A commit no branch or tag reaches any more, fetched by its id.
+fn fetch_commit(database: &Path, url: &str, commit: &str) -> Result<(), GitError> {
+    git(
+        database,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--end-of-options",
+            url,
+            commit,
+        ],
+    )
+    .map(drop)
+    .map_err(|detail| command_error(format!("fetch {commit} from {url}"), detail))
+}
+
+/// A full commit id, which a repository can be asked for directly.
+pub(crate) fn is_commit_id(text: &str) -> bool {
+    text.len() == 40
+        && text
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The commit `rev` names in `database`, or `None` when it names none.

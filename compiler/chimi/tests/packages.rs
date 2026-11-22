@@ -344,6 +344,16 @@ fn a_build_uses_the_locked_commit_until_the_package_is_updated_by_name() {
         text(&output.stdout),
         text(&output.stderr)
     );
+    // A cache that has never seen the repository fetches the locked commit,
+    // not what the tag or branch names now.
+    let fresh = scratch.path("fresh-cache");
+    let output = chimi_with_cache(&fresh, &["run", "--root", app, "app/main"]);
+    assert!(
+        runs_to(&output, 1),
+        "{}{}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
 
     // An update that names nothing keeps a pin whose source is unchanged.
     let output = chimi_with_cache(&cache, &["deps", "update", "--root", app]);
@@ -502,7 +512,10 @@ fn two_git_sources_for_one_package_fail_naming_both() {
              other = {{ path = \"../other\" }}\n"
         ),
     );
-    scratch.write("chimi.toml", "[workspace]\nmembers = [\"app\", \"other\"]\n");
+    scratch.write(
+        "chimi.toml",
+        "[workspace]\nmembers = [\"app\", \"other\"]\n",
+    );
     scratch.write(
         "other/chimi.toml",
         &format!(
@@ -546,6 +559,40 @@ fn a_members_update_writes_the_one_lockfile_at_the_workspace_root() {
     );
     assert!(
         runs_to(&output, 4),
+        "{}{}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+}
+
+#[test]
+fn a_rev_may_be_a_commit_no_branch_reaches() {
+    let scratch = git_dependency_scratch("git-orphan", 1);
+    let repo = scratch.path("repo");
+    git(&repo, &["checkout", "--quiet", "-b", "side"]);
+    scratch.write("repo/pkg/value.chimi", "pub fn value() -> Int { 9 }\n");
+    git(&repo, &["commit", "--quiet", "-am", "side"]);
+    let commit = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let commit = text(&commit.stdout).trim().to_owned();
+    git(&repo, &["checkout", "--quiet", "main"]);
+    git(&repo, &["branch", "--quiet", "-D", "side"]);
+    let manifest = std::fs::read_to_string(scratch.path("app/chimi.toml")).unwrap();
+    scratch.write(
+        "app/chimi.toml",
+        &manifest.replace("rev = \"v1\"", &format!("rev = \"{commit}\"")),
+    );
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    let cache = scratch.path("cache");
+    let output = chimi_with_cache(&cache, &["deps", "update", "--root", app]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let output = chimi_with_cache(&cache, &["run", "--root", app, "app/main"]);
+    assert!(
+        runs_to(&output, 9),
         "{}{}",
         text(&output.stdout),
         text(&output.stderr)

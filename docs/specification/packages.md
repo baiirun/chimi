@@ -111,7 +111,8 @@ json_tools = { git = "https://github.com/example/json_tools", rev = "v0.3.0" }
     root (and inside the repository, for a git package), so the same checkout
     always holds the same source;
   - `{ git = "<url>", rev = "<revision>" }`, where `rev` is a tag, a branch or
-    a commit. `rev` is required, so the manifest always says what it means to
+    a commit (anything `git rev-parse` reads, so `main~1` works too, and a
+    full commit id that no branch reaches any more is fetched by id). `rev` is required, so the manifest always says what it means to
     get. An optional `directory = "<path>"` names the package's directory
     inside the repository, for repositories that hold several packages.
 - The key MUST equal the `name` in the dependency's own manifest; a mismatch
@@ -191,7 +192,8 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   `~/.cache/chimi`. A locked commit is checked out once into a directory named
   by its URL and commit, and never changes after that, so builds share it.
 - A build fetches a locked commit missing from the cache. `--offline`,
-  written before the command (`chimi --offline test .`), makes a missing
+  written before the command and after `--std-dir` if there is one
+  (`chimi --offline test .`), makes a missing
   commit an error instead, naming the package, without touching the
   network. `chimi deps update` always fetches, so it rejects `--offline`.
 - The language server never fetches: a git package no command has fetched
@@ -281,6 +283,7 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | Two git sources for one package fail, naming both | `tests/packages.rs` `two_git_sources_for_one_package_fail_naming_both` |
 | A git package's `directory` stays inside its repository | `tests/packages.rs` `a_git_package_directory_must_stay_inside_its_repository` |
 | A member's update writes the workspace's one lockfile | `tests/packages.rs` `a_members_update_writes_the_one_lockfile_at_the_workspace_root` |
+| A full commit id that no branch reaches can be a `rev` | `tests/packages.rs` `a_rev_may_be_a_commit_no_branch_reaches` |
 | The lockfile reads back what it writes, and rejects anything else | `manifest::lock::tests` |
 
 Mutation lists: `scripts/mutation/packages_mutations.py`,
