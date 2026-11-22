@@ -6807,6 +6807,116 @@ fn main_with_a_written_clause_lists_its_runner_needs() {
     assert_eq!(check_codes(&unclosed), ["E5002"]);
 }
 
+const SHOP_LIBRARY: &str = concat!(
+    "import std/clock.{Clock}\n",
+    "pub interface Inventory {\n  reserve: fn(Int) -> Int\n}\n",
+    "pub needs Shop {\n  inventory: Inventory,\n  clock: Clock,\n}\n",
+    "needs Hidden {\n  inventory: Inventory,\n}\n",
+    "pub fn hold(item: Int) -> Int needs Shop {\n  inventory.reserve(item)\n}\n",
+);
+
+// G24 (decisions.md 2026-11-22): a needs group is only a name for its entries.
+// It is written alone or with `+`, named from another module through the alias
+// or a member import, binds its entries in the body, and `using` supplies them
+// entry by entry.
+#[test]
+fn a_needs_group_names_its_entries_across_modules() {
+    let outcome = run_both_project(
+        "needs-groups",
+        &[
+            (
+                "app/main",
+                concat!(
+                    "import app/shop as Shop.{Shop}\n",
+                    "import std/clock.{Clock}\n",
+                    "import std/io.{Console}\n",
+                    "fn twice(item: Int) -> Int needs Shop.Shop + { console: Console } {\n",
+                    "  console.write_line(\"holding\")\n",
+                    "  Shop.hold(item) + inventory.reserve(item)\n",
+                    "}\n",
+                    "fn imported(item: Int) -> Int needs Shop {\n  Shop.hold(item)\n}\n",
+                    "pub fn main() -> Int needs { console: Console, clock: Clock } {\n",
+                    "  twice(2) + imported(1) using { inventory: { reserve: fn(item) { item * 10 } } }\n",
+                    "}\n",
+                ),
+            ),
+            ("app/shop", SHOP_LIBRARY),
+        ],
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":50");
+}
+
+#[test]
+fn a_needs_group_is_checked_like_its_entries() {
+    let codes = |main: &str| build_codes(&[("app/main", main), ("app/shop", SHOP_LIBRARY)]);
+    // A group's entries count as written for the complete-needs rule.
+    assert_eq!(
+        codes(concat!(
+            "import app/shop as Shop\n",
+            "import std/random as Random\n",
+            "fn f() -> Int needs Shop.Shop {\n  Shop.hold(Random.int(1..=6))\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["T4204"]
+    );
+    // A private group stays in its module.
+    assert_eq!(
+        codes(concat!(
+            "import app/shop as Shop\n",
+            "fn f() -> Int needs Shop.Hidden {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["E_UNRESOLVED_TYPE"]
+    );
+    // Only a group or a generic row may stand alone in a needs clause.
+    assert_eq!(
+        codes(concat!(
+            "import app/shop as Shop.{Inventory}\n",
+            "fn f() -> Int needs Inventory {\n  0\n}\n",
+            "fn g() -> Int needs Shop.Nothing {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["E_UNRESOLVED_TYPE", "E_UNRESOLVED_TYPE"]
+    );
+    // Groups that share an entry combine, as rows do.
+    assert_eq!(
+        codes(concat!(
+            "import app/shop as Shop\n",
+            "import std/clock as Clock.{Clock}\n",
+            "needs Timing {\n  clock: Clock,\n}\n",
+            "fn f() -> Int needs Shop.Shop + Timing {\n  let _ = Clock.now()\n  Shop.hold(1)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        Vec::<String>::new()
+    );
+    // An entry written beside the group under the same name must agree with it.
+    assert_eq!(
+        codes(concat!(
+            "import app/shop as Shop\n",
+            "interface Other {\n  ping: fn() -> Int\n}\n",
+            "fn f() -> Int needs Shop.Shop + { inventory: Other } {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["T4103"]
+    );
+}
+
+#[test]
+fn a_needs_group_item_formats_on_its_own_lines() {
+    let source = "import std/io.{Console}\npub needs Out { console: Console }\nfn f() -> Void needs Out { console.write_line(\"x\") }\npub fn main() -> Int { 0 }\n";
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(!formatted.is_blocked(), "{}", formatted.render_diagnostics());
+    assert!(
+        formatted.text().starts_with(
+            "import std/io.{Console}\npub needs Out {\n  console: Console\n}\n"
+        ),
+        "{}",
+        formatted.text()
+    );
+    assert_formatter_round_trips(source);
+    assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {

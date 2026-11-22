@@ -548,6 +548,34 @@ the clause writes (`needs R + { clock: Clock }`) covers whatever binds it. The
 clause MAY list a need the body does not reach; the contract then still
 carries it.
 
+A module MAY name a set of needs with a needs group (G24, decisions.md
+2026-11-22):
+
+<!-- chimi: fragment -->
+```chimi
+pub needs Shop {
+  inventory: Inventory,
+  clock: Clock,
+}
+
+fn handle(order: Order) -> Void needs Shop + { log: Log } {
+  inventory.reserve(order)
+}
+```
+
+A group is only a name for its entries. A needs clause writes it alone or
+combined with `+`, like a generic row parameter; another module names it
+through its alias (`needs Checkout.Shop`) or a member import, as for a type,
+and a private group stays in its module. The body binds each entry by name, as
+if the clause had written it, and inference, `using`, the root check and the
+complete-needs rule all work entry by entry; an entry's interface is read in
+the group's own module. Terms that name the same need combine, so two groups
+may share `clock: Clock`, but one name with two interfaces is `T4103`. A name
+that is neither a generic row parameter nor a group (`needs Inventory`) is
+`E_UNRESOLVED_TYPE`; inside a function, its own generic row parameter takes
+the name first, as generics do for types. A group's entries are written
+fields only: a group does not include another group yet.
+
 An `interface` is a structural record of function contracts:
 
 <!-- chimi: fragment -->

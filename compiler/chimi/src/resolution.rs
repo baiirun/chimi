@@ -1971,13 +1971,7 @@ impl ProjectResolver {
         }
         for name in self.needs_group_entries(group) {
             if let Some(scope) = scope.as_deref_mut() {
-                self.define_local(
-                    module_index,
-                    semantic_id,
-                    &name,
-                    ProjectSymbolKind::Requirement,
-                    scope,
-                );
+                self.define_requirement(module_index, semantic_id, &name, scope);
             } else {
                 self.add_symbol(
                     Some(self.semantic.modules[module_index].id),
@@ -1988,6 +1982,30 @@ impl ProjectResolver {
                     false,
                 );
             }
+        }
+    }
+
+    /// Binds a need in a function body. Rows combine, so a need two terms name
+    /// (two groups sharing `clock`, or a group and a written entry) is one
+    /// binding; the checker reports differing interfaces (`T4103`).
+    fn define_requirement(
+        &mut self,
+        module_index: usize,
+        semantic_id: SemanticId,
+        name: &Name,
+        scope: &mut Scope,
+    ) {
+        let bound = scope.values.get(&name.text).is_some_and(|symbol| {
+            self.symbols[symbol.raw() as usize].kind == ProjectSymbolKind::Requirement
+        });
+        if !bound {
+            self.define_local(
+                module_index,
+                semantic_id,
+                name,
+                ProjectSymbolKind::Requirement,
+                scope,
+            );
         }
     }
 
@@ -2055,13 +2073,7 @@ impl ProjectResolver {
                 } => {
                     self.resolve_type(module_index, interface, generics);
                     if let Some(scope) = scope.as_deref_mut() {
-                        self.define_local(
-                            module_index,
-                            *semantic_id,
-                            name,
-                            ProjectSymbolKind::Requirement,
-                            scope,
-                        );
+                        self.define_requirement(module_index, *semantic_id, name, scope);
                     } else {
                         self.add_symbol(
                             Some(self.semantic.modules[module_index].id),

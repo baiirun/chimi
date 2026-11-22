@@ -8757,12 +8757,21 @@ impl ProjectTypeChecker {
                     name,
                     interface,
                 } => {
-                    let Some(requirement) = self.find_symbol(
-                        module_id,
-                        Some(*semantic_id),
-                        ProjectSymbolKind::Requirement,
-                        &name.text,
-                    ) else {
+                    // A name an earlier term bound has no symbol of its own here.
+                    let Some(requirement) = self
+                        .find_symbol(
+                            module_id,
+                            Some(*semantic_id),
+                            ProjectSymbolKind::Requirement,
+                            &name.text,
+                        )
+                        .or_else(|| {
+                            entries
+                                .iter()
+                                .find(|entry| entry.lexical_name == name.text)
+                                .map(|entry| entry.requirement)
+                        })
+                    else {
                         continue;
                     };
                     let interface = self.lower_value_type(module_id, interface, generics);
