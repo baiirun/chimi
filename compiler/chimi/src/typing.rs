@@ -1720,18 +1720,15 @@ struct ProjectTypeChecker {
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
     bounded_inference_variables: HashSet<u32>,
-<<<<<<< HEAD
     /// Needs groups being expanded, so a group reached again through one of its
     /// own entries' function types is reported (`T4104`, once per group)
     /// instead of recursing.
     expanding_groups: HashSet<SymbolId>,
     cyclic_groups: HashSet<SymbolId>,
-=======
     /// The type each type alias names, once lowered.
     alias_types: HashMap<SymbolId, TypeId>,
     /// Aliases whose type is being lowered, so a cycle of aliases stops.
     aliases_in_progress: HashSet<SymbolId>,
->>>>>>> origin/main
 }
 
 #[derive(Clone, Debug)]
@@ -2994,13 +2991,10 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
-<<<<<<< HEAD
             expanding_groups: HashSet::new(),
             cyclic_groups: HashSet::new(),
-=======
             alias_types: HashMap::new(),
             aliases_in_progress: HashSet::new(),
->>>>>>> origin/main
         }
     }
 
@@ -3452,13 +3446,9 @@ impl ProjectTypeChecker {
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
-<<<<<<< HEAD
+            | ModuleDeclarationKind::TypeAlias
             | ModuleDeclarationKind::ProcessName
             | ModuleDeclarationKind::NeedsGroup => false,
-=======
-            | ModuleDeclarationKind::TypeAlias
-            | ModuleDeclarationKind::ProcessName => false,
->>>>>>> origin/main
         }
     }
 
@@ -11451,11 +11441,8 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
             ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
-<<<<<<< HEAD
             ModuleDeclarationKind::NeedsGroup => ProjectSymbolKind::NeedsGroup,
-=======
             ModuleDeclarationKind::TypeAlias => ProjectSymbolKind::TypeAlias,
->>>>>>> origin/main
         };
         self.find_symbol(
             module_id,

@@ -1555,11 +1555,7 @@ impl<'source> Parser<'source> {
             Some((NodeKind::NativeTypeDeclaration, _)) => self.parse_native_type(),
             Some((NodeKind::TypeAliasDeclaration, _)) => self.parse_type_alias(),
             _ => self.error_and_bump(
-<<<<<<< HEAD
-                "expected `struct`, `enum`, `interface`, `fn`, `const`, `needs`, or `process name` \
-=======
-                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, or `process name` \
->>>>>>> origin/main
+                "expected `struct`, `enum`, `interface`, `type`, `fn`, `const`, `needs`, or `process name` \
                  after `pub`",
             ),
         }

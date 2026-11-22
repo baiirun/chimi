@@ -1217,13 +1217,13 @@ impl ProjectLowerer {
                         declarations.push(declaration);
                     }
                 }
-<<<<<<< HEAD
                 NodeKind::NeedsGroupDeclaration => {
                     if let Some(declaration) = lowerer.lower_needs_group(&node) {
-=======
+                        declarations.push(declaration);
+                    }
+                }
                 NodeKind::TypeAliasDeclaration => {
                     if let Some(declaration) = lowerer.lower_type_alias(&node) {
->>>>>>> origin/main
                         declarations.push(declaration);
                     }
                 }
@@ -1718,6 +1718,7 @@ impl ProjectLowerer {
             function: None,
             body: None,
             annotation,
+            needs_group: None,
             test: false,
         })
     }

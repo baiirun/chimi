@@ -1492,13 +1492,9 @@ pub(crate) fn lower(root: VerifiedRoot) -> Result<CoreProgram, Vec<Diagnostic>> 
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
-<<<<<<< HEAD
+            | ModuleDeclarationKind::TypeAlias
             | ModuleDeclarationKind::ProcessName
             | ModuleDeclarationKind::NeedsGroup => {
-=======
-            | ModuleDeclarationKind::TypeAlias
-            | ModuleDeclarationKind::ProcessName => {
->>>>>>> origin/main
                 unreachable!("only executable declarations enter reachability")
             }
         }
