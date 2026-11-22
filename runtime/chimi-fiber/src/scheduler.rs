@@ -8,6 +8,8 @@ mod carrier;
 mod clock;
 #[cfg(test)]
 mod idle_tests;
+#[cfg(test)]
+mod steal_tests;
 mod jobs;
 mod process;
 mod process_abi;
@@ -543,7 +545,8 @@ impl TaskPhase {
 }
 
 /// The carrier thread a fiber runs on: the one that last resumed it, until
-/// the kernel moves it (`Scheduler::rehome`) while it is not running. A
+/// the kernel moves it (`Scheduler::move_home`, when a carrier steals it)
+/// while it is not running. A
 /// fiber keeps no thread's state across a park (parallel-scheduler.md,
 /// "Runtime state by owner", rules), so a moved fiber may resume on any
 /// thread, once; the check catches a carrier that resumes a fiber the
@@ -566,7 +569,6 @@ impl Home {
     }
 
     /// Lets the next resume claim whichever thread it runs on.
-    #[cfg(test)]
     fn release(&mut self) {
         self.0 = None;
     }
@@ -603,9 +605,7 @@ impl PinnedFiber {
         self.fiber
     }
 
-    /// Requires: the fiber is not running. Only tests move fibers until
-    /// stealing (step 4 PR 4c).
-    #[cfg(test)]
+    /// Requires: the fiber is not running.
     fn release_home(&mut self) {
         self.home.release();
     }
@@ -1539,9 +1539,48 @@ impl Scheduler {
                 self.after_resume(resumes);
             }
             if !self.drain_host_releases() {
-                return None;
+                let task = self.steal()?;
+                if let Some(runnable) = self.prepare_run(task) {
+                    return Some(runnable);
+                }
             }
         }
+    }
+
+    /// Takes the front ready task of a carrier that is parked, its home
+    /// asleep, when that task has run before, and makes the current carrier
+    /// its home: a hand-off to a sleeping carrier (a message's receiver, a
+    /// member asked to stop) runs here at once instead of waiting for the
+    /// wake (step 4 PR 4c of parallel-scheduler.md). A task that never ran
+    /// is new work, which starts where it was placed, so a fan-out still
+    /// spreads. Carriers are tried in turn from the one after this. Carrier
+    /// 0 never parks this way, so the root and the descriptor waits it owns
+    /// never move. None with one carrier, or when nothing can be taken.
+    fn steal(&mut self) -> Option<TaskId> {
+        let carriers = self.ready.carriers();
+        let victim = (1..carriers)
+            .map(|step| ready::Carrier((self.current.0 + step) % carriers))
+            .find(|carrier| {
+                self.parked[carrier.0 as usize]
+                    && self
+                        .ready
+                        .front(*carrier)
+                        .is_some_and(|task| self.tasks.get(&task).is_none_or(|record| record.ran) && !self.moved_by_test(task))
+            })?;
+        let task = self.ready.pop_front(victim).expect("a ready task");
+        // A carrier other than 0 is woken only for its queued work or the
+        // end of the run, so once both queues are empty a wake not yet
+        // written would only find nothing; it would also take the lock
+        // from the carrier doing its work.
+        if self.ready.is_empty_for(victim) && self.jobs.is_empty_for(victim) && self.run_end.is_none() {
+            self.wakes.unmark(victim);
+        }
+        // An entry whose task is no longer runnable is skipped by
+        // `prepare_run` wherever it is popped, so it stays where it was.
+        if self.tasks.get(&task).is_some_and(|record| record.phase == TaskPhase::Runnable) {
+            self.move_home(task, self.current);
+        }
+        Some(task)
     }
 
     /// Applies every release `take_release` hands over, with no task
@@ -1608,6 +1647,25 @@ impl Scheduler {
     /// thread (step 4 PR 4b of parallel-scheduler.md).
     #[cfg(test)]
     fn rehome(&mut self, task: TaskId, to: ready::Carrier) {
+        self.move_home(task, to);
+    }
+
+    /// True for a task a test moves itself (`rotating`), which no carrier
+    /// takes.
+    #[cfg(test)]
+    fn moved_by_test(&self, task: TaskId) -> bool {
+        self.rotating.contains(&task)
+    }
+
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    fn moved_by_test(&self, _task: TaskId) -> bool {
+        false
+    }
+
+    /// Makes `to` the home of `task`, which is not running, has no job
+    /// queued and is in no ready queue.
+    fn move_home(&mut self, task: TaskId, to: ready::Carrier) {
         let record = self.tasks.get_mut(&task).expect("a live task");
         debug_assert!(
             !matches!(record.phase, TaskPhase::Running | TaskPhase::Draining(_)),
