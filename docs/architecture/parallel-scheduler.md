@@ -1292,6 +1292,24 @@ the gates measure, so it goes first.
        receive, channel send and receive, wake and the run loop, with a
        per-shard count of escalations; 4e-3: widen it where the counts
        show it pays.
+     - The access model, after 4d-6b. Rust forbids two live `&mut
+       Scheduler`, even over disjoint fields, so the local path never makes
+       one:
+       - `Kernel` keeps the scheduler in an `UnsafeCell` beside the shard
+         locks. The all-locks guard hands out `&mut Scheduler`, as the one
+         lock does today. A shard guard hands out a `LocalKernel` view:
+         shared references to the config and to the tables' structure, and
+         mutable access only to its own shard and to records homed on it.
+       - Records that a local request writes (a task, an incarnation's
+         mailbox, a channel's queues) sit behind their own `UnsafeCell` in
+         the table, so a shared reference to the table and a written record
+         never alias. Inserting or removing a record, and changing a home,
+         take every lock.
+       - A test build checks the rule: each record carries its home, and a
+         local write of a record homed elsewhere panics.
+       - This is soundness work, so 4e-1 and 4e-2 get an Opus review with
+         a verifier, a TSan run (gcc, as for the C side) of the carrier
+         suites, and the simulation build.
      - Risks: the C handle table's lock is taken by every Sender copy and
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
