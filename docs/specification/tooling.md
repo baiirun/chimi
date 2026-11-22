@@ -349,6 +349,44 @@ Rules:
 Implementation: `compiler/chimi/src/trace_export.rs` (`export_trace_otlp`).
 Tests: `compiler/chimi/tests/trace_export.rs`.
 
+## OpenTelemetry metrics: `chimi metrics export --otlp`
+
+Purpose: send what a run counted and measured to the metrics tools a team
+already uses, from the `--metrics-file` document the run wrote
+(observability.md, "The runner's aggregate").
+
+```text
+chimi metrics export --otlp [--service-name <name>] <metrics-file>
+chimi metrics export --otlp ... -               the document on standard input
+```
+
+The document goes to standard output. A collector takes it at `/v1/metrics`
+with `Content-Type: application/json`.
+
+Rules:
+
+- The input MUST be one `chimi.metrics.v1` document with `start_unix_ns` and
+  `time_unix_ns`. Anything else MUST fail with a message and print nothing,
+  including a document written before run times.
+- The output is one OTLP/JSON `MetricsData` document, encoded as for
+  `chimi trace export`. Its resource has `service.name`, which is the
+  `--service-name`, or `unknown_service` as OpenTelemetry names an unnamed
+  service.
+- Each name is one metric. Each of its label sets is one data point, with
+  the labels as string attributes, `startTimeUnixNano` the run's start and
+  `timeUnixNano` the end of `main`.
+  - A count is a `sum`, cumulative and monotonic, with `asInt`.
+  - A gauge is a `gauge` with `asDouble`.
+  - An observation is a cumulative `histogram` with `count`, `sum`,
+    `bucketCounts` and the document's bounds as `explicitBounds`. Both
+    sides use upper-inclusive buckets, so the counts carry over as they are.
+- Measurements the runner dropped are reported as the counts
+  `chimi.metrics.dropped_label_sets` and
+  `chimi.metrics.dropped_kind_conflicts`, each written only when it is not 0.
+
+Implementation: `compiler/chimi/src/metrics_export.rs` (`export_metrics_otlp`).
+Tests: `compiler/chimi/tests/std_metrics.rs`.
+
 ## Cross-compilation: `chimi build --target`
 
 Purpose: name the platform a build is for, so that building for another
