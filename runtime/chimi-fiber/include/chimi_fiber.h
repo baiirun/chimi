@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 29u
+#define CHIMI_FIBER_ABI_VERSION 30u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -840,6 +840,13 @@ uint32_t chimi_fiber_scope_cancel_pending(void);
    loop passes then issue CHIMI_REQUEST_SCOPE_CHECK every so often, because
    every request first fires the task's due scope deadlines. */
 uint32_t chimi_fiber_scope_polls(void);
+/* The execution clock's now in nanoseconds since its origin, read without a
+   scheduler request, so it parks nothing and checks no cancellation. From a
+   running fiber it is what CHIMI_REQUEST_TIMER_NOW would answer. After a run
+   it is the clock the last fiber resumed on this thread read: still moving
+   under the real clock, and where that fiber left virtual time. 0 before any
+   resume. */
+int64_t chimi_fiber_now(void);
 ChimiSchedulerOutcome chimi_scheduler_execute(ChimiFiberEntry entry, void *context,
                                               size_t stack_bytes,
                                               uint32_t trace_mode,

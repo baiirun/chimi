@@ -154,6 +154,39 @@ Telemetry contains event records only:
 {"schema":"chimi.runtime.v1","event":"computation_started","sequence":0}
 ```
 
+### Event times
+
+Every semantic event (`computation_started`, `operation_started`,
+`operation_completed`, `dependency_called` and `computation_completed`)
+carries `attributes.time_ns`. It is the execution clock's reading when the
+event happened, in nanoseconds since the clock's origin, with the same
+meaning as the `time_ns` of process and clock events. `computation_started`
+is at the origin, 0, and also carries `attributes.start_unix_ns`, the Unix
+time in nanoseconds at that origin, so `start_unix_ns + time_ns` is an
+event's wall time:
+
+```json
+{"schema":"chimi.runtime.v1","event":"computation_started","sequence":0,"attributes":{"time_ns":0,"start_unix_ns":0}}
+```
+
+- Under the virtual clock both fields MUST be determined by the program and
+  `--clock-start` alone: `start_unix_ns` is the `--clock-start` time (0
+  without it), and an event's `time_ns` is the virtual time it ran at. A
+  program that never waits writes 0 throughout.
+- Under the real clock `start_unix_ns` is the host's wall time when the
+  computation starts, and `time_ns` comes from the host's monotonic clock. A
+  program that needs no scheduler reads no clock, so its events are at 0.
+- Times MUST NOT decrease along one span's events: an operation completes no
+  earlier than it started.
+- Reading the time for an event MUST NOT be a scheduler request. It parks
+  nothing and consumes no cancellation, so tracing cannot change what a
+  program does. The native runtime reads it with `chimi_fiber_now()`.
+- The interpreter has no execution clock, so it writes 0 for both fields.
+  That is what the native runtime writes under the virtual clock for every
+  program the interpreter can run.
+- An event's existing attributes come first. `time_ns` follows them, and
+  `start_unix_ns` comes last.
+
 The outcome sink contains exactly one terminal record for an ordinary
 execution:
 

@@ -79,9 +79,16 @@ impl Clock {
     }
 
     pub(super) fn now(&self) -> Instant {
+        self.reading().now()
+    }
+
+    /// What a fiber resumed now may read as the time without the scheduler:
+    /// virtual time cannot move while a fiber runs, and real time is the
+    /// host clock less the origin.
+    pub(super) fn reading(&self) -> Reading {
         match self {
-            Self::Real { origin } => Instant(host_monotonic_nanos().saturating_sub(*origin)),
-            Self::Virtual { now } => *now,
+            Self::Real { origin } => Reading::Real { origin: *origin },
+            Self::Virtual { now } => Reading::Virtual { now: *now },
         }
     }
 
@@ -104,6 +111,47 @@ impl Clock {
             }
         }
     }
+}
+
+/// The clock as a running fiber reads it (`chimi_fiber_now`).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Reading {
+    Real { origin: i64 },
+    Virtual { now: Instant },
+}
+
+impl Default for Reading {
+    fn default() -> Self {
+        Self::Virtual { now: Instant::ORIGIN }
+    }
+}
+
+impl Reading {
+    pub(super) fn now(self) -> Instant {
+        match self {
+            Self::Real { origin } => Instant(host_monotonic_nanos().saturating_sub(origin)),
+            Self::Virtual { now } => now,
+        }
+    }
+}
+
+thread_local! {
+    static RESUME_CLOCK: std::cell::Cell<Reading> = const { std::cell::Cell::new(Reading::Virtual { now: Instant::ORIGIN }) };
+}
+
+/// Records the clock for the fiber about to resume on this thread.
+pub(super) fn set_resume_clock(reading: Reading) {
+    RESUME_CLOCK.with(|cell| cell.set(reading));
+}
+
+#[unsafe(no_mangle)]
+/// The execution clock's now, in nanoseconds since its origin, read without
+/// a scheduler request. From a running fiber it is the time the scheduler
+/// would answer `CHIMI_REQUEST_TIMER_NOW` with. After a run, it is the clock
+/// the last fiber resumed on this thread read: still moving under the real
+/// clock, and where that fiber left virtual time. 0 before any resume.
+pub extern "C" fn chimi_fiber_now() -> i64 {
+    RESUME_CLOCK.with(std::cell::Cell::get).now().as_nanos()
 }
 
 /// Blocks for `wait` of real time, or until one of `wake_fds` is readable.
