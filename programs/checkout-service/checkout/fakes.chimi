@@ -103,3 +103,17 @@ pub fn notifier() needs {
     },
   }
 }
+
+/// Every stand-in a checkout calls, as one provider record:
+/// `Checkout.run(order, deadline) using Fakes.all(healthy_at)`.
+pub fn all(healthy_at: Instant) needs {
+  clock: Clock
+} {
+  {
+    inventory: inventory(),
+    fraud: fraud(),
+    payments: payments(healthy_at),
+    carriers: carriers(),
+    notifier: notifier(),
+  }
+}
