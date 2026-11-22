@@ -36,14 +36,21 @@ MUTATIONS = [
         "    if edits.is_empty() {\n        return None;",
         "    if true {\n        return None;",
     )], filter="the_formatter_joins"),
-    mutant("the formatter joins across a comment", F, [(
-        "        .any(|token| token.is_missing() || token.kind() == TokenKind::Comment)",
-        "        .any(|token| token.is_missing())",
+    mutant("the formatter joins across a comment between the lines", F, [(
+        "        if comments.iter().any(|offset| span.contains(offset)) {",
+        "        if false {",
     )], filter="the_formatter_joins"),
     mutant("the formatter joins a line with a trailing comment", F, [(
-        " || !source[end..line_end].trim().is_empty() {",
-        " {",
+        "            || same_path.iter().any(|other| !other.joinable)\n",
+        "",
+    ), (
+        "        if comments.iter().any(|offset| span.contains(offset)) {",
+        "        if false {",
     )], filter="the_formatter_joins"),
+    mutant("the formatter joins a repeated member", F, [(
+        "        if (1..members.len()).any(|index| members[..index].contains(&members[index])) {",
+        "        if false {",
+    )], filter="the_formatter_keeps"),
     mutant("the formatter keeps the removed line", F, [(
         "            edits.push((other.lines.clone(), String::new()));",
         "            let _ = other;",

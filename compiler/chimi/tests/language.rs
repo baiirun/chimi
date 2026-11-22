@@ -6624,8 +6624,8 @@ fn a_combined_import_still_checks_its_members() {
 }
 
 // The formatter joins an alias import and a member import of one path, at the
-// first of the two lines. A commented line, and a path with two aliases, stay
-// as written.
+// first of the two lines. A commented line, a comment between the lines, and
+// a path with two aliases stay as written.
 #[test]
 fn the_formatter_joins_split_imports_of_one_path() {
     let source = concat!(
@@ -6637,6 +6637,9 @@ fn the_formatter_joins_split_imports_of_one_path() {
         "import std/set as Set\n",
         "import std/set as Sets\n",
         "import std/set.{Set}\n",
+        "import std/order as Order\n",
+        "// orderings\n",
+        "import std/order.{Ordering}\n",
         "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) + Text.byte_length(\"a\") }\n",
         "fn none() -> Bytes { Bytes.empty() }\n",
         "pub fn main() -> Int { 0 }\n",
@@ -6652,12 +6655,29 @@ fn the_formatter_joins_split_imports_of_one_path() {
             "import std/set as Set\n",
             "import std/set as Sets\n",
             "import std/set.{Set}\n",
+            "import std/order as Order\n",
+            "// orderings\n",
+            "import std/order.{Ordering}\n",
         )),
         "{}",
         formatted.text()
     );
     assert_formatter_round_trips(source);
     assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
+}
+
+// A member imported twice is a conflict; joining would hide it.
+#[test]
+fn the_formatter_keeps_a_repeated_member_import_as_written() {
+    let source = concat!(
+        "import std/set as Set\n",
+        "import std/set.{Set}\n",
+        "import std/set.{Set}\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(formatted.text().starts_with(source.split("pub").next().unwrap()), "{}", formatted.text());
+    assert_eq!(check_codes(formatted.text()), ["E_IMPORT_MEMBER_CONFLICT"]);
 }
 
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.

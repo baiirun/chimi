@@ -77,12 +77,15 @@ struct ImportLine {
     text: std::ops::Range<usize>,
     /// The whole line or lines it fills, with the newline that ends it.
     lines: std::ops::Range<usize>,
+    /// False when a comment or other code shares its lines.
+    joinable: bool,
 }
 
 /// Joins `import p as A` with `import p.{T}` into `import p as A.{T}`
 /// (decisions.md 2026-11-22), at the first of the lines. A path is joined only
 /// when it has exactly one alias-only import, at least one member-only import,
-/// no combined import already, and no comment on any of those lines. Returns
+/// no combined import already, no member named twice (the conflict stays
+/// visible), and no comment from its first import line to its last. Returns
 /// `None` when nothing is joined.
 fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
     let lines: Vec<ImportLine> = parsed
@@ -91,6 +94,13 @@ fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
         .into_iter()
         .filter(|node| node.kind() == NodeKind::ImportDeclaration)
         .filter_map(|node| import_line(source, &node))
+        .collect();
+    let comments: Vec<usize> = parsed
+        .root()
+        .descendant_tokens()
+        .into_iter()
+        .filter(|token| token.kind() == TokenKind::Comment)
+        .map(|token| token.range().start() as usize)
         .collect();
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut seen_paths: Vec<&str> = Vec::new();
@@ -110,17 +120,23 @@ fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
         let [alias_line] = aliases.as_slice() else {
             continue;
         };
-        if member_lines.is_empty() || alias_line.members.is_some() {
+        if member_lines.is_empty()
+            || alias_line.members.is_some()
+            || same_path.iter().any(|other| !other.joinable)
+        {
             continue;
         }
-        let mut members: Vec<&str> = Vec::new();
-        for member in member_lines
+        let span = same_path[0].lines.start..same_path[same_path.len() - 1].lines.end;
+        if comments.iter().any(|offset| span.contains(offset)) {
+            continue;
+        }
+        let members: Vec<&str> = member_lines
             .iter()
             .flat_map(|other| other.members.iter().flatten())
-        {
-            if !members.contains(&member.as_str()) {
-                members.push(member);
-            }
+            .map(String::as_str)
+            .collect();
+        if (1..members.len()).any(|index| members[..index].contains(&members[index])) {
+            continue;
         }
         let alias = alias_line.alias.as_deref().unwrap_or_default();
         let joined = format!("import {} as {alias}.{{{}}}", line.path, members.join(", "));
@@ -142,10 +158,7 @@ fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
 
 fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<ImportLine> {
     let tokens = node.descendant_tokens();
-    if tokens
-        .iter()
-        .any(|token| token.is_missing() || token.kind() == TokenKind::Comment)
-    {
+    if tokens.iter().any(|token| token.is_missing()) {
         return None;
     }
     let significant: Vec<_> = tokens
@@ -164,9 +177,9 @@ fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<Imp
         .find('\n')
         .map_or(source.len(), |index| end + index + 1);
     // Another item or a trailing comment on the same line keeps it as written.
-    if !source[line_start..start].trim().is_empty() || !source[end..line_end].trim().is_empty() {
-        return None;
-    }
+    let joinable = source[line_start..start].trim().is_empty()
+        && source[end..line_end].trim().is_empty()
+        && !tokens.iter().any(|token| token.kind() == TokenKind::Comment);
     let mut path = Vec::new();
     let mut alias = None;
     let mut members = None;
@@ -194,6 +207,7 @@ fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<Imp
         members,
         text: start..end,
         lines: line_start..line_end,
+        joinable,
     })
 }
 
