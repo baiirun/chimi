@@ -834,24 +834,18 @@ pub struct Scheduler {
     /// fibers first if the run finished.
     run_end: Option<carrier::RunEnd>,
     next_task: u64,
-    stack_bytes: usize,
-    trace_mode: TraceMode,
     events: Vec<TaskEvent>,
     channels: ChannelRegistry,
     channel_events: Vec<ChannelEvent>,
     constructed_events: u64,
-    trace_sink: Option<SchedulerTraceSink>,
-    trace_context: *mut c_void,
     clock: Clock,
     timers: TimerQueue,
     clock_events: Vec<ClockEvent>,
     host_operations: usize,
     kernel: ProcessKernel,
-    release_task_value: Option<(ValueRelease, *mut c_void)>,
-    release_channel_value: Option<(ValueRelease, *mut c_void)>,
-    release_task_context: Option<(TaskContextRelease, *mut c_void)>,
-    take_release: Option<(ReleaseTake, *mut c_void)>,
-    capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
+    /// What the host fixed when it built the scheduler: read on every step,
+    /// never changed by one (step 4 PR 4d-4).
+    config: KernelConfig,
     /// The value each task's fiber ended with, kept only while
     /// `release_task_value` is set. `Task.result` copies a value without
     /// consuming it, so a result stays until its task's handle is released
@@ -920,6 +914,21 @@ fn reply_with_outcome(request: &mut SchedulerRequest, outcome: TaskOutcome) {
             request.owner = origin.get();
         }
     }
+}
+
+/// The scheduler's configuration: the host's hooks and the run's fixed
+/// settings. Under the per-shard locks of step 4e any carrier reads it
+/// without the shared state's lock.
+struct KernelConfig {
+    stack_bytes: usize,
+    trace_mode: TraceMode,
+    trace_sink: Option<SchedulerTraceSink>,
+    trace_context: *mut c_void,
+    release_task_value: Option<(ValueRelease, *mut c_void)>,
+    release_channel_value: Option<(ValueRelease, *mut c_void)>,
+    release_task_context: Option<(TaskContextRelease, *mut c_void)>,
+    take_release: Option<(ReleaseTake, *mut c_void)>,
+    capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
 }
 
 impl Drop for Scheduler {
@@ -992,25 +1001,27 @@ impl Scheduler {
             parked: vec![false],
             run_end: None,
             next_task: 1,
-            stack_bytes,
-            trace_mode,
             events: Vec::new(),
             channels,
             channel_events: Vec::new(),
             constructed_events: 0,
-            trace_sink: None,
-            trace_context: std::ptr::null_mut(),
             clock: Clock::new(clock),
             timers: TimerQueue::default(),
             clock_events: Vec::new(),
             host_operations: 0,
             kernel,
-            release_task_value: release_task_value.map(|release| (release, release_context)),
-            release_channel_value: release_channel_value.map(|release| (release, release_context)),
-            release_task_context: release_task_context.map(|release| (release, release_context)),
-            take_release: take_release.map(|take| (take, release_context)),
-            capability_violation_report: capability_violation_report
-                .map(|report| (report, violation_context)),
+            config: KernelConfig {
+                stack_bytes,
+                trace_mode,
+                trace_sink: None,
+                trace_context: std::ptr::null_mut(),
+                release_task_value: release_task_value.map(|release| (release, release_context)),
+                release_channel_value: release_channel_value.map(|release| (release, release_context)),
+                release_task_context: release_task_context.map(|release| (release, release_context)),
+                take_release: take_release.map(|take| (take, release_context)),
+                capability_violation_report: capability_violation_report
+                    .map(|report| (report, violation_context)),
+            },
             task_values: BTreeMap::new(),
             released_terminal: Vec::new(),
             peak_tasks: 0,
@@ -1024,8 +1035,8 @@ impl Scheduler {
     }
 
     pub fn set_trace_sink(&mut self, sink: Option<SchedulerTraceSink>, context: *mut c_void) {
-        self.trace_sink = sink;
-        self.trace_context = context;
+        self.config.trace_sink = sink;
+        self.config.trace_context = context;
     }
 
     pub fn clock_mode(&self) -> ClockMode {
@@ -1347,7 +1358,7 @@ impl Scheduler {
     }
 
     fn emit_timer(&mut self, kind: ClockEventKind, task: Option<TaskId>, time: Instant) {
-        if self.trace_mode != TraceMode::Full {
+        if self.config.trace_mode != TraceMode::Full {
             return;
         }
         self.emit_clock(ClockEvent {
@@ -1360,7 +1371,7 @@ impl Scheduler {
     }
 
     fn emit_clock(&mut self, mut event: ClockEvent) {
-        if self.trace_mode == TraceMode::Off {
+        if self.config.trace_mode == TraceMode::Off {
             return;
         }
         self.constructed_events += 1;
@@ -1601,7 +1612,7 @@ impl Scheduler {
     /// the scheduler holds, so only their trace events are missing, and the
     /// host clears its queues before the next run.
     fn drain_host_releases(&mut self) -> bool {
-        let Some((take, context)) = self.take_release else {
+        let Some((take, context)) = self.config.take_release else {
             return false;
         };
         let mut drained = false;
@@ -2052,7 +2063,7 @@ impl Scheduler {
             );
             if let Some(TaskValue::Result(word)) = self.task_values.get(&task).copied() {
                 self.task_values.remove(&task);
-                if let Some((release, context)) = self.release_task_value {
+                if let Some((release, context)) = self.config.release_task_value {
                     // SAFETY: as for `release_channel_value`; the value is
                     // removed from the map before it is released.
                     unsafe { release(context, word) };
@@ -2093,7 +2104,7 @@ impl Scheduler {
     /// released once the execution ends. A process body ends with an end
     /// code the kernel reads, not a host value.
     fn keep_task_value(&mut self, task: TaskId, event: &ChimiFiberEvent) {
-        if self.release_task_value.is_none() || self.tasks[&task].process.is_some() {
+        if self.config.release_task_value.is_none() || self.tasks[&task].process.is_some() {
             return;
         }
         let value = match event.state {
@@ -2108,7 +2119,7 @@ impl Scheduler {
     }
 
     fn release_channel_value(&self, value: usize) {
-        if let Some((release, context)) = self.release_channel_value {
+        if let Some((release, context)) = self.config.release_channel_value {
             // SAFETY: the configuring caller keeps the hook and its context
             // valid until execution returns; the registry gives each
             // accepted value up at most once.
@@ -2120,7 +2131,7 @@ impl Scheduler {
         if task_context.is_null() {
             return;
         }
-        if let Some((release, context)) = self.release_task_context {
+        if let Some((release, context)) = self.config.release_task_context {
             // SAFETY: as for `release_channel_value`; a task's context is
             // cleared when it is released or its entry runs, so it is
             // released at most once and never after the entry took it.
@@ -2147,7 +2158,7 @@ impl Scheduler {
             self.release_channel_value(value);
         }
         let task_values = std::mem::take(&mut self.task_values);
-        if let Some((release, context)) = self.release_task_value {
+        if let Some((release, context)) = self.config.release_task_value {
             for value in task_values.into_values() {
                 // SAFETY: as for `release_channel_value`; each kept value is
                 // removed from the map before it is released.
@@ -2184,7 +2195,7 @@ impl Scheduler {
             entry,
             context,
             ChimiFiberConfig {
-                stack_bytes: self.stack_bytes,
+                stack_bytes: self.config.stack_bytes,
                 // Task/channel tracing records semantic scheduler events. A
                 // native parked-stack snapshot is a separate diagnostic and
                 // is not part of TaskEvent, so capturing one here would add
@@ -3224,7 +3235,7 @@ impl Scheduler {
     }
 
     fn emit(&mut self, task: TaskId, kind: TaskEventKind, cause: Option<TaskId>, full_only: bool) {
-        if self.trace_mode == TraceMode::Off || full_only && self.trace_mode != TraceMode::Full {
+        if self.config.trace_mode == TraceMode::Off || full_only && self.config.trace_mode != TraceMode::Full {
             return;
         }
         let record = self.tasks.get(&task);
@@ -3292,10 +3303,10 @@ impl Scheduler {
     }
 
     fn publish_trace(&self, event: SchedulerTraceEvent) {
-        if let Some(sink) = self.trace_sink {
+        if let Some(sink) = self.config.trace_sink {
             // SAFETY: the C entry contract requires the caller-provided sink
             // and context to remain valid until scheduler execution returns.
-            unsafe { sink(self.trace_context, &event) };
+            unsafe { sink(self.config.trace_context, &event) };
         }
     }
 
@@ -3308,7 +3319,7 @@ impl Scheduler {
         request_kind: u32,
         destination: Option<TaskId>,
     ) -> Result<T, SchedulerError> {
-        if let Some((report, context)) = self.capability_violation_report {
+        if let Some((report, context)) = self.config.capability_violation_report {
             let violation = ChimiCapabilityViolation::new(task, error, request_kind, destination);
             // SAFETY: the host keeps the hook and its context valid while the
             // scheduler runs; the record lives for the call.
