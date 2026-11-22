@@ -302,8 +302,9 @@ rows, and read the instruction counts below as the measured gain.
 | 4 | 938 (883 to 1012) | 835 (747 to 896) |
 | 8 | 890 (783 to 990) | 789 (687 to 833) |
 
-- The one-carrier drop is larger than the 12% fewer instructions, and two
-  carriers show none: most of each difference is within the runs' spread.
+- At one carrier the runs do not overlap, but the drop (21%) is larger
+  than the 12% fewer instructions, so part of it is the host. At two to
+  eight carriers the difference is within the runs' spread.
 - Instructions are steadier than times. Under callgrind, pairs with 2000
   rounds on one carrier ran 750 million instructions before and 661
   million after (12% fewer). The inclusive cost of `Scheduler::complete`,
