@@ -425,7 +425,12 @@ fn a_directory_with_more_modules_than_the_build_finds_the_right_file() {
     ]);
 
     assert!(output.status.success(), "{output:?}");
-    let service = directory.join("service.chimi").display().to_string();
+    // A directory is loaded by its canonical path (`/private/var` on macOS).
+    let service = std::fs::canonicalize(&directory)
+        .unwrap()
+        .join("service.chimi")
+        .display()
+        .to_string();
     let report = stdout(&output);
     assert!(
         report.contains(&format!("  {service}:2:3  defect  <- started here\n")),
@@ -632,7 +637,12 @@ fn a_file_built_alone_is_found_in_its_directory_and_back() {
     ]);
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    assert!(stdout(&output).contains(&started), "{output:?}");
+    let in_directory = std::fs::canonicalize(&program)
+        .unwrap()
+        .display()
+        .to_string();
+    let in_directory = format!("  {in_directory}:2:3  defect  <- started here\n");
+    assert!(stdout(&output).contains(&in_directory), "{output:?}");
 
     // Built as `service` in the directory, shown alone, where it is `main`.
     let executable = directory.join("rooted");
