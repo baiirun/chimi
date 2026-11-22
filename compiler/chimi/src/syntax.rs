@@ -304,6 +304,8 @@ pub(crate) enum NodeKind {
     ListExpression,
     RecordExpression,
     RecordField,
+    /// `field: pattern` inside a struct pattern `Name { field: pattern, .. }`.
+    FieldPattern,
     BlockExpression,
     BlockItem,
     CaseExpression,
@@ -379,6 +381,7 @@ impl NodeKind {
             Self::ListExpression => "list_expression",
             Self::RecordExpression => "record_expression",
             Self::RecordField => "record_field",
+            Self::FieldPattern => "field_pattern",
             Self::BlockExpression => "block_expression",
             Self::BlockItem => "block_item",
             Self::CaseExpression => "case_expression",
@@ -3210,7 +3213,9 @@ impl<'source> Parser<'source> {
                     while self.accept(TokenKind::Dot) {
                         self.expect(TokenKind::Identifier);
                     }
-                    if self.accept(TokenKind::LeftParen) {
+                    if self.at(TokenKind::LeftBrace) {
+                        self.parse_struct_pattern_fields();
+                    } else if self.accept(TokenKind::LeftParen) {
                         self.skip_newlines();
                         if !self.at(TokenKind::RightParen) {
                             self.parse_pattern();
@@ -3244,6 +3249,35 @@ impl<'source> Parser<'source> {
         self.finish();
     }
 
+    /// Parses the braces of a struct pattern `Name { field: pattern, .. }`.
+    /// Ensures: each `field: pattern` is a `FieldPattern` node holding the field
+    /// name and one `Pattern`; a `..` that matches the other fields is a direct
+    /// token. Lowering reports a misplaced or repeated `..`.
+    fn parse_struct_pattern_fields(&mut self) {
+        self.bump();
+        self.skip_newlines();
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::End) {
+            if self.at(TokenKind::DotDot) {
+                self.bump();
+            } else if self.at(TokenKind::Identifier) {
+                self.start(NodeKind::FieldPattern);
+                self.bump();
+                self.expect(TokenKind::Colon);
+                self.parse_pattern();
+                self.finish();
+            } else {
+                self.error_at_current("expected `field: pattern` or `..` in a struct pattern");
+                break;
+            }
+            if !self.accept(TokenKind::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        self.skip_newlines();
+        self.expect(TokenKind::RightBrace);
+    }
+
     /// Parses `: Type` after a binding name. A colon in a pattern always introduces a
     /// type; a colon followed by anything else is a labelled pattern, which is `S1001`
     /// because patterns are positional. The labelled pattern is still parsed so the
@@ -3257,7 +3291,7 @@ impl<'source> Parser<'source> {
             self.parse_type();
         } else {
             self.error_at_current(
-                "patterns are positional, as construction is; a colon in a pattern introduces a type, not a field label",
+                "a colon after a name in a pattern introduces a type; a struct's fields are matched by name in braces, `Name { field: pattern }`, and a variant's payload by position",
             );
             self.parse_pattern();
         }

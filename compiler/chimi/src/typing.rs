@@ -5365,10 +5365,44 @@ impl ProjectTypeChecker {
                 }
             }
             Pattern::Constructor {
-                arguments, range, ..
-            } => self.normalize_constructor_pattern(
-                module_id, pattern, arguments, *range, expected, context, bindings,
-            ),
+                arguments,
+                range,
+                form,
+                ..
+            } => {
+                if *form == (CallForm::Fields { ordered: false }) {
+                    self.reject_unordered_field_pattern(module_id, pattern, *range);
+                    for argument in arguments {
+                        self.normalize_pattern(
+                            module_id,
+                            argument,
+                            TypeId::new(0),
+                            PatternContext {
+                                nested: true,
+                                ..context
+                            },
+                            bindings,
+                        );
+                    }
+                    // The rejected pattern covers its whole constructor, as a
+                    // pattern with the wrong field count does, so the rejection
+                    // causes no coverage follow-ons.
+                    let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+                        return MatchPattern::Wildcard;
+                    };
+                    let arity = self.fields.get(&constructor).map_or(0, Vec::len);
+                    return MatchPattern::Constructor {
+                        tag: MatchTag::EnumVariant(constructor),
+                        fields: vec![MatchPattern::Wildcard; arity],
+                    };
+                }
+                if *form == CallForm::Positional {
+                    self.reject_positional_struct_pattern(module_id, pattern, arguments, *range);
+                }
+                self.normalize_constructor_pattern(
+                    module_id, pattern, arguments, *range, expected, context, bindings,
+                )
+            }
         }
     }
 
@@ -6919,7 +6953,22 @@ impl ProjectTypeChecker {
                     MatchTag::Rejected(_) => "_".to_owned(),
                     MatchTag::Tuple(_) => String::new(),
                 };
-                if fields.is_empty() {
+                let struct_fields = match tag {
+                    MatchTag::EnumVariant(symbol) if self.is_struct_constructor(*symbol) => {
+                        self.fields.get(symbol)
+                    }
+                    _ => None,
+                };
+                if let Some(declared) = struct_fields {
+                    struct_literals::braced(
+                        &name,
+                        declared
+                            .iter()
+                            .zip(join(fields))
+                            .map(|(field, pattern)| format!("{}: {pattern}", field.name))
+                            .collect(),
+                    )
+                } else if fields.is_empty() {
                     name
                 } else {
                     format!("{name}({})", join(fields).join(", "))

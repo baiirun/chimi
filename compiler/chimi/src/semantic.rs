@@ -603,13 +603,18 @@ pub(crate) enum Pattern {
         literal: PatternLiteral,
         range: TextRange,
     },
-    /// `None`, `Circle(radius)`, or `Value.Text(schema)`: a constructor path and its
-    /// payload patterns by position.
+    /// `None`, `Circle(radius)`, `Value.Text(schema)` or `Money { cents: c }`:
+    /// a constructor path and its payload patterns. With `Positional` or
+    /// `Fields { ordered: true }` the arguments are by position (lowering put a
+    /// struct pattern's fields in declaration order); with `Fields { ordered:
+    /// false }` they are the written field patterns, already reported for a
+    /// struct of the module.
     Constructor {
         semantic_id: SemanticId,
         path: Vec<Name>,
         arguments: Vec<Pattern>,
         range: TextRange,
+        form: CallForm,
     },
     /// `name: Type` or `_: Type`. Over an ordinary value the type is an annotation;
     /// over a failure-set value it selects the members of that type.
@@ -3244,6 +3249,9 @@ impl ProjectLowerer {
             }
             TokenKind::Void => PatternLiteral::Void,
             _ => {
+                if tokens.iter().any(|token| token.kind() == TokenKind::LeftBrace) {
+                    return self.lower_struct_pattern(semantic_id, node, identifiers, range);
+                }
                 let applied = tokens
                     .iter()
                     .any(|token| token.kind() == TokenKind::LeftParen);
@@ -3267,6 +3275,7 @@ impl ProjectLowerer {
                             .map(|child| self.lower_pattern(child))
                             .collect(),
                         range,
+                        form: CallForm::Positional,
                     },
                 };
             }
@@ -3276,6 +3285,161 @@ impl ProjectLowerer {
             literal,
             range,
         }
+    }
+
+    /// Lowers `Name { field: pattern, .. }`. For a struct of this module with
+    /// every field named once (or the rest matched by a final `..`), the
+    /// result is the positional constructor pattern in declaration order, with
+    /// `_` for each field `..` covers. Otherwise the field patterns stay in
+    /// source order under `Fields { ordered: false }`, after reporting why for
+    /// a struct of the module; typing reports any other name.
+    fn lower_struct_pattern(
+        &mut self,
+        semantic_id: SemanticId,
+        node: &SyntaxNode<'_>,
+        path: Vec<Name>,
+        range: TextRange,
+    ) -> Pattern {
+        let written = node
+            .child_nodes()
+            .into_iter()
+            .filter(|child| child.kind() == NodeKind::FieldPattern)
+            .filter_map(|field| {
+                let name = direct_identifier(&field)?;
+                let pattern = match direct_child(&field, NodeKind::Pattern) {
+                    Some(pattern) => self.lower_pattern(&pattern),
+                    None => Pattern::Wildcard {
+                        semantic_id: self.allocate_semantic_id(),
+                        range: name.range,
+                    },
+                };
+                Some((name, pattern))
+            })
+            .collect::<Vec<_>>();
+        let rests = significant_child_tokens(node)
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::DotDot)
+            .collect::<Vec<_>>();
+        let last_part = node
+            .descendant_tokens()
+            .into_iter()
+            .rfind(|token| {
+                !matches!(
+                    token.kind(),
+                    TokenKind::Whitespace
+                        | TokenKind::Newline
+                        | TokenKind::Comment
+                        | TokenKind::Comma
+                        | TokenKind::RightBrace
+                )
+            });
+        let mut rest = !rests.is_empty();
+        if rests.len() > 1
+            || rests
+                .first()
+                .is_some_and(|first| last_part.is_none_or(|last| last.range() != first.range()))
+        {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Syntax,
+                "S1001",
+                FileId::new(0),
+                rests.last().map_or(range, |token| token.range()),
+                "`..` matches the other fields once, after the fields a struct pattern names",
+            ));
+            rest = true;
+        }
+        let declared = match path.as_slice() {
+            [name] => self.struct_fields.get(&name.text).cloned(),
+            _ => None,
+        };
+        let order = declared.as_ref().and_then(|declared| {
+            let struct_name = path[0].text.clone();
+            self.struct_pattern_order(&struct_name, declared, &written, rest, range)
+        });
+        let Some(order) = order else {
+            return Pattern::Constructor {
+                semantic_id,
+                path,
+                arguments: written.into_iter().map(|(_, pattern)| pattern).collect(),
+                range,
+                form: CallForm::Fields { ordered: false },
+            };
+        };
+        let mut written = written.into_iter().map(Some).collect::<Vec<_>>();
+        let arguments = order
+            .into_iter()
+            .map(|source| match source.and_then(|index| written[index].take()) {
+                Some((_, pattern)) => pattern,
+                None => Pattern::Wildcard {
+                    semantic_id: self.allocate_semantic_id(),
+                    range,
+                },
+            })
+            .collect();
+        Pattern::Constructor {
+            semantic_id,
+            path,
+            arguments,
+            range,
+            form: CallForm::Fields { ordered: true },
+        }
+    }
+
+    /// For each field of `declared`, the index of the written field pattern
+    /// that matches it, or `None` where `..` covers it; `None` overall after
+    /// reporting a repeated, unknown or (without `..`) missing field.
+    fn struct_pattern_order(
+        &mut self,
+        struct_name: &str,
+        declared: &[String],
+        written: &[(Name, Pattern)],
+        rest: bool,
+        range: TextRange,
+    ) -> Option<Vec<Option<usize>>> {
+        let mut valid = true;
+        for (index, (name, _)) in written.iter().enumerate() {
+            if written[..index].iter().any(|(earlier, _)| earlier.text == name.text) {
+                self.type_error(
+                    "T4211",
+                    name.range,
+                    format!("field `{}` is named more than once", name.text),
+                );
+                valid = false;
+            } else if !declared.contains(&name.text) {
+                self.type_error(
+                    "T4205",
+                    name.range,
+                    format!("`{struct_name}` has no field `{}`", name.text),
+                );
+                valid = false;
+            }
+        }
+        let missing = declared
+            .iter()
+            .filter(|field| !written.iter().any(|(name, _)| name.text == **field))
+            .map(|field| format!("`{field}`"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() && !rest {
+            let (noun, list) = if missing.len() == 1 {
+                ("field", missing[0].clone())
+            } else {
+                ("fields", missing.join(", "))
+            };
+            self.type_error(
+                "T4215",
+                range,
+                format!(
+                    "a `{struct_name}` pattern names every field or ends with `..`; add {noun} {list}, or `..`"
+                ),
+            );
+            valid = false;
+        }
+        valid.then(|| {
+            declared
+                .iter()
+                .map(|field| written.iter().position(|(name, _)| name.text == *field))
+                .collect()
+        })
     }
 
     /// Splits list elements around the first rest element. A further rest is `L2021`;

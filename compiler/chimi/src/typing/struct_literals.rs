@@ -81,6 +81,96 @@ impl ProjectTypeChecker {
         self.push_type_diagnostic(diagnostic);
     }
 
+    /// Reports `Money(cents)` as a pattern: a struct's fields are matched by
+    /// name. Ensures: when the pattern names one sub-pattern per field, the
+    /// diagnostic carries the edit to `Money { cents: cents }`.
+    pub(super) fn reject_positional_struct_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &crate::semantic::Pattern,
+        arguments: &[crate::semantic::Pattern],
+        range: TextRange,
+    ) {
+        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
+            return;
+        };
+        if !self.is_struct_constructor(constructor) {
+            return;
+        }
+        let name = self.resolved.symbol(constructor).name.clone();
+        let fields = self
+            .fields
+            .get(&constructor)
+            .map(|fields| fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let module = &self.resolved.semantic.modules[module_id.raw() as usize];
+        let file_id = module.source.file_id();
+        let source = module.source.text();
+        let slice = |range: TextRange| &source[range.start() as usize..range.end() as usize];
+        let written = slice(range);
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticStage::Type,
+            "T4216",
+            file_id,
+            range,
+            format!(
+                "a struct pattern names its fields: `{}`",
+                braced(&name, fields.iter().map(|field| format!("{field}: ...")).collect())
+            ),
+        );
+        if arguments.len() == fields.len() && written.ends_with(')') {
+            let callee = &written[..written.find('(').unwrap_or(written.len())];
+            let replacement = braced(
+                callee,
+                fields
+                    .iter()
+                    .zip(arguments)
+                    .map(|(field, argument)| format!("{field}: {}", slice(argument.range())))
+                    .collect(),
+            );
+            diagnostic = diagnostic.with_fix(range, replacement);
+        }
+        self.push_type_diagnostic(diagnostic);
+    }
+
+    /// Reports field braces in a pattern that lowering could not order: an
+    /// enum variant (whose payload is positional) or another module's struct.
+    /// A struct of this module reports nothing more (lowering said why).
+    pub(super) fn reject_unordered_field_pattern(
+        &mut self,
+        module_id: ModuleId,
+        pattern: &crate::semantic::Pattern,
+        range: TextRange,
+    ) {
+        let Some(symbol) = self.resolved_pattern_symbol(module_id, pattern) else {
+            return;
+        };
+        let declared = self.resolved.symbol(symbol);
+        let name = declared.name.clone();
+        if declared.kind == ProjectSymbolKind::StructConstructor {
+            if declared.module_id != Some(module_id) {
+                self.type_error_range(
+                    module_id,
+                    "E_PRIVATE_STRUCT_CONSTRUCTOR",
+                    range,
+                    format!(
+                        "`{name}` has module-private fields, so only its own module can match them"
+                    ),
+                );
+            }
+            return;
+        }
+        self.type_error_range(
+            module_id,
+            "T4217",
+            range,
+            format!(
+                "`{name}` is an enum variant; a variant's payload is matched in parentheses, \
+                 in declaration order"
+            ),
+        );
+    }
+
     /// Reports a struct constructor used as a value, as `let make = Money`: a
     /// struct is built by field name, so its constructor is not a function.
     pub(super) fn reject_constructor_value(
@@ -188,7 +278,7 @@ impl ProjectTypeChecker {
 }
 
 /// `Name { a: 1, b: 2 }`, or `Name {}` for a struct without fields.
-fn braced(name: &str, fields: Vec<String>) -> String {
+pub(super) fn braced(name: &str, fields: Vec<String>) -> String {
     if fields.is_empty() {
         format!("{name} {{}}")
     } else {

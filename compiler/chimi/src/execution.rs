@@ -74,6 +74,9 @@ pub struct ExecutionConfig {
     /// Where the runner's `std/log` provider appends its lines; `None` writes
     /// them to application stderr.
     log_file: Option<String>,
+    /// Where the runner's `std/metrics` provider writes its aggregates at the
+    /// end; `None` records nothing.
+    metrics_file: Option<String>,
 }
 
 impl ExecutionConfig {
@@ -96,6 +99,7 @@ impl ExecutionConfig {
             random_seed: None,
             log_level: 1,
             log_file: None,
+            metrics_file: None,
         })
     }
 
@@ -157,6 +161,12 @@ impl ExecutionConfig {
     /// Appends the runner's `std/log` lines to `path` instead of stderr.
     pub fn with_log_file(mut self, path: impl Into<String>) -> Self {
         self.log_file = Some(path.into());
+        self
+    }
+
+    /// Writes the runner's `std/metrics` aggregates to `path` at the end.
+    pub fn with_metrics_file(mut self, path: impl Into<String>) -> Self {
+        self.metrics_file = Some(path.into());
         self
     }
 
@@ -982,6 +992,8 @@ struct Evaluator<'core> {
     random: Option<crate::random_source::Generator>,
     /// The files `std/fs` has open.
     open_files: host_operations::OpenFiles,
+    /// What the runner's `std/metrics` provider has recorded.
+    metrics: host_operations::MetricsAggregate,
 }
 
 impl<'core> Evaluator<'core> {
@@ -1009,6 +1021,7 @@ impl<'core> Evaluator<'core> {
             next_test_log: 1,
             random: None,
             open_files: host_operations::OpenFiles::default(),
+            metrics: host_operations::MetricsAggregate::default(),
         }
     }
 
@@ -1068,6 +1081,11 @@ impl<'core> Evaluator<'core> {
             _ => None,
         };
         let program_exit = self.program_exit(&control);
+        if let Some(path) = &self.config.metrics_file {
+            // The native runner exits 74 when this write fails; the reference
+            // interpreter has no exit status of its own to report it with.
+            let _ = std::fs::write(path, self.metrics.render());
+        }
         let outcome = self.public_outcome(control);
         ExecutionReport {
             events: self.events,
@@ -2026,6 +2044,8 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::SignalHostWait
             | StandardFunction::LogHostMinimumLevel
             | StandardFunction::LogHostWrite
+            | StandardFunction::MetricsHostEnabled
+            | StandardFunction::MetricsHostRecord
             => {
                 self.invoke_host_operation(function, arguments, call_node)
             }
@@ -3267,6 +3287,7 @@ mod tests {
                 random_seed: None,
                 log_level: 1,
                 log_file: None,
+                metrics_file: None,
             }
         );
         assert_eq!(
