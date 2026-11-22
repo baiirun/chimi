@@ -176,7 +176,8 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   moves that package's pin to what its `rev` points to now, and naming a
   package that is not a git dependency of the workspace is an error,
   reported before anything is fetched when no member names it and the
-  lockfile does not pin it. It
+  lockfile does not pin it. (A dependency's new git dependency is first
+  pinned by an update without names.) It
   prints each pin it adds, moves or drops. These are the
   only commands that write the lockfile or move a pinned commit.
 - `check`, `run`, `build`, `test`, `doc` and `lint` MUST NOT write the

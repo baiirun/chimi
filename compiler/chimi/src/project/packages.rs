@@ -191,6 +191,13 @@ pub enum PackageError {
         name: PackageName,
         error: GitError,
     },
+    /// `chimi deps update <name>` names a package no member names as a git
+    /// dependency and the lockfile does not pin, checked before fetching. A
+    /// new git dependency of a dependency is pinned by an update without
+    /// names first.
+    NotNamedOrPinned {
+        name: String,
+    },
     /// `chimi deps update <name>` names no git package of the workspace.
     NotAGitDependency {
         name: String,
@@ -323,6 +330,12 @@ impl fmt::Display for PackageError {
             Self::NoManifest { directory } => {
                 write!(formatter, "{} has no {MANIFEST_FILE}", directory.display())
             }
+            Self::NotNamedOrPinned { name } => write!(
+                formatter,
+                "`{name}` is not a git dependency of the workspace: no member names it and \
+                 {LOCK_FILE} does not pin it (a dependency's new git dependency is pinned by \
+                 `chimi deps update` without names)"
+            ),
             Self::NotAGitDependency { name } => {
                 write!(
                     formatter,
@@ -477,7 +490,7 @@ impl PackageGraph {
                 })
         };
         if let Some(name) = moving.iter().find(|name| !known(name)) {
-            return Err(PackageError::NotAGitDependency { name: name.clone() });
+            return Err(PackageError::NotNamedOrPinned { name: name.clone() });
         }
         let mut pins = Pins::Updating {
             previous,

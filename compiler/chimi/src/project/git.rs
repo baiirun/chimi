@@ -266,6 +266,8 @@ fn git(database: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
                 // Only transports that fetch; `ext::` runs commands.
                 .args(["-c", "protocol.ext.allow=never"])
                 .args(arguments)
+                // Untranslated messages, which `is_lock_collision` reads.
+                .env("LC_ALL", "C")
                 .output(),
         )
     };
