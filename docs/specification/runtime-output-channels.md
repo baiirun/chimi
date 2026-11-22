@@ -62,6 +62,7 @@ program --chimi-runner \
   --max-line-bytes=1048576 \
   --log-level=info \
   --log-file=/path/to/app.log \
+  --metrics-file=/path/to/metrics.json \
   -- \
   application arguments
 ```
@@ -71,7 +72,12 @@ Supported trace modes are `off`, `boundaries`, and `full`. `--log-level` and
 ([observability modules](observability.md#the-runners-provider)). Log lines
 are application output: they go to application stderr, or to the log file,
 which MUST be distinct from every report file above, and never to the
-telemetry or outcome sinks. Unlike those sinks, the log file is appended to. Cancellation,
+telemetry or outcome sinks. Unlike those sinks, the log file is appended to.
+`--metrics-file` names where the runner's `std/metrics` provider writes its
+aggregates when the program ends
+([observability modules](observability.md#the-runners-aggregate)); it MUST be
+distinct from every report file and from the log file, and is replaced on
+each run. Cancellation,
 benchmark configuration, and the maximum UTF-8 line size remain runner-owned
 options inside the same boundary. Arguments after `--` are passed as the one
 `List<Text>` input to `main`; without a runner marker, every process argument is

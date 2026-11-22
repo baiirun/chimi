@@ -1,0 +1,177 @@
+/// Metrics: counters, gauges and observed values. Recording needs the
+/// `metrics: Metrics` capability, which the runner supplies to `main` and a
+/// test supplies with `using`, so a function's signature says when it records
+/// and a test can check what it records.
+///
+/// ```text
+/// pub fn main() -> Void needs { metrics: Metrics, clock: Clock } {
+///   let started = Clock.now()
+///   Metrics.count("orders", 1, [("route", "/pay")])
+///   Metrics.gauge("queue_depth", 12.0, [])
+///   Metrics.observe("charge_seconds", Metrics.seconds(Clock.since(started)), [])
+/// }
+/// ```
+///
+/// The runner's provider adds each measurement into one aggregate per name
+/// and label set and writes them all to the file named by the runner option
+/// `--metrics-file` when the program ends. Without that option it records
+/// nothing.
+
+import std/debug as Debug
+import std/duration as Duration.{Duration}
+import std/float as Float
+import std/int as Int
+import std/json as Json
+import std/list as List
+import std/map as Map
+
+// 1. Public types.
+
+/// How a measurement adds into its aggregate.
+pub enum Kind {
+  /// Added to a running total.
+  Count
+  /// Replaces the last value.
+  Gauge
+  /// Counted into a histogram, with its sum.
+  Observe
+}
+
+/// One measurement: what kind, the metric's name, its value, and its labels
+/// in the order written.
+pub struct Measurement {
+  kind: Kind,
+  name: Text,
+  value: Float,
+  labels: List<(Text, Text)>,
+}
+
+/// The capability to record metrics. The runner's provider aggregates and
+/// writes them at exit; a test's fake is a record with this one function,
+/// such as one that keeps measurements in a `std/test` recorder.
+pub interface Metrics {
+  /// Adds `measurement` into its aggregate.
+  record: fn(Measurement) -> Void
+}
+
+// 5. Queries.
+
+/// The measurement's kind.
+///
+/// Cost: O(1).
+pub fn kind(measurement: Measurement) -> Kind {
+  measurement.kind
+}
+
+/// The metric's name.
+///
+/// Cost: O(1).
+pub fn name(measurement: Measurement) -> Text {
+  measurement.name
+}
+
+/// The measurement's value: the amount for `Count`, the value for `Gauge` and
+/// `Observe`.
+///
+/// Cost: O(1).
+pub fn value(measurement: Measurement) -> Float {
+  measurement.value
+}
+
+/// The measurement's labels, in the order written.
+///
+/// Cost: O(1).
+pub fn labels(measurement: Measurement) -> List<(Text, Text)> {
+  measurement.labels
+}
+
+// 6. Recording.
+
+/// Adds `by` to the counter `name` with `labels`. A counter only grows; a
+/// value that goes down is a gauge.
+///
+/// Defects when: `by` is negative.
+/// Cost: whatever the provider's `record` costs.
+pub fn count(name: Text, by: Int, labels: List<(Text, Text)>) -> Void needs {
+  metrics: Metrics
+} {
+  case by < 0 {
+    True -> Debug.crash("Metrics: count must not be negative, got ${Int.to_text(by)}")
+    False -> Void
+  }
+  metrics.record(Measurement(Kind.Count, name, Float.from_int(by), labels))
+}
+
+/// Sets the gauge `name` with `labels` to `value`.
+///
+/// Cost: whatever the provider's `record` costs.
+pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs {
+  metrics: Metrics
+} {
+  metrics.record(Measurement(Kind.Gauge, name, value, labels))
+}
+
+/// Counts `value` into the histogram `name` with `labels`. A duration is
+/// observed in seconds, as `Metrics.seconds` gives it.
+///
+/// Cost: whatever the provider's `record` costs.
+pub fn observe(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs {
+  metrics: Metrics
+} {
+  metrics.record(Measurement(Kind.Observe, name, value, labels))
+}
+
+// 7. Conversions.
+
+/// `duration` in seconds, the unit a duration is observed in.
+///
+/// Cost: O(1).
+pub fn seconds(duration: Duration) -> Float {
+  Float.from_int(Duration.to_nanoseconds(duration)) / 1000000000.0
+}
+
+// 8. Private helpers, the runner provider, and the native core.
+
+fn code(kind: Kind) -> Int {
+  case kind {
+    Kind.Count -> 0
+    Kind.Gauge -> 1
+    Kind.Observe -> 2
+  }
+}
+
+// The labels as one JSON object, so a label set is one key whatever order
+// it was written in; a label written twice keeps its last value.
+fn labels_key(labels: List<(Text, Text)>) -> Text {
+  Json.encode(Json.object(Map.from(List.map(labels, fn(label) {
+    let (key, value) = label
+    (key, Json.text(value))
+  }))))
+}
+
+// The provider the runner binds to `main`'s `metrics` need (operations.rs
+// `RUNNER_PROVIDERS`). Private, so no other code can take the capability
+// without declaring the need. Without `--metrics-file` nothing is recorded,
+// so the labels are never encoded.
+fn host() {
+  let enabled = host_enabled()
+  {
+    record: fn(measurement: Measurement) {
+      case enabled {
+        True -> host_record(
+          code(measurement.kind),
+          Json.encode(Json.text(measurement.name)),
+          measurement.value,
+          labels_key(measurement.labels),
+        )
+        False -> Void
+      }
+    }
+  }
+}
+
+native fn host_enabled() -> Bool
+
+// `name` and `labels` arrive encoded as JSON, so both runtimes key and write
+// them byte for byte alike.
+native fn host_record(kind: Int, name: Text, value: Float, labels: Text) -> Void

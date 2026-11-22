@@ -1,0 +1,323 @@
+//! Conformance for `std/metrics` (Phase 7c, CHI-289): the measurement each
+//! recording function builds, fakes through `using`, and the runner's
+//! provider, which adds measurements into one aggregate per name and label
+//! set and writes them to `--metrics-file` when the program ends.
+//!
+//! Each test writes `cases.chimi` to a scratch directory and runs the CLI there.
+
+#![cfg(unix)]
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str, source: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "chimi-metrics-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        if path.exists() {
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("cases.chimi"), source).unwrap();
+        Self(path)
+    }
+
+    fn chimi(&self, arguments: &[&str]) -> Run {
+        run(Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&self.0)
+            .args(arguments))
+    }
+
+    /// Builds `cases.chimi` with the native backend and returns the binary.
+    fn build(&self) -> PathBuf {
+        let built = self.chimi(&["build", "cases.chimi", "-o", "program"]);
+        assert_eq!(built.status, Some(0), "{}{}", built.stdout, built.stderr);
+        self.0.join("program")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct Run {
+    status: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+fn run(command: &mut Command) -> Run {
+    let output = command.output().expect("run the command");
+    Run {
+        status: output.status.code(),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    }
+}
+
+fn runner(program: &Path, options: &[&str]) -> Run {
+    run(Command::new(program)
+        .arg("--chimi-runner")
+        .args(options)
+        .arg("--"))
+}
+
+const PROGRAM: &str = r#"import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Void needs { metrics: Metrics } {
+  Metrics.count("orders", 1, [("route", "/pay"), ("method", "POST")])
+  Metrics.count("orders", 2, [("method", "POST"), ("route", "/pay")])
+  Metrics.count("orders", 4, [])
+  Metrics.gauge("queue \"depth\"", 12.0, [("route", "a"), ("route", "b")])
+  Metrics.gauge("queue \"depth\"", -3.5, [("route", "b")])
+  Metrics.observe("charge_seconds", 0.0, [])
+  Metrics.observe("charge_seconds", 0.25, [])
+  Metrics.observe("charge_seconds", 0.5, [])
+  Metrics.observe("charge_seconds", 11.0, [])
+  Metrics.gauge("orders", 1.0, [])
+}
+"#;
+
+const DOCUMENT: &str = concat!(
+    r#"{"schema":"chimi.metrics.v1","metrics":["#,
+    r#"{"name":"charge_seconds","labels":{},"kind":"observe","count":4,"sum":11.75,"#,
+    r#""bounds":[0.0,0.005,0.01,0.025,0.05,0.075,0.1,0.25,0.5,0.75,1.0,2.5,5.0,7.5,10.0],"#,
+    r#""bucket_counts":[1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1]},"#,
+    r#"{"name":"orders","labels":{"method":"POST","route":"/pay"},"kind":"count","value":3},"#,
+    r#"{"name":"orders","labels":{},"kind":"count","value":4},"#,
+    r#"{"name":"queue \"depth\"","labels":{"route":"b"},"kind":"gauge","value":-3.5}"#,
+    r#"],"dropped":{"label_sets":0,"kind_conflicts":1}}"#,
+    "\n"
+);
+
+// Rejects a provider that keys a label set by the order it was written in,
+// keeps a repeated label's first value, replaces a count instead of adding
+// to it, adds gauges, puts a value on a bound into the next bucket, sorts the
+// series some other way, escapes a name badly, or lets a name change kind.
+#[test]
+fn the_runner_writes_one_aggregate_per_name_and_label_set() {
+    let scratch = Scratch::new("document", PROGRAM);
+    let program = scratch.build();
+    let file = scratch.0.join("metrics.json");
+    let option = format!("--metrics-file={}", file.display());
+    let output = runner(&program, &[&option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    assert_eq!((output.stdout.as_str(), output.stderr.as_str()), ("", ""));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), DOCUMENT);
+    // A second run replaces the file: it holds one run's aggregates.
+    let output = runner(&program, &[&option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), DOCUMENT);
+}
+
+// Rejects a provider that writes somewhere without the option, or a runner
+// that lets the metrics file share a report or log file, even under another
+// spelling, or that runs `main` when the file cannot be opened.
+#[test]
+fn the_metrics_file_option_is_checked_before_main_runs() {
+    let scratch = Scratch::new("options", PROGRAM);
+    let program = scratch.build();
+    let output = runner(&program, &[]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let mut written: Vec<String> = std::fs::read_dir(&scratch.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    written.sort();
+    assert_eq!(written, ["cases.chimi", "program", "target"], "nothing beside the build");
+    let file = scratch.0.join("same.json");
+    let metrics = format!("--metrics-file={}", file.display());
+    let expected = "the metrics file must be distinct from the runner's report files and the log file\n";
+    for other in ["--outcome-file", "--telemetry-file", "--log-file", "--memory-report-file", "--profile-file"] {
+        let clash = runner(&program, &[&metrics, &format!("{other}={}", file.display())]);
+        assert_eq!((clash.status, clash.stderr.as_str()), (Some(64), expected), "{other}");
+    }
+    let log = format!("--log-file={}", file.display());
+    let respelled = format!("--metrics-file={}/./same.json", scratch.0.display());
+    let clash = runner(&program, &[&log, &respelled]);
+    assert_eq!((clash.status, clash.stderr.as_str()), (Some(64), expected), "another spelling");
+    let missing = runner(&program, &["--metrics-file=/nonexistent/dir/metrics.json"]);
+    assert_eq!(missing.status, Some(74));
+    assert!(missing.stderr.starts_with("cannot open metrics file /nonexistent/dir/metrics.json"), "{}", missing.stderr);
+}
+
+const LIMITS: &str = r#"import std/int as Int
+import std/list as List
+import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Void needs { metrics: Metrics } {
+  List.each(List.enumerate(List.repeat(0, 1001)), fn(pair) {
+    let (index, _) = pair
+    Metrics.count("ids", 1, [("id", Int.to_text(index))])
+  })
+  Metrics.count("ids", 5, [("id", "7")])
+  Metrics.count("ids", 1, [("id", "1000")])
+}
+"#;
+
+// Rejects a provider with no bound on the label sets one name can make, or
+// one that drops a measurement into a label set it already has.
+#[test]
+fn one_name_keeps_at_most_a_thousand_label_sets() {
+    let scratch = Scratch::new("limits", LIMITS);
+    let program = scratch.build();
+    let file = scratch.0.join("metrics.json");
+    let output = runner(&program, &[&format!("--metrics-file={}", file.display())]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(written.matches(r#""name":"ids""#).count(), 1000);
+    assert!(written.contains(r#"{"name":"ids","labels":{"id":"7"},"kind":"count","value":6}"#), "{written}");
+    assert!(!written.contains(r#""id":"1000""#), "{written}");
+    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
+}
+
+const CARRIERS: &str = r#"import std/list as List
+import std/metrics as Metrics.{Metrics}
+import std/task as Task
+
+fn work() -> Int needs { metrics: Metrics } {
+  List.each(List.repeat(0, 500), fn(_) {
+    Metrics.count("done", 1, [])
+    Metrics.observe("size", 1.0, [])
+  })
+  0
+}
+
+pub fn main() -> Void needs { metrics: Metrics } {
+  let tasks = List.map(List.repeat(0, 8), fn(_) { Task.start(work) })
+  List.each(tasks, fn(task) {
+    let _ = Task.result(task)
+    Void
+  })
+}
+"#;
+
+// Rejects an aggregate that loses a measurement when tasks on several
+// carriers record at once.
+#[test]
+fn tasks_on_several_carriers_record_into_one_aggregate() {
+    let scratch = Scratch::new("carriers", CARRIERS);
+    let program = scratch.build();
+    let file = scratch.0.join("metrics.json");
+    let option = format!("--metrics-file={}", file.display());
+    let output = runner(&program, &["--clock=real", "--carriers=4", &option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.contains(r#"{"name":"done","labels":{},"kind":"count","value":4000}"#), "{written}");
+    assert!(written.contains(r#""kind":"observe","count":4000,"sum":4000.0,"#), "{written}");
+}
+
+const NEGATIVE: &str = r#"import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Void needs { metrics: Metrics } {
+  Metrics.count("refunds", -1, [])
+}
+"#;
+
+// Rejects a counter that can go down.
+#[test]
+fn a_negative_count_is_a_defect() {
+    let scratch = Scratch::new("negative", NEGATIVE);
+    let program = scratch.build();
+    let outcome = scratch.0.join("outcome.json");
+    let output = runner(&program, &[&format!("--outcome-file={}", outcome.display())]);
+    assert_eq!(output.status, Some(70), "{}", output.stderr);
+    let outcome = std::fs::read_to_string(&outcome).unwrap();
+    assert!(outcome.contains("Metrics: count must not be negative, got -1"), "{outcome}");
+}
+
+const TESTS: &str = r#"import std/duration as Duration
+import std/float as Float
+import std/list as List
+import std/metrics as Metrics.{Kind, Measurement, Metrics}
+import std/test as Test
+
+fn kept(recorder: Test.Recorder<Measurement>) {
+  { record: fn(measurement) { Test.record(recorder, measurement) } }
+}
+
+fn charge(cents: Int) -> Int needs { metrics: Metrics } {
+  Metrics.count("charges", 1, [("currency", "usd")])
+  Metrics.observe("cents", Float.from_int(cents), [])
+  cents
+}
+
+test "a fake keeps each measurement with its kind, name, value and labels" {
+  let recorder = Test.recorder()
+  let charged = charge(250) using { metrics: kept(recorder) }
+  charged |> Test.assert_equal(250)
+  Metrics.gauge("depth", 2.5, [("b", "1"), ("a", "2")]) using { metrics: kept(recorder) }
+  let measurements = Test.recorded(recorder)
+  List.map(measurements, Metrics.kind) |> Test.assert_equal([Kind.Count, Kind.Observe, Kind.Gauge])
+  List.map(measurements, Metrics.name) |> Test.assert_equal(["charges", "cents", "depth"])
+  List.map(measurements, Metrics.value) |> Test.assert_equal([1.0, 250.0, 2.5])
+  List.map(measurements, Metrics.labels)
+    |> Test.assert_equal([[("currency", "usd")], [], [("b", "1"), ("a", "2")]])
+}
+
+test "a duration is observed in seconds" {
+  Metrics.seconds(Duration.milliseconds(1500)) |> Test.assert_equal(1.5)
+  Metrics.seconds(Duration.nanoseconds(1)) |> Test.assert_equal(0.000000001)
+}
+"#;
+
+// Rejects recording functions that build the wrong kind, change the value or
+// the labels, or bypass the provider `using` supplies; on both backends.
+#[test]
+fn a_test_records_measurements_through_a_fake() {
+    let scratch = Scratch::new("fake", TESTS);
+    for backend in [&[][..], &["--backend=native"][..]] {
+        let mut arguments = vec!["test", "cases.chimi"];
+        arguments.extend_from_slice(backend);
+        let output = scratch.chimi(&arguments);
+        assert_eq!(output.status, Some(0), "{}{}", output.stdout, output.stderr);
+        assert!(output.stdout.contains("2 passed, 0 failed"), "{}", output.stdout);
+    }
+}
+
+// Rejects a test that reaches the runner's provider: a test never records to
+// the machine by accident.
+#[test]
+fn a_test_without_a_metrics_provider_is_rejected() {
+    let scratch = Scratch::new(
+        "no-provider",
+        "import std/metrics as Metrics\n\ntest \"records\" {\n  Metrics.gauge(\"x\", 1.0, [])\n}\n",
+    );
+    let output = scratch.chimi(&["test", "cases.chimi"]);
+    assert_ne!(output.status, Some(0));
+    assert!(output.stderr.contains("T4400") || output.stdout.contains("T4400"), "{}{}", output.stdout, output.stderr);
+}
+
+// The interpreter's provider aggregates the same way and writes the same
+// document, and records nothing without a file.
+#[test]
+fn the_interpreter_writes_the_same_document() {
+    use chimi::execution::{ExecutionConfig, TraceMode};
+    use chimi::source::SourceSnapshot;
+    use chimi::{Compiler, ProjectSource};
+    let run = |source: &str, config: ExecutionConfig| {
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        Compiler::run_project(vec![module], config.with_trace_mode(TraceMode::Off))
+            .expect("the program compiles")
+    };
+    let scratch = Scratch::new("interpreter", "");
+    let file = scratch.0.join("metrics.json");
+    let config = || ExecutionConfig::new("metrics").unwrap().with_metrics_file(file.to_string_lossy());
+    run(PROGRAM, config());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), DOCUMENT);
+    run(LIMITS, config());
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(written.matches(r#""name":"ids""#).count(), 1000);
+    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
+    std::fs::remove_file(&file).unwrap();
+    run(PROGRAM, ExecutionConfig::new("metrics").unwrap());
+    assert!(!file.exists());
+}

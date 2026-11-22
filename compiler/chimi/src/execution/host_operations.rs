@@ -351,6 +351,21 @@ impl Evaluator<'_> {
                 }
                 Control::Success(RuntimeValue::Void)
             }
+            (StandardFunction::MetricsHostEnabled, []) => {
+                Control::Success(RuntimeValue::Boolean(self.config.metrics_file.is_some()))
+            }
+            (
+                StandardFunction::MetricsHostRecord,
+                [
+                    RuntimeValue::Integer(kind),
+                    RuntimeValue::Text(name),
+                    RuntimeValue::Float(value),
+                    RuntimeValue::Text(labels),
+                ],
+            ) => {
+                self.metrics.record(*kind, name, *value, labels);
+                Control::Success(RuntimeValue::Void)
+            }
             (_, []) => self.invoke_environment_operation(function, call_node),
             _ => self.intrinsic_shape_defect(function, call_node),
         }
@@ -483,5 +498,118 @@ mod log_line_tests {
         assert_eq!(super::utc_millis(1_795_327_200_250), "2026-11-22T06:00:00.250Z");
         assert_eq!(super::utc_millis(-750), "1969-12-31T23:59:59.250Z");
         assert_eq!(super::utc_millis(10_000_000_000_250), "2286-11-20T17:46:40.250Z");
+    }
+}
+
+/// Most label sets one metric name keeps; a measurement with a further one is
+/// dropped and counted, so a label holding an id cannot grow without bound.
+pub(super) const METRIC_SERIES_PER_NAME: usize = 1000;
+
+/// Upper bounds of an observed metric's histogram buckets, in seconds when the
+/// value is a duration (OpenTelemetry's default boundaries).
+pub(super) const METRIC_BOUNDS: [f64; 15] = [
+    0.0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+];
+
+#[derive(Clone, Debug)]
+enum Series {
+    Count(i64),
+    Gauge(f64),
+    Observe { count: u64, sum: f64, buckets: [u64; METRIC_BOUNDS.len() + 1] },
+}
+
+/// What the runner's `std/metrics` provider has recorded: one aggregate per
+/// name and label set, in name and then label order.
+#[derive(Default)]
+pub(super) struct MetricsAggregate {
+    /// The kind code each name was first recorded with.
+    kinds: std::collections::BTreeMap<String, i64>,
+    series: std::collections::BTreeMap<(String, String), Series>,
+    series_per_name: std::collections::BTreeMap<String, usize>,
+    dropped_label_sets: u64,
+    dropped_kind_conflicts: u64,
+}
+
+impl MetricsAggregate {
+    /// Adds one measurement: `kind` 0 count, 1 gauge, 2 observe; `name` is the
+    /// metric's name as a JSON string and `labels` the label set as a JSON
+    /// object, together its key.
+    pub(super) fn record(&mut self, kind: i64, name: &str, value: f64, labels: &str) {
+        if *self.kinds.entry(name.to_owned()).or_insert(kind) != kind {
+            self.dropped_kind_conflicts += 1;
+            return;
+        }
+        let key = (name.to_owned(), labels.to_owned());
+        if !self.series.contains_key(&key) {
+            let count = self.series_per_name.entry(name.to_owned()).or_default();
+            if *count == METRIC_SERIES_PER_NAME {
+                self.dropped_label_sets += 1;
+                return;
+            }
+            *count += 1;
+            let empty = match kind {
+                0 => Series::Count(0),
+                1 => Series::Gauge(0.0),
+                _ => Series::Observe {
+                    count: 0,
+                    sum: 0.0,
+                    buckets: [0; METRIC_BOUNDS.len() + 1],
+                },
+            };
+            self.series.insert(key.clone(), empty);
+        }
+        match self.series.get_mut(&key).expect("the series was just made") {
+            // A count's value is a whole, non-negative number (std/metrics.count).
+            Series::Count(total) => *total = total.saturating_add(value as i64),
+            Series::Gauge(last) => *last = value,
+            Series::Observe { count, sum, buckets } => {
+                *count += 1;
+                *sum += value;
+                let bucket = METRIC_BOUNDS
+                    .iter()
+                    .position(|bound| value <= *bound)
+                    .unwrap_or(METRIC_BOUNDS.len());
+                buckets[bucket] += 1;
+            }
+        }
+    }
+
+    /// The metrics file: one JSON document, as the native runtime writes it.
+    pub(super) fn render(&self) -> String {
+        let series = self
+            .series
+            .iter()
+            .map(|((metric, labels), series)| {
+                let head = format!("{{\"name\":{metric},\"labels\":{labels},");
+                match series {
+                    Series::Count(total) => {
+                        format!("{head}\"kind\":\"count\",\"value\":{total}}}")
+                    }
+                    Series::Gauge(last) => format!(
+                        "{head}\"kind\":\"gauge\",\"value\":{}}}",
+                        crate::numeric::render_float(*last)
+                    ),
+                    Series::Observe { count, sum, buckets } => format!(
+                        "{head}\"kind\":\"observe\",\"count\":{count},\"sum\":{},\"bounds\":[{}],\"bucket_counts\":[{}]}}",
+                        crate::numeric::render_float(*sum),
+                        METRIC_BOUNDS
+                            .iter()
+                            .map(|bound| crate::numeric::render_float(*bound))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        buckets
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    ),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"schema\":\"chimi.metrics.v1\",\"metrics\":[{series}],\"dropped\":{{\"label_sets\":{},\"kind_conflicts\":{}}}}}\n",
+            self.dropped_label_sets, self.dropped_kind_conflicts
+        )
     }
 }

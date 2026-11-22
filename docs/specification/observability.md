@@ -3,17 +3,17 @@
 ## Status
 
 This is the normative contract for the Phase 7c observability modules
-(CHI-289): `std/log` now; `std/metrics` and OpenTelemetry export are planned
-in the same phase and are not specified yet. The words MUST, MUST NOT,
+(CHI-289): `std/log` and `std/metrics` now; OpenTelemetry export is planned
+in the same phase and is not specified yet. The words MUST, MUST NOT,
 SHOULD, SHOULD NOT, and MAY are normative. The modules follow the
 [standard library conventions](standard-library-conventions.md) and the
 [runner-provided capability rules](system-modules.md#runner-provided-capabilities).
 
 ## Goals
 
-- Logging is a need, as `console` and `clock` are (decisions.md, 2026-11-22):
-  a function that logs says so in its signature, and a test sees what it logs
-  by supplying a fake with `using`.
+- Logging and metrics are needs, as `console` and `clock` are (decisions.md,
+  2026-11-22): a function that logs or records says so in its signature, and
+  a test sees what it logs or records by supplying a fake with `using`.
 - A log line is structured: a machine reads its level, message and fields
   without parsing prose.
 - Log output is the application's, not the runtime's: it never goes to the
@@ -121,6 +121,105 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
 - There is no OpenTelemetry log export.
 - There is no per-module level, no sampling, and no rotation of the log file.
 
+## std/metrics
+
+```text
+pub enum Kind { Count, Gauge, Observe }
+pub struct Measurement
+pub interface Metrics { record: fn(Measurement) -> Void }
+
+pub fn kind(measurement: Measurement) -> Kind
+pub fn name(measurement: Measurement) -> Text
+pub fn value(measurement: Measurement) -> Float
+pub fn labels(measurement: Measurement) -> List<(Text, Text)>
+
+pub fn count(name: Text, by: Int, labels: List<(Text, Text)>) -> Void needs { metrics: Metrics }
+pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs { metrics: Metrics }
+pub fn observe(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs { metrics: Metrics }
+
+pub fn seconds(duration: Duration) -> Float
+```
+
+<!-- chimi: check -->
+```chimi
+import std/float as Float
+import std/metrics as Metrics.{Metrics}
+
+fn charge(cents: Int) -> Void needs { metrics: Metrics } {
+  Metrics.count("charges", 1, [("currency", "usd")])
+  Metrics.observe("charge_cents", Float.from_int(cents), [])
+}
+```
+
+- Each recording function MUST build one `Measurement` with its kind, the
+  name, the value and the labels in the order written, and pass it to the
+  `metrics` provider's `record` once. `count`'s value is `by` as a `Float`.
+- A counter only grows: `count` with a negative `by` MUST defect, with the
+  message `Metrics: count must not be negative, got <by>`. A value that goes
+  down is a gauge.
+- `seconds` MUST return the duration's nanoseconds divided by 10^9. A
+  duration is observed in seconds.
+- `Metrics` is `metrics`'s fixed need name, and the runner closes it on
+  `main` with the private provider `std/metrics.host`. A test that reaches
+  `metrics` without supplying it with `using` is `T4400`.
+- Recording MUST NOT fail for any reason the program could act on: the
+  provider's `record` returns `Void` with no failures.
+
+### The runner's aggregate
+
+- The provider MUST record nothing unless the runner option
+  `--metrics-file=<path>` is given; it reads that once, when `main` starts,
+  and without it a label set is never encoded.
+- It MUST add each measurement into one aggregate per name and label set.
+  A label set is the labels as one JSON object, so the order they were
+  written in does not matter and a label written twice keeps its last value.
+  - A count adds to a running total, kept as a whole number that saturates
+    at the largest `Int`.
+  - A gauge keeps the last value set.
+  - An observation adds to a count, a sum, and a histogram whose buckets
+    have the upper bounds `0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25,
+    0.5, 0.75, 1, 2.5, 5, 7.5, 10` (OpenTelemetry's defaults) and one more
+    bucket for larger values. A value equal to a bound falls in that bound's
+    bucket.
+- A name keeps the kind it was first recorded with. A measurement of
+  another kind under that name MUST be dropped and counted in
+  `dropped.kind_conflicts`.
+- A name MUST keep at most 1000 label sets. A measurement that would make
+  one more MUST be dropped and counted in `dropped.label_sets`, so a label
+  holding an unbounded value such as a user id cannot use up memory.
+- Tasks on every carrier MUST record into the one aggregate, and no
+  measurement is lost.
+- When the program ends, however it ends, the runner MUST write one JSON
+  document to the file, replacing what it held:
+
+  ```text
+  {"schema":"chimi.metrics.v1","metrics":[
+    {"name":"charge_seconds","labels":{},"kind":"observe","count":2,"sum":0.75,"bounds":[0.0,0.005,...,10.0],"bucket_counts":[0,...,1,1,...,0]},
+    {"name":"orders","labels":{"route":"/pay"},"kind":"count","value":3},
+    {"name":"queue_depth","labels":{},"kind":"gauge","value":12.0}
+  ],"dropped":{"label_sets":0,"kind_conflicts":0}}
+  ```
+
+  - The document is on one line, ending in a newline; it is wrapped above
+    for reading.
+  - The series are in order of name, then label set, comparing the
+    JSON-encoded text byte by byte.
+  - A count's `value` is an integer. A gauge's `value`, a `sum` and the
+    `bounds` are written as `Float.to_text` spells them.
+  - `bucket_counts` has one more entry than `bounds`.
+- The file MUST differ from the runner's report files and from the log
+  file, compared as files rather than spellings of the path; a clash is
+  invalid configuration, exit 64. A file that cannot be opened is a sink
+  failure, exit 74, before `main` runs. A failed write at exit is exit 74.
+- The interpreter's provider MUST aggregate the same way and write the same
+  document to `ExecutionConfig::with_metrics_file`.
+
+### Not in this slice
+
+- Metrics are written once, at exit. There is no export while the program
+  runs and no OpenTelemetry export yet.
+- There are no custom histogram bounds and no up-down counter.
+
 ## Conformance
 
 | Behavior | Test |
@@ -132,3 +231,11 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
 | Level functions build the entry and reach a fake through `using`, on both backends | `tests/std_log.rs` `a_test_records_entries_through_a_fake` |
 | A test without a `log` provider is `T4400` | `tests/std_log.rs` `a_test_without_a_log_provider_is_rejected` |
 | The interpreter's provider writes the same lines and takes the same settings | `tests/std_log.rs` `the_interpreter_writes_the_same_lines` |
+| One aggregate per name and label set; label order and repeats; count, gauge and histogram; series order; escaping; kind conflicts; the file is replaced | `tests/std_metrics.rs` `the_runner_writes_one_aggregate_per_name_and_label_set` |
+| Nothing recorded without `--metrics-file`; clashes with report and log files (64), even spelled differently; open failure (74) | `tests/std_metrics.rs` `the_metrics_file_option_is_checked_before_main_runs` |
+| At most 1000 label sets per name, the rest counted as dropped | `tests/std_metrics.rs` `one_name_keeps_at_most_a_thousand_label_sets` |
+| Tasks on four carriers lose no measurement | `tests/std_metrics.rs` `tasks_on_several_carriers_record_into_one_aggregate` |
+| A negative count is a defect | `tests/std_metrics.rs` `a_negative_count_is_a_defect` |
+| Recording functions build the measurement and reach a fake through `using`, on both backends; `seconds` | `tests/std_metrics.rs` `a_test_records_measurements_through_a_fake` |
+| A test without a `metrics` provider is `T4400` | `tests/std_metrics.rs` `a_test_without_a_metrics_provider_is_rejected` |
+| The interpreter's provider writes the same document | `tests/std_metrics.rs` `the_interpreter_writes_the_same_document` |

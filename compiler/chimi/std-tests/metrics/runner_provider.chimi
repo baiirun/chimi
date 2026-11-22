@@ -1,0 +1,14 @@
+// The runner closes `main`'s `metrics` need with the host provider, which
+// aggregates measurements and writes them to `--metrics-file` at exit;
+// tests/std_metrics.rs checks the document and the runner option. This
+// program reaches the provider on both backends.
+import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Text needs {
+  metrics: Metrics
+} {
+  Metrics.count("runs", 1, [("module", "metrics")])
+  Metrics.gauge("depth", 1.5, [])
+  Metrics.observe("seconds", 0.01, [])
+  "recorded"
+}
