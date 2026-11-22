@@ -42,11 +42,14 @@ impl DocumentPath {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentVersion(pub i32);
 
-/// A project the editor configured explicitly, because Chimi has no manifest.
+/// A project the editor analyzes: one it configured with a root and an entry
+/// module, or a package found from an open file's `chimi.toml`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectConfig {
     root: PathBuf,
-    entry_module: String,
+    /// `None` for a package, whose every module is analyzed, as
+    /// `chimi test <package>` loads it.
+    entry_module: Option<String>,
 }
 
 impl ProjectConfig {
@@ -54,8 +57,16 @@ impl ProjectConfig {
     pub fn new(root: impl AsRef<Path>, entry_module: impl Into<String>) -> io::Result<Self> {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
-            entry_module: entry_module.into(),
+            entry_module: Some(entry_module.into()),
         })
+    }
+
+    /// The package in `root`, found from a file's manifest.
+    fn package(root: PathBuf) -> Self {
+        Self {
+            root,
+            entry_module: None,
+        }
     }
 }
 
@@ -389,7 +400,10 @@ impl Workspace {
     /// of `path`, and every other previously published file is cleared.
     pub fn analyze(&mut self, path: &DocumentPath) -> Vec<FileDiagnostics> {
         let mut sets = BTreeMap::new();
-        let reached = match self.configured_project_for(path) {
+        let reached = match self
+            .configured_project_for(path)
+            .or_else(|| self.package_project_for(path))
+        {
             Some(index) => self.analyze_configured(index, path, &mut sets),
             None => false,
         };
@@ -675,6 +689,17 @@ impl Workspace {
             .map(|(index, _)| index)
     }
 
+    /// The project of the package holding `path`, added on first use, when
+    /// no configured project covers it (packages.md, "Commands").
+    fn package_project_for(&mut self, path: &DocumentPath) -> Option<usize> {
+        let root = chimi::project::package_root_of(path.as_path())?.canonicalize().ok()?;
+        if let Some(index) = self.projects.iter().position(|project| project.root == root) {
+            return Some(index);
+        }
+        self.projects.push(ProjectConfig::package(root));
+        Some(self.projects.len() - 1)
+    }
+
     /// Analyzes a configured project into `sets` and reports whether it reached `path`.
     fn analyze_configured(
         &mut self,
@@ -683,12 +708,20 @@ impl Workspace {
         sets: &mut BTreeMap<DocumentPath, FileDiagnostics>,
     ) -> bool {
         let project = &self.projects[index];
-        let loaded = LoadedProject::load_with(
-            &project.root,
-            project.entry_module.clone(),
-            &OpenBuffers(&self.documents),
-            &StandardTree::embedded(),
-        );
+        let reader = OpenBuffers(&self.documents);
+        let loaded = match &project.entry_module {
+            Some(entry) => LoadedProject::load_with(
+                &project.root,
+                entry.clone(),
+                &reader,
+                &StandardTree::embedded(),
+            ),
+            None => LoadedProject::load_directory_with(
+                &project.root,
+                &reader,
+                &StandardTree::embedded(),
+            ),
+        };
         let analysis = self
             .analyses
             .entry(ProjectKey::Configured(index))
@@ -986,6 +1019,39 @@ mod tests {
             .expect("lib republished");
         assert_eq!(lib_after.version, Some(DocumentVersion(2)));
         assert!(lib_after.diagnostics.is_empty());
+    }
+
+    /// Guards packages.md "Commands": a file in a package with no configured
+    /// project is analyzed in its package, so imports by package name resolve
+    /// and a dependency's modules are neither linted nor reported on.
+    #[test]
+    fn a_file_in_a_package_is_analyzed_with_its_package() {
+        let fixture = Fixture::new("package");
+        fixture.write("chimi.toml", "[workspace]\nmembers = [\"app\", \"money\"]\n");
+        fixture.write(
+            "app/chimi.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nmoney = { path = \"../money\" }\n",
+        );
+        fixture.write("money/chimi.toml", "[package]\nname = \"money\"\n");
+        let money = fixture.write(
+            "money/amount.chimi",
+            "/// Doc.\npub fn value() -> Int { 1 }\nfn unused() -> Int { 0 }\n",
+        );
+        let app = fixture.write(
+            "app/main.chimi",
+            "import money/amount as Amount\n/// Doc.\npub fn main() -> Int { Amount.value() }\n",
+        );
+        let other = fixture.write("app/other.chimi", "/// Doc.\npub fn value() -> Int { 2 }\n");
+        let mut workspace = Workspace::new(Vec::new(), PositionEncoding::Utf16);
+
+        let sets = workspace.analyze(&app);
+        let published = |path: &DocumentPath| sets.iter().find(|set| set.path == *path);
+        assert_eq!(published(&app).expect("app published").diagnostics, []);
+        assert!(published(&other).is_some(), "every module of the package is analyzed");
+        assert!(
+            published(&money).is_none_or(|set| set.diagnostics.is_empty()),
+            "a dependency is not linted: {sets:?}"
+        );
     }
 
     /// Lint findings reach the editor as warnings once the project compiles,

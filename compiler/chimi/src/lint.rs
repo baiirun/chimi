@@ -26,11 +26,14 @@ pub(crate) const MISSING_DOC: &str = "missing-doc";
 
 /// The findings for every module `include` accepts, in module order, then
 /// source order.
-pub(crate) fn lint(resolved: &ResolvedProject, include: impl Fn(&str) -> bool) -> Vec<Diagnostic> {
+pub(crate) fn lint(
+    resolved: &ResolvedProject,
+    include: impl Fn(crate::compiler::ModuleOrigin) -> bool,
+) -> Vec<Diagnostic> {
     let used = used_symbols(resolved);
     let mut findings = Vec::new();
     for module in &resolved.semantic.modules {
-        if !include(&module.path) {
+        if !include(module.origin) {
             continue;
         }
         let mut module_findings = unused_imports(resolved, module);

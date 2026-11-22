@@ -1,0 +1,10 @@
+import money/amount as Amount
+
+/// The order total, in cents.
+pub fn cents() -> Int {
+  Amount.add(40, 3)
+}
+
+test "the app's own test runs" {
+  Void
+}

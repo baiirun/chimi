@@ -111,7 +111,7 @@ impl IncrementalTypeReport {
             .iter()
             .map(|module| (module.source.file_id(), module.source.path()))
             .collect();
-        for finding in crate::lint::lint(resolved, |module_path| !module_path.starts_with("std/")) {
+        for finding in crate::lint::lint(resolved, |origin| origin == crate::compiler::ModuleOrigin::Own) {
             if let Some(path) = paths.get(&finding.file_id()) {
                 findings.entry(*path).or_default().push(finding);
             }
@@ -232,10 +232,12 @@ impl CompilerSession {
                 module_path,
                 source,
                 syntax: supplied_syntax,
+                origin,
             } = source;
             let cached = self.modules.get(&module_path);
-            let source_unchanged =
-                cached.is_some_and(|cached| same_source(&cached.source, &source));
+            let source_unchanged = cached.is_some_and(|cached| {
+                same_source(&cached.source, &source) && cached.semantic.origin == origin
+            });
             let syntax = if source_unchanged {
                 statistics.reused_parsed_modules += 1;
                 cached.expect("unchanged module is cached").syntax.clone()
@@ -259,6 +261,7 @@ impl CompilerSession {
                     module_path.clone(),
                     source.clone(),
                     syntax.clone(),
+                    origin,
                 )
             };
             semantic_modules.push(semantic.clone());

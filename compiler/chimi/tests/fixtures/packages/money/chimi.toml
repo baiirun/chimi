@@ -1,0 +1,5 @@
+[package]
+name = "money"
+
+[dependencies]
+rounding = { path = "../rounding" }
