@@ -279,7 +279,7 @@ Rules:
   `channel_receive_parked` or `channel_send_parked` event after its
   `task_parked`): the usual reasons a concurrent run stops or hangs.
 
-Not yet: timing (the telemetry carries none), channel and clock event
+Not yet: timing (`chimi trace export --otlp` gives span times to a tracing tool), channel and clock event
 detail, linking a process's spans to its entry in the process list, telling
 apart two runs concatenated under the same `--execution-id` (their events
 merge), and a browsable or interactive view. Chimi has no REPL
@@ -288,6 +288,66 @@ examples.
 
 Implementation: `compiler/chimi/src/trace_view.rs` (`render_trace`) and
 `LoadedProject::source_locator`. Tests: `compiler/chimi/tests/trace_show.rs`.
+
+## OpenTelemetry traces: `chimi trace export --otlp`
+
+Purpose: show a run in the tracing tools a team already uses (Jaeger, Tempo,
+Honeycomb, any OpenTelemetry collector), from the telemetry the run already
+wrote. Converting a file after the run keeps the runtime free of export work;
+a live exporter is CHI-296 (decisions.md, 2026-11-22).
+
+```text
+chimi trace export --otlp [--service-name <name>] <trace> [<path> | <directory> | --root <project> <entry>]
+chimi trace export --otlp ... -                 the trace on standard input
+```
+
+The document goes to standard output. A collector takes it with
+`curl -H 'Content-Type: application/json' --data-binary @trace.json http://collector:4318/v1/traces`.
+
+Rules:
+
+- The input is read as for `chimi trace show`. Any record that is not
+  `chimi.runtime.v1`, or a line that is not a JSON object, MUST fail naming
+  its line and print nothing. A semantic event without `time_ns`, or a
+  `computation_started` without `start_unix_ns`, MUST fail the same way.
+  Traces written before event times (runtime-output-channels.md, "Event
+  times") cannot be exported.
+- The output is one OTLP/JSON `TracesData` document. Keys are
+  lowerCamelCase, trace and span ids are hex, 64-bit integers and times are
+  decimal strings, and enums are integers, as the OTLP specification's JSON
+  encoding requires.
+- Each `execution_id` is one trace and one `resourceSpans` entry. Its
+  resource has `service.name` (the `--service-name`, or else the
+  computation's name) and `chimi.execution_id`. The trace id is a hash of the
+  execution id, so one run always exports with the same id.
+- The computation, each operation and each dependency call is one span. It
+  is named like a line of `chimi trace show` (`computation main`, `call`,
+  `dependency store.load`), has kind INTERNAL, and keeps its span id and
+  parent. Its times are `start_unix_ns + time_ns` of its events.
+- An operation ends at its completion event. A dependency call has no
+  completion event, and the provider's operations are children of the
+  calling operation, as in `chimi trace show`, so the call is a span with no
+  length that marks when the call happened. An operation that never
+  completed ends when the last span inside it ends, and has status ERROR
+  with the message `did not complete`.
+- A second `computation_started` for an execution id already seen MUST fail
+  naming its line, since two runs under one `--execution-id` would share
+  span ids.
+- An interpreter trace exports with every time at Unix 0, because the
+  interpreter has no clock. Its shape is right, but tracing tools place it
+  in 1970.
+- A span whose outcome is `expected_failure` or `defect` has status ERROR,
+  with the outcome as its message. Other outcomes (success, break,
+  cancellation) leave the status unset. Every span carries
+  `chimi.operation`, `chimi.core_node_id`, `chimi.file_id`,
+  `chimi.source_start`, `chimi.source_end`, and `chimi.outcome` when it
+  completed. A dependency call also carries `chimi.requirement` and
+  `chimi.method`. With the program's source, `chimi.source` is
+  `path:line:column`.
+- Scheduler, task, channel, clock and process events are not exported.
+
+Implementation: `compiler/chimi/src/trace_export.rs` (`export_trace_otlp`).
+Tests: `compiler/chimi/tests/trace_export.rs`.
 
 ## Cross-compilation: `chimi build --target`
 
