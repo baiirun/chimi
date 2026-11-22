@@ -234,10 +234,9 @@ providers.
 ### G17. User-emitted observability
 
 Tracing belongs to the runner. Application code cannot add attributes or emit
-log or metric events. The open decision is whether logging is a `needs`
-dependency (explicit, but it appears in many signatures) or a runtime
-operation attached to the current computation context (ambient, but already
-structured).
+log or metric events. Decided 2026-11-22 (Byron): logging and metrics are
+`needs` dependencies, as `console` is, closed by the runner at the root and
+replaced by fakes in tests; see decisions.md.
 
 ### G18. Byte streams
 
@@ -314,7 +313,5 @@ whenever the trace-summary or supervisor programs make the cost too high.
   resolved as an ordinary workspace package?
 - Is derived structural equality and hashing acceptable without opt-in, or
   should types declare it?
-- Logging as a `needs` dependency or as a context-attached runtime operation
-  (G17)?
 - Do G11 and G12 count as one feature (generic scope-owning interface
   methods) or two?
