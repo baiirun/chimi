@@ -15,7 +15,8 @@
 /// The runner's provider adds each measurement into one aggregate per name
 /// and label set and writes them all to the file named by the runner option
 /// `--metrics-file` when the program ends. Without that option it records
-/// nothing.
+/// nothing until the program first reads the aggregate with
+/// `Metrics.runner_document`, as an exporter such as `std/otel` does.
 
 import std/debug as Debug
 import std/duration as Duration.{Duration}
@@ -83,6 +84,19 @@ pub fn value(measurement: Measurement) -> Float {
 /// Cost: O(1).
 pub fn labels(measurement: Measurement) -> List<(Text, Text)> {
   measurement.labels
+}
+
+/// The runner's aggregate so far, as the `chimi.metrics.v1` document
+/// `--metrics-file` holds at exit, with `time_unix_ns` the time of this
+/// call. From the first call on, the runner's provider records even without
+/// `--metrics-file`; what was recorded before it without that option is not
+/// in the aggregate. A fake `metrics` provider records nothing into it.
+///
+/// Cost: O(n log n) in the number of label sets.
+pub fn runner_document() -> Text needs {
+  metrics: Metrics
+} {
+  host_document()
 }
 
 // 6. Recording.
@@ -157,13 +171,13 @@ fn labels_key(labels: List<(Text, Text)>) -> Text {
 
 // The provider the runner binds to `main`'s `metrics` need (operations.rs
 // `RUNNER_PROVIDERS`). Private, so no other code can take the capability
-// without declaring the need. Without `--metrics-file` nothing is recorded,
-// so the labels are never encoded.
+// without declaring the need. Until there is something to write to (the
+// `--metrics-file` or a `runner_document` reader) nothing is recorded, so
+// the labels are never encoded.
 fn host() {
-  let enabled = host_enabled()
   {
     record: fn(measurement: Measurement) {
-      case enabled {
+      case host_enabled() {
         True -> host_record(
           code(measurement.kind),
           Json.encode(Json.text(measurement.name)),
@@ -177,6 +191,8 @@ fn host() {
 }
 
 native fn host_enabled() -> Bool
+
+native fn host_document() -> Text
 
 // `name` and `labels` arrive encoded as JSON, so both runtimes key and write
 // them byte for byte alike.

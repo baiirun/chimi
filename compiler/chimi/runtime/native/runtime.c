@@ -7264,6 +7264,11 @@ typedef struct {
 } MetricTable;
 
 static pthread_mutex_t metrics_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Set by the first Metrics.runner_document: from then on the provider
+   records without --metrics-file. */
+static atomic_bool metrics_reading;
+/* When the aggregate began: the run's start, or the first repeat's. */
+static int64_t metrics_started_unix_ns;
 static MetricSeries *metric_series;
 static size_t metric_series_count, metric_series_capacity;
 static MetricName *metric_names;
@@ -7429,10 +7434,15 @@ static int metric_series_order(const void *left, const void *right) {
 
 static bool close_output(FILE *output);
 
-/* Writes the metrics document, whose counts began at `started`; true when
-   the write failed. */
-static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *output) {
-  if (!output) return false;
+/* Whether the provider records: with --metrics-file, or once the program
+   has read the aggregate. */
+static bool metrics_recording(const ChimiRuntime *runtime) {
+  return runtime->metrics_file != NULL || atomic_load_explicit(&metrics_reading, memory_order_acquire);
+}
+
+/* Writes the metrics document, whose counts began at `started`, to `output`
+   as it stands now. */
+static void write_metrics_document(const ChimiRuntime *runtime, int64_t started, FILE *output) {
   pthread_mutex_lock(&metrics_lock);
   size_t *order = malloc((metric_series_count ? metric_series_count : 1) * sizeof(*order));
   if (!order) exhausted_memory();
@@ -7467,7 +7477,8 @@ static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *ou
         break;
     }
   }
-  /* `main` has ended: the clock is where its last fiber left it. */
+  /* At exit, `main` has ended and the clock is where its last fiber left it;
+     mid-run, it is the reading fiber's time. */
   int64_t ended;
   if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;
   fprintf(output, "],\"dropped\":{\"label_sets\":%" PRIu64 ",\"kind_conflicts\":%" PRIu64
@@ -7475,7 +7486,27 @@ static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *ou
           metric_dropped_label_sets, metric_dropped_kind_conflicts, started, ended);
   pthread_mutex_unlock(&metrics_lock);
   free(order);
+}
+
+/* Writes the metrics document at exit; true when the write failed. */
+static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *output) {
+  if (!output) return false;
+  write_metrics_document(runtime, started, output);
   return close_output(output);
+}
+
+/* Metrics.runner_document: the aggregate so far, and recording from now on. */
+static ChimiValue *metrics_document_now(const ChimiRuntime *runtime) {
+  atomic_store_explicit(&metrics_reading, true, memory_order_release);
+  char *bytes = NULL;
+  size_t length = 0;
+  FILE *output = open_memstream(&bytes, &length);
+  if (!output) exhausted_memory();
+  write_metrics_document(runtime, metrics_started_unix_ns, output);
+  if (fclose(output) != 0) exhausted_memory();
+  ChimiValue *document = text_from_bytes(bytes, length);
+  free(bytes);
+  return document;
 }
 
 static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t intrinsic,
@@ -7483,13 +7514,18 @@ static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t in
                                               uint32_t call_node) {
   if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED) {
     if (argument_count != 0) return intrinsic_shape_defect(call_node);
-    return success(boolean_value(runtime->metrics_file != NULL));
+    return success(boolean_value(metrics_recording(runtime)));
+  }
+  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    if (runtime->cancel) return cancelled();
+    return success(metrics_document_now(runtime));
   }
   if (argument_count != 4 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
       arguments[2]->kind != VALUE_FLOAT || arguments[3]->kind != VALUE_TEXT)
     return intrinsic_shape_defect(call_node);
   if (runtime->cancel) return cancelled();
-  if (runtime->metrics_file)
+  if (metrics_recording(runtime))
     metrics_add(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
                 arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);
   return runtime->cancel ? cancelled() : success(void_value());
@@ -11523,7 +11559,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
     return invoke_log_operation(runtime, intrinsic, arguments, argument_count, call_node);
-  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD)
+  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD ||
+      intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
     return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
@@ -13866,7 +13903,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
         carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
       runtime.start_unix_ns = start_unix_nanos(&runtime);
-      if (repeat == 0) metrics_started = runtime.start_unix_ns;
+      if (repeat == 0) metrics_started_unix_ns = metrics_started = runtime.start_unix_ns;
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {
@@ -13897,6 +13934,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   install_stop_signals(&runtime);
   runtime.start_unix_ns = start_unix_nanos(&runtime);
+  metrics_started_unix_ns = runtime.start_unix_ns;
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiEnvironment *environment = new_environment(entry_function->local_count);
   if (entry_function->parameters_length == 1) {

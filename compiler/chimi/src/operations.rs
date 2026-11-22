@@ -512,6 +512,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     host("std/log.host_write", 3, StandardFunction::LogHostWrite),
     host("std/metrics.host_enabled", 0, StandardFunction::MetricsHostEnabled),
     host("std/metrics.host_record", 4, StandardFunction::MetricsHostRecord),
+    host("std/metrics.host_document", 0, StandardFunction::MetricsHostDocument),
 ];
 
 /// A capability the runner closes on `main` with a provider written in the
