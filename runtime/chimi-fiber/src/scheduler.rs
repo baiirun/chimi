@@ -598,9 +598,10 @@ impl PinnedFiber {
     /// The task record keeps the fiber, which is never dropped or removed
     /// while its task is `Running`, so the pointer stays valid without the
     /// record (or the kernel lock) being held across the resume.
-    fn enter(&mut self, context: scope::ResumeContext) -> NonNull<ChimiFiber> {
+    fn enter(&mut self, context: scope::ResumeContext, clock: clock::Reading) -> NonNull<ChimiFiber> {
         assert!(self.home.enter(), "a fiber resumed off its home carrier");
         scope::set_resume_context(context);
+        clock::set_resume_clock(clock);
         self.fiber
     }
 
@@ -2269,6 +2270,7 @@ impl Scheduler {
             scope_pending: self.scope_cancel_pending(task),
             polls: self.polls_scope_deadlines(task),
         };
+        let clock = self.clock.reading();
         let fiber = self
             .tasks
             .get_mut(&task)
@@ -2276,7 +2278,7 @@ impl Scheduler {
             .fiber
             .as_mut()
             .expect("runnable task owns a fiber")
-            .enter(context);
+            .enter(context, clock);
         Some(carrier::Runnable {
             task,
             fiber,
@@ -2312,13 +2314,14 @@ impl Scheduler {
     fn prepare_job(&mut self, job: jobs::Job) -> Option<carrier::Runnable> {
         match job {
             jobs::Job::Unwind { task, forced } => {
+                let clock = self.clock.reading();
                 let record = self.tasks.get_mut(&task)?;
                 debug_assert!(
                     self.any_carrier || record.carrier == self.current,
                     "a job run off its home carrier"
                 );
                 debug_assert!(matches!(record.phase, TaskPhase::Draining(_)), "an unwind job's task drains");
-                let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL);
+                let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL, clock);
                 Some(carrier::Runnable {
                     task,
                     fiber,
@@ -2875,12 +2878,13 @@ impl Scheduler {
             self.wake_carrier(carrier);
             return;
         }
+        let clock = self.clock.reading();
         let cleanup = self
             .tasks
             .get_mut(&task)
             .and_then(|record| record.fiber.as_mut())
             .expect("non-terminal task owns a fiber")
-            .enter(scope::ResumeContext::TERMINAL);
+            .enter(scope::ResumeContext::TERMINAL, clock);
         let cleanup = resume_fiber(cleanup, ChimiFiberCommand::Cancel);
         self.end_after_unwind(task, outcome, &cleanup);
     }
@@ -3825,6 +3829,74 @@ mod tests {
         scheduler.complete(runnable, event);
         assert_eq!(SERVED_STATUS.with(std::cell::Cell::get), RESPONSE_OK);
         assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+    }
+
+    thread_local! {
+        static CLOCK_READS: std::cell::Cell<(i64, i64, i64)> = const { std::cell::Cell::new((-1, -1, -1)) };
+    }
+
+    fn timer_request(kind: u32, value: i64) -> SchedulerRequest {
+        SchedulerRequest {
+            kind,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value,
+            entry: None,
+            context: std::ptr::null_mut(),
+        }
+    }
+
+    /// Reads the clock without a request, sleeps to 5ms, then reads it
+    /// both ways.
+    unsafe extern "C" fn read_the_clock_around_a_sleep(_context: *mut c_void) -> crate::ChimiFiberResult {
+        let before = clock::chimi_fiber_now();
+        loop {
+            let mut sleep = timer_request(REQUEST_TIMER_SLEEP_UNTIL, 5_000_000);
+            unsafe { crate::chimi_fiber_request((&raw mut sleep).cast(), std::ptr::null()) };
+            if sleep.status == RESPONSE_OK {
+                break;
+            }
+        }
+        let after = clock::chimi_fiber_now();
+        let mut now = timer_request(REQUEST_TIMER_NOW, 0);
+        unsafe { crate::chimi_fiber_request((&raw mut now).cast(), std::ptr::null()) };
+        CLOCK_READS.with(|reads| reads.set((before, after, now.value)));
+        crate::ChimiFiberResult {
+            state: ChimiFiberState::Succeeded as u32,
+            value: 0,
+            defect_code: 0,
+        }
+    }
+
+    /// A fiber reads the virtual clock without a request as the scheduler
+    /// would answer it: the origin before its sleep, the deadline after.
+    #[test]
+    fn a_fiber_reads_the_virtual_clock_without_a_request() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        CLOCK_READS.with(|reads| reads.set((-1, -1, -1)));
+        let mut scheduler = Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Virtual));
+        let task = scheduler.start_root(read_the_clock_around_a_sleep).expect("task");
+        let _ = scheduler.run_until_idle();
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Succeeded(0)));
+        assert_eq!(CLOCK_READS.with(std::cell::Cell::get), (0, 5_000_000, 5_000_000));
+        assert_eq!(clock::chimi_fiber_now(), 5_000_000, "after the run, where the last fiber left it");
+    }
+
+    /// Under the real clock a read without a request moves forward and stays
+    /// within the scheduler's own answers.
+    #[test]
+    fn a_fiber_reads_the_real_clock_between_the_schedulers_answers() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        CLOCK_READS.with(|reads| reads.set((-1, -1, -1)));
+        let mut scheduler = Scheduler::with_options(SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real));
+        let _task = scheduler.start_root(read_the_clock_around_a_sleep).expect("task");
+        let _ = scheduler.run_until_idle();
+        let (before, after, answered) = CLOCK_READS.with(std::cell::Cell::get);
+        assert!((0..5_000_000).contains(&before), "before the sleep: {before}");
+        assert!(after >= 5_000_000 && after <= answered, "after {after}, answered {answered}");
     }
 
     thread_local! {
