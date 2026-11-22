@@ -2248,6 +2248,26 @@ impl ProjectResolver {
                     self.resolve_expression(module_index, &provider.value, generics, scope);
                 }
             }
+            ModuleExpression::UsingRecord {
+                semantic_id,
+                expression,
+                record,
+                ..
+            } => {
+                self.resolve_expression(module_index, record, generics, scope);
+                self.resolve_expression(module_index, expression, generics, scope);
+                // Core lowering binds the record to this local, so each provider
+                // reads one evaluation of it.
+                let module_id = self.semantic.modules[module_index].id;
+                self.add_symbol(
+                    Some(module_id),
+                    Some(*semantic_id),
+                    Namespace::Value,
+                    ProjectSymbolKind::PatternBinding,
+                    USING_TEMPORARY,
+                    false,
+                );
+            }
             ModuleExpression::Sequence { expressions, .. } => {
                 for child in expressions {
                     self.resolve_expression(module_index, child, generics, scope);
@@ -3231,6 +3251,8 @@ impl Scope {
 
 /// The name of the locals a record update lowers through; no source name can spell it.
 pub(crate) const UPDATE_TEMPORARY: &str = "#update";
+/// The local a `using record` binds its record value to.
+pub(crate) const USING_TEMPORARY: &str = "#using";
 
 /// The entries row of the `needs` group `symbol` declares.
 pub(crate) fn needs_group_declaration<'a>(

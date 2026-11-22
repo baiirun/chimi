@@ -807,6 +807,14 @@ pub(crate) enum ModuleExpression {
         providers: Vec<RecordValueField>,
         range: TextRange,
     },
+    /// `expression using record`: the providers are the fields of a record
+    /// value, evaluated once before `expression`.
+    UsingRecord {
+        semantic_id: SemanticId,
+        expression: Box<Self>,
+        record: Box<Self>,
+        range: TextRange,
+    },
     Sequence {
         semantic_id: SemanticId,
         expressions: Vec<Self>,
@@ -892,6 +900,7 @@ impl ModuleExpression {
             | Self::Binary { semantic_id, .. }
             | Self::Group { semantic_id, .. }
             | Self::Using { semantic_id, .. }
+            | Self::UsingRecord { semantic_id, .. }
             | Self::Sequence { semantic_id, .. }
             | Self::Block { semantic_id, .. }
             | Self::Function { semantic_id, .. }
@@ -917,6 +926,7 @@ impl ModuleExpression {
             | Self::Binary { range, .. }
             | Self::Group { range, .. }
             | Self::Using { range, .. }
+            | Self::UsingRecord { range, .. }
             | Self::Sequence { range, .. }
             | Self::Block { range, .. }
             | Self::Function { range, .. }
@@ -2685,12 +2695,24 @@ impl ProjectLowerer {
                 range: significant_range(node),
             };
         };
-        let provider_records = children
-            .filter(|child| child.kind() == NodeKind::RecordExpression)
-            .collect::<Vec<_>>();
+        let provider_records = children.collect::<Vec<_>>();
         let last_record = provider_records.len().saturating_sub(1);
         let mut expression = self.lower_expression(&base);
         for (index, record) in provider_records.into_iter().enumerate() {
+            let semantic_id = if index == last_record {
+                semantic_id
+            } else {
+                self.allocate_semantic_id()
+            };
+            if record.kind() != NodeKind::RecordExpression {
+                expression = ModuleExpression::UsingRecord {
+                    semantic_id,
+                    expression: Box::new(expression),
+                    record: Box::new(self.lower_expression(&record)),
+                    range: significant_range(node),
+                };
+                continue;
+            }
             let providers = record
                 .child_nodes()
                 .into_iter()
@@ -2703,11 +2725,7 @@ impl ProjectLowerer {
                 })
                 .collect();
             expression = ModuleExpression::Using {
-                semantic_id: if index == last_record {
-                    semantic_id
-                } else {
-                    self.allocate_semantic_id()
-                },
+                semantic_id,
                 expression: Box::new(expression),
                 providers,
                 range: significant_range(node),
