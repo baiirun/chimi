@@ -244,7 +244,11 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
   without the file is not in the aggregate, so an exporter reads it first,
   at the top of `main`.
 - With `--metrics-file`, the file at exit is what a read at the end of
-  `main` would return.
+  `main` would return, apart from `time_unix_ns`, which is when it is
+  written.
+- With `--benchmark-repeats`, the repeats share the aggregate, as they do
+  for the file, and the first read: a repeat after it records from its
+  start, and its reads include the earlier repeats.
 - It reads the runner's aggregate whatever provider closes `metrics`: under
   a fake it returns what the runner's provider recorded, which is nothing
   in a test. The need says that the function reads metrics.

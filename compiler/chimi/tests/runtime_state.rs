@@ -104,6 +104,10 @@ const SHARED: &[&str] = &[
     "metric_name_table",
     "metric_dropped_label_sets",
     "metric_dropped_kind_conflicts",
+    // Atomic: set once by the first Metrics.runner_document.
+    "metrics_reading",
+    // Set before main starts; read under metrics_lock.
+    "metrics_started_unix_ns",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {

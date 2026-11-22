@@ -650,7 +650,18 @@ pub fn main() -> Text needs { metrics: Metrics } {
   let _ = Metrics.runner_document()
   let tasks = List.map([1, 2, 3, 4], fn(task) {
     Task.start(fn() {
-      List.each(List.repeat(0, 500), fn(_) { Metrics.count("done", 1, []) })
+      List.each(List.enumerate(List.repeat(0, 500)), fn(pair) {
+        let (index, _) = pair
+        Metrics.count("done", 1, [])
+        // Reads on every carrier while the others record.
+        case index % 100 == 0 {
+          True -> {
+            let _ = Metrics.runner_document()
+            Void
+          }
+          False -> Void
+        }
+      })
       0
     })
   })
@@ -663,8 +674,9 @@ pub fn main() -> Text needs { metrics: Metrics } {
 "#;
 
 // Once the aggregate has been read, tasks on several carriers record into
-// it without `--metrics-file`. Rejects recording that only the first
-// carrier sees turned on.
+// it without `--metrics-file`, and read it while others record. Rejects
+// recording that only the first carrier sees turned on, or a read that
+// loses or corrupts a measurement.
 #[test]
 fn a_read_turns_recording_on_for_every_carrier() {
     let scratch = Scratch::new("carrier-reader", CARRIER_READER);
