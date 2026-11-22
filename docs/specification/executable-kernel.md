@@ -604,8 +604,10 @@ fn checkout(cart: Cart) needs {
 }
 ```
 
-Each need has a lexical name and an interface type. Composition unions
-compatible needs. Reusing one name with incompatible interface types is a
+Each need has a lexical name and an interface type. A record type written
+inline or named through a type alias is not an interface, so `needs {
+counter: { next: fn() -> Int } }` is `T4105`; declare `interface Counter`
+and write `counter: Counter`. Composition unions compatible needs. Reusing one name with incompatible interface types is a
 diagnostic.
 
 A function with no `needs` clause has its needs inferred from its body. A

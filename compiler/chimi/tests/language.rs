@@ -13745,3 +13745,27 @@ pub fn main() -> Text {
         "\"outcome\":\"success\",\"value\":\"caller own / caller x\""
     );
 }
+
+// CHI-298: a need's type is an interface. An inline record type used to pass
+// the checker and then crash the compiler while lowering a method call on it.
+#[test]
+fn a_need_whose_type_is_not_an_interface_is_rejected() {
+    let inline = "fn bump() -> Int needs { counter: { next: fn() -> Int } } { counter.next() }\n\
+                  pub fn main() -> Int {\n  bump() using { counter: { next: fn() { 7 } } }\n}\n";
+    let diagnostics = diagnostics_of(inline);
+    let codes: Vec<&str> = diagnostics.iter().map(|(code, _)| code.as_str()).collect();
+    assert_eq!(codes, ["T4105"], "{diagnostics:?}");
+    assert!(diagnostics[0].1.contains("interface"), "{diagnostics:?}");
+    let aliased = "type Counter = { next: fn() -> Int }\n\
+                   fn bump() -> Int needs { counter: Counter } { counter.next() }\n\
+                   pub fn main() -> Int {\n  bump() using { counter: { next: fn() { 7 } } }\n}\n";
+    let codes: Vec<String> = diagnostics_of(aliased).into_iter().map(|(code, _)| code).collect();
+    assert_eq!(codes, ["T4105"]);
+    let interface = "interface Counter {\n  next: fn() -> Int\n}\n\
+                     fn bump() -> Int needs { counter: Counter } { counter.next() }\n\
+                     pub fn main() -> Int {\n  bump() using { counter: { next: fn() { 7 } } }\n}\n";
+    assert_eq!(
+        run_both("need-interface-type", interface),
+        "\"outcome\":\"success\",\"value\":7"
+    );
+}
