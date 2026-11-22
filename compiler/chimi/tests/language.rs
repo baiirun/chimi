@@ -12363,19 +12363,50 @@ fn braces_with_field_names_build_only_a_struct_of_the_module() {
         "}\n",
     );
     let user = concat!(
-        "import lib/money as Money\n",
+        "import lib/money as Cash\n",
         "import lib/money.{Money}\n",
         "\n",
         "pub fn main() -> Int {\n",
-        "  let qualified = Money.Money { cents: 1 }\n",
+        "  let qualified = Cash.Money { cents: 1 }\n",
         "  let imported = Money { cents: 2 }\n",
         "  1\n",
         "}\n",
     );
     let codes = struct_project_codes(&[("lib/money", library), ("app/main", user)]);
-    assert!(!codes.is_empty(), "external struct literals must be rejected");
-    assert!(
-        codes.iter().all(|code| code == "E_PRIVATE_STRUCT_CONSTRUCTOR" || code == "E_UNRESOLVED_CONSTRUCTOR" || code == "E_UNRESOLVED_VALUE"),
-        "{codes:?}"
+    // Fields of another module's struct are private, so neither form builds it;
+    // a member import binds the type, not a constructor.
+    assert_eq!(codes, ["E_PRIVATE_STRUCT_CONSTRUCTOR", "E_UNRESOLVED_VALUE"]);
+}
+
+// In a `case` subject the `{` opens the arms, so an arm that starts with a
+// typed binding is not read as a struct literal's field; brackets around the
+// subject allow a literal there. A clause guard may end in one.
+#[test]
+fn a_case_subject_needs_brackets_around_a_struct_literal_and_a_guard_does_not() {
+    let source = format!(
+        "{POINT}{}",
+        concat!(
+            "fn next(value: Int) -> Int {\n",
+            "  case value {\n",
+            "    count: Int -> count + 1\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "fn far(point: Point) -> Int if point != Point { x: 0, y: 0 } {\n",
+            "  100\n",
+            "}\n",
+            "fn far(point) {\n",
+            "  0\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let bracketed = case (Point { x: 4, y: 5 }) {\n",
+            "    point -> point.x * 10 + point.y\n",
+            "  }\n",
+            "  next(1) + bracketed + far(Point { x: 1, y: 0 }) + far(Point { x: 0, y: 0 })\n",
+            "}\n",
+        )
     );
+    let outcome = run_both("struct-case-subject", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":147");
 }

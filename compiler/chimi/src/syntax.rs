@@ -1401,10 +1401,10 @@ struct Parser<'source> {
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
     /// Whether `Name { field: value }` may be read as a struct literal here. It
-    /// is not in a `case` subject or a clause guard, where the `{` opens arms or
-    /// a body that may start with a typed pattern `name: Type`; brackets around
-    /// an expression allow it again. A `loop` body is a block, which cannot
-    /// start with `name:`, so a `loop` start value may be a struct literal.
+    /// is not in a `case` subject, where the `{` opens arms that may start with
+    /// a typed binding `name: Type`; brackets around an expression allow it
+    /// again. A block cannot start with `name:`, so the start value of a `loop`
+    /// and a clause guard before a function body may end in a struct literal.
     struct_literals: bool,
 }
 
@@ -1725,7 +1725,7 @@ impl<'source> Parser<'source> {
         if self.at(TokenKind::If) {
             self.start(NodeKind::ClauseGuard);
             self.bump();
-            self.with_struct_literals(false, Self::parse_expression);
+            self.parse_expression();
             self.finish();
         }
         self.skip_newlines();

@@ -155,9 +155,9 @@ such as an enum variant, are `T4217`. Function calls and enum variant
 constructors stay positional.
 
 A struct literal after a bare name or a qualified name is read as one wherever
-an expression is, except in a `case` subject and a function clause guard,
-where `{` opens the arms or the body. There it needs parentheses:
-`case (Money { cents: 0 }) == total { ... }`.
+an expression is, except in a `case` subject, where `{` opens the arms and
+an arm may start with a typed binding `name: Type`. There it needs
+parentheses: `case (Money { cents: 0 }) == total { ... }`.
 
 Struct representation is all-or-nothing; the kernel has no per-field
 visibility modifiers.
