@@ -574,7 +574,12 @@ may share `clock: Clock`, but one name with two interfaces is `T4103`. A name
 that is neither a generic row parameter nor a group (`needs Inventory`) is
 `E_UNRESOLVED_TYPE`; inside a function, its own generic row parameter takes
 the name first, as generics do for types. A group's entries are written
-fields only: a group does not include another group yet.
+fields only: a group does not include another group yet. A group is not a
+type, so writing one where a type goes (`fn f(x: Shop)`) is
+`E_UNRESOLVED_TYPE`. An entry whose function type needs its own group, directly
+or through another group, is `T4104` at that clause. A report about a group's
+entry from a function that uses it, such as `T4103` or a parameter with an
+entry's name, points at the group in that function's clause.
 
 An `interface` is a structural record of function contracts:
 

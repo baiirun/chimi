@@ -6901,6 +6901,82 @@ fn a_needs_group_is_checked_like_its_entries() {
     );
 }
 
+// From review of the needs-groups change: a diagnostic about a group's entry
+// points at the group in the clause that uses it, in that module; a conflict
+// inside a group is its declaration's alone; a group that reaches itself is
+// T4104 rather than a crash; and a group is not a type.
+#[test]
+fn a_needs_group_reports_at_the_clause_that_uses_it() {
+    let library = concat!(
+        "// This comment moves the library's ranges past the end of main.\n",
+        "// This comment moves the library's ranges past the end of main.\n",
+        "pub interface Inventory {\n  reserve: fn(Int) -> Int\n}\n",
+        "pub interface Other {\n  ping: fn() -> Int\n}\n",
+        "pub needs Shop {\n  inventory: Inventory,\n}\n",
+        "pub needs Bad {\n  inventory: Other,\n}\n",
+    );
+    let at = |main: &str| {
+        let sources = vec![
+            ProjectSource::new("app/main", SourceSnapshot::from_text("app/main.chimi", main))
+                .unwrap(),
+            ProjectSource::new("app/shop", SourceSnapshot::from_text("app/shop.chimi", library))
+                .unwrap(),
+        ];
+        let diagnostics = Compiler::verify_project(sources).expect_err("the program is refused");
+        diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let range = diagnostic.range();
+                let text = main
+                    .get(range.start() as usize..range.end() as usize)
+                    .unwrap_or("<outside main>");
+                format!("{} {text}", diagnostic.code())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        at(concat!(
+            "import app/shop as Shop\n",
+            "fn f() -> Int needs Shop.Shop + Shop.Bad {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["T4103 Bad"]
+    );
+    assert_eq!(
+        at(concat!(
+            "import app/shop as Shop.{Shop}\n",
+            "fn f(inventory: Int) -> Int needs Shop {\n  inventory\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["E_DUPLICATE_LOCAL Shop"]
+    );
+    assert_eq!(
+        check_codes(concat!(
+            "needs T {\n  a: Int,\n  a: Bool,\n}\n",
+            "fn f() -> Int needs T {\n  0\n}\n",
+            "fn g() -> Int needs T {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["T4103"]
+    );
+    assert_eq!(
+        check_codes(concat!(
+            "needs S {\n  a: fn() -> Int needs S,\n}\n",
+            "fn f() -> Int needs S {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["T4104"]
+    );
+    assert_eq!(
+        build_messages(concat!(
+            "needs S {\n  inv: Int,\n}\n",
+            "fn f(x: S) -> Int {\n  0\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )),
+        ["E_UNRESOLVED_TYPE: `S` is a needs group, not a type; a group stands in a needs clause, as in `needs S`"]
+    );
+}
+
 #[test]
 fn a_needs_group_item_formats_on_its_own_lines() {
     let source = "import std/io.{Console}\npub needs Out { console: Console }\nfn f() -> Void needs Out { console.write_line(\"x\") }\npub fn main() -> Int { 0 }\n";

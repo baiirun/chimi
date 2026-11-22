@@ -1773,6 +1773,14 @@ impl ProjectResolver {
                     resolution => resolution,
                 }
             };
+            // A needs group shares the type namespace but names needs, not values.
+            let names_group = matches!(resolution, ReferenceResolution::Resolved(symbol)
+                if self.symbols[symbol.raw() as usize].kind == ProjectSymbolKind::NeedsGroup);
+            let resolution = if names_group {
+                ReferenceResolution::Unresolved
+            } else {
+                resolution
+            };
             let display = path
                 .iter()
                 .map(|part| part.text.as_str())
@@ -1788,9 +1796,11 @@ impl ProjectResolver {
                 resolution,
             });
             if resolution == ReferenceResolution::Unresolved {
-                let message = if let Some(fields) =
-                    self.enum_variant_field_count(module_index, path)
-                {
+                let message = if names_group {
+                    format!(
+                        "`{display}` is a needs group, not a type; a group stands in a needs clause, as in `needs {display}`"
+                    )
+                } else if let Some(fields) = self.enum_variant_field_count(module_index, path) {
                     let payload = if fields == 0 {
                         String::new()
                     } else {
@@ -1955,11 +1965,12 @@ impl ProjectResolver {
 
     /// A group used in a function's clause binds each of its entries as a
     /// requirement in the body, under the term's own semantic id, as a written
-    /// entry would.
+    /// entry would. A clash is reported at the term (`at`), in this module.
     fn bind_group_entries(
         &mut self,
         module_index: usize,
         semantic_id: SemanticId,
+        at: crate::ids::TextRange,
         resolution: ReferenceResolution,
         scope: &mut Option<&mut Scope>,
     ) {
@@ -1969,7 +1980,11 @@ impl ProjectResolver {
         if self.symbols[group.raw() as usize].kind != ProjectSymbolKind::NeedsGroup {
             return;
         }
-        for name in self.needs_group_entries(group) {
+        for entry in self.needs_group_entries(group) {
+            let name = Name {
+                text: entry.text,
+                range: at,
+            };
             if let Some(scope) = scope.as_deref_mut() {
                 self.define_requirement(module_index, semantic_id, &name, scope);
             } else {
@@ -2033,7 +2048,7 @@ impl ProjectResolver {
                         name,
                         resolution,
                     );
-                    self.bind_group_entries(module_index, *semantic_id, resolution, &mut scope);
+                    self.bind_group_entries(module_index, *semantic_id, name.range, resolution, &mut scope);
                     if resolution == ReferenceResolution::Unresolved {
                         let module = &self.semantic.modules[module_index];
                         self.diagnostics.push(name_error(
@@ -2055,7 +2070,13 @@ impl ProjectResolver {
                         range: path[1].range,
                         resolution,
                     });
-                    self.bind_group_entries(module_index, *semantic_id, resolution, &mut scope);
+                    self.bind_group_entries(
+                        module_index,
+                        *semantic_id,
+                        path[1].range,
+                        resolution,
+                        &mut scope,
+                    );
                     if !matches!(resolution, ReferenceResolution::Resolved(_)) {
                         let module = &self.semantic.modules[module_index];
                         self.diagnostics.push(name_error(

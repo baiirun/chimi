@@ -1705,6 +1705,11 @@ struct ProjectTypeChecker {
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
     bounded_inference_variables: HashSet<u32>,
+    /// Needs groups being expanded, so a group reached again through one of its
+    /// own entries' function types is reported (`T4104`, once per group)
+    /// instead of recursing.
+    expanding_groups: HashSet<SymbolId>,
+    cyclic_groups: HashSet<SymbolId>,
 }
 
 #[derive(Clone, Debug)]
@@ -1924,6 +1929,8 @@ impl ProjectTypeChecker {
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
             generic_requirements: HashMap::new(),
             property_checks: Vec::new(),
             expression_site: None,
@@ -2963,6 +2970,8 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
         }
     }
 
@@ -8746,11 +8755,11 @@ impl ProjectTypeChecker {
                         self.constrain_generic(module_id, symbol, GenericKind::NeedsRow, name);
                         parameters.push(symbol);
                     } else {
-                        self.expand_needs_group(module_id, *semantic_id, &mut entries);
+                        self.expand_needs_group(module_id, *semantic_id, name, &mut entries);
                     }
                 }
-                RequirementTermUse::Group { semantic_id, .. } => {
-                    self.expand_needs_group(module_id, *semantic_id, &mut entries);
+                RequirementTermUse::Group { semantic_id, path } => {
+                    self.expand_needs_group(module_id, *semantic_id, &path[1], &mut entries);
                 }
                 RequirementTermUse::Field {
                     semantic_id,
@@ -8826,11 +8835,13 @@ impl ProjectTypeChecker {
     /// A needs group written in a clause is only a name for its entries
     /// (decisions.md, 2026-11-22): each entry is added as if written there, its
     /// interface read in the group's own module, and bound in the body to the
-    /// requirement resolution gave the term.
+    /// requirement resolution gave the term. A conflict with another term is
+    /// reported at the term (`at`); one inside the group is its declaration's.
     fn expand_needs_group(
         &mut self,
         module_id: ModuleId,
         semantic_id: SemanticId,
+        at: &crate::semantic::Name,
         entries: &mut Vec<Need>,
     ) {
         let Some(group) = self.resolved_type_symbol(module_id, semantic_id) else {
@@ -8849,7 +8860,23 @@ impl ProjectTypeChecker {
         else {
             return;
         };
+        if !self.expanding_groups.insert(group) {
+            if !self.cyclic_groups.insert(group) {
+                return;
+            }
+            self.type_error(
+                module_id,
+                "T4104",
+                at,
+                format!(
+                    "needs group `{}` reaches itself through an entry's function type",
+                    group_symbol.name
+                ),
+            );
+            return;
+        }
         let no_generics = HashMap::new();
+        let mut group_entries: Vec<(SymbolId, String, TypeId)> = Vec::new();
         for term in &row.terms {
             let RequirementTermUse::Field {
                 semantic_id: entry_id,
@@ -8878,7 +8905,17 @@ impl ProjectTypeChecker {
                 continue;
             };
             let interface = self.lower_value_type(group_module, interface, &no_generics);
-            self.add_need(module_id, entries, requirement, name, interface);
+            if !group_entries.iter().any(|(_, entry, _)| *entry == name.text) {
+                group_entries.push((requirement, name.text.clone(), interface));
+            }
+        }
+        self.expanding_groups.remove(&group);
+        for (requirement, text, interface) in group_entries {
+            let name = crate::semantic::Name {
+                text,
+                range: at.range,
+            };
+            self.add_need(module_id, entries, requirement, &name, interface);
         }
     }
 
