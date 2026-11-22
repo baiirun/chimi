@@ -141,7 +141,7 @@ impl ProjectTypeChecker {
                 children.extend(failures.iter().map(|failures| &**failures));
                 children.extend(requirements.terms.iter().filter_map(|term| match term {
                     RequirementTermUse::Field { interface, .. } => Some(interface),
-                    RequirementTermUse::Variable { .. } => None,
+                    RequirementTermUse::Variable { .. } | RequirementTermUse::Group { .. } => None,
                 }));
             }
             TypeUse::Tuple { elements, .. } | TypeUse::Union {

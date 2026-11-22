@@ -1,7 +1,7 @@
-import checkout/order as Checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
+import checkout/order as Checkout.{FraudError, Order, PaymentError, Receipt, Services, ShippingError, StockError}
 import std/broadcast as Broadcast
 import std/channel as Channel.{Receive, Receiver, Sender}
-import std/clock as Clock.{Clock}
+import std/clock as Clock
 import std/duration as Duration.{Duration}
 import std/list as List
 import std/result.{Result}
@@ -71,14 +71,7 @@ fn report(events: Broadcast.Publisher<Event>, event: Event) -> Void {
   }
 }
 
-fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast.Publisher<Event>) -> Void needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast.Publisher<Event>) -> Void needs Services {
   let started = Clock.now()
   let deadline = Clock.add(started, Duration.milliseconds(order_budget_ms))
   let result = Checkout.run(order, deadline)
@@ -97,14 +90,7 @@ pub fn work(
   settings: Watch.Subscription<Settings>,
   outcomes: Sender<Outcome>,
   events: Broadcast.Publisher<Event>,
-) -> Int needs {
-  inventory: Inventory,
-  fraud: Fraud,
-  payments: Payments,
-  carriers: Carriers,
-  notifier: Notifier,
-  clock: Clock,
-} {
+) -> Int needs Services {
   loop state = (False, True, 0) {
     let (paused, following, handled) = state
     // A drained watch is always ready, so it leaves the list once it drains;
