@@ -199,9 +199,9 @@ fiber may move threads. Its cost on one carrier, against main at
   (+1.9%). The added instructions are the thread-pointer reads in
   `allocate`, `release_allocation` and the code inlined into them, and a
   footprint fold the compiler no longer inlines.
-- Wall time: the lab's PG01, PG03 and PG06, five alternating rounds each,
+- Wall time: the lab's PG01, PG03 and PG06, five rounds of each build in turn,
   had medians from 0.87 to 1.31 times main's, with the two builds' ranges
-  overlapping on every gate except PG06's text payload. Twelve alternating
+  overlapping on every gate except PG06's text payload in one of two sets. Twelve alternating
   runs of the text payload alone (256,000 messages) had medians of 0.402 s
   (main) and 0.427 s (+6%), with ranges of 0.34 to 0.54 s and 0.31 to
   0.58 s. On this host that is within the noise; the instruction counts are
