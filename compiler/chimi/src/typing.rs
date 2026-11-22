@@ -3676,7 +3676,18 @@ impl ProjectTypeChecker {
                 ..
             } => {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
-                if *form == (CallForm::Fields { ordered: false }) {
+                // Lowering orders a literal by the written name alone, so the
+                // name must still resolve to the module's own struct here: a
+                // local or parameter of that name is not one.
+                let builds_own_struct = |checker: &Self| {
+                    callee_symbol.is_some_and(|symbol| {
+                        checker.is_struct_constructor(symbol)
+                            && checker.resolved.symbol(symbol).module_id == Some(module_id)
+                    })
+                };
+                if *form == (CallForm::Fields { ordered: false })
+                    || (*form == (CallForm::Fields { ordered: true }) && !builds_own_struct(self))
+                {
                     return self.infer_unordered_fields(
                         module_id,
                         callee,
@@ -3701,9 +3712,7 @@ impl ProjectTypeChecker {
                     );
                     // The construction is rejected as written; its arity and
                     // field types are not checked again.
-                    return self.infer_unordered_fields(
-                        module_id, callee, None, arguments, generics, bindings,
-                    );
+                    return self.infer_rejected_fields(module_id, arguments, generics, bindings);
                 }
                 let labelled_order = self.reject_argument_labels(
                     module_id,
@@ -9298,10 +9307,13 @@ impl ProjectTypeChecker {
             if let Some(labelled) = labelled
                 && range.start() == callee.range().start()
             {
-                diagnostic = diagnostic.with_fix(
-                    range,
-                    format!("{} {{ {} }}", slice(callee.range()), labelled.join(", ")),
-                );
+                let literal = format!("{} {{ {} }}", slice(callee.range()), labelled.join(", "));
+                let literal = if struct_literals::in_case_subject(source, range) {
+                    format!("({literal})")
+                } else {
+                    literal
+                };
+                diagnostic = diagnostic.with_fix(range, literal);
             }
             self.push_type_diagnostic(diagnostic);
             return order;

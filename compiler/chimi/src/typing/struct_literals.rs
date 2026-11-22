@@ -9,7 +9,7 @@
 
 use super::{ExpressionFact, ProjectTypeChecker};
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
-use crate::ids::{ModuleId, SymbolId, TextRange};
+use crate::ids::{ModuleId, SymbolId, TextRange, TypeId};
 use crate::resolution::ProjectSymbolKind;
 use crate::semantic::{CallArgument, ModuleExpression};
 
@@ -53,24 +53,29 @@ impl ProjectTypeChecker {
             file_id,
             range,
             format!(
-                "a struct is built by field name: `{name} {{ {} }}`",
-                fields
-                    .iter()
-                    .map(|field| format!("{field}: ..."))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "a struct is built by field name: `{}`",
+                braced(
+                    &name,
+                    fields.iter().map(|field| format!("{field}: ...")).collect()
+                )
             ),
         );
-        if written_as_call && !fields.is_empty() {
-            let replacement = format!(
-                "{callee_text} {{ {} }}",
+        if written_as_call {
+            let replacement = braced(
+                callee_text,
                 fields
                     .iter()
                     .zip(arguments)
                     .map(|(field, argument)| format!("{field}: {}", slice(argument.value.range())))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                    .collect(),
             );
+            // A `case` subject's `{` opens the arms, so a literal there is
+            // bracketed.
+            let replacement = if in_case_subject(source, range) {
+                format!("({replacement})")
+            } else {
+                replacement
+            };
             diagnostic = diagnostic.with_fix(range, replacement);
         }
         self.push_type_diagnostic(diagnostic);
@@ -141,9 +146,67 @@ impl ProjectTypeChecker {
                 self.type_error_range(module_id, code, callee.range(), message);
             }
         }
+        if callee_symbol.is_none() {
+            // A field or a call result; a name that does not resolve has its
+            // own error, and its type is poisoned.
+            let callee_fact = self.infer_expression(module_id, callee, generics, bindings);
+            if callee_fact.success != TypeId::new(0) {
+                self.type_error_range(
+                    module_id,
+                    "T4217",
+                    callee.range(),
+                    "this is not a struct; braces with field names build a struct".to_owned(),
+                );
+            }
+        }
+        self.poisoned_with(&facts)
+    }
+
+    /// Infers the values of a construction already reported, so their own
+    /// errors still show, and gives the construction a poisoned type.
+    pub(super) fn infer_rejected_fields(
+        &mut self,
+        module_id: ModuleId,
+        arguments: &[CallArgument],
+        generics: &std::collections::HashMap<String, SymbolId>,
+        bindings: &mut std::collections::HashMap<SymbolId, super::ValueBinding>,
+    ) -> ExpressionFact {
+        let facts = arguments
+            .iter()
+            .map(|argument| self.infer_expression(module_id, &argument.value, generics, bindings))
+            .collect::<Vec<_>>();
+        self.poisoned_with(&facts)
+    }
+
+    /// A poisoned fact that keeps the failures and needs of `facts`.
+    fn poisoned_with(&mut self, facts: &[ExpressionFact]) -> ExpressionFact {
         let mut fact = self.poison_expression_fact();
         fact.failures = self.union_failure_rows(facts.iter().map(|fact| fact.failures));
         fact.needs = self.union_needs_rows(facts.iter().map(|fact| fact.needs));
         fact
     }
+}
+
+/// `Name { a: 1, b: 2 }`, or `Name {}` for a struct without fields.
+fn braced(name: &str, fields: Vec<String>) -> String {
+    if fields.is_empty() {
+        format!("{name} {{}}")
+    } else {
+        format!("{name} {{ {} }}", fields.join(", "))
+    }
+}
+
+/// Whether `range` lies between a `case` keyword and the `{` of its arms on
+/// the same line, where a struct literal needs brackets.
+pub(super) fn in_case_subject(source: &str, range: TextRange) -> bool {
+    let before = &source[..range.start() as usize];
+    let line = &before[before.rfind('\n').map_or(0, |index| index + 1)..];
+    line.rfind("case ").is_some_and(|start| {
+        let keyword_ends_word = start == 0
+            || !line[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        keyword_ends_word && !line[start..].contains(['{', '}'])
+    })
 }

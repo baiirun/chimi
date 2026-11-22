@@ -144,14 +144,17 @@ order. Field names are the identity for construction as for access
 (`value.cents`), so reordering a struct's fields changes no construction site.
 `..base` inside a struct literal is `S1001`; a copy with some fields changed is
 a [record update](patterns-and-function-clauses.md#record-update),
-`{ ..base, cents: 0 }`.
+`{ ..base, cents: 0 }`. A struct without fields is built with empty braces,
+`Marker {}`.
 
 Positional construction such as `Money(2500)` is `T4216`, whose fix writes the
-struct literal, and so is a labelled call such as `Money(cents: 2500)`. A
-struct's constructor is not a function value: `let make = Money` and
+struct literal (in brackets when the call is a `case` subject), and so is a
+labelled call such as `Money(cents: 2500)`. A struct's constructor is not a function value: `let make = Money` and
 `value |> Money` are `T4216` too; write `fn(cents) { Money { cents: cents } }`.
 Braces with field names after anything that is not a struct of the module,
-such as an enum variant, are `T4217`. Function calls and enum variant
+such as an enum variant, a function, a field, or a local or parameter that
+shares a struct's name, are `T4217`. Another module's struct is
+`E_PRIVATE_STRUCT_CONSTRUCTOR`, since its fields are private to its module. Function calls and enum variant
 constructors stay positional.
 
 A struct literal after a bare name or a qualified name is read as one wherever

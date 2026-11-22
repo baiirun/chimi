@@ -12410,3 +12410,74 @@ fn a_case_subject_needs_brackets_around_a_struct_literal_and_a_guard_does_not() 
     let outcome = run_both("struct-case-subject", &source);
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":147");
 }
+
+// A literal is ordered by its written name, so the name must still be the
+// struct where it is used: a local or a parameter of that name is not one, and
+// neither is a field or any other value.
+#[test]
+fn braces_after_a_name_that_is_not_the_struct_are_rejected() {
+    let program = |body: &str| format!("{POINT}pub fn main() -> Int {{\n{body}\n}}\n");
+    assert_eq!(
+        check_codes(&program(
+            "  let Point = fn(a: Int, b: Int) -> Int { a * 10 + b }\n  Point { y: 2, x: 1 }"
+        )),
+        ["T4217"]
+    );
+    assert_eq!(
+        check_codes(&format!(
+            "{POINT}fn apply(Point: fn(Int, Int) -> Int) -> Int {{\n  Point {{ x: 1, y: 2 }}\n}}\n\npub fn main() -> Int {{\n  1\n}}\n"
+        )),
+        ["T4217"]
+    );
+    assert_eq!(
+        check_codes(&program(
+            "  let r = { make: fn(x: Int) -> Int { x } }\n  r.make { x: 1 }"
+        )),
+        ["T4217"]
+    );
+}
+
+#[test]
+fn a_struct_without_fields_is_built_with_empty_braces() {
+    let source = concat!(
+        "struct Marker {\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let first = Marker {}\n",
+        "  let second = Marker {\n",
+        "  }\n",
+        "  case first == second {\n",
+        "    True -> 1\n",
+        "    False -> 0\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(run_both("struct-empty", source), "\"outcome\":\"success\",\"value\":1");
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(formatted.text().contains("  let second = Marker {}\n"), "{}", formatted.text());
+    let positional = "struct Marker {\n}\n\npub fn main() -> Int {\n  let m = Marker()\n  1\n}\n";
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", positional))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let codes = report.diagnostics().iter().map(|d| d.code()).collect::<Vec<_>>();
+    assert_eq!(codes, ["T4216"]);
+    assert_eq!(report.diagnostics()[0].fixes()[0].replacement(), "Marker {}");
+}
+
+// In a `case` subject the literal the fix writes needs brackets.
+#[test]
+fn the_named_form_fix_brackets_a_case_subject() {
+    for (call, replacement) in [
+        ("Point(1, 2)", "(Point { x: 1, y: 2 })"),
+        ("Point(y: 2, x: 1)", "(Point { y: 2, x: 1 })"),
+    ] {
+        let source = format!("{POINT}pub fn main() -> Int {{\n  case {call} {{\n    point -> point.x\n  }}\n}}\n");
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source.as_str()))
+            .expect("valid module path");
+        let report = Compiler::type_project(vec![module]);
+        let diagnostic = &report.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "T4216", "{}", diagnostic.message());
+        assert_eq!(diagnostic.fixes()[0].replacement(), replacement);
+    }
+}

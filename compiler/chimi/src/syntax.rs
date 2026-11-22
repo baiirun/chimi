@@ -1440,7 +1440,9 @@ impl<'source> Parser<'source> {
     }
 
     /// Whether the `{` at the current position starts the fields of a struct
-    /// literal: `{` followed, after any line breaks, by `field:` or `..`.
+    /// literal: `{` followed, after any line breaks, by `field:`, `..` or the
+    /// `}` of a struct with no fields. Empty braces are no block or record, so
+    /// `Name {}` is never anything else.
     fn at_struct_fields(&self) -> bool {
         if !self.struct_literals || !self.at(TokenKind::LeftBrace) {
             return false;
@@ -1450,6 +1452,7 @@ impl<'source> Parser<'source> {
             position += 1;
         }
         self.kind_at(position) == TokenKind::DotDot
+            || self.kind_at(position) == TokenKind::RightBrace
             || (self.kind_at(position) == TokenKind::Identifier
                 && self.kind_at(position + 1) == TokenKind::Colon)
     }
@@ -2514,7 +2517,7 @@ impl<'source> Parser<'source> {
                     wrapped = true;
                 }
                 names_a_type = false;
-                self.parse_record();
+                self.parse_struct_fields();
             } else {
                 break;
             }
@@ -2857,6 +2860,24 @@ impl<'source> Parser<'source> {
     /// Parses a record literal or a record update `{ ..base, field: value }`.
     /// Ensures: a leading `..base` is a `RecordSpread` child; a spread anywhere else is
     /// `S1001` and is still parsed as a `RecordSpread` so lowering sees the base.
+    /// The braces of a struct literal: a record's fields, or none for a struct
+    /// without fields (`Marker {}`).
+    fn parse_struct_fields(&mut self) {
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) != TokenKind::RightBrace {
+            self.parse_record();
+            return;
+        }
+        self.start(NodeKind::RecordExpression);
+        self.bump();
+        self.skip_newlines();
+        self.bump();
+        self.finish();
+    }
+
     fn parse_record(&mut self) {
         self.start(NodeKind::RecordExpression);
         let open = self.position;
