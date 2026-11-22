@@ -475,6 +475,26 @@ fn offline_a_missing_commit_fails_without_fetching() {
         text(&output.stderr)
     );
 
+    // The cache knows the repository but not the commit the lock now pins.
+    scratch.write("repo/pkg/value.chimi", "pub fn value() -> Int { 6 }\n");
+    git(
+        &scratch.path("repo"),
+        &["commit", "--quiet", "-am", "second"],
+    );
+    git(&scratch.path("repo"), &["tag", "--force", "v1"]);
+    let output = chimi_with_cache(
+        &scratch.path("cache"),
+        &["deps", "update", "--root", app, "json_tools"],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let output = chimi_with_cache(&empty, &["--offline", "run", "--root", app, "app/main"]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stdout));
+    assert!(
+        text(&output.stderr).contains("forbids fetching it"),
+        "{}",
+        text(&output.stderr)
+    );
+
     let output = chimi_with_cache(&empty, &["--offline", "deps", "update"]);
     assert_eq!(output.status.code(), Some(2));
 }

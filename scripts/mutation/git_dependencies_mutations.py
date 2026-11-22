@@ -67,9 +67,9 @@ MUTATIONS = [
         "                        directory: fields.get(\"directory\").map(|text| (*text).to_owned()),",
         "                        directory: None,",
     )]),
-    lock("the lock accepts a short commit", [(
-        "            if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {",
-        "            if commit.is_empty() {",
+    dict(name="the lock accepts a short commit", file=C, targets=["lib"], filter="manifest::lock", edits=[(
+        "    text.len() == 40\n",
+        "    !text.is_empty()\n",
     )]),
     lock("quotes are written raw", [(
         "            '\"' => quoted.push_str(\"\\\\\\\"\"),",
