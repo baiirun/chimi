@@ -33,6 +33,14 @@ MUTATIONS = [
         "                    if let Some((prior, _, _)) =\n                        own.iter().find(|(_, _, prior)| prior.name == package.name)",
         "                    if let Some((prior, _, _)) =\n                        own.iter().find(|_| false)",
     )]),
+    unit("a member may sit outside the workspace", G, [(
+        "                    if !directory.starts_with(root) {",
+        "                    if false {",
+    )]),
+    unit("a member may be listed twice", G, [(
+        "                    if own.iter().any(|(listed, _, _)| *listed == directory) {",
+        "                    if false {",
+    )]),
     unit("--root takes a workspace", G, [(
         "            Manifest::Workspace(_) if !workspace_allowed =>",
         "            Manifest::Workspace(_) if false =>",

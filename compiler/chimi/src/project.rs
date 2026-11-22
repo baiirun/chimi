@@ -1596,7 +1596,14 @@ mod tests {
     fn a_workspace_directory_loads_every_members_modules_as_its_own() {
         let fixture = workspace(&[
             ("app", APP, &[("main.chimi", "import money/amount as Amount\npub fn main() -> Int { Amount.value() }")]),
-            ("money", MONEY, &[("amount.chimi", "pub fn value() -> Int { 1 }")]),
+            (
+                "money",
+                MONEY,
+                &[
+                    ("amount.chimi", "pub fn value() -> Int { 1 }"),
+                    ("extra.chimi", "pub fn value() -> Int { 2 }"),
+                ],
+            ),
         ]);
         let origins = |project: &LoadedProject| {
             let mut modules: Vec<_> = project
@@ -1613,6 +1620,8 @@ mod tests {
             [
                 ("app/main".to_owned(), ModuleOrigin::Own),
                 ("money/amount".to_owned(), ModuleOrigin::Own),
+                // No member imports it; a workspace loads it all the same.
+                ("money/extra".to_owned(), ModuleOrigin::Own),
             ]
         );
         let app = LoadedProject::load_directory(fixture.path().join("app"), &StandardTree::embedded())
@@ -1623,7 +1632,12 @@ mod tests {
     #[test]
     fn a_workspace_rejects_bad_members() {
         type Files<'a> = &'a [(&'a str, &'a str)];
-        let cases: [(&str, Files<'_>, &str); 3] = [
+        let cases: [(&str, Files<'_>, &str); 4] = [
+            (
+                "[workspace]\nmembers = [\"one\", \"./one\"]\n",
+                &[("one/chimi.toml", MONEY)],
+                "is listed twice",
+            ),
             ("[workspace]\nmembers = [\"gone\"]\n", &[], "member "),
             (
                 "[workspace]\nmembers = [\"plain\"]\n",
@@ -1647,6 +1661,18 @@ mod tests {
                 .to_string();
             assert!(error.contains(message), "{message}: {error}");
         }
+    }
+
+    #[test]
+    fn a_workspace_member_outside_the_workspace_fails() {
+        let fixture = TestDirectory::new();
+        fixture.write("shop/chimi.toml", "[workspace]\nmembers = [\"../money\"]\n");
+        fixture.write("money/chimi.toml", MONEY);
+        fixture.write("money/amount.chimi", "pub fn value() -> Int { 1 }");
+        let error = LoadedProject::load_directory(fixture.path().join("shop"), &StandardTree::embedded())
+            .expect_err("member outside")
+            .to_string();
+        assert!(error.contains("is outside the workspace directory"), "{error}");
     }
 
     #[test]

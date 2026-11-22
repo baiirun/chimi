@@ -75,6 +75,8 @@ pub enum PackageError {
         source: std::io::Error,
     },
     MemberNotAPackage { workspace: PathBuf, member: PathBuf },
+    MemberOutsideWorkspace { workspace: PathBuf, member: PathBuf },
+    MemberListedTwice { workspace: PathBuf, member: PathBuf },
     DuplicateMember {
         name: PackageName,
         first: PathBuf,
@@ -172,6 +174,18 @@ impl fmt::Display for PackageError {
                 workspace.display(),
                 member.display()
             ),
+            Self::MemberOutsideWorkspace { workspace, member } => write!(
+                formatter,
+                "{}: member {} is outside the workspace directory",
+                workspace.display(),
+                member.display()
+            ),
+            Self::MemberListedTwice { workspace, member } => write!(
+                formatter,
+                "{}: member {} is listed twice",
+                workspace.display(),
+                member.display()
+            ),
             Self::DuplicateMember {
                 name,
                 first,
@@ -233,6 +247,18 @@ impl PackageGraph {
                             source,
                         }
                     })?;
+                    if !directory.starts_with(root) {
+                        return Err(PackageError::MemberOutsideWorkspace {
+                            workspace: manifest_path,
+                            member: directory,
+                        });
+                    }
+                    if own.iter().any(|(listed, _, _)| *listed == directory) {
+                        return Err(PackageError::MemberListedTwice {
+                            workspace: manifest_path,
+                            member: directory,
+                        });
+                    }
                     let member_manifest = directory.join(MANIFEST_FILE);
                     let package = match member_manifest
                         .is_file()
