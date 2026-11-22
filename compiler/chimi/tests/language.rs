@@ -6991,6 +6991,14 @@ fn a_needs_group_item_formats_on_its_own_lines() {
     );
     assert_formatter_round_trips(source);
     assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
+    // A private group right after an import line stays on its own line.
+    let private = "import std/io.{Console}\nneeds Inner { console: Console }\npub fn main() -> Int { 0 }\n";
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", private));
+    assert!(
+        formatted.text().contains("}\nneeds Inner {\n  console: Console\n}\n"),
+        "{}",
+        formatted.text()
+    );
 }
 
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
