@@ -1,0 +1,18 @@
+# mutation run at 10eb93df319847123e78856335a22f1538a74537
+# otel_log_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [std_otel] (71s)
+KILLED       the outer log is not written [std_otel] (66s)
+KILLED       the level is not filtered [std_otel] (67s)
+KILLED       a dropped log is not counted [std_otel] (68s)
+KILLED       waiting logs are not pushed when the body ends [std_otel] (69s)
+KILLED       a flush does not push [std_otel] (70s)
+KILLED       an interval does not push [std_otel] (68s)
+KILLED       pushed logs stay waiting [std_otel] (69s)
+KILLED       waiting entries are not capped [std_otel] (70s)
+KILLED       the last pushes run one after the other [std_otel] (69s)
+KILLED       a dropped entry in the process is not counted [std_otel] (71s)
+KILLED       a whole number is written as spelled [std_otel] (70s)
+KILLED       every number is a double [std_otel] (68s)
+KILLED       warn has info's severity [std_otel] (69s)
+KILLED       at_least is strict [std_otel] (69s)
+# result: every mutant killed
