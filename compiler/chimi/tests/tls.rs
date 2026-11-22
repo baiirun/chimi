@@ -488,6 +488,91 @@ test "sessions are freed" {
     assert_passed(&result, 1);
 }
 
+/// Starts `openssl s_server` on a free loopback port and returns it once it
+/// is listening. A port read from a released listener can be taken again
+/// before the server binds it, so the server's own `ACCEPT` line, which it
+/// prints only after binding, is the readiness signal, and a server that
+/// exits first (its port was taken) is started again on another port.
+fn start_openssl_server(scratch: &Scratch, version: &str) -> (std::process::Child, u16) {
+    let free = std::iter::repeat_with(|| {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    });
+    start_openssl_server_on(scratch, version, free)
+}
+
+/// Starts `openssl s_server` on the first of `ports` it can bind, trying at
+/// most five.
+fn start_openssl_server_on(
+    scratch: &Scratch,
+    version: &str,
+    ports: impl Iterator<Item = u16>,
+) -> (std::process::Child, u16) {
+    use std::io::BufRead;
+    for port in ports.take(5) {
+        let mut server = Command::new("openssl")
+            .current_dir(&scratch.0)
+            .args(["s_server", "-www", "-num_tickets", "2", version])
+            .args(["-cert", "server.pem", "-key", "server.key"])
+            .args(["-accept", &format!("127.0.0.1:{port}")])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("openssl s_server runs (the TLS interop test needs OpenSSL)");
+        let (ready, listening) = std::sync::mpsc::channel();
+        let output = std::io::BufReader::new(server.stdout.take().unwrap());
+        // Reads the server's output to its end, so it never blocks on a full pipe.
+        std::thread::spawn(move || {
+            for line in output.lines() {
+                let Ok(line) = line else { break };
+                if line.starts_with("ACCEPT") {
+                    let _ = ready.send(());
+                }
+            }
+        });
+        match listening.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(()) => return (server, port),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // The server exited before it listened.
+                let _ = server.wait();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = server.kill();
+                let _ = server.wait();
+                panic!("openssl s_server did not start");
+            }
+        }
+    }
+    panic!("openssl s_server could not bind a loopback port in five tries");
+}
+
+// Rejects a server start that trusts a port it never bound: the first port
+// offered is already taken, so the server must come up on the second.
+#[test]
+fn the_openssl_server_moves_off_a_taken_port() {
+    let scratch = Scratch::new("openssl-port", "");
+    std::fs::write(scratch.0.join("server.pem"), SERVER_CERT).unwrap();
+    std::fs::write(scratch.0.join("server.key"), SERVER_KEY).unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken_port = taken.local_addr().unwrap().port();
+    let free = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let ports = [taken_port, free].into_iter();
+    let (mut server, port) = start_openssl_server_on(&scratch, "-tls1_3", ports);
+    assert_eq!(port, free);
+    assert!(server.try_wait().unwrap().is_none(), "the server exited");
+    let _ = server.kill();
+    let _ = server.wait();
+    drop(taken);
+}
+
 // Rejects an engine that tests only against itself: OpenSSL's server sends
 // TLS 1.3 session tickets after the handshake (a record with no data, ahead of
 // the answer), and speaks TLS 1.2 when told to. Twenty exchanges each, since
@@ -499,29 +584,7 @@ fn a_client_talks_to_an_openssl_server() {
         let scratch = Scratch::new("openssl", "");
         std::fs::write(scratch.0.join("server.pem"), SERVER_CERT).unwrap();
         std::fs::write(scratch.0.join("server.key"), SERVER_KEY).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let mut server = Command::new("openssl")
-            .current_dir(&scratch.0)
-            .args(["s_server", "-quiet", "-www", "-num_tickets", "2", version])
-            .args(["-cert", "server.pem", "-key", "server.key"])
-            .args(["-accept", &format!("127.0.0.1:{port}")])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("openssl s_server runs (the TLS interop test needs OpenSSL)");
-        let started = std::time::Instant::now();
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(10),
-                "openssl s_server did not start"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        let (mut server, port) = start_openssl_server(&scratch, version);
         let tests = format!(
             r#"
 import std/clock.{{Clock}}
