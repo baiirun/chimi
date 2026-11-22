@@ -2,8 +2,7 @@
 // ascending order and that equal items are kept once; sets built in different
 // orders compare equal.
 import std/debug as Debug
-import std/set as Set
-import std/set.{Set}
+import std/set as Set.{Set}
 import std/test as Test
 
 enum Tag {

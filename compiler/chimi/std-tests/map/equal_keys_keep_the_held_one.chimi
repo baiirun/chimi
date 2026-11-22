@@ -1,11 +1,9 @@
 // A key or item equal to a held one, but written differently, does not replace
 // it: `1.50` equals `1.5`, so `Map.put`, `Map.from`, `Map.merge`, and `Set.add`
 // keep the held `1.5` and change only the value.
-import std/decimal as Decimal
-import std/decimal.{Decimal}
+import std/decimal as Decimal.{Decimal}
 import std/list as List
-import std/map as Map
-import std/map.{Map}
+import std/map as Map.{Map}
 import std/set as Set
 import std/text as Text
 import std/test as Test

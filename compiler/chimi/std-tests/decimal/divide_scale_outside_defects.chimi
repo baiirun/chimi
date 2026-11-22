@@ -1,6 +1,5 @@
 // Decimal.divide takes result scales 0 through 38.
-import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal as Decimal.{Decimal, Rounding}
 import std/test as Test
 
 fn run() -> Decimal {

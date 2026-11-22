@@ -123,7 +123,7 @@ tests, so a private function that only calls itself, two that only call each
 other, or a chain only dead code uses, all count as used. Private structs,
 enums, interfaces and `process name` items, and unused `needs` entries, are
 not checked yet. When a module alias and a member import share a name, as
-`import std/clock as Clock` with `import std/clock.{Clock}`, a qualified path
+`import std/clock as Clock.{Clock}`, a qualified path
 such as `Clock.Instant` uses the alias, as the compiler resolves it.
 Suggested fixes (code actions) are not offered yet.
 

@@ -2,8 +2,7 @@
 // composed with by, reverse, and then, applied by List.sort_by.
 import std/debug as Debug
 import std/list as List
-import std/order as Order
-import std/order.{Equal, Ordering}
+import std/order as Order.{Equal, Ordering}
 import std/test as Test
 
 struct User {

@@ -1,21 +1,16 @@
-import checkout/order as Checkout
-import checkout/order.{FraudError, PaymentError, ShippingError, StockError}
+import checkout/order as Checkout.{FraudError, PaymentError, ShippingError, StockError}
 import checkout/fakes as Fakes
-import service/worker as Worker
-import service/worker.{Event, Outcome}
+import service/worker as Worker.{Event, Outcome}
 import std/broadcast as Broadcast
 import std/cause as Cause
-import std/channel as Channel
-import std/channel.{Receive, Receiver}
-import std/clock as Clock
-import std/clock.{Clock}
+import std/channel as Channel.{Receive, Receiver}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
 import std/io.{Console}
 import std/list as List
 import std/order as Order
 import std/result.{Result}
-import std/task as Task
-import std/task.{Timeout}
+import std/task as Task.{Timeout}
 import std/watch as Watch
 
 // The Phase 3 forcing program: a checkout service. Two workers share one

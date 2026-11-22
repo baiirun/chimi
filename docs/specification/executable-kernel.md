@@ -99,6 +99,22 @@ import billing/money.{Money, NegativeAmount}
 Member imports MUST NOT bind functions. Bare module imports and wildcard member
 imports are invalid.
 
+One import line MAY bind the alias and members together, with the member list
+after the alias:
+
+<!-- chimi: fragment -->
+```chimi
+import billing/money as BillingMoney.{Money, NegativeAmount}
+```
+
+It means exactly the two lines `import billing/money as BillingMoney` and
+`import billing/money.{Money, NegativeAmount}`: the alias stays required and
+written, and the members follow the member-import rules above. An unknown
+module on such a line is reported once. The formatter joins a module's
+alias-only import and its member-only imports into this form, at the first of
+those lines, unless one of them carries a comment or shares its line with
+other code (decisions.md, 2026-11-22).
+
 Imports MUST NOT form a cycle. The project loader rejects a cycle while reading
 modules from disk, and the compiler rejects one among sources it is given with
 `E_IMPORT_CYCLE` at the import that closes it, listing the path, as in

@@ -1,8 +1,7 @@
 // A comparator's failure passes through Order.by and List.sort_by unchanged.
 import std/list as List
 import std/order as Order
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum KeyError {

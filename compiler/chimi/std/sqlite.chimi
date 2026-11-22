@@ -35,8 +35,7 @@
 /// the other tasks there until it ends.
 
 import std/bytes.{Bytes}
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/decimal as Decimal
 import std/duration as Duration
 import std/float as Float
@@ -46,10 +45,8 @@ import std/list as List
 import std/option as Option
 import std/path as Path
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err, Ok, Result}
-import std/sql as Sql
-import std/sql.{Connection, Driver, SqlError, Value}
+import std/result as Result.{Err, Ok, Result}
+import std/sql as Sql.{Connection, Driver, SqlError, Value}
 import std/text as Text
 
 // 1. The driver.

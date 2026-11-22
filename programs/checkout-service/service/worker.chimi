@@ -1,12 +1,8 @@
-import checkout/order as Checkout
-import checkout/order.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
+import checkout/order as Checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, Order, PaymentError, Payments, Receipt, ShippingError, StockError}
 import std/broadcast as Broadcast
-import std/channel as Channel
-import std/channel.{Receive, Receiver, Sender}
-import std/clock as Clock
-import std/clock.{Clock}
-import std/duration as Duration
-import std/duration.{Duration}
+import std/channel as Channel.{Receive, Receiver, Sender}
+import std/clock as Clock.{Clock}
+import std/duration as Duration.{Duration}
 import std/list as List
 import std/result.{Result}
 import std/select as Select

@@ -1,8 +1,7 @@
 // A failing callback stops List.map at that element: the failure escapes with
 // the first failing element, and later elements are never visited.
 import std/list as List
-import std/result as Result
-import std/result.{Err}
+import std/result as Result.{Err}
 import std/test as Test
 
 enum Rejected {

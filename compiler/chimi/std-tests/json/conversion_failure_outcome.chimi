@@ -3,11 +3,8 @@
 // number the caller already holds.
 import std/debug as Debug
 import std/decimal.{Decimal}
-import std/json as Json
-import std/json.{Value}
-import std/json.{ConversionError}
-import std/result as Result
-import std/result.{Err}
+import std/json as Json.{Value, ConversionError}
+import std/result as Result.{Err}
 import std/test as Test
 
 fn run() -> Decimal {
