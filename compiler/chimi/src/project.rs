@@ -10,7 +10,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod git;
 mod packages;
+pub use git::{GitCache, GitError, Network};
 use packages::{Discovered, PackageGraph};
 pub use packages::PackageError;
 
@@ -223,18 +225,21 @@ impl LoadedProject {
         entry_module: impl Into<String>,
         standard: &StandardTree,
     ) -> Result<Self, ProjectLoadError> {
-        Self::load_with(root, entry_module, &FileSystemReader, standard)
+        let cache = GitCache::from_environment(Network::Allowed);
+        Self::load_with(root, entry_module, &FileSystemReader, standard, &cache)
     }
 
     /// Loads a project like [`LoadedProject::load`], taking module text from `reader`.
     ///
     /// Ensures: module discovery, validation, and errors match `load`; only
-    /// where text comes from differs. Paths are still canonicalized on disk.
+    /// where text comes from, and where git packages come from, differ.
+    /// Paths are still canonicalized on disk.
     pub fn load_with(
         root: impl AsRef<Path>,
         entry_module: impl Into<String>,
         reader: &dyn SourceReader,
         standard: &StandardTree,
+        cache: &GitCache,
     ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
@@ -250,7 +255,7 @@ impl LoadedProject {
         let entry_module = entry_module.into();
         validate_module_path(entry_module.clone())?;
         let mut loader = Loader {
-            packages: match PackageGraph::discover(&root, false)? {
+            packages: match PackageGraph::discover(&root, false, cache)? {
                 Discovered::Plain => None,
                 Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
             },
@@ -282,7 +287,8 @@ impl LoadedProject {
         root: impl AsRef<Path>,
         standard: &StandardTree,
     ) -> Result<Self, ProjectLoadError> {
-        Self::load_directory_with(root, &FileSystemReader, standard)
+        let cache = GitCache::from_environment(Network::Allowed);
+        Self::load_directory_with(root, &FileSystemReader, standard, &cache)
     }
 
     /// Loads a directory like [`LoadedProject::load_directory`], taking module
@@ -291,6 +297,7 @@ impl LoadedProject {
         root: impl AsRef<Path>,
         reader: &dyn SourceReader,
         standard: &StandardTree,
+        cache: &GitCache,
     ) -> Result<Self, ProjectLoadError> {
         let requested_root = root.as_ref();
         let root = requested_root
@@ -302,7 +309,7 @@ impl LoadedProject {
         if !root.is_dir() {
             return Err(ProjectLoadError::RootNotDirectory { path: root });
         }
-        let packages = match PackageGraph::discover(&root, true)? {
+        let packages = match PackageGraph::discover(&root, true, cache)? {
             Discovered::Plain => None,
             Discovered::Package(graph) | Discovered::Workspace(graph) => Some(graph),
         };
@@ -704,6 +711,7 @@ pub enum ProjectLoadError {
         modules: Vec<String>,
     },
     Package(PackageError),
+    WriteLock { path: PathBuf, source: io::Error },
     /// The entry module of a package build is not one of its own modules.
     NotInEntryPackage {
         module: String,
@@ -795,6 +803,9 @@ impl fmt::Display for ProjectLoadError {
                 write!(formatter, "import cycle: {}", modules.join(" -> "))
             }
             Self::Package(error) => error.fmt(formatter),
+            Self::WriteLock { path, source } => {
+                write!(formatter, "cannot write {}: {source}", path.display())
+            }
             Self::NotInEntryPackage { module, package } => write!(
                 formatter,
                 "module {module} is not in package {package}: its modules are named \
@@ -964,6 +975,88 @@ impl Loader<'_> {
         self.modules.push(module);
         Ok(())
     }
+}
+
+/// One package's pin as `chimi deps update` moved it.
+#[derive(Debug, Eq, PartialEq)]
+pub enum PinChange {
+    Added { name: String, rev: String, commit: String },
+    Moved { name: String, rev: String, from: String, to: String },
+    Removed { name: String },
+}
+
+impl fmt::Display for PinChange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let short = |commit: &str| commit[..12.min(commit.len())].to_owned();
+        match self {
+            Self::Added { name, rev, commit } => {
+                write!(formatter, "locked {name} at {} ({rev})", short(commit))
+            }
+            Self::Moved { name, rev, from, to } => {
+                write!(formatter, "moved {name} from {} to {} ({rev})", short(from), short(to))
+            }
+            Self::Removed { name } => write!(formatter, "removed {name}"),
+        }
+    }
+}
+
+/// `chimi deps update` (packages.md, "Lockfile"): pins every git package of
+/// the workspace that holds `root`, moving only pins whose manifest source
+/// changed, pins that are missing, and the pins of the packages in `moving`;
+/// then rewrites `chimi.lock` when anything changed. Returns the changes, by
+/// package name.
+pub fn update_dependencies(
+    root: impl AsRef<Path>,
+    moving: Vec<String>,
+    cache: &GitCache,
+) -> Result<Vec<PinChange>, ProjectLoadError> {
+    let requested = root.as_ref();
+    let root = requested
+        .canonicalize()
+        .map_err(|source| ProjectLoadError::ReadRoot {
+            path: requested.to_owned(),
+            source,
+        })?;
+    let update = PackageGraph::update(&root, moving, cache)?;
+    let mut changes = Vec::new();
+    for (package, locked) in &update.next.entries {
+        let name = package.to_string();
+        let rev = locked.source.rev.clone();
+        match update.previous.entries.get(package) {
+            None => changes.push(PinChange::Added {
+                name,
+                rev,
+                commit: locked.commit.clone(),
+            }),
+            Some(prior) if prior.commit != locked.commit => changes.push(PinChange::Moved {
+                name,
+                rev,
+                from: prior.commit.clone(),
+                to: locked.commit.clone(),
+            }),
+            Some(_) => {}
+        }
+    }
+    for name in update.previous.entries.keys() {
+        if !update.next.entries.contains_key(name) {
+            changes.push(PinChange::Removed {
+                name: name.to_string(),
+            });
+        }
+    }
+    let text = update.next.render();
+    let unchanged = match std::fs::read_to_string(&update.path) {
+        Ok(existing) => existing == text,
+        // No lockfile and no git package: nothing to write.
+        Err(_) => update.next.entries.is_empty(),
+    };
+    if !unchanged {
+        std::fs::write(&update.path, text).map_err(|source| ProjectLoadError::WriteLock {
+            path: update.path.clone(),
+            source,
+        })?;
+    }
+    Ok(changes)
 }
 
 /// The directory of the package that holds the file `path`: the nearest
@@ -1712,7 +1805,7 @@ mod tests {
         };
 
         let project =
-            LoadedProject::load_with(fixture.path(), "app", &overlay, &StandardTree::embedded())
+            LoadedProject::load_with(fixture.path(), "app", &overlay, &StandardTree::embedded(), &GitCache::from_environment(Network::Offline))
                 .unwrap();
 
         let modules = project

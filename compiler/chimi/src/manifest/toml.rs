@@ -1,5 +1,6 @@
 //! The part of TOML that `chimi.toml` and `chimi.lock` use: `#` comments,
-//! `[table]` and `[[array]]` headers, bare keys, and values that are basic
+//! `[table]`, dotted `[table.name]` and `[[array]]` headers, bare keys, and
+//! values that are basic
 //! strings, arrays of strings (which may span lines), or inline tables of
 //! strings. Anything else is an error with its line, so a file the compiler
 //! cannot read fully is never read in part.
@@ -112,7 +113,12 @@ impl Parser {
         self.expect('[')?;
         let array_element = self.eat('[');
         self.skip_spaces();
-        let name = self.bare_key()?;
+        // A dotted name, as `[git.json_tools]`, is kept whole.
+        let mut name = self.bare_key()?;
+        while self.eat('.') {
+            name.push('.');
+            name.push_str(&self.bare_key()?);
+        }
         self.skip_spaces();
         self.expect(']')?;
         if array_element {
@@ -345,11 +351,12 @@ mod tests {
             "money = { path = \"../money\" }\n",
             "list = [\n  \"a\",\n  \"b\\u00e9\", # comment\n]\n",
             "[[git]]\nname = \"x\"\n[[git]]\nname = \"y\"\n",
+            "[git.json_tools]\nurl = \"u\"\n",
         ))
         .unwrap();
         assert_eq!(document.root.entries[0].value, Value::String("1".into()));
         let names: Vec<_> = document.tables.iter().map(|table| table.name.as_str()).collect();
-        assert_eq!(names, ["package", "dependencies", "git", "git"]);
+        assert_eq!(names, ["package", "dependencies", "git", "git", "git.json_tools"]);
         assert_eq!(
             document.tables[1].entries[0].value,
             Value::InlineTable(vec![("path".into(), "../money".into())])

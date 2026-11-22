@@ -3,7 +3,11 @@
 //! graph is built from manifests alone, before any module loads, so a
 //! conflict, a cycle or an escaping path fails before anything is parsed.
 
-use crate::manifest::{DependencySource, MANIFEST_FILE, Manifest, PackageManifest, PackageName};
+use super::git::{GitCache, GitError};
+use crate::manifest::{
+    DependencySource, GitSource, LOCK_FILE, LockedGit, Lockfile, MANIFEST_FILE, Manifest,
+    PackageManifest, PackageName,
+};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -27,6 +31,101 @@ pub(crate) struct Package {
     /// names: its modules are [`ModuleOrigin::Own`](crate::compiler::ModuleOrigin).
     pub(crate) own: bool,
     pub(crate) dependencies: Vec<PackageName>,
+    /// The git source and commit of a fetched package; `None` for a
+    /// package of the workspace, or a path package inside a fetched one.
+    pub(crate) git: Option<LockedGit>,
+    /// The directory its path dependencies must stay inside.
+    boundary: Boundary,
+}
+
+#[derive(Clone, Debug)]
+enum Boundary {
+    Workspace(PathBuf),
+    /// The checkout of a fetched repository.
+    Repository(PathBuf),
+}
+
+impl Boundary {
+    fn directory(&self) -> &Path {
+        match self {
+            Self::Workspace(directory) | Self::Repository(directory) => directory,
+        }
+    }
+}
+
+/// Where each git package's commit comes from.
+pub(crate) enum Pins<'cache> {
+    /// A build: from the lockfile, which must match every manifest.
+    Locked {
+        lock: Lockfile,
+        cache: &'cache GitCache,
+    },
+    /// `chimi deps update`: kept from `previous` where the manifest still
+    /// matches it, unless the package is in `moving`, and resolved from the
+    /// repository otherwise; every pin the build uses ends up in `next`.
+    Updating {
+        previous: Lockfile,
+        moving: Vec<String>,
+        next: Lockfile,
+        cache: &'cache GitCache,
+    },
+}
+
+impl Pins<'_> {
+    fn cache(&self) -> &GitCache {
+        match self {
+            Self::Locked { cache, .. } | Self::Updating { cache, .. } => cache,
+        }
+    }
+
+    fn commit(
+        &mut self,
+        name: &PackageName,
+        source: &GitSource,
+        manifest: &Path,
+    ) -> Result<String, PackageError> {
+        match self {
+            Self::Locked { lock, .. } => lock
+                .entries
+                .get(name)
+                .filter(|locked| locked.source == *source)
+                .map(|locked| locked.commit.clone())
+                .ok_or_else(|| PackageError::LockOutOfDate {
+                    manifest: manifest.to_owned(),
+                    name: name.clone(),
+                }),
+            Self::Updating {
+                previous,
+                moving,
+                next,
+                cache,
+            } => {
+                let kept = previous
+                    .entries
+                    .get(name)
+                    .filter(|locked| locked.source == *source && !moving.iter().any(|moved| moved == name.as_str()))
+                    .map(|locked| locked.commit.clone());
+                let commit = match kept {
+                    Some(commit) => commit,
+                    None => cache.resolve(&source.url, &source.rev).map_err(|error| {
+                        PackageError::Git {
+                            manifest: manifest.to_owned(),
+                            name: name.clone(),
+                            error,
+                        }
+                    })?,
+                };
+                next.entries.insert(
+                    name.clone(),
+                    LockedGit {
+                        source: source.clone(),
+                        commit: commit.clone(),
+                    },
+                );
+                Ok(commit)
+            }
+        }
+    }
 }
 
 /// Why the packages of a build cannot be resolved.
@@ -58,15 +157,34 @@ pub enum PackageError {
         directory: PathBuf,
         workspace: PathBuf,
     },
-    /// One package name with two sources.
+    /// A fetched package's path dependency, or its `directory`, leaves the
+    /// repository it came from.
+    OutsideRepository {
+        manifest: PathBuf,
+        name: PackageName,
+        directory: PathBuf,
+        repository: PathBuf,
+    },
+    /// One package name with two sources: each the manifest that names it
+    /// and the source, as written for a person.
     Conflict {
         name: PackageName,
-        first: (PathBuf, PathBuf),
-        second: (PathBuf, PathBuf),
+        first: (PathBuf, String),
+        second: (PathBuf, String),
     },
     Cycle { packages: Vec<PackageName> },
-    /// Git dependencies arrive with the lockfile (packages.md, PR 4).
-    GitNotSupported { manifest: PathBuf, name: PackageName },
+    Lock(crate::manifest::ManifestError),
+    /// A git dependency with no lock entry, or one for another source.
+    LockOutOfDate { manifest: PathBuf, name: PackageName },
+    Git {
+        manifest: PathBuf,
+        name: PackageName,
+        error: GitError,
+    },
+    /// `chimi deps update <name>` names no git package of the workspace.
+    NotAGitDependency { name: String },
+    /// `chimi deps update` outside any package or workspace.
+    NoManifest { directory: PathBuf },
     /// A package under a workspace directory that the workspace does not list.
     UnlistedMember { package: PathBuf, workspace: PathBuf },
     MemberMissing {
@@ -137,6 +255,18 @@ impl fmt::Display for PackageError {
                 directory.display(),
                 workspace.display()
             ),
+            Self::OutsideRepository {
+                manifest,
+                name,
+                directory,
+                repository,
+            } => write!(
+                formatter,
+                "{}: dependency `{name}` at {} is outside its repository's checkout {}",
+                manifest.display(),
+                directory.display(),
+                repository.display()
+            ),
             Self::Conflict {
                 name,
                 first,
@@ -144,20 +274,32 @@ impl fmt::Display for PackageError {
             } => write!(
                 formatter,
                 "package `{name}` has two sources: {} (from {}) and {} (from {})",
-                first.1.display(),
+                first.1,
                 first.0.display(),
-                second.1.display(),
+                second.1,
                 second.0.display()
             ),
+            Self::Lock(error) => error.fmt(formatter),
+            Self::LockOutOfDate { manifest, name } => write!(
+                formatter,
+                "{}: git dependency `{name}`: {LOCK_FILE} is out of date; run `chimi deps update`",
+                manifest.display()
+            ),
+            Self::Git {
+                manifest,
+                name,
+                error,
+            } => write!(formatter, "{}: git dependency `{name}`: {error}", manifest.display()),
+            Self::NoManifest { directory } => {
+                write!(formatter, "{} has no {MANIFEST_FILE}", directory.display())
+            }
+            Self::NotAGitDependency { name } => {
+                write!(formatter, "`{name}` is not a git dependency of the workspace")
+            }
             Self::Cycle { packages } => {
                 let names: Vec<&str> = packages.iter().map(PackageName::as_str).collect();
                 write!(formatter, "package dependency cycle: {}", names.join(" -> "))
             }
-            Self::GitNotSupported { manifest, name } => write!(
-                formatter,
-                "{}: git dependency `{name}`: git dependencies are not supported yet",
-                manifest.display()
-            ),
             Self::MemberMissing {
                 workspace,
                 member,
@@ -208,6 +350,20 @@ impl fmt::Display for PackageError {
 
 impl std::error::Error for PackageError {}
 
+/// The lockfile `chimi deps update` would write, and the one it replaces.
+pub(crate) struct LockUpdate {
+    pub(crate) path: PathBuf,
+    pub(crate) previous: Lockfile,
+    pub(crate) next: Lockfile,
+}
+
+struct OwnPackages {
+    /// Each package's directory, manifest path and manifest.
+    packages: Vec<(PathBuf, PathBuf, PackageManifest)>,
+    workspace: PathBuf,
+    is_workspace: bool,
+}
+
 /// What a build reads from `root`.
 pub(crate) enum Discovered {
     /// No manifest: a plain project.
@@ -221,18 +377,90 @@ impl PackageGraph {
     /// The packages of a build rooted at the directory `root` (canonical):
     /// the package there and its dependencies, a workspace's members and
     /// theirs, or nothing for a plain project. A workspace is an error unless
-    /// `workspace_allowed`, as for `--root`, which names one package.
-    pub(crate) fn discover(root: &Path, workspace_allowed: bool) -> Result<Discovered, PackageError> {
+    /// `workspace_allowed`, as for `--root`, which names one package. Git
+    /// packages come at the commits `chimi.lock` pins, from `cache`.
+    pub(crate) fn discover(
+        root: &Path,
+        workspace_allowed: bool,
+        cache: &GitCache,
+    ) -> Result<Discovered, PackageError> {
+        let Some(found) = Self::own_packages(root, workspace_allowed)? else {
+            return Ok(Discovered::Plain);
+        };
+        let lock = Lockfile::read(&found.workspace.join(LOCK_FILE)).map_err(PackageError::Lock)?;
+        let graph = Self::resolve(found.packages, &found.workspace, &mut Pins::Locked { lock, cache })?;
+        Ok(if found.is_workspace {
+            Discovered::Workspace(graph)
+        } else {
+            Discovered::Package(graph)
+        })
+    }
+
+    /// `chimi deps update` from the directory `root` (canonical): resolves
+    /// every member of its workspace, keeping each pin whose source still
+    /// matches unless its package is in `moving`, and returns the lockfile
+    /// before and after. Nothing is written here.
+    pub(crate) fn update(
+        root: &Path,
+        moving: Vec<String>,
+        cache: &GitCache,
+    ) -> Result<LockUpdate, PackageError> {
         let manifest_path = root.join(MANIFEST_FILE);
         if !manifest_path.is_file() {
-            return Ok(Discovered::Plain);
+            return Err(PackageError::NoManifest {
+                directory: root.to_owned(),
+            });
+        }
+        let workspace = match Manifest::read(&manifest_path).map_err(PackageError::Manifest)? {
+            Manifest::Package(_) => workspace_root(root)?,
+            Manifest::Workspace(_) => root.to_owned(),
+        };
+        let found = Self::own_packages(&workspace, true)?
+            .expect("the workspace root holds a manifest");
+        let path = workspace.join(LOCK_FILE);
+        let previous = Lockfile::read(&path).map_err(PackageError::Lock)?;
+        let mut pins = Pins::Updating {
+            previous,
+            moving,
+            next: Lockfile::default(),
+            cache,
+        };
+        Self::resolve(found.packages, &workspace, &mut pins)?;
+        let Pins::Updating {
+            previous,
+            moving,
+            next,
+            ..
+        } = pins
+        else {
+            unreachable!("the pins were built updating")
+        };
+        if let Some(name) = moving
+            .into_iter()
+            .find(|name| next.entries.keys().all(|locked| locked.as_str() != name))
+        {
+            return Err(PackageError::NotAGitDependency { name });
+        }
+        Ok(LockUpdate {
+            path,
+            previous,
+            next,
+        })
+    }
+
+    /// The packages the command names at `root`, and the workspace they
+    /// belong to; `None` without a manifest.
+    fn own_packages(root: &Path, workspace_allowed: bool) -> Result<Option<OwnPackages>, PackageError> {
+        let manifest_path = root.join(MANIFEST_FILE);
+        if !manifest_path.is_file() {
+            return Ok(None);
         }
         match Manifest::read(&manifest_path).map_err(PackageError::Manifest)? {
-            Manifest::Package(package) => {
-                let workspace = workspace_root(root)?;
-                let own = vec![(root.to_owned(), manifest_path, package)];
-                Self::resolve(own, &workspace).map(Discovered::Package)
-            }
+            Manifest::Package(package) => Ok(Some(OwnPackages {
+                packages: vec![(root.to_owned(), manifest_path, package)],
+                workspace: workspace_root(root)?,
+                is_workspace: false,
+            })),
             Manifest::Workspace(_) if !workspace_allowed => Err(PackageError::RootIsWorkspace {
                 manifest: manifest_path,
             }),
@@ -285,18 +513,23 @@ impl PackageGraph {
                     }
                     own.push((directory, member_manifest, package));
                 }
-                Self::resolve(own, root).map(Discovered::Workspace)
+                Ok(Some(OwnPackages {
+                    packages: own,
+                    workspace: root.to_owned(),
+                    is_workspace: true,
+                }))
             }
         }
     }
 
     /// The graph of the `own` packages (directory, manifest path, manifest)
-    /// and everything they depend on, every path inside `workspace`.
+    /// and everything they depend on, every path package inside `workspace`
+    /// or inside the repository of the fetched package that names it.
     fn resolve(
         own: Vec<(PathBuf, PathBuf, PackageManifest)>,
         workspace: &Path,
+        pins: &mut Pins<'_>,
     ) -> Result<Self, PackageError> {
-        let workspace = workspace.to_owned();
         let mut graph = Self {
             packages: Vec::new(),
         };
@@ -309,50 +542,92 @@ impl PackageGraph {
                 manifest: manifest_path,
                 own: true,
                 dependencies: Vec::new(),
+                git: None,
+                boundary: Boundary::Workspace(workspace.to_owned()),
             });
             pending.push((graph.packages.len() - 1, package.dependencies));
         }
         while let Some((index, dependencies)) = pending.pop() {
             for dependency in dependencies {
-                let importer = &graph.packages[index];
-                let DependencySource::Path(relative) = &dependency.source else {
-                    return Err(PackageError::GitNotSupported {
-                        manifest: importer.manifest.clone(),
-                        name: dependency.name,
-                    });
-                };
-                let requested = importer.root.join(relative);
-                let directory =
-                    requested
-                        .canonicalize()
-                        .map_err(|source| PackageError::DependencyMissing {
-                            manifest: importer.manifest.clone(),
-                            name: dependency.name.clone(),
-                            directory: requested.clone(),
-                            source,
-                        })?;
-                if !directory.starts_with(&workspace) {
-                    return Err(PackageError::OutsideWorkspace {
-                        manifest: importer.manifest.clone(),
-                        name: dependency.name,
-                        directory,
-                        workspace,
-                    });
-                }
+                let importer_manifest = graph.packages[index].manifest.clone();
                 graph.packages[index]
                     .dependencies
                     .push(dependency.name.clone());
+                let (directory, git, boundary) = match &dependency.source {
+                    DependencySource::Path(relative) => {
+                        let importer = &graph.packages[index];
+                        let directory = existing(importer.root.join(relative), &importer.manifest, &dependency.name)?;
+                        let boundary = importer.boundary.clone();
+                        if !directory.starts_with(boundary.directory()) {
+                            return Err(match boundary {
+                                Boundary::Workspace(workspace) => PackageError::OutsideWorkspace {
+                                    manifest: importer_manifest,
+                                    name: dependency.name,
+                                    directory,
+                                    workspace,
+                                },
+                                Boundary::Repository(repository) => PackageError::OutsideRepository {
+                                    manifest: importer_manifest,
+                                    name: dependency.name,
+                                    directory,
+                                    repository,
+                                },
+                            });
+                        }
+                        (directory, None, boundary)
+                    }
+                    DependencySource::Git(source) => {
+                        // A package already fetched for this name is reused
+                        // only for the same source, before any pin is asked.
+                        if let Some(known) = graph.find(&dependency.name) {
+                            if known.git.as_ref().map(|locked| &locked.source) == Some(source) {
+                                continue;
+                            }
+                            return Err(PackageError::Conflict {
+                                name: dependency.name.clone(),
+                                first: (known.declared_by.clone(), known.describe_source()),
+                                second: (importer_manifest, describe_git(source)),
+                            });
+                        }
+                        let commit = pins.commit(&dependency.name, source, &importer_manifest)?;
+                        let checkout = pins.cache().checkout(&source.url, &commit).map_err(|error| {
+                            PackageError::Git {
+                                manifest: importer_manifest.clone(),
+                                name: dependency.name.clone(),
+                                error,
+                            }
+                        })?;
+                        let checkout = existing(checkout, &importer_manifest, &dependency.name)?;
+                        let directory = existing(
+                            checkout.join(source.directory.as_deref().unwrap_or_default()),
+                            &importer_manifest,
+                            &dependency.name,
+                        )?;
+                        if !directory.starts_with(&checkout) {
+                            return Err(PackageError::OutsideRepository {
+                                manifest: importer_manifest,
+                                name: dependency.name,
+                                directory,
+                                repository: checkout,
+                            });
+                        }
+                        let locked = LockedGit {
+                            source: source.clone(),
+                            commit,
+                        };
+                        (directory, Some(locked), Boundary::Repository(checkout))
+                    }
+                };
                 if let Some(known) = graph.find(&dependency.name) {
                     if known.root != directory {
                         return Err(PackageError::Conflict {
                             name: dependency.name,
-                            first: (known.declared_by.clone(), known.root.clone()),
-                            second: (graph.packages[index].manifest.clone(), directory),
+                            first: (known.declared_by.clone(), known.describe_source()),
+                            second: (importer_manifest, directory.display().to_string()),
                         });
                     }
                     continue;
                 }
-                let importer_manifest = graph.packages[index].manifest.clone();
                 let manifest_path = directory.join(MANIFEST_FILE);
                 let package = match manifest_path
                     .is_file()
@@ -384,6 +659,8 @@ impl PackageGraph {
                     declared_by: importer_manifest,
                     own: false,
                     dependencies: Vec::new(),
+                    git,
+                    boundary,
                 });
                 pending.push((graph.packages.len() - 1, package.dependencies));
             }
@@ -445,6 +722,35 @@ impl PackageGraph {
             visit(self, package, &mut states, &mut Vec::new())?;
         }
         Ok(())
+    }
+}
+
+/// `requested`, canonical, or the error naming the dependency that asked
+/// for it.
+fn existing(requested: PathBuf, manifest: &Path, name: &PackageName) -> Result<PathBuf, PackageError> {
+    requested
+        .canonicalize()
+        .map_err(|source| PackageError::DependencyMissing {
+            manifest: manifest.to_owned(),
+            name: name.clone(),
+            directory: requested,
+            source,
+        })
+}
+
+fn describe_git(source: &GitSource) -> String {
+    match &source.directory {
+        Some(directory) => format!("{} at `{}`, directory {directory}", source.url, source.rev),
+        None => format!("{} at `{}`", source.url, source.rev),
+    }
+}
+
+impl Package {
+    fn describe_source(&self) -> String {
+        match &self.git {
+            Some(locked) => describe_git(&locked.source),
+            None => self.root.display().to_string(),
+        }
     }
 }
 

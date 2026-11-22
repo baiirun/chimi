@@ -3,7 +3,10 @@
 //! or key outside that shape is an error naming it, so a typo never drops a
 //! dependency silently.
 
+mod lock;
 mod toml;
+
+pub(crate) use lock::{LOCK_FILE, LockedGit, Lockfile};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -62,12 +65,18 @@ pub(crate) struct Dependency {
 pub(crate) enum DependencySource {
     /// Relative to the manifest's directory, as written.
     Path(PathBuf),
-    Git {
-        url: String,
-        rev: String,
-        /// The package's directory inside the repository.
-        directory: Option<String>,
-    },
+    Git(GitSource),
+}
+
+/// Where a git package comes from, as a manifest writes it and a lockfile
+/// records it beside the commit `rev` resolved to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitSource {
+    pub(crate) url: String,
+    /// A tag, a branch or a commit.
+    pub(crate) rev: String,
+    /// The package's directory inside the repository.
+    pub(crate) directory: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -225,11 +234,19 @@ fn dependency(entry: &Entry) -> Result<Dependency, (Option<usize>, String)> {
                     format!("git dependency `{name}` needs a `rev`: a tag, a branch or a commit"),
                 )
             })?;
-            DependencySource::Git {
+            // Both are passed to `git` as arguments, which a leading `-`
+            // would turn into options.
+            if let Some(option) = [&url, &rev].into_iter().find(|text| text.starts_with('-')) {
+                return Err((
+                    line,
+                    format!("git dependency `{name}`: `{option}` must not start with `-`"),
+                ));
+            }
+            DependencySource::Git(GitSource {
                 url,
                 rev,
                 directory: field("directory"),
-            }
+            })
         }
         (Some(_), Some(_)) => {
             return Err((
@@ -285,7 +302,7 @@ fn unknown_key(entry: &Entry, table: Option<&str>) -> (Option<usize>, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DependencySource, Manifest, PackageName};
+    use super::{DependencySource, GitSource, Manifest, PackageName};
     use std::path::PathBuf;
 
     #[test]
@@ -308,11 +325,11 @@ mod tests {
         );
         assert_eq!(
             package.dependencies[1].source,
-            DependencySource::Git {
+            DependencySource::Git(GitSource {
                 url: "https://example.com/json".into(),
                 rev: "v1".into(),
                 directory: Some("pkg".into()),
-            }
+            })
         );
     }
 
@@ -349,6 +366,10 @@ mod tests {
             (
                 "[package]\nname = \"a\"\n[dependencies]\nb = { git = \"u\" }\n",
                 "4: git dependency `b` needs a `rev`",
+            ),
+            (
+                "[package]\nname = \"a\"\n[dependencies]\nb = { git = \"u\", rev = \"--upload-pack=x\" }\n",
+                "4: git dependency `b`: `--upload-pack=x` must not start with `-`",
             ),
             (
                 "[package]\nname = \"a\"\n[dependencies]\nb = { path = \"p\", git = \"u\" }\n",

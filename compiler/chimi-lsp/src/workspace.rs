@@ -10,7 +10,7 @@
 
 use chimi::diagnostic::{Diagnostic, DiagnosticStage, Severity};
 use chimi::line_index::{LineIndex, LinePosition, PositionEncoding};
-use chimi::project::{LoadedProject, SourceReader, StandardTree};
+use chimi::project::{GitCache, LoadedProject, Network, SourceReader, StandardTree};
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
@@ -711,17 +711,22 @@ impl Workspace {
     ) -> bool {
         let project = &self.projects[index];
         let reader = OpenBuffers(&self.documents);
+        // The editor never fetches: a git package a build has not fetched
+        // yet is reported, not downloaded while the user types.
+        let cache = GitCache::from_environment(Network::Offline);
         let loaded = match &project.entry_module {
             Some(entry) => LoadedProject::load_with(
                 &project.root,
                 entry.clone(),
                 &reader,
                 &StandardTree::embedded(),
+                &cache,
             ),
             None => LoadedProject::load_directory_with(
                 &project.root,
                 &reader,
                 &StandardTree::embedded(),
+                &cache,
             ),
         };
         let analysis = self
