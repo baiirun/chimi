@@ -1167,6 +1167,11 @@ the gates measure, so it goes first.
      - Runtime C fibers now really move: about 15,000 steals ran across
        the carriers and carrier_stress suites on real threads (counted with
        a temporary log), and both suites pass.
+   - 4d-1, before the split: a carrier retries the kernel lock for up to
+     20 µs before it blocks in it (`carrier::lock_spinning`). Parallel
+     messaging on four carriers went from 1625 to 925 ms, level with one
+     carrier (multi-carrier-baseline.md, "Spinning on the kernel lock").
+     It does not make more carriers faster; the split does.
 4. **4d: the kernel split by owner, still under one lock.** Per carrier:
    the tasks homed on it, its ready queue, jobs and timers, the mailboxes
    of incarnations homed on it, and the channels created on it. Shared:
