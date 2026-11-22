@@ -705,6 +705,26 @@ let checkout = submit(cart) using {
 Successfully supplied needs are removed from the resulting callable contract;
 unsupplied needs remain. The provider record MUST be nonempty.
 
+A provider supplied to a function value is fixed at the `using`. When `using`
+removes a need from the contract of the function value its expression
+produces, every call of that value MUST use that provider for the need,
+whoever calls it and whatever provider of the same name the caller has:
+
+<!-- chimi: fragment -->
+```chimi
+let greet = fn() { hello() } using { greeter: formal }
+let run = fn() { "${hello()} and ${call(greet)}" }
+run() using { greeter: casual }
+```
+
+Here `call(greet)` greets formally. A need the value still has after the
+`using` comes from its caller, as for any function value. A `using` that only
+supplies needs of evaluating the expression fixes nothing on the value: in
+`pick(x) using { greeter: formal }` with `pick<T>(x: T) -> T needs { greeter:
+Greeter }`, the value is a `T`, and if it is a function that needs `greeter`,
+its caller supplies it. A function value that is supplied again after widening
+to a type with the need keeps the provider its first `using` gave it.
+
 The provider record may also be a value: a name, a member, or a call, whose
 type is a record. Each of its fields is a provider under the field's name, so
 one set of providers is written once and supplied wherever it is needed:
