@@ -126,6 +126,13 @@ pub fn fields_object(entry: Entry) -> Json.Value {
   Json.object(Map.from(fields(entry)))
 }
 
+/// Whether `level` is `minimum` or more severe, as a provider filters.
+///
+/// Cost: O(1).
+pub fn at_least(level: Level, minimum: Level) -> Bool {
+  rank(level) >= rank(minimum)
+}
+
 // 6. Writing.
 
 /// Writes a `Debug` entry.

@@ -270,6 +270,8 @@ enum Answer {
     Status(u16),
     /// Reads the push and never replies.
     Hang,
+    /// Replies 200, after this many milliseconds for the first push only.
+    SlowFirst(u64),
 }
 
 /// One push a test collector received.
@@ -329,6 +331,15 @@ impl Collector {
                             );
                         }
                         Answer::Hang => std::thread::sleep(std::time::Duration::from_secs(30)),
+                        Answer::SlowFirst(milliseconds) => {
+                            if recorded.lock().unwrap().len() == 1 {
+                                std::thread::sleep(std::time::Duration::from_millis(milliseconds));
+                            }
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                            );
+                        }
                     }
                 });
             }
@@ -569,5 +580,318 @@ fn a_stopped_program_pushes_before_it_exits() {
         pushes[0].body.contains(r#""asInt":"7""#),
         "{}",
         pushes[0].body
+    );
+}
+
+/// A program that exports to `port` with `settings` while `body` runs with
+/// `Otel.log` as its `log` provider.
+fn logging(port: u16, settings: &str, body: &str) -> String {
+    format!(
+        r#"import std/clock as Clock.{{Clock}}
+import std/duration as Duration
+import std/json as Json
+import std/log as Log.{{Log}}
+import std/map as Map
+import std/metrics as Metrics.{{Metrics}}
+import std/net.{{Network}}
+import std/otel as Otel
+
+fn work() -> Text needs {{ log: Log, clock: Clock }} {{
+{body}
+}}
+
+pub fn main() -> Text needs {{ network: Network, clock: Clock, metrics: Metrics, log: Log }} {{
+  let settings = {{ ..Otel.defaults, endpoint: "http://127.0.0.1:{port}", service_name: "shop"{settings} }}
+  Otel.export(settings, fn(exporter) {{
+    work() using {{ log: Otel.log(exporter) }}
+  }})
+}}
+"#
+    )
+}
+
+// `Otel.log` writes each entry to the outer provider as before and pushes
+// it to `/v1/logs` within an interval, or with the last push, when its level
+// is at least `log_level`; fields become typed attributes. Rejects an entry
+// lost from the outer log, a filtered entry sent, an entry written last
+// that never leaves, the wrong severity, or an attribute of the wrong type.
+#[test]
+fn logs_are_pushed_and_still_written() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("logs");
+    let body = r#"  Log.info("charged", [Log.int("order", 42), Log.float("seconds", 1.5), Log.text("who", "ann"), Log.bool("ok", True), Log.json("tags", Json.object(Map.from([("a", Json.text("b"))]))), Log.json("thousand", Json.decode("1e3"))])
+  Log.debug("hidden", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.warn("slow", [])
+  "done""#;
+    let (output, metrics) = scratch.run_native(&logging(
+        collector.port,
+        ", interval: Duration.milliseconds(100)",
+        body,
+    ));
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains(r#""message":"charged""#), "{stderr}");
+    assert!(stderr.contains(r#""message":"slow""#), "{stderr}");
+    assert!(!metrics.contains("chimi.otel"), "{metrics}");
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 2, "one within the interval, one at the end");
+    let first = &logs[0].body;
+    assert!(
+        first.contains(r#""body":{"stringValue":"charged"}"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#""severityNumber":9,"severityText":"INFO""#),
+        "{first}"
+    );
+    for attribute in [
+        r#"{"key":"order","value":{"intValue":"42"}}"#,
+        r#"{"key":"seconds","value":{"doubleValue":1.5}}"#,
+        r#"{"key":"who","value":{"stringValue":"ann"}}"#,
+        r#"{"key":"ok","value":{"boolValue":true}}"#,
+        r#"{"key":"thousand","value":{"intValue":"1000"}}"#,
+        r#"{"key":"tags","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"b"}}]}}}"#,
+    ] {
+        assert!(first.contains(attribute), "{attribute} in {first}");
+    }
+    assert!(first.contains(r#"{"stringValue":"shop"}"#), "{first}");
+    assert!(!logs.iter().any(|push| push.body.contains("hidden")));
+    let last = &logs[1].body;
+    assert!(last.contains(r#""body":{"stringValue":"slow"}"#), "{last}");
+    assert!(
+        last.contains(r#""severityNumber":13,"severityText":"WARN""#),
+        "{last}"
+    );
+    assert!(!last.contains("charged"), "an entry is pushed once: {last}");
+}
+
+// Writing a log never waits for the collector: with the logs process busy
+// on a push that hangs and its buffer full, more entries are dropped and
+// counted. Rejects a write that blocks, or drops left uncounted.
+#[test]
+fn a_full_log_buffer_drops_and_counts() {
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("log-buffer");
+    let body = r#"  Log.info("first", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.info("a", [])
+  Log.info("b", [])
+  Log.info("c", [])
+  Log.info("d", [])
+  Log.info("e", [])
+  "done""#;
+    let settings = ", interval: Duration.milliseconds(100), timeout: Duration.seconds(5), flush_within: Duration.milliseconds(200), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(slow.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":3}"#),
+        "{metrics}"
+    );
+}
+
+// Stopping the program pushes the waiting logs too. Rejects logs left in
+// the logs process when it is stopped.
+#[test]
+fn a_stopped_program_pushes_its_waiting_logs() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("stopped-logs");
+    let body = r#"  Log.info("bye", [])
+  Clock.sleep(Duration.seconds(60))
+  "done""#;
+    scratch.write(
+        "main.chimi",
+        &logging(collector.port, ", interval: Duration.seconds(60)", body),
+    );
+    let built = scratch.chimi(&["build", "main.chimi", "-o", "program"]);
+    assert!(built.status.success(), "{built:?}");
+    let mut runner = Command::new(scratch.0.join("program"))
+        .current_dir(&scratch.0)
+        .args(["--chimi-runner", "--clock=real", "--"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let sent = Command::new("kill")
+        .args(["-TERM", &runner.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let _ = runner.wait().unwrap();
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 1, "one logs push, on stop");
+    assert!(
+        logs[0].body.contains(r#""body":{"stringValue":"bye"}"#),
+        "{}",
+        logs[0].body
+    );
+}
+
+// Entries written while the logs process is busy on a slow push wait in
+// its mailbox and still go in the last push; the flush request does not
+// queue behind them. Rejects a flush lost to a full mailbox.
+#[test]
+fn entries_waiting_behind_a_slow_push_are_flushed() {
+    let collector = Collector::start(Answer::SlowFirst(600));
+    let scratch = Scratch::new("slow-first");
+    let body = r#"  Log.info("first", [])
+  Clock.sleep(Duration.milliseconds(300))
+  Log.info("a", [])
+  Log.info("b", [])
+  Log.info("c", [])
+  "done""#;
+    let settings =
+        ", interval: Duration.milliseconds(100), flush_within: Duration.seconds(3), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(collector.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":1}"#),
+        "{metrics}"
+    );
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    let last = &logs.last().unwrap().body;
+    assert!(
+        last.contains(r#""stringValue":"a""#) && last.contains(r#""stringValue":"b""#),
+        "{last}"
+    );
+}
+
+// At most `log_buffer` entries wait between pushes, even when the logs
+// process is idle. Rejects a buffer that only bounds the mailbox.
+#[test]
+fn at_most_log_buffer_entries_wait() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("log-cap");
+    let body = r#"  Log.info("a", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("b", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("c", [])
+  Clock.sleep(Duration.milliseconds(20))
+  Log.info("d", [])
+  "done""#;
+    let settings = ", interval: Duration.seconds(60), log_buffer: 2";
+    let (output, metrics) = scratch.run_native(&logging(collector.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        metrics
+            .contains(r#"{"name":"chimi.otel.dropped_logs","labels":{},"kind":"count","value":2}"#),
+        "{metrics}"
+    );
+    let pushes = collector.pushes();
+    let logs: Vec<&Push> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .collect();
+    assert_eq!(logs.len(), 1);
+    assert!(
+        logs[0].body.contains(r#""stringValue":"b""#)
+            && !logs[0].body.contains(r#""stringValue":"c""#),
+        "{}",
+        logs[0].body
+    );
+}
+
+// The last logs push and the last metrics push share one `flush_within`.
+// Rejects a release that spends it twice.
+#[test]
+fn the_last_pushes_share_flush_within() {
+    let slow = Collector::start(Answer::Hang);
+    let scratch = Scratch::new("shared-flush");
+    let body = r#"  Log.info("bye", [])
+  "done""#;
+    let settings = ", interval: Duration.seconds(60), flush_within: Duration.seconds(1)";
+    let (output, _, took) = scratch.run_native_timed(&logging(slow.port, settings, body));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(slow.pushes().len(), 2, "a logs push and a metrics push");
+    assert!(took >= std::time::Duration::from_secs(1), "{took:?}");
+    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+}
+
+// The example program `programs/otel-worker` runs its jobs, writes each log
+// line to standard error, and pushes its metrics and its `Info` and `Warn`
+// logs to the collector `--collector` names. Rejects an example that no
+// longer builds, loses a job's count or log, or pushes a `Debug` entry.
+#[test]
+fn the_otel_worker_example_pushes_its_jobs() {
+    let collector = Collector::start(Answer::Status(200));
+    let scratch = Scratch::new("example");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs/otel-worker");
+    let built = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch.0)
+        .arg("build")
+        .arg("--root")
+        .arg(&root)
+        .args(["app/main", "-o", "program"])
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{built:?}");
+    let output = Command::new(scratch.0.join("program"))
+        .current_dir(&scratch.0)
+        .args(["--chimi-runner", "--clock=real", "--", "--collector"])
+        .arg(format!("http://127.0.0.1:{}", collector.port))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches(r#""message":"job done""#).count(),
+        4,
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches(r#""message":"job failed""#).count(),
+        2,
+        "{stderr}"
+    );
+    let pushes = collector.pushes();
+    let logs: String = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/logs")
+        .map(|push| push.body.as_str())
+        .collect();
+    assert_eq!(
+        logs.matches(r#"{"stringValue":"job done"}"#).count(),
+        4,
+        "{logs}"
+    );
+    assert_eq!(
+        logs.matches(r#"{"stringValue":"job failed"}"#).count(),
+        2,
+        "{logs}"
+    );
+    assert!(!logs.contains("starting"), "{logs}");
+    // Each push is answered on its own thread, so the last to arrive may
+    // be a periodic one; the final push is the one that holds every job.
+    let series = [
+        r#"{"asInt":"4","attributes":[{"key":"outcome","value":{"stringValue":"done"}}]"#,
+        r#"{"asInt":"2","attributes":[{"key":"outcome","value":{"stringValue":"failed"}}]"#,
+        r#"{"stringValue":"otel-worker"}"#,
+    ];
+    let metrics: Vec<&str> = pushes
+        .iter()
+        .filter(|push| push.path == "/v1/metrics")
+        .map(|push| push.body.as_str())
+        .collect();
+    assert!(
+        metrics
+            .iter()
+            .any(|body| series.iter().all(|one| body.contains(one))),
+        "no metrics push holds every job: {metrics:?}"
     );
 }

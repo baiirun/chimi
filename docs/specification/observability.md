@@ -6,8 +6,8 @@ This is the normative contract for the Phase 7c observability modules
 (CHI-289): `std/log` and `std/metrics`, and `std/otel`'s OpenTelemetry
 encoding and metrics push (CHI-296). Offline export is
 `chimi trace export --otlp` and `chimi metrics export --otlp` (tooling.md);
-`Otel.export` pushes metrics to a collector while the program runs. Pushing
-logs is being built in CHI-296 and is not specified yet. The words MUST, MUST NOT,
+`Otel.export` pushes metrics, and logs written through `Otel.log`, to a
+collector while the program runs. The words MUST, MUST NOT,
 SHOULD, SHOULD NOT, and MAY are normative. The modules follow the
 [standard library conventions](standard-library-conventions.md) and the
 [runner-provided capability rules](system-modules.md#runner-provided-capabilities).
@@ -41,6 +41,7 @@ pub fn level(entry: Entry) -> Level
 pub fn message(entry: Entry) -> Text
 pub fn fields(entry: Entry) -> List<(Text, Json.Value)>
 pub fn fields_object(entry: Entry) -> Json.Value
+pub fn at_least(level: Level, minimum: Level) -> Bool
 
 pub fn debug(message: Text, fields: List<Field>) -> Void needs { log: Log }
 pub fn info(message: Text, fields: List<Field>) -> Void needs { log: Log }
@@ -63,6 +64,8 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
   provider's.
 - `Log.float` MUST write the number as `Float.to_text` spells it, which is
   always a JSON number, since a `Float` is never NaN or infinite.
+- `at_least` MUST order the levels `Debug < Info < Warn < Error`, as the
+  runner's provider and `--log-level` filter.
 - `fields` MUST return every field in the order written, a repeated key
   included. `fields_object` MUST return them as one JSON object in which a
   key written twice keeps its last value.
@@ -267,15 +270,20 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 ## std/otel
 
 ```text
-pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings }
+pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings, log_level: Log.Level, log_buffer: Int }
 pub const defaults: Settings
 pub struct Exporter
 
 pub enum DocumentError { Invalid(message: Text) }
 
 pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E needs R) -> T needs R + { network: Network, clock: Clock, metrics: Metrics }
+pub fn log(exporter: Exporter) -> { write: fn(Log.Entry) -> Void } needs { log: Log, clock: Clock, metrics: Metrics }
 pub fn metrics_request(document: Text, service_name: Text) -> Text
+pub fn logs_request(entries: List<(Log.Entry, Int)>, service_name: Text) -> Text
 ```
+
+`programs/otel-worker` is a worked example, with a guide to setting the
+exporter up in its README.
 
 ### Pushing metrics
 
@@ -307,8 +315,44 @@ pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics }
   `settings.flush_within`, so a collector that is down or slow delays the
   program's end by at most that.
 - The defaults are `http://localhost:4318`, `unknown_service`, a 10 s
-  interval, 5 s for a push and 5 s for the last one, no headers, and
-  `Http.client_defaults`.
+  interval, 5 s for a push and 5 s for the last one, no headers,
+  `Http.client_defaults`, logs at `Info` and above, and 1024 waiting logs.
+  A `log_buffer` below 1 is a defect, as the other settings are.
+
+### Pushing logs
+
+```text
+Otel.export(settings, fn(exporter) {
+  serve() using { log: Otel.log(exporter) }
+})
+```
+
+- `Otel.log(exporter)` MUST be a `log` provider that writes each entry to
+  the `log` provider it is built under, unchanged, and then, when
+  `Log.at_least(level, settings.log_level)`, sends it with the wall-clock
+  Unix time of the write to the exporter's logs process.
+- The send never waits. At most `log_buffer` entries wait to be pushed,
+  in the logs process's mailbox and again in what it holds between pushes;
+  an entry over either bound MUST be dropped and counted as
+  `chimi.otel.dropped_logs`. A request to flush does not go through the
+  mailbox, so a full one cannot lose it.
+- The logs process MUST push the entries waiting at each interval's end to
+  `<endpoint>/v1/logs`, as `logs_request` writes them, under the same rules
+  as a metrics push (headers, `timeout`, failures counted as
+  `chimi.otel.failed_exports`). An interval with no entries pushes nothing.
+- When the body ends, however it ends, the entries waiting MUST be pushed,
+  those still in the mailbox included, while the last metrics push runs:
+  the two share one `flush_within`. Then the logs process stops. An entry
+  is pushed once.
+- `logs_request` writes one `logRecord` per entry, in order, with
+  `timeUnixNano` and `observedTimeUnixNano` the entry's time, the severity
+  number and text (`Debug` 5 `DEBUG`, `Info` 9 `INFO`, `Warn` 13 `WARN`,
+  `Error` 17 `ERROR`), the message as a string body, and each field as an
+  attribute: text a `stringValue`, a number `Json.number_to_int` accepts an
+  `intValue` in decimal digits (`1e3` is `"1000"`), another number a
+  `doubleValue` as spelled, a boolean a `boolValue`, an
+  array an `arrayValue`, an object a `kvlistValue`, and `null` an empty
+  value.
 - It needs the native runtime, as `Http.send` does: the interpreter refuses
   the program (`E5204`).
 
@@ -332,8 +376,8 @@ pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics }
 
 ### Not in this slice
 
-- Pushing logs (CHI-296), retries within an interval, compression and
-  protobuf. Traces stay offline: a trace has one span per
+- Retries within an interval, compression, protobuf, and log records
+  tied to traces. Traces stay offline: a trace has one span per
   operation, too fine to push live, and an explicit span API is a later
   ticket.
 
@@ -366,3 +410,10 @@ pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics }
 | A body that defects still pushes | `tests/std_otel.rs` `a_body_that_defects_still_pushes` |
 | Settings that are not positive are a defect | `tests/std_otel.rs` `settings_that_are_not_positive_are_a_defect` |
 | A stopped program pushes before it exits | `tests/std_otel.rs` `a_stopped_program_pushes_before_it_exits` |
+| `Otel.log` writes to the outer log, filters by level, and pushes each entry once with typed attributes | `tests/std_otel.rs` `logs_are_pushed_and_still_written` |
+| A full log buffer drops and counts | `tests/std_otel.rs` `a_full_log_buffer_drops_and_counts` |
+| A stopped program pushes its waiting logs | `tests/std_otel.rs` `a_stopped_program_pushes_its_waiting_logs` |
+| Entries waiting behind a slow push are flushed; the flush is not lost to a full mailbox | `tests/std_otel.rs` `entries_waiting_behind_a_slow_push_are_flushed` |
+| At most `log_buffer` entries wait while the process is idle | `tests/std_otel.rs` `at_most_log_buffer_entries_wait` |
+| The last logs and metrics pushes share `flush_within` | `tests/std_otel.rs` `the_last_pushes_share_flush_within` |
+| The `programs/otel-worker` example pushes its jobs' metrics and logs | `tests/std_otel.rs` `the_otel_worker_example_pushes_its_jobs` |
