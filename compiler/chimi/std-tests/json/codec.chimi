@@ -3,8 +3,7 @@
 // UTF-8 byte order at every depth whatever order the map was built in, text
 // escapes only what JSON requires, and a missing member stays apart from a
 // member that holds null.
-import std/json as Json
-import std/json.{Value}
+import std/json as Json.{Value}
 import std/map as Map
 import std/test as Test
 

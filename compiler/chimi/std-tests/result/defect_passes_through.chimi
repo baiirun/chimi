@@ -1,7 +1,6 @@
 // A defect inside Result.capture is not stored: it still ends the program.
 // `divide` cannot fail, so its Result has no Err to match.
-import std/result as Result
-import std/result.{Ok}
+import std/result as Result.{Ok}
 import std/test as Test
 
 fn divide(left: Int, right: Int) -> Int {

@@ -1,5 +1,4 @@
-import std/channel as Channel
-import std/channel.{Completion, Receiver, Receive, Sender, SendError}
+import std/channel as Channel.{Completion, Receiver, Receive, Sender, SendError}
 
 fn send(sender: Sender<Int>, value: Int) -> Void {
   Channel.send(sender, value)
