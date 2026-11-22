@@ -7326,6 +7326,14 @@ static void metrics_record(int64_t kind, const char *name, size_t name_length, d
   }
 }
 
+/* Adds one measurement from any carrier. */
+static void metrics_add(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
+                        size_t labels_length) {
+  pthread_mutex_lock(&metrics_lock);
+  metrics_record(kind, name, name_length, value, labels, labels_length);
+  pthread_mutex_unlock(&metrics_lock);
+}
+
 /* Name order, then label order, comparing bytes as Rust's String does. */
 static int metric_bytes_order(const char *left, size_t left_length, const char *right, size_t right_length) {
   int order = memcmp(left, right, left_length < right_length ? left_length : right_length);
@@ -7396,12 +7404,9 @@ static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t in
       arguments[2]->kind != VALUE_FLOAT || arguments[3]->kind != VALUE_TEXT)
     return intrinsic_shape_defect(call_node);
   if (runtime->cancel) return cancelled();
-  if (runtime->metrics_file) {
-    pthread_mutex_lock(&metrics_lock);
-    metrics_record(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
-                   arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);
-    pthread_mutex_unlock(&metrics_lock);
-  }
+  if (runtime->metrics_file)
+    metrics_add(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
+                arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);
   return runtime->cancel ? cancelled() : success(void_value());
 }
 

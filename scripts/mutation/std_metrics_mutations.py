@@ -23,8 +23,8 @@ MUTATIONS = [
         "  case by < -1 {",
     )]),
     mutant("gauge builds an observation", S, [(
-        "  metrics.record(Measurement(Kind.Gauge, name, value, labels))",
-        "  metrics.record(Measurement(Kind.Observe, name, value, labels))",
+        "  metrics.record(Measurement { kind: Kind.Gauge, name: name, value: value, labels: labels })",
+        "  metrics.record(Measurement { kind: Kind.Observe, name: name, value: value, labels: labels })",
     )]),
     mutant("the provider drops the labels", S, [(
         "          labels_key(measurement.labels),",
@@ -87,12 +87,9 @@ MUTATIONS = [
         "",
     )]),
     mutant("the native runtime records without the lock", C, [(
-        "    pthread_mutex_lock(&metrics_lock);\n    metrics_record(",
-        "    metrics_record(",
-    ), (
-        "                   arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);\n    pthread_mutex_unlock(&metrics_lock);",
-        "                   arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);",
-    )]),
+        "  pthread_mutex_lock(&metrics_lock);\n  metrics_record(kind, name, name_length, value, labels, labels_length);\n  pthread_mutex_unlock(&metrics_lock);",
+        "  metrics_record(kind, name, name_length, value, labels, labels_length);",
+    )], targets=("std_metrics", "runtime_state")),
     mutant("the native metrics file may be the log file under another spelling", C, [(
         "    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))",
         "    if (false)",
