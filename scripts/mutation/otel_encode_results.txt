@@ -1,0 +1,19 @@
+# mutation run at 1caa67b63bd0d75c39f94e9bd8d53c65dd65ad10
+# otel_encode_mutations.py: 15 mutants against compiler/chimi
+BASELINE ok  [std_otel] (124s)
+KILLED       the CLI writes labels in document order [std_otel] (36s)
+KILLED       a number above 2^64 - 1 counts as unsigned [std_otel] (76s)
+KILLED       a fraction or exponent counts as unsigned [std_otel] (54s)
+KILLED       a 20-digit number below 2^64 is refused [std_otel] (55s)
+KILLED       a non-object entry gets the series message [std_otel] (54s)
+KILLED       a 64-bit integer is written as a number [std_otel] (56s)
+KILLED       one name's label sets are separate metrics [std_otel] (57s)
+KILLED       a name's kind change does not start a metric [std_otel] (57s)
+KILLED       a zero dropped total is written [std_otel] (57s)
+KILLED       a histogram of the wrong shape is read [std_otel] (56s)
+KILLED       a time before 1970 is accepted [std_otel] (53s)
+KILLED       a count is not monotonic [std_otel] (59s)
+KILLED       the service name is ignored [std_otel] (57s)
+KILLED       the schema is not checked [std_otel] (55s)
+KILLED       the end time is the start time [std_otel] (58s)
+# result: every mutant killed
