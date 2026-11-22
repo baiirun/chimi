@@ -869,6 +869,52 @@ fn semantic_events_carry_their_execution_times() {
         .as_nanos() as i64;
     let start_unix = integer_attribute(start_line, "start_unix_ns");
     assert!(start_unix <= wall && wall - start_unix < 120_000_000_000, "{start_unix} vs {wall}");
+    let real_times = semantic_times(&real.telemetry);
+    assert!(real_times.windows(2).all(|pair| pair[0].2 <= pair[1].2), "{real_times:?}");
+    assert!(real_times.last().unwrap().2 >= 10_000_000, "two real naps: {real_times:?}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// Each semantic event's name and attributes, in order.
+fn event_attributes(telemetry: &str) -> Vec<String> {
+    telemetry
+        .lines()
+        .filter(|line| line.contains("\"event\":") && line.contains("\"operation\":"))
+        .map(|line| {
+            let event = line.split("\"event\":\"").nth(1).unwrap().split('"').next().unwrap();
+            let attributes = line.split("\"attributes\":").nth(1).unwrap();
+            format!("{event} {attributes}")
+        })
+        .collect()
+}
+
+// The interpreter writes the times the native runner writes under the virtual
+// clock for a program that never waits: every attribute, in the same order.
+// Rejects an interpreter that leaves either time out or orders them
+// differently.
+#[test]
+fn the_interpreter_writes_the_native_virtual_event_times() {
+    let body = concat!(
+        "interface Store { load: fn() -> Int }\n",
+        "fn loaded() -> Int needs { store: Store } {\n  store.load() + 1\n}\n",
+        "pub fn main() -> Int {\n",
+        "  let run = loaded using { store: { load: fn() -> Int { 1 } } }\n",
+        "  run()\n",
+        "}\n",
+    );
+    let scratch = scratch_directory("interpreter-times");
+    let executable = build_native(&scratch, "interpreter-times", body);
+    let native = run(&executable, &scratch, "native", "full", &["--clock=virtual"]);
+    assert_eq!(native.outcome, success("2"));
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .arg(scratch.join("interpreter-times.chimi"))
+        .output()
+        .expect("run the reference interpreter");
+    let interpreted = event_attributes(&String::from_utf8_lossy(&output.stdout));
+    assert!(interpreted.first().unwrap().contains("\"start_unix_ns\":0"), "{interpreted:?}");
+    assert!(interpreted.iter().any(|line| line.starts_with("dependency_called")), "{interpreted:?}");
+    assert_eq!(interpreted, event_attributes(&native.telemetry));
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

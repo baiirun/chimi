@@ -45,9 +45,9 @@ MUTATIONS = [
     mutant("the interpreter writes no time", EXECUTION, [(
         "            output.push_str(\"\\\"time_ns\\\":0\");",
         "            output.push_str(\"\\\"t\\\":0\");",
-    )], filter="", targets=("trace_show", "language")),
+    )], filter="interpreter_writes"),
     mutant("the interpreter writes no start", EXECUTION, [(
         "            if event.kind == EventKind::ComputationStarted {\n                output.push_str(",
         "            if false {\n                output.push_str(",
-    )], filter="", targets=("trace_show", "language")),
+    )], filter="interpreter_writes"),
 ]

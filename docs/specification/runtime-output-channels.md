@@ -174,7 +174,8 @@ event's wall time:
   without it), and an event's `time_ns` is the virtual time it ran at. A
   program that never waits writes 0 throughout.
 - Under the real clock `start_unix_ns` is the host's wall time when the
-  computation starts, and `time_ns` comes from the host's monotonic clock.
+  computation starts, and `time_ns` comes from the host's monotonic clock. A
+  program that needs no scheduler reads no clock, so its events are at 0.
 - Times MUST NOT decrease along one span's events: an operation completes no
   earlier than it started.
 - Reading the time for an event MUST NOT be a scheduler request. It parks
