@@ -6,9 +6,9 @@ use std::process::Command;
 use std::time::Duration;
 
 // Rejects a build that writes its artifact directory while another build
-// holds it: the test holds the lock (shared, so a build that also took it
-// shared would not wait), and `chimi build`
-// must wait for it and then succeed.
+// holds it: the test holds the lock, and `chimi build` must wait for it and
+// then succeed. The test's hold is shared, so a build that took the lock
+// shared too would not wait.
 #[test]
 fn a_build_waits_for_the_artifact_directory() {
     let scratch = std::env::temp_dir().join(format!("chimi-build-lock-{}", std::process::id()));
