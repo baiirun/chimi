@@ -40,10 +40,11 @@ MUTATIONS = [
         "        if dropped > u64::MAX - 1 {",
     )]),
     mutant("an untimed document exports", EXPORT, [(
-        "        _ => Err(MetricsError(format!(",
-        "        _ => Ok(\"0\").or(Err(MetricsError(format!(",
-    ), (
-        "            \"the document has no {key}; it was written by a runtime without run times\"\n        ))),",
-        "            \"the document has no {key}; it was written by a runtime without run times\"\n        )))),",
+        "        _ => Err(MetricsError(format!(\n            \"the document has no {key}; it was written by a runtime without run times\"\n        ))),",
+        "        _ => Ok(\"0\"),",
+    )]),
+    mutant("a time before 1970 is called missing", EXPORT, [(
+        "        Some(JsonData::Number(number)) if number.starts_with('-') => Err(MetricsError(format!(",
+        "        Some(JsonData::Number(number)) if number.starts_with('?') => Err(MetricsError(format!(",
     )]),
 ]
