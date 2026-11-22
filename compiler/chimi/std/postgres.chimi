@@ -69,11 +69,14 @@ import std/watch as Watch
 
 // 1. The driver.
 
+/// The driver's settings, the type of `Postgres.defaults`.
+pub type Settings = { roots: Roots, connect_timeout: Duration }
+
 /// A driver's settings, to update with what differs: `roots` are the
 /// authorities trusted for TLS (the system's by default), and
 /// `connect_timeout` bounds opening a connection, from the TCP connect
 /// through authentication (10 s by default).
-pub const defaults: { roots: Roots, connect_timeout: Duration } = {
+pub const defaults: Settings = {
   roots: Tls.defaults.roots,
   connect_timeout: Duration.seconds(10),
 }
@@ -83,7 +86,7 @@ pub const defaults: { roots: Roots, connect_timeout: Duration } = {
 ///
 /// Defects when: `settings.connect_timeout` is not positive.
 /// Cost: O(1).
-pub fn driver(settings: { roots: Roots, connect_timeout: Duration }) -> Driver needs {
+pub fn driver(settings: Settings) -> Driver needs {
   network: Network,
   clock: Clock,
 } {
