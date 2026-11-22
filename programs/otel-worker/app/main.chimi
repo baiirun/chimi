@@ -1,0 +1,73 @@
+/// A worker that runs jobs and pushes its metrics and logs to an
+/// OpenTelemetry collector while it runs, with `std/otel`.
+///
+/// `main` sets the exporter up in code: the collector's address comes from
+/// `--collector`, and everything else from `Otel.defaults`. The jobs run
+/// inside `Otel.export`, so the aggregate is pushed every interval and once
+/// more when they end, and `Otel.log` sends each log entry at `Info` and
+/// above to the collector as well as to standard error.
+
+import std/cli as Cli.{Exit}
+import std/clock as Clock.{Clock}
+import std/duration as Duration
+import std/log as Log.{Log}
+import std/metrics as Metrics.{Metrics}
+import std/net.{Network}
+import std/option as Option
+import std/otel as Otel
+
+const collector = Cli.option("collector", "c", "The collector's OTLP/HTTP address", Cli.text)
+const jobs = Cli.option("jobs", "n", "How many jobs to run", Cli.int)
+const command = Cli.command("otel-worker", "Run jobs and push their telemetry to a collector", [Cli.arg(collector), Cli.arg(jobs)])
+
+// One job: it takes a few milliseconds, and every third one fails.
+fn run_job(job: Int) -> Void needs {
+  log: Log, clock: Clock, metrics: Metrics
+} {
+  let took = Duration.milliseconds(20 + job % 4 * 10)
+  Clock.sleep(took)
+  Metrics.observe("job.seconds", Metrics.seconds(took), [])
+  case job % 3 == 0 {
+    True -> {
+      Metrics.count("jobs", 1, [("outcome", "failed")])
+      Log.warn("job failed", [Log.int("job", job), Log.text("reason", "upstream timed out")])
+    }
+    False -> {
+      Metrics.count("jobs", 1, [("outcome", "done")])
+      Log.info("job done", [Log.int("job", job), Log.float("seconds", Metrics.seconds(took))])
+    }
+  }
+}
+
+fn run_jobs(count: Int) -> Int needs {
+  log: Log, clock: Clock, metrics: Metrics
+} {
+  Log.debug("starting", [Log.int("jobs", count)])
+  loop job = 1 {
+    case job > count {
+      True -> break count
+      False -> {
+        run_job(job)
+        job + 1
+      }
+    }
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Exit needs {
+  network: Network, clock: Clock, metrics: Metrics, log: Log
+} {
+  let parsed = Cli.parse(command, arguments)
+  let settings = {
+    ..Otel.defaults,
+    endpoint: Option.unwrap_or(Cli.get(parsed, collector), Otel.defaults.endpoint),
+    service_name: "otel-worker",
+    interval: Duration.milliseconds(100),
+  }
+  let count = Option.unwrap_or(Cli.get(parsed, jobs), 6)
+  let ran = Otel.export(settings, fn(exporter) {
+    run_jobs(count) using { log: Otel.log(exporter) }
+  })
+  Log.info("finished", [Log.int("jobs", ran)])
+  Exit.Code(0)
+}
