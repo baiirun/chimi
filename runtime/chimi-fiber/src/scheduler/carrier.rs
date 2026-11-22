@@ -36,20 +36,26 @@ impl KernelAccess for Scheduler {
 pub(crate) struct Locked<'kernel> {
     kernel: &'kernel Mutex<Scheduler>,
     carrier: Carrier,
+    /// How long this carrier retries the lock before it blocks (`lock_spin`).
+    spin: std::time::Duration,
 }
 
 impl<'kernel> Locked<'kernel> {
     /// Requires: `carrier` is one of the kernel's carriers, and no other
     /// thread reaches the kernel as `carrier`.
     pub(crate) fn new(kernel: &'kernel Mutex<Scheduler>, carrier: Carrier) -> Self {
-        Self { kernel, carrier }
+        Self {
+            kernel,
+            carrier,
+            spin: lock_spin(),
+        }
     }
 }
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
         let (result, wakes) = {
-            let mut kernel = self.kernel.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut kernel = lock_spinning(self.kernel, self.spin);
             #[cfg(test)]
             let _held = HeldMark::set();
             debug_assert!(
@@ -62,6 +68,46 @@ impl KernelAccess for Locked<'_> {
         };
         wakes.write();
         result
+    }
+}
+
+/// How long a carrier retries the kernel lock before it blocks in it.
+const LOCK_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
+
+/// `LOCK_SPIN`, or none on a host with one core: there a carrier that
+/// spins holds the only core the lock's holder needs to let go (measured
+/// 8% slower with 8 or 32 carriers on one core). With two cores or more it
+/// helped at every carrier count measured, up to 32 on four cores.
+fn lock_spin() -> std::time::Duration {
+    if std::thread::available_parallelism().map_or(1, std::num::NonZero::get) > 1 {
+        LOCK_SPIN
+    } else {
+        std::time::Duration::ZERO
+    }
+}
+
+/// Takes the kernel lock, first retrying for up to `spin` without
+/// blocking. A kernel hold lasts about a microsecond, while a thread that
+/// blocks in the lock sleeps until the holder wakes it, which with several
+/// carriers sending at once cost more than the holds themselves
+/// (multi-carrier-baseline.md, "Spinning on the kernel lock"). A poisoned
+/// lock is taken over, as everywhere the kernel is reached.
+fn lock_spinning<T>(lock: &Mutex<T>, spin: std::time::Duration) -> std::sync::MutexGuard<'_, T> {
+    // The clock is read only once the lock was found held.
+    let mut spin_until = None;
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let now = std::time::Instant::now();
+        if now >= *spin_until.get_or_insert(now + spin) {
+            return lock.lock().unwrap_or_else(PoisonError::into_inner);
+        }
+        for _ in 0..32 {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -298,4 +344,86 @@ fn test_readable(fd: i32) -> bool {
     };
     // SAFETY: one valid pollfd for the duration of the call.
     unsafe { libc::poll(&mut poll, 1, 0) > 0 }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::{LOCK_SPIN, lock_spinning};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// A lock held past the spin is still taken once its holder lets go.
+    #[test]
+    fn a_lock_held_past_the_spin_is_taken_when_released() {
+        let lock = Mutex::new(0);
+        std::thread::scope(|scope| {
+            let held = lock.lock().expect("lock");
+            let (taken, waiter) = std::sync::mpsc::channel();
+            let lock = &lock;
+            scope.spawn(move || {
+                *lock_spinning(lock, LOCK_SPIN) += 1;
+                taken.send(()).expect("send");
+            });
+            std::thread::sleep(LOCK_SPIN * 50);
+            assert!(waiter.try_recv().is_err(), "not taken while held");
+            drop(held);
+            waiter.recv_timeout(Duration::from_secs(30)).expect("taken once released");
+        });
+        assert_eq!(*lock.lock().expect("lock"), 1);
+    }
+
+    /// A holder that panics after the waiter stopped spinning poisons the
+    /// lock under the waiter's blocking take, which takes it over too.
+    #[test]
+    fn a_lock_poisoned_while_waiting_is_taken_over() {
+        let lock = Mutex::new(7);
+        let (held, holding) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let lock = &lock;
+            let holder = scope.spawn(move || {
+                let _held = lock.lock().expect("lock");
+                held.send(()).expect("send");
+                std::thread::sleep(LOCK_SPIN * 100);
+                panic!("poison it");
+            });
+            holding.recv().expect("held");
+            assert_eq!(*lock_spinning(lock, LOCK_SPIN), 7);
+            assert!(holder.join().is_err());
+        });
+    }
+
+    /// A host with one core does not spin; any other spins `LOCK_SPIN`.
+    #[test]
+    fn the_spin_is_off_on_one_core() {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let expected = if cores > 1 { LOCK_SPIN } else { Duration::ZERO };
+        assert_eq!(super::lock_spin(), expected);
+    }
+
+    /// With no spin a held lock is still taken once released.
+    #[test]
+    fn with_no_spin_a_held_lock_is_taken_when_released() {
+        let lock = Mutex::new(0);
+        std::thread::scope(|scope| {
+            let held = lock.lock().expect("lock");
+            let lock = &lock;
+            let taker = scope.spawn(move || *lock_spinning(lock, Duration::ZERO) += 1);
+            std::thread::sleep(Duration::from_millis(5));
+            drop(held);
+            taker.join().expect("taken");
+        });
+        assert_eq!(*lock.lock().expect("lock"), 1);
+    }
+
+    /// A lock a panic already poisoned is taken over at once.
+    #[test]
+    fn a_poisoned_lock_is_taken_over() {
+        let lock = Mutex::new(7);
+        let _ = std::panic::catch_unwind(|| {
+            let _held = lock.lock().expect("lock");
+            panic!("poison it");
+        });
+        assert!(lock.is_poisoned());
+        assert_eq!(*lock_spinning(&lock, LOCK_SPIN), 7);
+    }
 }
