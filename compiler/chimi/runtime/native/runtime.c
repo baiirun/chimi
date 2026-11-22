@@ -285,6 +285,10 @@ struct ChimiRuntime {
   FILE *telemetry;
   FILE *outcome;
   uint32_t max_line_bytes;
+  /* std/log: the least severe level written (0 debug .. 3 error), and the
+     file named by --log-file, or NULL for standard error. */
+  int64_t log_level;
+  FILE *log_file;
   /* The telemetry stream's next sequence number. It and
      trace_events_constructed change only under trace_lock, which an emitter
      holds for a whole event, so events from several carriers come out whole
@@ -7068,6 +7072,60 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   return runtime->cancel ? cancelled() : success(void_value());
 }
 
+/* std/log's host core. host_write gets the message and fields already encoded
+   as JSON and writes one line, `{"time":..,"level":..,"message":..,"fields":..}`,
+   whole: to the --log-file file, or to standard error through the console
+   queue, so log lines and the program's own write_error lines never
+   interleave. A line that cannot be written is lost: logging never fails. */
+static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrinsic,
+                                          ChimiValue **arguments, uint32_t argument_count,
+                                          uint32_t call_node) {
+  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL) {
+    if (argument_count != 0) return intrinsic_shape_defect(call_node);
+    return success(integer_value(runtime->log_level));
+  }
+  if (argument_count != 3 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
+      arguments[2]->kind != VALUE_TEXT)
+    return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
+  static const char *const names[] = {"debug", "info", "warn", "error"};
+  int64_t level = arguments[0]->as.integer;
+  const char *name = names[level < 0 ? 0 : level > 3 ? 3 : level];
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  char time[48];
+  int64_t millis = (int64_t)now.tv_nsec / 1000000;
+  /* timestamp_text trims the fraction; a log line keeps three digits. */
+  timestamp_text((int64_t)now.tv_sec * 1000000000, time);
+  time[strlen(time) - 1] = '\0';
+  size_t message_length = arguments[1]->as.text.length, fields_length = arguments[2]->as.text.length;
+  size_t capacity = 96 + message_length + fields_length;
+  char *line = malloc(capacity);
+  if (!line) exhausted_memory();
+  int head = snprintf(line, capacity, "{\"time\":\"%s.%03" PRId64 "Z\",\"level\":\"%s\",\"message\":", time,
+                      millis, name);
+  size_t length = (size_t)head;
+  memcpy(line + length, arguments[1]->as.text.bytes, message_length);
+  length += message_length;
+  memcpy(line + length, ",\"fields\":", 10);
+  length += 10;
+  memcpy(line + length, arguments[2]->as.text.bytes, fields_length);
+  length += fields_length;
+  line[length++] = '}';
+  int written = 0;
+  if (runtime->log_file) {
+    console_enter();
+    if (fwrite(line, 1, length, runtime->log_file) == length) fputc('\n', runtime->log_file);
+    fflush(runtime->log_file);
+    console_leave();
+  } else {
+    written = console_write_line(runtime, &console_streams[1], line, length);
+  }
+  free(line);
+  if (written < 0) return cancelled();
+  return runtime->cancel ? cancelled() : success(void_value());
+}
+
 /* C bindings (G20). A binding function (chimi_binding.h) sees a call, never
    the runtime: values cross as ChimiBindingValue, which is ChimiValue, and its
    one result as ChimiBindingResult, which is ChimiControl. */
@@ -11094,6 +11152,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_fs_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
+  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
+    return invoke_log_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
     return invoke_duration(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
@@ -13136,6 +13196,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .computation = CHIMI_COMPUTATION,
     .silent = true,
     .max_line_bytes = 1024 * 1024,
+    .log_level = 1,
     .next_span = 2,
     .carriers = 1,
   };
@@ -13146,6 +13207,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
   const char *profile_path = NULL;
+  const char *log_path = NULL;
   decode_constants();
   if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
   int32_t index = 1;
@@ -13241,6 +13303,18 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       }
       runtime.max_line_bytes = (uint32_t)value;
     }
+    else if (strncmp(argv[index], "--log-level=", 12) == 0) {
+      const char *level = argv[index] + 12;
+      if (strcmp(level, "debug") == 0) runtime.log_level = 0;
+      else if (strcmp(level, "info") == 0) runtime.log_level = 1;
+      else if (strcmp(level, "warn") == 0) runtime.log_level = 2;
+      else if (strcmp(level, "error") == 0) runtime.log_level = 3;
+      else {
+        fputs("--log-level requires debug, info, warn or error\n", stderr);
+        return 64;
+      }
+    }
+    else if (strncmp(argv[index], "--log-file=", 11) == 0) log_path = argv[index] + 11;
     else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
       benchmark_repeats = (uint32_t)strtoul(argv[index] + 20, NULL, 10);
     else { fprintf(stderr, "unknown Chimi runtime argument: %s\n", argv[index]); return 64; }
@@ -13290,6 +13364,13 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fputs("profile, memory report, telemetry, and runner outcome require distinct files\n", stderr);
     return 64;
   }
+  if (log_path && ((telemetry_path && strcmp(log_path, telemetry_path) == 0) ||
+                   (outcome_path && strcmp(log_path, outcome_path) == 0) ||
+                   (memory_report_path && strcmp(log_path, memory_report_path) == 0) ||
+                   (profile_path && strcmp(log_path, profile_path) == 0))) {
+    fputs("the log file must be distinct from the runner's report files\n", stderr);
+    return 64;
+  }
   if (profile_path && benchmark_repeats) {
     fputs("--profile-file cannot be combined with --benchmark-repeats\n", stderr);
     return 64;
@@ -13310,6 +13391,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     if (!runtime.outcome) {
       fprintf(stderr, "cannot open outcome file %s: %s\n", outcome_path, strerror(errno));
       if (runtime.telemetry) fclose(runtime.telemetry);
+      return 74;
+    }
+  }
+  if (log_path) {
+    /* Appended to, unlike the runner's reports: a log outlives one run. */
+    runtime.log_file = open_report(log_path, "a");
+    if (!runtime.log_file) {
+      fprintf(stderr, "cannot open log file %s: %s\n", log_path, strerror(errno));
+      if (runtime.telemetry) fclose(runtime.telemetry);
+      if (runtime.outcome) fclose(runtime.outcome);
       return 74;
     }
   }
@@ -13379,6 +13470,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* Lines whose writers were cancelled while they waited (CHI-266). */
   console_drain_all();
   release_binding_handles();
+  /* A log line already went out whole; a failed close loses nothing the
+     program could act on. */
+  if (runtime.log_file) fclose(runtime.log_file);
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);

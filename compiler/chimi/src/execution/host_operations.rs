@@ -325,6 +325,32 @@ impl Evaluator<'_> {
                 node: Some(call_node),
                 cause: None,
             },
+            (StandardFunction::LogHostMinimumLevel, []) => {
+                Control::Success(RuntimeValue::Integer(self.config.log_level))
+            }
+            (
+                StandardFunction::LogHostWrite,
+                [
+                    RuntimeValue::Integer(level),
+                    RuntimeValue::Text(message),
+                    RuntimeValue::Text(fields),
+                ],
+            ) => {
+                let line = log_line(*level, message, fields);
+                match &self.config.log_file {
+                    None => self.application_stderr.push_str(&line),
+                    // A log line that cannot be written is lost, as on the
+                    // native runner: logging never fails the program.
+                    Some(path) => {
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut file| file.write_all(line.as_bytes()));
+                    }
+                }
+                Control::Success(RuntimeValue::Void)
+            }
             (_, []) => self.invoke_environment_operation(function, call_node),
             _ => self.intrinsic_shape_defect(function, call_node),
         }
@@ -400,4 +426,55 @@ fn make_temporary_directory() -> std::io::Result<String> {
         }
     }
     Err(std::io::Error::other("no free temporary directory name"))
+}
+
+/// One `std/log` line as the runner writes it: the wall-clock time, the level,
+/// then the message and fields `std/log` already encoded as JSON.
+fn log_line(level: i64, message: &str, fields: &str) -> String {
+    let level = match level {
+        0 => "debug",
+        1 => "info",
+        2 => "warn",
+        _ => "error",
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{{\"time\":\"{}\",\"level\":\"{level}\",\"message\":{message},\"fields\":{fields}}}\n",
+        utc_millis(now.as_secs(), now.subsec_millis())
+    )
+}
+
+/// RFC 3339 UTC with milliseconds, `2026-11-22T06:00:00.000Z`, by the proleptic
+/// Gregorian calendar.
+fn utc_millis(seconds: u64, millis: u32) -> String {
+    let days = (seconds / 86_400) as i64;
+    let of_day = seconds % 86_400;
+    // civil_from_days (Howard Hinnant), as the native runtime's timestamp text.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        of_day / 3600,
+        of_day / 60 % 60,
+        of_day % 60
+    )
+}
+
+#[cfg(test)]
+mod log_line_tests {
+    #[test]
+    fn utc_millis_follows_the_calendar() {
+        assert_eq!(super::utc_millis(0, 0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(super::utc_millis(951_782_400, 7), "2000-02-29T00:00:00.007Z");
+        assert_eq!(super::utc_millis(1_795_327_200, 250), "2026-11-22T06:00:00.250Z");
+    }
 }
