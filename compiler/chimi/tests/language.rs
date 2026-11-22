@@ -14024,6 +14024,8 @@ pub fn main() -> Text {
         run_both("row-lacks-decorator", source),
         "\"outcome\":\"success\",\"value\":\"t0 r@t0\""
     );
+}
+
 // CHI-295: a need the runtime serves method by method (`console`, `random`,
 // `files`) may be read as a value and passed on, as any other need may. The
 // value's methods are the provider's in scope, or the host's with none.
