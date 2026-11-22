@@ -60,14 +60,14 @@ pub interface Log {
 ///
 /// Cost: O(1).
 pub fn text(key: Text, value: Text) -> Field {
-  Field(key, Json.text(value))
+  Field { key: key, value: Json.text(value) }
 }
 
 /// A field holding the integer `value`.
 ///
 /// Cost: O(1).
 pub fn int(key: Text, value: Int) -> Field {
-  Field(key, Json.int(value))
+  Field { key: key, value: Json.int(value) }
 }
 
 /// A field holding the number `value`, written as `Float.to_text` spells it.
@@ -78,21 +78,21 @@ pub fn float(key: Text, value: Float) -> Field {
     Success(number) -> number
     Failure(_) -> Json.text(Float.to_text(value))
   }
-  Field(key, number)
+  Field { key: key, value: number }
 }
 
 /// A field holding the boolean `value`.
 ///
 /// Cost: O(1).
 pub fn bool(key: Text, value: Bool) -> Field {
-  Field(key, Json.boolean(value))
+  Field { key: key, value: Json.boolean(value) }
 }
 
 /// A field holding any JSON `value`, such as an array or an object.
 ///
 /// Cost: O(1).
 pub fn json(key: Text, value: Json.Value) -> Field {
-  Field(key, value)
+  Field { key: key, value: value }
 }
 
 // 5. Queries.
@@ -134,7 +134,9 @@ pub fn fields_object(entry: Entry) -> Json.Value {
 pub fn debug(message: Text, fields: List<Field>) -> Void needs {
   log: Log
 } {
-  log.write(Entry(Level.Debug, message, fields))
+  log.write(Entry {
+    level: Level.Debug, message: message, fields: fields
+  })
 }
 
 /// Writes an `Info` entry.
@@ -143,7 +145,9 @@ pub fn debug(message: Text, fields: List<Field>) -> Void needs {
 pub fn info(message: Text, fields: List<Field>) -> Void needs {
   log: Log
 } {
-  log.write(Entry(Level.Info, message, fields))
+  log.write(Entry {
+    level: Level.Info, message: message, fields: fields
+  })
 }
 
 /// Writes a `Warn` entry.
@@ -152,7 +156,9 @@ pub fn info(message: Text, fields: List<Field>) -> Void needs {
 pub fn warn(message: Text, fields: List<Field>) -> Void needs {
   log: Log
 } {
-  log.write(Entry(Level.Warn, message, fields))
+  log.write(Entry {
+    level: Level.Warn, message: message, fields: fields
+  })
 }
 
 /// Writes an `Error` entry.
@@ -161,7 +167,9 @@ pub fn warn(message: Text, fields: List<Field>) -> Void needs {
 pub fn error(message: Text, fields: List<Field>) -> Void needs {
   log: Log
 } {
-  log.write(Entry(Level.Error, message, fields))
+  log.write(Entry {
+    level: Level.Error, message: message, fields: fields
+  })
 }
 
 // 8. Private helpers, the runner provider, and the native core.
