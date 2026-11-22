@@ -93,7 +93,7 @@ const DOCUMENT: &str = concat!(
     r#"{"name":"orders","labels":{"method":"POST","route":"/pay"},"kind":"count","value":3},"#,
     r#"{"name":"orders","labels":{},"kind":"count","value":4},"#,
     r#"{"name":"queue \"depth\"","labels":{"route":"b"},"kind":"gauge","value":-3.5}"#,
-    r#"],"dropped":{"label_sets":0,"kind_conflicts":1}}"#,
+    r#"],"dropped":{"label_sets":0,"kind_conflicts":1},"start_unix_ns":0,"time_unix_ns":0}"#,
     "\n"
 );
 
@@ -107,12 +107,12 @@ fn the_runner_writes_one_aggregate_per_name_and_label_set() {
     let program = scratch.build();
     let file = scratch.0.join("metrics.json");
     let option = format!("--metrics-file={}", file.display());
-    let output = runner(&program, &[&option]);
+    let output = runner(&program, &["--clock=virtual", &option]);
     assert_eq!(output.status, Some(0), "{}", output.stderr);
     assert_eq!((output.stdout.as_str(), output.stderr.as_str()), ("", ""));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), DOCUMENT);
     // A second run replaces the file: it holds one run's aggregates.
-    let output = runner(&program, &[&option]);
+    let output = runner(&program, &["--clock=virtual", &option]);
     assert_eq!(output.status, Some(0), "{}", output.stderr);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), DOCUMENT);
 }
@@ -177,13 +177,13 @@ fn one_name_keeps_at_most_a_thousand_label_sets() {
     let scratch = Scratch::new("limits", LIMITS);
     let program = scratch.build();
     let file = scratch.0.join("metrics.json");
-    let output = runner(&program, &[&format!("--metrics-file={}", file.display())]);
+    let output = runner(&program, &["--clock=virtual", &format!("--metrics-file={}", file.display())]);
     assert_eq!(output.status, Some(0), "{}", output.stderr);
     let written = std::fs::read_to_string(&file).unwrap();
     assert_eq!(written.matches(r#""name":"ids""#).count(), 1000);
     assert!(written.contains(r#"{"name":"ids","labels":{"id":"7"},"kind":"count","value":6}"#), "{written}");
     assert!(!written.contains(r#""id":"1000""#), "{written}");
-    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
+    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0},\"start_unix_ns\":0,\"time_unix_ns\":0}\n"));
 }
 
 const CARRIERS: &str = r#"import std/int as Int
@@ -237,7 +237,7 @@ pub fn main() -> Void needs { metrics: Metrics } {
 }
 "#;
 
-const AFTER_ONE: &str = r#"{"schema":"chimi.metrics.v1","metrics":[{"name":"refunds","labels":{},"kind":"count","value":1}],"dropped":{"label_sets":0,"kind_conflicts":0}}"#;
+const AFTER_ONE: &str = r#"{"schema":"chimi.metrics.v1","metrics":[{"name":"refunds","labels":{},"kind":"count","value":1}],"dropped":{"label_sets":0,"kind_conflicts":0},"start_unix_ns":0,"time_unix_ns":0}"#;
 
 // Rejects a counter that can go down, and a runner that writes the metrics
 // only when `main` succeeds.
@@ -248,6 +248,7 @@ fn a_negative_count_is_a_defect() {
     let outcome = scratch.0.join("outcome.json");
     let metrics = scratch.0.join("metrics.json");
     let output = runner(&program, &[
+        "--clock=virtual",
         &format!("--outcome-file={}", outcome.display()),
         &format!("--metrics-file={}", metrics.display()),
     ]);
@@ -289,7 +290,7 @@ fn counts_and_sums_saturate_and_both_runtimes_agree() {
     let scratch = Scratch::new("edges", EDGES);
     let program = scratch.build();
     let native = scratch.0.join("native.json");
-    let output = runner(&program, &[&format!("--metrics-file={}", native.display())]);
+    let output = runner(&program, &["--clock=virtual", &format!("--metrics-file={}", native.display())]);
     assert_eq!(output.status, Some(0), "{}", output.stderr);
     let native = std::fs::read_to_string(&native).unwrap();
     assert!(native.contains(r#"{"name":"big","labels":{},"kind":"count","value":9223372036854775807}"#), "{native}");
@@ -392,10 +393,154 @@ fn the_interpreter_writes_the_same_document() {
     run(LIMITS, config());
     let written = std::fs::read_to_string(&file).unwrap();
     assert_eq!(written.matches(r#""name":"ids""#).count(), 1000);
-    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
+    assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0},\"start_unix_ns\":0,\"time_unix_ns\":0}\n"));
     run(NEGATIVE, config());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{AFTER_ONE}\n"));
     std::fs::remove_file(&file).unwrap();
     run(PROGRAM, ExecutionConfig::new("metrics").unwrap());
     assert!(!file.exists());
+}
+
+const TIMED: &str = r#"import std/clock as Clock
+import std/duration as Duration
+import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Void needs { clock: Clock.Clock, metrics: Metrics } {
+  Clock.sleep(Duration.seconds(2))
+  Metrics.count("naps", 1, [])
+}
+"#;
+
+// The document says when the run started and when `main` ended, as Unix
+// nanoseconds: under the virtual clock from `--clock-start` and the time
+// slept, under the real clock from the host. Rejects a document without
+// times, or one whose end ignores the run's time.
+#[test]
+fn the_document_carries_the_runs_start_and_end() {
+    let scratch = Scratch::new("timed", TIMED);
+    let program = scratch.build();
+    let file = scratch.0.join("metrics.json");
+    let option = format!("--metrics-file={}", file.display());
+    let output = runner(
+        &program,
+        &[
+            "--clock=virtual",
+            "--clock-start=2026-11-10T09:30:00Z",
+            &option,
+        ],
+    );
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        written.ends_with(
+            r#","start_unix_ns":1794303000000000000,"time_unix_ns":1794303002000000000}
+"#
+        ),
+        "{written}"
+    );
+    let export = scratch.chimi(&["metrics", "export", "--otlp", "metrics.json"]);
+    assert_eq!(export.status, Some(0), "{}", export.stderr);
+    assert!(
+        export
+            .stdout
+            .contains(r#""startTimeUnixNano":"1794303000000000000","timeUnixNano":"1794303002000000000""#),
+        "{}",
+        export.stdout
+    );
+    let output = runner(&program, &["--clock=real", &option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let written = std::fs::read_to_string(&file).unwrap();
+    let number = |key: &str| -> i64 {
+        let start = written.find(key).unwrap() + key.len();
+        written[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    };
+    let (start, end) = (number("\"start_unix_ns\":"), number("\"time_unix_ns\":"));
+    assert!(end - start >= 2_000_000_000, "{written}");
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    assert!(end <= wall && wall - end < 120_000_000_000, "{written}");
+    assert!(wall - start < 120_000_000_000, "{written}");
+}
+
+// `chimi metrics export --otlp` turns the document into OTLP/JSON metrics:
+// one metric per name and one cumulative data point per label set, from the
+// run's start to the end of `main`. Rejects a count that is not a monotonic
+// sum, a gauge or histogram spelled some other way, label sets split into
+// separate metrics, times that are not the run's, and dropped measurements
+// that go unreported.
+#[test]
+fn the_document_exports_as_opentelemetry_metrics() {
+    let scratch = Scratch::new("export", PROGRAM);
+    let program = scratch.build();
+    let option = format!("--metrics-file={}", scratch.0.join("metrics.json").display());
+    let output = runner(&program, &["--clock=virtual", "--clock-start=2026-11-10T09:30:00Z", &option]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let export = scratch.chimi(&["metrics", "export", "--otlp", "--service-name", "shop", "metrics.json"]);
+    assert_eq!(export.status, Some(0), "{}", export.stderr);
+    let times = r#""startTimeUnixNano":"1794303000000000000","timeUnixNano":"1794303000000000000""#;
+    let expected = [
+        r#"{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"shop"}}]},"#,
+        r#""scopeMetrics":[{"scope":{"name":"chimi","version":""#,
+    ];
+    assert!(export.stdout.starts_with(expected[0]), "{}", export.stdout);
+    assert!(export.stdout.contains(expected[1]), "{}", export.stdout);
+    for metric in [
+        format!(
+            concat!(
+                r#"{{"name":"charge_seconds","histogram":{{"dataPoints":[{{"attributes":[],{times},"#,
+                r#""count":"4","sum":11.75,"bucketCounts":["1","0","0","0","0","0","0","1","1","0","0","0","0","0","0","1"],"#,
+                r#""explicitBounds":[0.0,0.005,0.01,0.025,0.05,0.075,0.1,0.25,0.5,0.75,1.0,2.5,5.0,7.5,10.0]}}],"#,
+                r#""aggregationTemporality":2}}}}"#
+            ),
+            times = times
+        ),
+        format!(
+            concat!(
+                r#"{{"name":"orders","sum":{{"dataPoints":["#,
+                r#"{{"attributes":[{{"key":"method","value":{{"stringValue":"POST"}}}},{{"key":"route","value":{{"stringValue":"/pay"}}}}],{times},"asInt":"3"}},"#,
+                r#"{{"attributes":[],{times},"asInt":"4"}}],"#,
+                r#""aggregationTemporality":2,"isMonotonic":true}}}}"#
+            ),
+            times = times
+        ),
+        format!(
+            r#"{{"name":"queue \"depth\"","gauge":{{"dataPoints":[{{"attributes":[{{"key":"route","value":{{"stringValue":"b"}}}}],{times},"asDouble":-3.5}}]}}}}"#,
+            times = times
+        ),
+        format!(
+            r#"{{"name":"chimi.metrics.dropped_kind_conflicts","sum":{{"dataPoints":[{{"attributes":[],{times},"asInt":"1"}}],"aggregationTemporality":2,"isMonotonic":true}}}}"#,
+            times = times
+        ),
+    ] {
+        assert!(export.stdout.contains(&metric), "{metric}\nin {}", export.stdout);
+    }
+    assert!(!export.stdout.contains("dropped_label_sets"), "none were dropped");
+    assert!(export.stdout.ends_with("]}]}]}\n"));
+}
+
+// A document from before run times, or anything else, cannot be exported and
+// prints nothing. Rejects metrics silently placed at 1970.
+#[test]
+fn a_metrics_document_without_times_is_refused() {
+    let scratch = Scratch::new("export-old", "");
+    std::fs::write(scratch.0.join("old.json"), format!("{AFTER_ONE}\n").replace(r#","start_unix_ns":0,"time_unix_ns":0"#, "")).unwrap();
+    let old = scratch.chimi(&["metrics", "export", "--otlp", "old.json"]);
+    assert_eq!((old.status, old.stdout.as_str()), (Some(1), ""));
+    assert!(old.stderr.contains("the document has no start_unix_ns"), "{}", old.stderr);
+    let before_1970 = format!("{AFTER_ONE}\n").replace(r#""start_unix_ns":0"#, r#""start_unix_ns":-5"#);
+    std::fs::write(scratch.0.join("early.json"), before_1970).unwrap();
+    let early = scratch.chimi(&["metrics", "export", "--otlp", "early.json"]);
+    assert_eq!((early.status, early.stdout.as_str()), (Some(1), ""));
+    assert!(early.stderr.contains("start_unix_ns is before 1970"), "{}", early.stderr);
+    std::fs::write(scratch.0.join("trace.json"), "{\"schema\":\"chimi.runtime.v1\"}\n").unwrap();
+    let other = scratch.chimi(&["metrics", "export", "--otlp", "trace.json"]);
+    assert_eq!((other.status, other.stdout.as_str()), (Some(1), ""));
+    assert!(other.stderr.contains("not a chimi.metrics.v1 document"), "{}", other.stderr);
 }

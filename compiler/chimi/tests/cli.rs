@@ -3162,6 +3162,7 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
             "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
             "chimi trace export --otlp [--service-name <name>] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
+            "chimi metrics export --otlp [--service-name <name>] (<metrics-file> | -) | ",
             "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | ",
             "chimi inspect <path> <byte-offset> | ",
             "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",

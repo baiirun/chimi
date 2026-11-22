@@ -1,0 +1,18 @@
+# mutation run at d77f14dc30aa7a9caf77215e1aa23220046e53cd
+# metrics_export_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [std_metrics] (68s)
+KILLED       the document's end ignores the run's time [std_metrics] (54s)
+KILLED       the start is taken when tracing only [std_metrics] (46s)
+KILLED       a count is not monotonic [std_metrics] (63s)
+KILLED       label sets become separate metrics [std_metrics] (28s)
+KILLED       data points end at the start [std_metrics] (27s)
+KILLED       dropped measurements go unreported [std_metrics] (30s)
+(an untimed document exports: rewritten, as the first form did not compile; rerun below)
+# result: 6 of 6 compiling mutants killed
+
+# mutation run at 8d8fcdd17e4628392e42d51769afce224bae86f4
+# metrics_export_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [std_metrics] (78s)
+KILLED       an untimed document exports [std_metrics] (24s)
+KILLED       a time before 1970 is called missing [std_metrics] (24s)
+# result: every mutant killed
