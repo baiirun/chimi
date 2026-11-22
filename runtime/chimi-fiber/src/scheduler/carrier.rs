@@ -10,7 +10,7 @@ use super::ready::Carrier;
 use super::{ChimiFiberCommand, Idle, Scheduler, TaskId, clock, resume_fiber};
 use crate::ChimiFiber;
 use std::ptr::NonNull;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{PoisonError, RwLock, RwLockWriteGuard};
 use std::time::Duration;
 
 /// How the loop reaches the kernel: directly, for the scheduler's own
@@ -27,43 +27,43 @@ impl KernelAccess for Scheduler {
     }
 }
 
-/// The kernel with one lock per carrier (parallel-scheduler.md, "Step 4
-/// plan", 4e-1). For now every access takes every lock, in carrier order,
-/// which is the one lock it was before: the locks exist so that 4e-2 can
-/// let a request whose state is all its own carrier's take only that
-/// carrier's lock.
+/// The kernel and its lock (parallel-scheduler.md, "Step 4 plan", 4e).
+/// The lock is a reader-writer lock. Its write side is the one kernel lock
+/// it was before 4e: it excludes every other access, so its holder may
+/// write anything. Its read side is for the local path (4e-2): a carrier
+/// holding it may read what no reader writes and write only what is homed
+/// on it. Only one thread reaches the kernel as each carrier (`Locked`),
+/// so two readers never write the same record, and a reader needs no
+/// carrier lock of its own. For now every access takes the write side.
 pub(crate) struct Kernel {
-    locks: Box<[PaddedLock]>,
+    lock: PaddedLock,
     state: std::cell::UnsafeCell<Scheduler>,
 }
 
-/// A lock on its own cache line, so carriers taking neighbouring locks do
-/// not share one.
+/// The lock on its own cache line, so the scheduler fields beside it are
+/// not on the line every carrier writes to take it.
 #[repr(align(128))]
-struct PaddedLock(Mutex<()>);
+struct PaddedLock(RwLock<()>);
 
-// SAFETY: the scheduler is reached only while every lock is held
-// (`AllLocked`, `Locked::with`), which excludes every other access, and the
-// scheduler itself may move between threads (`Scheduler: Send`).
+// SAFETY: the scheduler is reached only while the lock's write side is
+// held (`AllLocked`, `Locked::with`), which excludes every other access,
+// and the scheduler itself may move between threads (`Scheduler: Send`).
 unsafe impl Sync for Kernel {}
 
 impl Kernel {
-    /// One lock per carrier the scheduler has now.
     pub(crate) fn new(scheduler: Scheduler) -> Self {
-        let carriers = scheduler.shards.carriers();
         Self {
-            locks: (0..carriers).map(|_| PaddedLock(Mutex::new(()))).collect(),
+            lock: PaddedLock(RwLock::new(())),
             state: std::cell::UnsafeCell::new(scheduler),
         }
     }
 
-    /// Every lock, blocking: for setup, teardown and tests.
+    /// The write side, blocking: for setup, teardown and tests.
     pub(crate) fn lock_all(&self) -> AllLocked<'_> {
-        let mut guards = Vec::with_capacity(self.locks.len());
-        for lock in &self.locks {
-            guards.push(lock.0.lock().unwrap_or_else(PoisonError::into_inner));
+        AllLocked {
+            _guard: self.lock.0.write().unwrap_or_else(PoisonError::into_inner),
+            state: &self.state,
         }
-        AllLocked { _guards: guards, state: &self.state }
     }
 
     pub(crate) fn into_inner(self) -> Scheduler {
@@ -71,9 +71,9 @@ impl Kernel {
     }
 }
 
-/// The scheduler, while this holds every lock of its kernel.
+/// The scheduler, while this holds its kernel's write side.
 pub(crate) struct AllLocked<'kernel> {
-    _guards: Vec<std::sync::MutexGuard<'kernel, ()>>,
+    _guard: RwLockWriteGuard<'kernel, ()>,
     state: &'kernel std::cell::UnsafeCell<Scheduler>,
 }
 
@@ -81,15 +81,15 @@ impl std::ops::Deref for AllLocked<'_> {
     type Target = Scheduler;
 
     fn deref(&self) -> &Scheduler {
-        // SAFETY: every lock is held for this guard's life.
+        // SAFETY: the write side is held for this guard's life.
         unsafe { &*self.state.get() }
     }
 }
 
 impl std::ops::DerefMut for AllLocked<'_> {
     fn deref_mut(&mut self) -> &mut Scheduler {
-        // SAFETY: every lock is held for this guard's life, and the guard
-        // is borrowed mutably.
+        // SAFETY: the write side is held for this guard's life, and the
+        // guard is borrowed mutably.
         unsafe { &mut *self.state.get() }
     }
 }
@@ -103,10 +103,8 @@ impl std::ops::DerefMut for AllLocked<'_> {
 pub(crate) struct Locked<'kernel> {
     kernel: &'kernel Kernel,
     carrier: Carrier,
-    /// How long this carrier retries a lock before it blocks (`lock_spin`).
+    /// How long this carrier retries the lock before it blocks (`lock_spin`).
     spin: std::time::Duration,
-    /// The guards of the access running now; kept to reuse its capacity.
-    guards: Vec<std::sync::MutexGuard<'kernel, ()>>,
 }
 
 impl<'kernel> Locked<'kernel> {
@@ -117,20 +115,15 @@ impl<'kernel> Locked<'kernel> {
             kernel,
             carrier,
             spin: lock_spin(),
-            guards: Vec::with_capacity(kernel.locks.len()),
         }
     }
 }
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
-        // Every lock in carrier order, so two accesses never wait on each
-        // other's locks in a cycle.
-        for lock in &self.kernel.locks {
-            self.guards.push(lock_spinning(&lock.0, self.spin));
-        }
+        let guard = lock_spinning(&self.kernel.lock.0, self.spin);
         let (result, wakes) = {
-            // SAFETY: every lock is held until `guards` is cleared below,
+            // SAFETY: the write side is held until `guard` is dropped below,
             // and this reference does not outlive the block.
             let kernel = unsafe { &mut *self.kernel.state.get() };
             #[cfg(test)]
@@ -143,7 +136,7 @@ impl KernelAccess for Locked<'_> {
             let result = operation(kernel);
             (result, kernel.take_wakes())
         };
-        self.guards.clear();
+        drop(guard);
         wakes.write();
         result
     }
@@ -164,24 +157,24 @@ fn lock_spin() -> std::time::Duration {
     }
 }
 
-/// Takes the kernel lock, first retrying for up to `spin` without
-/// blocking. A kernel hold lasts about a microsecond, while a thread that
+/// Takes the kernel lock's write side, first retrying for up to `spin`
+/// without blocking. A kernel hold lasts about a microsecond, while a thread that
 /// blocks in the lock sleeps until the holder wakes it, which with several
 /// carriers sending at once cost more than the holds themselves
 /// (multi-carrier-baseline.md, "Spinning on the kernel lock"). A poisoned
 /// lock is taken over, as everywhere the kernel is reached.
-fn lock_spinning<T>(lock: &Mutex<T>, spin: std::time::Duration) -> std::sync::MutexGuard<'_, T> {
+fn lock_spinning<T>(lock: &RwLock<T>, spin: std::time::Duration) -> RwLockWriteGuard<'_, T> {
     // The clock is read only once the lock was found held.
     let mut spin_until = None;
     loop {
-        match lock.try_lock() {
+        match lock.try_write() {
             Ok(guard) => return guard,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
         let now = std::time::Instant::now();
         if now >= *spin_until.get_or_insert(now + spin) {
-            return lock.lock().unwrap_or_else(PoisonError::into_inner);
+            return lock.write().unwrap_or_else(PoisonError::into_inner);
         }
         for _ in 0..32 {
             std::hint::spin_loop();
@@ -427,15 +420,15 @@ fn test_readable(fd: i32) -> bool {
 #[cfg(test)]
 mod lock_tests {
     use super::{LOCK_SPIN, lock_spinning};
-    use std::sync::Mutex;
+    use std::sync::RwLock;
     use std::time::Duration;
 
     /// A lock held past the spin is still taken once its holder lets go.
     #[test]
     fn a_lock_held_past_the_spin_is_taken_when_released() {
-        let lock = Mutex::new(0);
+        let lock = RwLock::new(0);
         std::thread::scope(|scope| {
-            let held = lock.lock().expect("lock");
+            let held = lock.write().expect("lock");
             let (taken, waiter) = std::sync::mpsc::channel();
             let lock = &lock;
             scope.spawn(move || {
@@ -447,19 +440,19 @@ mod lock_tests {
             drop(held);
             waiter.recv_timeout(Duration::from_secs(30)).expect("taken once released");
         });
-        assert_eq!(*lock.lock().expect("lock"), 1);
+        assert_eq!(*lock.write().expect("lock"), 1);
     }
 
     /// A holder that panics after the waiter stopped spinning poisons the
     /// lock under the waiter's blocking take, which takes it over too.
     #[test]
     fn a_lock_poisoned_while_waiting_is_taken_over() {
-        let lock = Mutex::new(7);
+        let lock = RwLock::new(7);
         let (held, holding) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             let lock = &lock;
             let holder = scope.spawn(move || {
-                let _held = lock.lock().expect("lock");
+                let _held = lock.write().expect("lock");
                 held.send(()).expect("send");
                 std::thread::sleep(LOCK_SPIN * 100);
                 panic!("poison it");
@@ -481,24 +474,24 @@ mod lock_tests {
     /// With no spin a held lock is still taken once released.
     #[test]
     fn with_no_spin_a_held_lock_is_taken_when_released() {
-        let lock = Mutex::new(0);
+        let lock = RwLock::new(0);
         std::thread::scope(|scope| {
-            let held = lock.lock().expect("lock");
+            let held = lock.write().expect("lock");
             let lock = &lock;
             let taker = scope.spawn(move || *lock_spinning(lock, Duration::ZERO) += 1);
             std::thread::sleep(Duration::from_millis(5));
             drop(held);
             taker.join().expect("taken");
         });
-        assert_eq!(*lock.lock().expect("lock"), 1);
+        assert_eq!(*lock.write().expect("lock"), 1);
     }
 
     /// A lock a panic already poisoned is taken over at once.
     #[test]
     fn a_poisoned_lock_is_taken_over() {
-        let lock = Mutex::new(7);
+        let lock = RwLock::new(7);
         let _ = std::panic::catch_unwind(|| {
-            let _held = lock.lock().expect("lock");
+            let _held = lock.write().expect("lock");
             panic!("poison it");
         });
         assert!(lock.is_poisoned());
