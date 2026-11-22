@@ -927,15 +927,21 @@ impl TypedProject {
                 let Some(contract) = self.contracts.get(&symbol.id) else {
                     continue;
                 };
-                let written: Vec<&str> = signature
-                    .requirements
-                    .terms
-                    .iter()
-                    .map(|term| match term {
-                        RequirementTermUse::Field { name, .. }
-                        | RequirementTermUse::Variable { name, .. } => name.text.as_str(),
-                    })
-                    .collect();
+                let mut written: Vec<String> = Vec::new();
+                for term in &signature.requirements.terms {
+                    match term {
+                        RequirementTermUse::Field { name, .. } => written.push(name.text.clone()),
+                        RequirementTermUse::Variable { semantic_id, .. }
+                        | RequirementTermUse::Group { semantic_id, .. } => {
+                            written.extend(self.written_group_or_row(
+                                module.id,
+                                *semantic_id,
+                                term,
+                            ));
+                        }
+                    }
+                }
+                let written: Vec<&str> = written.iter().map(String::as_str).collect();
                 let row = &self.needs_rows[contract.needs.raw() as usize];
                 // `main`'s root check (E5002) already reports a need the runner
                 // does not close, which listing it would not fix.
@@ -1023,6 +1029,39 @@ impl TypedProject {
                 range,
                 message,
             ));
+        }
+    }
+
+    /// The names a `Variable` or `Group` term writes: a group's entries, or the
+    /// generic row parameter's own name.
+    fn written_group_or_row(
+        &self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        term: &RequirementTermUse,
+    ) -> Vec<String> {
+        let resolved = self
+            .resolved
+            .reference_resolution(module_id, semantic_id, Namespace::Type);
+        if let Some(ReferenceResolution::Resolved(symbol)) = resolved {
+            let symbol = self.resolved.symbol(symbol);
+            if symbol.kind == ProjectSymbolKind::NeedsGroup {
+                return crate::resolution::needs_group_declaration(&self.resolved.semantic, symbol)
+                    .map(|row| {
+                        row.terms
+                            .iter()
+                            .filter_map(|term| match term {
+                                RequirementTermUse::Field { name, .. } => Some(name.text.clone()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+        }
+        match term {
+            RequirementTermUse::Variable { name, .. } => vec![name.text.clone()],
+            _ => Vec::new(),
         }
     }
 
@@ -1681,6 +1720,11 @@ struct ProjectTypeChecker {
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
     bounded_inference_variables: HashSet<u32>,
+    /// Needs groups being expanded, so a group reached again through one of its
+    /// own entries' function types is reported (`T4104`, once per group)
+    /// instead of recursing.
+    expanding_groups: HashSet<SymbolId>,
+    cyclic_groups: HashSet<SymbolId>,
     /// The type each type alias names, once lowered.
     alias_types: HashMap<SymbolId, TypeId>,
     /// Aliases whose type is being lowered, so a cycle of aliases stops.
@@ -1904,6 +1948,8 @@ impl ProjectTypeChecker {
             expression_facts: HashMap::new(),
             fields: HashMap::new(),
             generic_kinds: HashMap::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
             generic_requirements: HashMap::new(),
             property_checks: Vec::new(),
             expression_site: None,
@@ -2945,6 +2991,8 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            expanding_groups: HashSet::new(),
+            cyclic_groups: HashSet::new(),
             alias_types: HashMap::new(),
             aliases_in_progress: HashSet::new(),
         }
@@ -3255,6 +3303,13 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), address);
                 }
             }
+            // Lowered for its own diagnostics (an entry named twice is `T4103`);
+            // each use expands it again where the clause is lowered.
+            ModuleDeclarationKind::NeedsGroup => {
+                if let Some(row) = &declaration.needs_group {
+                    self.lower_needs_row(module_id, row, &generic_symbols);
+                }
+            }
         }
     }
 
@@ -3392,7 +3447,8 @@ impl ProjectTypeChecker {
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
             | ModuleDeclarationKind::TypeAlias
-            | ModuleDeclarationKind::ProcessName => false,
+            | ModuleDeclarationKind::ProcessName
+            | ModuleDeclarationKind::NeedsGroup => false,
         }
     }
 
@@ -8724,49 +8780,41 @@ impl ProjectTypeChecker {
         let mut parameters = Vec::new();
         for term in &row.terms {
             match term {
-                RequirementTermUse::Variable { name, .. } => {
+                RequirementTermUse::Variable { semantic_id, name } => {
                     if let Some(symbol) = generics.get(&name.text).copied() {
                         self.constrain_generic(module_id, symbol, GenericKind::NeedsRow, name);
                         parameters.push(symbol);
+                    } else {
+                        self.expand_needs_group(module_id, *semantic_id, name, &mut entries);
                     }
+                }
+                RequirementTermUse::Group { semantic_id, path } => {
+                    self.expand_needs_group(module_id, *semantic_id, &path[1], &mut entries);
                 }
                 RequirementTermUse::Field {
                     semantic_id,
                     name,
                     interface,
                 } => {
-                    let Some(requirement) = self.find_symbol(
-                        module_id,
-                        Some(*semantic_id),
-                        ProjectSymbolKind::Requirement,
-                        &name.text,
-                    ) else {
+                    // A name an earlier term bound has no symbol of its own here.
+                    let Some(requirement) = self
+                        .find_symbol(
+                            module_id,
+                            Some(*semantic_id),
+                            ProjectSymbolKind::Requirement,
+                            &name.text,
+                        )
+                        .or_else(|| {
+                            entries
+                                .iter()
+                                .find(|entry| entry.lexical_name == name.text)
+                                .map(|entry| entry.requirement)
+                        })
+                    else {
                         continue;
                     };
                     let interface = self.lower_value_type(module_id, interface, generics);
-                    if let Some(existing) = entries
-                        .iter()
-                        .find(|entry: &&Need| entry.lexical_name == name.text)
-                    {
-                        if existing.interface != interface {
-                            self.type_error(
-                                module_id,
-                                "T4103",
-                                name,
-                                format!(
-                                    "requirement `{}` names incompatible interface types",
-                                    name.text
-                                ),
-                            );
-                        }
-                        continue;
-                    }
-                    entries.push(Need {
-                        requirement,
-                        lexical_name: name.text.clone(),
-                        interface,
-                        explained: false,
-                    });
+                    self.add_need(module_id, &mut entries, requirement, name, interface);
                 }
             }
         }
@@ -8777,6 +8825,128 @@ impl ProjectTypeChecker {
             entries,
             parameters,
         })
+    }
+
+    /// Adds one need to a row being lowered; a second entry under the same name
+    /// must name the same interface (`T4103`).
+    fn add_need(
+        &mut self,
+        module_id: ModuleId,
+        entries: &mut Vec<Need>,
+        requirement: SymbolId,
+        name: &crate::semantic::Name,
+        interface: TypeId,
+    ) {
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry: &&Need| entry.lexical_name == name.text)
+        {
+            if existing.interface != interface {
+                self.type_error(
+                    module_id,
+                    "T4103",
+                    name,
+                    format!(
+                        "requirement `{}` names incompatible interface types",
+                        name.text
+                    ),
+                );
+            }
+            return;
+        }
+        entries.push(Need {
+            requirement,
+            lexical_name: name.text.clone(),
+            interface,
+            explained: false,
+        });
+    }
+
+    /// A needs group written in a clause is only a name for its entries
+    /// (decisions.md, 2026-11-22): each entry is added as if written there, its
+    /// interface read in the group's own module, and bound in the body to the
+    /// requirement resolution gave the term. A conflict with another term is
+    /// reported at the term (`at`); one inside the group is its declaration's.
+    fn expand_needs_group(
+        &mut self,
+        module_id: ModuleId,
+        semantic_id: SemanticId,
+        at: &crate::semantic::Name,
+        entries: &mut Vec<Need>,
+    ) {
+        let Some(group) = self.resolved_type_symbol(module_id, semantic_id) else {
+            return;
+        };
+        let group_symbol = self.resolved.symbol(group).clone();
+        if group_symbol.kind != ProjectSymbolKind::NeedsGroup {
+            return;
+        }
+        let Some(group_module) = group_symbol.module_id else {
+            return;
+        };
+        let Some(row) =
+            crate::resolution::needs_group_declaration(&self.resolved.semantic, &group_symbol)
+                .cloned()
+        else {
+            return;
+        };
+        if !self.expanding_groups.insert(group) {
+            if !self.cyclic_groups.insert(group) {
+                return;
+            }
+            self.type_error(
+                module_id,
+                "T4104",
+                at,
+                format!(
+                    "needs group `{}` reaches itself through an entry's function type",
+                    group_symbol.name
+                ),
+            );
+            return;
+        }
+        let no_generics = HashMap::new();
+        let mut group_entries: Vec<(SymbolId, String, TypeId)> = Vec::new();
+        for term in &row.terms {
+            let RequirementTermUse::Field {
+                semantic_id: entry_id,
+                name,
+                interface,
+            } = term
+            else {
+                continue;
+            };
+            let requirement = self
+                .find_symbol(
+                    module_id,
+                    Some(semantic_id),
+                    ProjectSymbolKind::Requirement,
+                    &name.text,
+                )
+                .or_else(|| {
+                    self.find_symbol(
+                        group_module,
+                        Some(*entry_id),
+                        ProjectSymbolKind::Requirement,
+                        &name.text,
+                    )
+                });
+            let Some(requirement) = requirement else {
+                continue;
+            };
+            let interface = self.lower_value_type(group_module, interface, &no_generics);
+            if !group_entries.iter().any(|(_, entry, _)| *entry == name.text) {
+                group_entries.push((requirement, name.text.clone(), interface));
+            }
+        }
+        self.expanding_groups.remove(&group);
+        for (requirement, text, interface) in group_entries {
+            let name = crate::semantic::Name {
+                text,
+                range: at.range,
+            };
+            self.add_need(module_id, entries, requirement, &name, interface);
+        }
     }
 
     fn builtin_type(&mut self, name: &str) -> TypeId {
@@ -11271,6 +11441,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::Constant => ProjectSymbolKind::Constant,
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
             ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
+            ModuleDeclarationKind::NeedsGroup => ProjectSymbolKind::NeedsGroup,
             ModuleDeclarationKind::TypeAlias => ProjectSymbolKind::TypeAlias,
         };
         self.find_symbol(

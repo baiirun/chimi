@@ -231,6 +231,7 @@ pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
         ModuleDeclarationKind::Constant => "const",
         ModuleDeclarationKind::NativeType | ModuleDeclarationKind::TypeAlias => "type",
         ModuleDeclarationKind::ProcessName => "process name",
+        ModuleDeclarationKind::NeedsGroup => "needs",
     }
 }
 

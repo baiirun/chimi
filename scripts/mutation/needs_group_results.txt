@@ -1,0 +1,5 @@
+needs_group_mutations.py, 2026-11-22: 13 mutants, 13 killed.
+Run in parts (a container restart cut two runs short): 9 killed at 6731d77,
+and the remaining 4 killed at adfea7f after the formatter test was tightened
+(the "group item joins the line above" mutant survived the first test, which
+used `pub needs`; a private group after an import line now pins it).
