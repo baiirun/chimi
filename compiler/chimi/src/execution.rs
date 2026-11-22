@@ -382,6 +382,17 @@ impl ExecutionReport {
                 output.push(':');
                 write_json_attribute(&mut output, &attribute.value);
             }
+            // The interpreter has no execution clock, so no time passes:
+            // every event is at the origin, and the origin is Unix time 0, as
+            // under the native virtual clock without `--clock-start`. Written
+            // here rather than stored, since a run can hold millions of events.
+            if !event.attributes.is_empty() {
+                output.push(',');
+            }
+            output.push_str("\"time_ns\":0");
+            if event.kind == EventKind::ComputationStarted {
+                output.push_str(",\"start_unix_ns\":0");
+            }
             output.push_str("}}\n");
         }
         output

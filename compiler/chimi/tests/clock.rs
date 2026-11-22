@@ -782,6 +782,96 @@ fn timeout_scope_firing_is_a_boundary_event() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// An integer attribute of a telemetry line.
+fn integer_attribute(line: &str, name: &str) -> i64 {
+    let key = format!("\"{name}\":");
+    let start = line.find(&key).unwrap_or_else(|| panic!("no {name} in {line}")) + key.len();
+    line[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '-')
+        .collect::<String>()
+        .parse()
+        .expect("an integer attribute")
+}
+
+/// The semantic events, as (event, operation, time_ns), in sequence order.
+fn semantic_times(telemetry: &str) -> Vec<(String, String, i64)> {
+    telemetry
+        .lines()
+        .filter(|line| line.contains("\"operation\":"))
+        .map(|line| {
+            let event = line.split("\"event\":\"").nth(1).unwrap().split('"').next().unwrap();
+            let operation = line.split("\"operation\":\"").nth(1).unwrap().split('"').next().unwrap();
+            (event.to_owned(), operation.to_owned(), integer_attribute(line, "time_ns"))
+        })
+        .collect()
+}
+
+// Every semantic event carries the execution time it happened at, and the
+// computation's start carries the Unix time of the clock's origin. Rejects an
+// event without a time, a time that does not include a sleep before it (a
+// dependency call's included), a computation that ends before its last
+// operation, and a start that ignores `--clock-start` or the real wall clock.
+#[test]
+fn semantic_events_carry_their_execution_times() {
+    let body = concat!(
+        "interface Store { load: fn() -> Int }\n",
+        "fn nap() -> Int {\n  Clock.sleep(Duration.milliseconds(5))\n  1\n}\n",
+        "fn loaded() -> Int needs { clock: Clock.Clock, store: Store } {\n  let first = nap() + store.load()\n  first + nap()\n}\n",
+        "pub fn main() -> Int {\n",
+        "  let run = loaded using { store: { load: fn() -> Int { 1 } } }\n",
+        "  run()\n",
+        "}\n",
+    );
+    let scratch = scratch_directory("event-times");
+    let executable = build_native(&scratch, "event-times", body);
+    let result = run(&executable, &scratch, "default", "full", &["--clock=virtual"]);
+    assert_eq!(result.outcome, success("3"));
+    let times = semantic_times(&result.telemetry);
+    let first = times.first().expect("events");
+    assert_eq!((first.0.as_str(), first.2), ("computation_started", 0));
+    let start_line = result.telemetry.lines().find(|line| line.contains("computation_started")).unwrap();
+    assert_eq!(integer_attribute(start_line, "start_unix_ns"), 0);
+    let last = times.last().expect("events");
+    assert_eq!((last.0.as_str(), last.2), ("computation_completed", 10_000_000));
+    let completed_calls = times
+        .iter()
+        .filter(|(event, operation, _)| event == "operation_completed" && operation == "call")
+        .map(|(_, _, time)| *time)
+        .collect::<Vec<_>>();
+    assert!(
+        completed_calls.contains(&5_000_000) && completed_calls.contains(&10_000_000),
+        "{times:?}"
+    );
+    let dependency = times
+        .iter()
+        .find(|(event, _, _)| event == "dependency_called")
+        .expect("the store call");
+    assert_eq!(dependency.2, 5_000_000, "the store is called after the first nap");
+    assert!(times.windows(2).all(|pair| pair[0].2 <= pair[1].2), "{times:?}");
+
+    let started = run(
+        &executable,
+        &scratch,
+        "started",
+        "full",
+        &["--clock=virtual", "--clock-start=2026-11-10T09:30:00Z"],
+    );
+    let start_line = started.telemetry.lines().find(|line| line.contains("computation_started")).unwrap();
+    assert_eq!(integer_attribute(start_line, "start_unix_ns"), 1_794_303_000_000_000_000);
+    assert_eq!(semantic_times(&started.telemetry), times, "the start moves no event");
+
+    let real = run(&executable, &scratch, "real", "full", &[]);
+    let start_line = real.telemetry.lines().find(|line| line.contains("computation_started")).unwrap();
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    let start_unix = integer_attribute(start_line, "start_unix_ns");
+    assert!(start_unix <= wall && wall - start_unix < 120_000_000_000, "{start_unix} vs {wall}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // ----- Interpreter ----------------------------------------------------------
 
 // The interpreter has no scheduler clock. Rejects one that runs a timeout or
