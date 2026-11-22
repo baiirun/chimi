@@ -1,0 +1,20 @@
+# mutation run at ac1c7ed80624042d808c46da3751c259d43ef567
+# carrier_peak_mutations.py: 8 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- across_carrier_threads] (97s)
+KILLED       a fall is never folded [runtime_state -- across_carrier_threads] (43s)
+KILLED       a fragment fall is never folded [runtime_state -- across_carrier_threads] (39s)
+KILLED       the report keeps the largest carrier peak [runtime_state -- across_carrier_threads] (40s)
+KILLED       a fold never raises the peak [runtime_state -- across_carrier_threads] (43s)
+SURVIVED     every change folds at once [runtime_state -- across_carrier_threads] (44s)
+KILLED       a fold forgets what it folded [runtime_state -- across_carrier_threads] (39s)
+SURVIVED     the report ignores the footprint at exit [runtime_state -- across_carrier_threads] (41s)
+KILLED       a new young chunk never folds [runtime_state -- across_carrier_threads] (45s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+#
+# The two survivors:
+# - "every change folds at once" is equivalent in behaviour: folding on every
+#   change is exact, only slower (one shared atomic per allocation).
+# - "the report ignores the footprint at exit" changes the peak by less than
+#   one carrier's unfolded change, which is inside the tolerance; it only
+#   matters for the "never below the footprint at exit" promise, which needs
+#   the footprint at exit to be within the slack of the peak.
