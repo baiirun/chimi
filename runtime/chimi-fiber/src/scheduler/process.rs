@@ -1468,7 +1468,7 @@ impl Scheduler {
     /// restarted nested supervisor rebuilds its members under new
     /// memberships, so they may land on other carriers.
     fn membership_home(&self, membership: MembershipId) -> super::ready::Carrier {
-        let carriers = u64::from(self.ready.carriers());
+        let carriers = u64::from(self.shards.carriers());
         let home = u32::try_from(membership.get() % carriers).expect("below the carrier count");
         super::ready::Carrier(home)
     }
@@ -1921,7 +1921,7 @@ impl Scheduler {
                 break;
             }
             let carrier = self.tasks[&task].carrier;
-            self.ready.remove(carrier, task);
+            self.shards.remove_ready(carrier, task);
             self.run(task);
         }
         let task = self.kernel.incarnations[&incarnation].task;
@@ -2387,7 +2387,7 @@ impl Scheduler {
         (
             self.kernel.incarnations.len(),
             self.blocked_plan_count(),
-            !self.ready.is_empty() || !self.jobs.is_empty() || self.timers.earliest().is_some(),
+            !self.shards.no_ready() || !self.shards.no_jobs() || self.timers.earliest().is_some(),
         )
     }
 

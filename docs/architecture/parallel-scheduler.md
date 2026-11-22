@@ -1241,6 +1241,9 @@ the gates measure, so it goes first.
          `ChannelRegistry` until 4d-5.
      - 4d-5: a channel operation moves into its task's record, so channel
        state is per channel and per task.
+     - 4d-5 dropped: a channel operation is keyed by its task, so it can
+       split by carrier as the task table does, without moving into the
+       task's record.
      - 4d-6, in parts: a `Shard` per carrier holding its ready queue, jobs,
        parked flag and wake mark; then tasks (a move moves the record);
        then incarnations, which follow their task; then channels, in their
@@ -1250,6 +1253,11 @@ the gates measure, so it goes first.
        Carrier 0's housekeeping writes `Signals` (the latch, delivery,
        timers once the root ends), so it takes every lock when a signal
        word is set or the root has ended.
+       - 4d-6a as landed: `scheduler/shard.rs`. `Shards` holds one `Shard`
+         per carrier with its ready queue, jobs and parked flag, which were
+         three vectors indexed by carrier (`ReadyQueues`, `Jobs`,
+         `parked`). The wake marks stay in `Wakes` beside the pipes they
+         write. No behaviour change.
 5. **4e: a lock per shard.** A request whose state is all in its own
    carrier's shard takes only that shard's lock: a send to a local
    mailbox, a receive, a channel operation on a local channel, a yield or
