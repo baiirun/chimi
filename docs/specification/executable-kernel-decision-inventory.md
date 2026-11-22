@@ -268,9 +268,11 @@ without a separate decision.
 
 - Effect tracking for async suspension, state, IO, resources, and concurrency;
   dependency needs are not a substitute for programming-language effects.
-- Type aliases and `newtype`-like declarations. Structs, enums, and anonymous
-  records are sufficient for every accepted kernel program; additional named
-  data forms require a concrete future use case.
+- `newtype`-like declarations. Structs, enums, and anonymous records are
+  sufficient for every accepted kernel program; additional named data forms
+  require a concrete future use case. Type aliases were accepted on
+  2026-11-22 for naming settings records and failure sets (CHI-279; see
+  decisions.md).
 - The blessed structured-concurrency, cancellation, supervision, backpressure,
   and fault-isolation APIs.
 - Production durability, poison-job policy, recovery, queues, scheduling, and
