@@ -1,0 +1,15 @@
+# mutation run at f2b0d976ca14dca304684e2335e736f6b12d6a99
+# otel_export_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [std_otel] (68s)
+KILLED       settings are not checked [std_otel] (68s)
+KILLED       the last push is bounded by timeout [std_otel] (70s)
+KILLED       no push when the body ends [std_otel] (72s)
+KILLED       no periodic push [std_otel] (71s)
+KILLED       recording is not turned on first [std_otel] (71s)
+KILLED       a failed push is not counted [std_otel] (70s)
+KILLED       any status counts as pushed [std_otel] (70s)
+KILLED       the settings' headers are not sent [std_otel] (68s)
+KILLED       metrics go to the endpoint's root [std_otel] (71s)
+KILLED       the last push is not bounded by flush_within [std_otel] (88s)
+KILLED       the service name is not sent [std_otel] (71s)
+# result: every mutant killed
