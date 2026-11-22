@@ -437,20 +437,25 @@ fn log_line(level: i64, message: &str, fields: &str) -> String {
         2 => "warn",
         _ => "error",
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    // Milliseconds since the epoch, negative before 1970, as the native
+    // runtime reads CLOCK_REALTIME.
+    let millis = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
+        Err(before) => -i64::try_from(before.duration().as_millis()).unwrap_or(i64::MAX),
+    };
     format!(
         "{{\"time\":\"{}\",\"level\":\"{level}\",\"message\":{message},\"fields\":{fields}}}\n",
-        utc_millis(now.as_secs(), now.subsec_millis())
+        utc_millis(millis)
     )
 }
 
 /// RFC 3339 UTC with milliseconds, `2026-11-22T06:00:00.000Z`, by the proleptic
 /// Gregorian calendar.
-fn utc_millis(seconds: u64, millis: u32) -> String {
-    let days = (seconds / 86_400) as i64;
-    let of_day = seconds % 86_400;
+fn utc_millis(millis_since_epoch: i64) -> String {
+    let seconds = millis_since_epoch.div_euclid(1000);
+    let millis = millis_since_epoch.rem_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
     // civil_from_days (Howard Hinnant), as the native runtime's timestamp text.
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
@@ -473,8 +478,10 @@ fn utc_millis(seconds: u64, millis: u32) -> String {
 mod log_line_tests {
     #[test]
     fn utc_millis_follows_the_calendar() {
-        assert_eq!(super::utc_millis(0, 0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(super::utc_millis(951_782_400, 7), "2000-02-29T00:00:00.007Z");
-        assert_eq!(super::utc_millis(1_795_327_200, 250), "2026-11-22T06:00:00.250Z");
+        assert_eq!(super::utc_millis(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(super::utc_millis(951_782_400_007), "2000-02-29T00:00:00.007Z");
+        assert_eq!(super::utc_millis(1_795_327_200_250), "2026-11-22T06:00:00.250Z");
+        assert_eq!(super::utc_millis(-750), "1969-12-31T23:59:59.250Z");
+        assert_eq!(super::utc_millis(10_000_000_000_250), "2286-11-20T17:46:40.250Z");
     }
 }

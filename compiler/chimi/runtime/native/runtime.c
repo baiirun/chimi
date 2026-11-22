@@ -6848,10 +6848,15 @@ typedef struct {
   ConsoleQueue *queue;
 } ConsoleStream;
 
-static ConsoleQueue console_queues[2];
-static ConsoleStream console_streams[2] = {
+enum { CONSOLE_STREAM_COUNT = 3 };
+static ConsoleQueue console_queues[CONSOLE_STREAM_COUNT];
+/* Standard output, standard error, and std/log's --log-file (fd -1 when
+   there is none), which is written like the other two so a slow reader never
+   blocks a carrier and its lines never tear or interleave. */
+static ConsoleStream console_streams[CONSOLE_STREAM_COUNT] = {
   {.fd = STDOUT_FILENO, .name = "stdout"},
   {.fd = STDERR_FILENO, .name = "stderr"},
+  {.fd = -1, .name = "log"},
 };
 /* Guards both streams and queues, since a task on any carrier writes lines.
    A writer holds it except while it parks. console_drain_all runs at exit,
@@ -6878,19 +6883,24 @@ enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
 
 static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
   if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
-  stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
-  stream->queue = &console_queues[stream->fd == STDOUT_FILENO ? 0 : 1];
+  size_t index = (size_t)(stream - console_streams);
+  if (!stream->file) stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
+  stream->queue = &console_queues[index];
   struct stat status;
   bool known = fstat(stream->fd, &status) == 0;
   stream->socket = known && S_ISSOCK(status.st_mode);
   stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !S_ISREG(status.st_mode)
     ? CONSOLE_QUEUED : CONSOLE_DIRECT;
-  if (stream->mode == CONSOLE_QUEUED && stream->fd == STDERR_FILENO) {
-    ConsoleStream *output = &console_streams[0];
+  /* A stream naming the same open file as an earlier one shares its queue. */
+  for (size_t earlier = 0; stream->mode == CONSOLE_QUEUED && earlier < index; ++earlier) {
+    ConsoleStream *other_stream = &console_streams[earlier];
     struct stat other;
-    if (console_mode(runtime, output) == CONSOLE_QUEUED && fstat(output->fd, &other) == 0 &&
-        other.st_dev == status.st_dev && other.st_ino == status.st_ino)
-      stream->queue = output->queue;
+    if (other_stream->fd >= 0 && console_mode(runtime, other_stream) == CONSOLE_QUEUED &&
+        fstat(other_stream->fd, &other) == 0 && other.st_dev == status.st_dev &&
+        other.st_ino == status.st_ino) {
+      stream->queue = other_stream->queue;
+      break;
+    }
   }
   return stream->mode;
 }
@@ -6962,7 +6972,7 @@ static void console_drain_blocking(const ConsoleStream *stream) {
 static void console_drain_all(void) {
   bool entered = !console_lock_held;
   if (entered) console_enter();
-  for (size_t index = 0; index < 2; ++index)
+  for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
     if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
   if (entered) console_leave();
 }
@@ -7007,10 +7017,15 @@ static int console_write_line_locked(const ChimiRuntime *runtime, ConsoleStream 
                                      const char *text, size_t length) {
   if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
     errno = 0;
-    if (fwrite(text, 1, length, stream->file) != length || fputc('\n', stream->file) == EOF ||
-        fflush(stream->file) != 0)
-      return errno ? errno : EIO;
-    return 0;
+    /* The newline goes out even after a short write, so a later line never
+       joins a broken one. */
+    bool written = fwrite(text, 1, length, stream->file) == length;
+    written = fputc('\n', stream->file) != EOF && written;
+    written = fflush(stream->file) == 0 && written;
+    if (written) return 0;
+    int error = errno ? errno : EIO;
+    clearerr(stream->file);
+    return error;
   }
   ConsoleQueue *queue = stream->queue;
   /* A body ending under a terminal cancel must not park (CHI-265), and must
@@ -7093,13 +7108,16 @@ static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrin
   const char *name = names[level < 0 ? 0 : level > 3 ? 3 : level];
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
-  char time[48];
-  int64_t millis = (int64_t)now.tv_nsec / 1000000;
-  /* timestamp_text trims the fraction; a log line keeps three digits. */
-  timestamp_text((int64_t)now.tv_sec * 1000000000, time);
-  time[strlen(time) - 1] = '\0';
+  int64_t seconds = (int64_t)now.tv_sec, millis = (int64_t)now.tv_nsec / 1000000;
+  int64_t days = seconds / 86400, of_day = seconds % 86400;
+  if (of_day < 0) { of_day += 86400; days -= 1; }
+  int64_t year, month, day;
+  civil_from_days(days, &year, &month, &day);
+  char time[64];
+  snprintf(time, sizeof time, "%04" PRId64 "-%02" PRId64 "-%02" PRId64 "T%02" PRId64 ":%02" PRId64 ":%02" PRId64,
+           year, month, day, of_day / 3600, of_day / 60 % 60, of_day % 60);
   size_t message_length = arguments[1]->as.text.length, fields_length = arguments[2]->as.text.length;
-  size_t capacity = 96 + message_length + fields_length;
+  size_t capacity = 128 + message_length + fields_length;
   char *line = malloc(capacity);
   if (!line) exhausted_memory();
   int head = snprintf(line, capacity, "{\"time\":\"%s.%03" PRId64 "Z\",\"level\":\"%s\",\"message\":", time,
@@ -7112,15 +7130,8 @@ static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrin
   memcpy(line + length, arguments[2]->as.text.bytes, fields_length);
   length += fields_length;
   line[length++] = '}';
-  int written = 0;
-  if (runtime->log_file) {
-    console_enter();
-    if (fwrite(line, 1, length, runtime->log_file) == length) fputc('\n', runtime->log_file);
-    fflush(runtime->log_file);
-    console_leave();
-  } else {
-    written = console_write_line(runtime, &console_streams[1], line, length);
-  }
+  ConsoleStream *stream = &console_streams[runtime->log_file ? 2 : 1];
+  int written = console_write_line(runtime, stream, line, length);
   free(line);
   if (written < 0) return cancelled();
   return runtime->cancel ? cancelled() : success(void_value());
@@ -13403,6 +13414,18 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (runtime.outcome) fclose(runtime.outcome);
       return 74;
     }
+    /* The same file under another spelling (`./out.json`) is still a clash. */
+    struct stat log_status, report_status;
+    FILE *reports[] = {runtime.telemetry, runtime.outcome};
+    for (size_t report = 0; report < 2; ++report)
+      if (reports[report] && fstat(fileno(runtime.log_file), &log_status) == 0 &&
+          fstat(fileno(reports[report]), &report_status) == 0 && log_status.st_dev == report_status.st_dev &&
+          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {
+        fputs("the log file must be distinct from the runner's report files\n", stderr);
+        return 64;
+      }
+    console_streams[2].fd = fileno(runtime.log_file);
+    console_streams[2].file = runtime.log_file;
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
@@ -13472,7 +13495,10 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   release_binding_handles();
   /* A log line already went out whole; a failed close loses nothing the
      program could act on. */
-  if (runtime.log_file) fclose(runtime.log_file);
+  if (runtime.log_file) {
+    console_streams[2].fd = -1;
+    fclose(runtime.log_file);
+  }
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) print_outcome(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);

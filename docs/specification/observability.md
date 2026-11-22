@@ -68,7 +68,9 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
   supplying it with `using` is `T4400`.
 - Writing an entry MUST NOT fail or defect for any reason the program could
   act on: the provider's `write` returns `Void` with no failures, and a line
-  that cannot be written is lost.
+  that cannot be written is lost. As with standard error, a pipe whose reader
+  has gone raises `SIGPIPE`, which ends the program unless its parent
+  ignores the signal.
 
 ### The runner's provider
 
@@ -91,8 +93,14 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
   the order they were written in and never interleave.
 - The runner option `--log-file=<path>` MUST send the lines to that file
   instead, appended to it and created if missing.
-  - The path MUST differ from the runner's report files (telemetry, outcome,
-    memory report, profile); a clash is invalid configuration, exit 64.
+  - The file is written the way standard error is: a pipe or terminal
+    through its own queue, so a slow reader never blocks other tasks and a
+    pending write can be cancelled, and a regular file directly. A log file
+    that is the same open file as standard output or error shares that
+    stream's queue, so lines never tear.
+  - The file MUST differ from the runner's report files (telemetry, outcome,
+    memory report, profile), compared as files rather than spellings of the
+    path; a clash is invalid configuration, exit 64.
   - A file that cannot be opened is a sink failure, exit 74, before `main`
     runs.
 - The runner option `--log-level=debug|info|warn|error` (default `info`)
@@ -119,7 +127,8 @@ fn charge(order: Int, cents: Int) -> Void needs { log: Log.Log } {
 | --- | --- |
 | One JSON line per kept entry on stderr; member order; escaping; last value of a repeated key; order against `write_error` lines | `tests/std_log.rs` `the_runner_writes_one_json_line_per_entry_to_stderr` |
 | `--log-level` filters, and rejects a bad level with 64 | `tests/std_log.rs` `the_log_level_option_filters_entries` |
-| `--log-file` appends there, must differ from the report files (64), and fails to open with 74 | `tests/std_log.rs` `the_log_file_option_appends_lines_there` |
+| `--log-file` appends there, must differ from the report files even when spelled differently (64), and fails to open with 74 | `tests/std_log.rs` `the_log_file_option_appends_lines_there` |
+| A log file whose reader falls behind does not block the program or a timeout | `tests/std_log.rs` `a_slow_log_file_reader_does_not_block_the_program` |
 | Level functions build the entry and reach a fake through `using`, on both backends | `tests/std_log.rs` `a_test_records_entries_through_a_fake` |
 | A test without a `log` provider is `T4400` | `tests/std_log.rs` `a_test_without_a_log_provider_is_rejected` |
 | The interpreter's provider writes the same lines and takes the same settings | `tests/std_log.rs` `the_interpreter_writes_the_same_lines` |

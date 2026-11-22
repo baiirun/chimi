@@ -171,8 +171,56 @@ fn the_log_file_option_appends_lines_there() {
     let clash = runner(&program, &[&option, &outcome]);
     assert_eq!(clash.status, Some(64));
     assert_eq!(clash.stderr, "the log file must be distinct from the runner's report files\n");
+    let fresh = format!("--log-file={}/fresh.log", scratch.0.display());
+    let respelled = format!("--outcome-file={}/./fresh.log", scratch.0.display());
+    let clash = runner(&program, &[&fresh, &respelled]);
+    assert_eq!(clash.status, Some(64), "the same file under another spelling");
     let missing = runner(&program, &["--log-file=/nonexistent/dir/app.log"]);
     assert_eq!(missing.status, Some(74));
+}
+
+const SLOW_READER: &str = r#"import std/clock.{Clock}
+import std/duration as Duration
+import std/io.{Console}
+import std/list as List
+import std/log as Log
+import std/task as Task
+import std/text as Text
+
+pub fn main() -> Void needs { console: Console, clock: Clock, log: Log.Log } {
+  let line = Text.repeat("y", 10000)
+  let flood = fn() {
+    List.each(List.repeat(0, 100000), fn(_) { Log.info(line, []) })
+    "finished"
+  }
+  let ended = case Task.timeout(flood, Duration.milliseconds(300)) {
+    Success(ended) -> ended
+    Failure(_) -> "timed out"
+  }
+  console.write_line(ended)
+}
+"#;
+
+// Rejects a log file written with blocking writes: a reader that falls behind
+// must not stall the program or keep a timeout from firing.
+#[test]
+fn a_slow_log_file_reader_does_not_block_the_program() {
+    let scratch = Scratch::new("slow-reader", SLOW_READER);
+    let program = scratch.build();
+    let fifo = scratch.0.join("log.fifo");
+    let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success());
+    let mut reader = Command::new("sh")
+        .arg("-c")
+        // Opens the pipe at once, then reads nothing for two seconds.
+        .arg("exec 3<\"$0\"; sleep 2; cat <&3 > /dev/null")
+        .arg(&fifo)
+        .spawn()
+        .unwrap();
+    let option = format!("--log-file={}", fifo.display());
+    let output = runner(&program, &["--clock=real", &option]);
+    reader.wait().unwrap();
+    assert_eq!(output.stdout, "timed out\n", "{}", output.stderr);
 }
 
 const TESTS: &str = r#"import std/json as Json
@@ -252,6 +300,11 @@ fn the_interpreter_writes_the_same_lines() {
     };
     let config = || ExecutionConfig::new("log").unwrap();
     let report = run(config());
+    assert_eq!(
+        lines(&report.application_stderr.replace("plain stderr\n", "")),
+        [STARTED, SLOW, FAILED]
+    );
+    let report = run(config().with_log_level("info").unwrap());
     assert_eq!(
         lines(&report.application_stderr.replace("plain stderr\n", "")),
         [STARTED, SLOW, FAILED]
