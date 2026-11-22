@@ -287,7 +287,8 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 | The lockfile reads back what it writes, and rejects anything else | `manifest::lock::tests` |
 
 Mutation lists: `scripts/mutation/packages_mutations.py`,
-`packages_editor_mutations.py` and `workspaces_mutations.py`.
+`packages_editor_mutations.py`, `workspaces_mutations.py` and
+`git_dependencies_mutations.py`.
 
 ## Notes
 

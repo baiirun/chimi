@@ -1,0 +1,20 @@
+# mutation run at 4dff349ec81f121252948de30c3811233d1efd78
+# git_dependencies_mutations.py: 13 mutants against compiler/chimi
+BASELINE ok  [packages] (99s)
+BASELINE ok  [lib -- manifest::lock] (58s)
+KILLED       a build ignores the lock's source [packages] (36s)
+KILLED       an update keeps a named package's pin [packages] (7s)
+KILLED       an update re-resolves every pin [packages] (29s)
+KILLED       an update accepts any package name [packages] (32s)
+SURVIVED     offline fetches anyway [packages] (38s)
+KILLED       a git directory may leave its repository [packages] (8s)
+KILLED       two git sources for one name are accepted [packages] (6s)
+KILLED       a member's lock is written beside it [packages] (21s)
+KILLED       the cache checks out the branch tip, not the commit [packages] (20s)
+KILLED       an unchanged lock is never rewritten and changes are not printed [packages] (5s)
+KILLED       the lock skips the directory [lib -- manifest::lock] (4s)
+STALE        the lock accepts a short commit: edit text occurs 0 times in src/manifest/lock.rs
+KILLED       quotes are written raw [lib -- manifest::lock] (4s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# rerun after adding the offline-with-cached-repository test and retargeting the short-commit mutant at is_commit_id: both killed; every mutant killed
