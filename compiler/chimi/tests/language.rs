@@ -13769,3 +13769,181 @@ fn a_need_whose_type_is_not_an_interface_is_rejected() {
         "\"outcome\":\"success\",\"value\":7"
     );
 }
+
+// CHI-297: a needs row parameter's needs are the caller's. A `using` may not
+// supply a name to an expression whose row also has a parameter that might
+// carry that name (T4225), and a call may not bind a parameter its callee
+// takes a name off to a row that has that name (T4226). Otherwise the one
+// provider of the name would serve both sides.
+const ROW_PRELUDE: &str = r#"
+fn twice<R>(h: fn() -> Text needs R) -> Text needs R + { greeter: Greeter } { "${greeter.greet("own")} / ${h()}" }
+
+fn fixing<R>(f: fn() -> Text needs R + { greeter: Greeter }) -> Text needs R { f() using { greeter: g("fixed") } }
+"#;
+
+fn row_program(body: &str) -> String {
+    format!("{BOUND_PRELUDE}{ROW_PRELUDE}{body}")
+}
+
+#[test]
+fn using_cannot_supply_a_name_a_needs_row_parameter_may_carry() {
+    let hidden_by_a_call = row_program(
+        r#"
+fn wrap<R>(h: fn() -> Text needs R) -> Text needs R { twice(h) using { greeter: g("inner") } }
+pub fn main() -> Text {
+  let run = fn() { "${hello()} | ${wrap(hello)}" }
+  run() using { greeter: g("caller") }
+}
+"#,
+    );
+    let hidden_by_a_lambda = row_program(
+        r#"
+fn wrap<R>(h: fn() -> Text needs R) -> Text needs R {
+  let k = fn() { "${hello()} ${h()}" }
+  k() using { greeter: g("inner") }
+}
+pub fn main() -> Text {
+  let run = fn() { wrap(hello) }
+  run() using { greeter: g("caller") }
+}
+"#,
+    );
+    for source in [hidden_by_a_call, hidden_by_a_lambda] {
+        let codes: Vec<String> = diagnostics_of(&source)
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect();
+        assert_eq!(codes, ["T4225"], "{source}");
+    }
+}
+
+#[test]
+fn a_call_cannot_bind_a_row_to_a_name_its_callee_takes_off_it() {
+    let widened = row_program(
+        r#"
+fn both<R>(f: fn() -> Text needs R + { greeter: Greeter }, k: fn() -> Text needs R) -> Text needs R {
+  "${f()} ; ${k()}" using { greeter: g("fixed") }
+}
+pub fn main() -> Text {
+  let run = fn() { both(hello, hello) }
+  run() using { greeter: g("caller") }
+}
+"#,
+    );
+    let through_a_generic = row_program(
+        r#"
+fn outer<Q>(h: fn() -> Text needs Q) -> Text needs Q { fixing(h) }
+pub fn main() -> Text {
+  let run = fn() { outer(hello) }
+  run() using { greeter: g("caller") }
+}
+"#,
+    );
+    for source in [widened, through_a_generic] {
+        let codes: Vec<String> = diagnostics_of(&source)
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect();
+        assert_eq!(codes, ["T4226"], "{source}");
+    }
+}
+
+// What stays allowed: supplying a name the row was declared without, a
+// generic that passes that declaration on, and a direct call where one scope
+// supplies the merged need for both sides.
+#[test]
+fn a_row_declared_without_a_name_may_have_it_supplied() {
+    let source = row_program(
+        r#"
+fn outer<Q>(h: fn() -> Text needs Q + { greeter: Greeter }) -> Text needs Q { fixing(h) }
+fn fixing_twice<R>(f: fn() -> Text needs R + { greeter: Greeter }) -> Text needs R { twice(f) using { greeter: g("fixed") } }
+pub fn main() -> Text {
+  let run = fn() { "${twice(hello)} | ${fixing(named)} | ${outer(named)} | ${fixing_twice(named)}" }
+  run() using { greeter: g("caller"), namer: { name: fn() { "nm" } } }
+}
+"#,
+    );
+    assert_eq!(
+        run_both("row-lacks-allowed", &source),
+        "\"outcome\":\"success\",\"value\":\"caller own / caller x | fixed nm | fixed nm | fixed own / fixed nm\""
+    );
+}
+
+// A generic interface member's row lacks what the member's own signature
+// takes off it, so a call through the member is checked like a direct call,
+// and a provider may not take off a need the member leaves on the row.
+#[test]
+fn a_generic_member_keeps_its_rows_lacks() {
+    let runner = |member: &str, call: &str| {
+        row_program(&format!(
+            r#"
+interface Runner {{
+  run: {member}
+}}
+fn both<R>(f: fn() -> Text needs R + {{ greeter: Greeter }}, k: fn() -> Text needs R) -> Text needs R {{
+  "${{f()}} ; ${{k()}}" using {{ greeter: g("fixed") }}
+}}
+fn plain() -> Text {{ "plain" }}
+fn go() -> Text needs {{ runner: Runner, greeter: Greeter }} {{ {call} }}
+pub fn main() -> Text {{
+  go() using {{ runner: {{ run: both }}, greeter: g("caller") }}
+}}
+"#
+        ))
+    };
+    let lacking =
+        "fn<R>(fn() -> Text needs R + { greeter: Greeter }, fn() -> Text needs R) -> Text needs R";
+    let forwarding = "fn<R>(fn() -> Text needs R + { greeter: Greeter }, fn() -> Text needs R) -> Text needs R + { greeter: Greeter }";
+    let codes = |source: &str| -> Vec<String> {
+        diagnostics_of(source)
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect()
+    };
+    let leak = runner(lacking, "runner.run(hello, hello)");
+    assert_eq!(codes(&leak), ["T4226"], "{leak}");
+    let provider = runner(forwarding, "runner.run(hello, hello)");
+    assert_eq!(codes(&provider), ["T4213"], "{provider}");
+    assert_eq!(
+        run_both(
+            "row-lacks-member",
+            &runner(lacking, "runner.run(hello, plain)")
+        ),
+        "\"outcome\":\"success\",\"value\":\"fixed x ; plain\""
+    );
+}
+
+// A wrapper whose result needs the name beside the row forwards the caller's
+// provider rather than supplying its own, so its row need not lack the name.
+#[test]
+fn a_row_whose_function_also_needs_the_name_may_carry_it() {
+    let source = row_program(
+        r#"
+fn traced<R>(op: fn() -> Text needs R + { greeter: Greeter }) -> Text needs R + { greeter: Greeter } {
+  "${greeter.greet("trace")}: ${op()}"
+}
+fn handler<Q>(h: fn() -> Text needs Q) -> Text needs Q + { greeter: Greeter } { traced(fn() { "${hello()} ${h()}" }) }
+pub fn main() -> Text {
+  let run = fn() { handler(hello) }
+  run() using { greeter: g("caller") }
+}
+"#,
+    );
+    assert_eq!(
+        run_both("row-lacks-forwarding", &source),
+        "\"outcome\":\"success\",\"value\":\"caller trace: caller x caller x\""
+    );
+    let supplying = row_program(
+        r#"
+fn traced<R>(op: fn() -> Text needs R + { greeter: Greeter }) -> Text needs R + { greeter: Greeter } {
+  op() using { greeter: g("inner") }
+}
+pub fn main() -> Text { traced(hello) using { greeter: g("caller") } }
+"#,
+    );
+    let codes: Vec<String> = diagnostics_of(&supplying)
+        .into_iter()
+        .map(|(code, _)| code)
+        .collect();
+    assert_eq!(codes, ["T4225"], "{supplying}");
+}

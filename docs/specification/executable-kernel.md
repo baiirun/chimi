@@ -732,8 +732,37 @@ A function value whose needs include a row parameter, such as `twice` in
 cannot have a provider fixed this way (`T4219`). The row's needs are the
 caller's, and a call may bind it to the same name, which would leave one
 need with two providers. A provider can be supplied where the value is
-called instead; a call that binds the row to the same name still merges the
-two needs into one there, an open problem tracked as CHI-297.
+called instead, under the next rule.
+
+A row parameter's needs are its caller's, so one name must never reach both
+sides of a row through one provider (CHI-297). A function's signature takes
+a name off a row parameter when a parameter's type writes them together, as
+`f: fn() -> Text needs R + { greeter: Greeter }` does: matching an argument
+there peels `greeter` off `R`, so `R` lacks `greeter`.
+
+- A `using` that supplies a name to an expression whose needs also include a
+  row parameter not known to lack that name is `T4225`. Inside
+  `fn wrap<R>(h: fn() -> Text needs R)`, `twice(h) using { greeter: g }` is
+  rejected, since a call `wrap(hello)` would give `hello` the inner provider.
+  Inside a function whose parameter is `needs R + { greeter: Greeter }`, the
+  same `using` is accepted.
+- A call that binds a row parameter its callee takes a name off to a row
+  with that name, or to another row parameter not known to lack it, is
+  `T4226`. This covers a second argument that widens the row and a generic
+  caller that passes its own row through.
+- A function's result row (`needs R + { clock: Clock }` on `retry`) takes
+  nothing off `R`: a callback that also needs `clock` shares the caller's
+  provider with the function, as one need. When the result row writes a name
+  beside `R` that a parameter's type also writes beside it, the function
+  forwards its caller's provider, so `R` does not lack the name:
+  `traced<R>(op: fn() -> Text needs R + { greeter: Greeter }) -> Text needs R + { greeter: Greeter }`
+  may be called from generic code with any row, and a `using` of `greeter`
+  on `op()` inside it is `T4225`.
+- A generic member of an interface or struct (`run: fn<R>(..)`) lacks names
+  by its own signature, and a call through the member is checked as a
+  direct call is. A provider of the member that takes a name off a row the
+  member leaves it on does not conform (`T4213`): the member's callers may
+  bind that row to the name.
 
 Each provider of a clause is evaluated where the `using` is written, before
 the expression, and a provider's own needs come from there: a provider never

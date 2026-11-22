@@ -8372,6 +8372,33 @@ impl ProjectTypeChecker {
             self.remove_supplied_needs(expression_fact.needs, &supplied_names);
         remaining_expression_needs =
             self.mark_explained_needs(remaining_expression_needs, &explained_names);
+        let evaluation = self.needs_rows[expression_fact.needs.raw() as usize].clone();
+        for need in &evaluation.entries {
+            if !supplied_names.contains(&need.lexical_name) {
+                continue;
+            }
+            let Some(parameter) = evaluation.parameters.iter().copied().find(|parameter| {
+                !self
+                    .row_lacked_names(*parameter)
+                    .contains(&need.lexical_name)
+            }) else {
+                continue;
+            };
+            let (_, range, _) = providers
+                .iter()
+                .find(|(name, _, _)| name == &need.lexical_name)
+                .expect("a supplied name is one of the providers");
+            let row = self.resolved.symbol(parameter).name.clone();
+            self.type_error_range(
+                module_id,
+                "T4225",
+                *range,
+                format!(
+                    "`using` cannot supply `{name}` here: this expression also needs row `{row}`, whose needs come from the caller and may include `{name}`; supply `{name}` only to the part that needs it, or take it off the row by writing the callback's type as `needs {row} + {{ {name}: ... }}`",
+                    name = need.lexical_name
+                ),
+            );
+        }
         let bound_names = self.needs_rows[latent_needs.raw() as usize]
             .entries
             .iter()
@@ -8418,6 +8445,180 @@ impl ProjectTypeChecker {
                 std::iter::once(remaining_expression_needs)
                     .chain(provider_facts.iter().map(|fact| fact.needs)),
             ),
+        }
+    }
+
+    /// The names a needs row parameter lacks: those the signature that
+    /// declares it takes off it in a parameter's type (`needs R + { name: I }`).
+    /// Unifying such a row with a function argument's row peels the names off
+    /// `R`, so `R` never carries them for that position; a call that binds
+    /// `R` otherwise must keep them off too (`T4226`). A name the signature's
+    /// own needs row also lists beside `R` is not lacked: the caller supplies
+    /// it, so `R` may carry it from the same provider.
+    fn row_lacked_names(&self, parameter: SymbolId) -> Vec<String> {
+        let Some(contract) = self.row_parameter_contract(parameter) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        for input in &contract.inputs {
+            self.collect_row_peels(*input, parameter, &mut names, &mut seen);
+        }
+        let own = &self.needs_rows[contract.needs.raw() as usize];
+        if own.parameters.contains(&parameter) {
+            names.retain(|name| !own.entries.iter().any(|need| &need.lexical_name == name));
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// The contract of the signature that declares row parameter `parameter`:
+    /// a function's own, or that of the generic member of an interface or
+    /// struct that binds it (`run: fn<R>(..)`).
+    fn row_parameter_contract(&self, parameter: SymbolId) -> Option<&CallableContract> {
+        let symbol = self.resolved.symbol(parameter);
+        let declared = symbol
+            .module_id
+            .zip(symbol.semantic_id)
+            .and_then(|key| self.declaration_types.get(&key))
+            .map(|declared| &self.types[declared.raw() as usize]);
+        match declared {
+            Some(
+                CanonicalType::Function(contract)
+                | CanonicalType::PolymorphicFunction { contract, .. },
+            ) => Some(contract),
+            _ => self.fields.values().flatten().find_map(|field| {
+                match &self.types[field.type_id.raw() as usize] {
+                    CanonicalType::PolymorphicFunction {
+                        parameters,
+                        contract,
+                    } if parameters.contains(&parameter) => Some(contract),
+                    _ => None,
+                }
+            }),
+        }
+    }
+
+    /// The names `parameter` lacks that `bound` may carry, each with what in
+    /// `bound` carries it: an entry, or a row parameter not known to lack it.
+    fn row_lack_clashes(&self, parameter: SymbolId, bound: NeedsRowId) -> Vec<(String, String)> {
+        let bound = &self.needs_rows[bound.raw() as usize];
+        self.row_lacked_names(parameter)
+            .into_iter()
+            .filter_map(|name| {
+                let clash = if bound.entries.iter().any(|need| need.lexical_name == name) {
+                    Some(format!("`{{ {name} }}`"))
+                } else {
+                    bound
+                        .parameters
+                        .iter()
+                        .find(|other| !self.row_lacked_names(**other).contains(&name))
+                        .map(|other| {
+                            format!(
+                                "`{}`, which may include `{name}`",
+                                self.resolved.symbol(*other).name
+                            )
+                        })
+                };
+                clash.map(|clash| (name, clash))
+            })
+            .collect()
+    }
+
+    /// `Runner.run` for a parameter bound by generic member `run` of
+    /// interface or struct `Runner`.
+    fn generic_member_name(&self, parameter: SymbolId) -> Option<String> {
+        self.fields.iter().find_map(|(owner, fields)| {
+            fields.iter().find_map(|field| {
+                matches!(
+                    &self.types[field.type_id.raw() as usize],
+                    CanonicalType::PolymorphicFunction { parameters, .. }
+                        if parameters.contains(&parameter)
+                )
+                .then(|| format!("{}.{}", self.resolved.symbol(*owner).name, field.name))
+            })
+        })
+    }
+
+    fn collect_row_peels(
+        &self,
+        type_id: TypeId,
+        parameter: SymbolId,
+        names: &mut Vec<String>,
+        seen: &mut HashSet<TypeId>,
+    ) {
+        if !seen.insert(type_id) {
+            return;
+        }
+        match &self.types[type_id.raw() as usize] {
+            CanonicalType::Function(contract)
+            | CanonicalType::PolymorphicFunction { contract, .. } => {
+                let row = &self.needs_rows[contract.needs.raw() as usize];
+                if row.parameters.contains(&parameter) {
+                    names.extend(row.entries.iter().map(|need| need.lexical_name.clone()));
+                }
+                for input in &contract.inputs {
+                    self.collect_row_peels(*input, parameter, names, seen);
+                }
+                self.collect_row_peels(contract.success, parameter, names, seen);
+            }
+            CanonicalType::Named { arguments, .. } => {
+                for argument in arguments {
+                    self.collect_row_peels(*argument, parameter, names, seen);
+                }
+            }
+            CanonicalType::Record(fields) => {
+                for field in fields {
+                    self.collect_row_peels(field.type_id, parameter, names, seen);
+                }
+            }
+            CanonicalType::Tuple(elements) => {
+                for element in elements {
+                    self.collect_row_peels(*element, parameter, names, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `T4226`: a call may not bind a needs row parameter to a row that has a
+    /// name the callee takes off that parameter, or to another row parameter
+    /// not known to lack it, since the one provider of that name would then
+    /// serve both the callee and the callback.
+    fn check_row_lacks(
+        &mut self,
+        module_id: ModuleId,
+        range: TextRange,
+        callee: Option<SymbolId>,
+        parameters: &[SymbolId],
+        substitution: &CallSubstitution,
+    ) {
+        for parameter in parameters {
+            if self.generic_kinds.get(parameter) != Some(&GenericKind::NeedsRow) {
+                continue;
+            }
+            let Some(bound) = substitution.needs.get(parameter) else {
+                continue;
+            };
+            for (name, clash) in self.row_lack_clashes(*parameter, *bound) {
+                let row = self.resolved.symbol(*parameter).name.clone();
+                let callee = callee.map_or_else(
+                    || {
+                        self.generic_member_name(*parameter)
+                            .unwrap_or_else(|| self.generic_owner_name(*parameter))
+                    },
+                    |symbol| self.callable_display_name(symbol),
+                );
+                self.type_error_range(
+                    module_id,
+                    "T4226",
+                    range,
+                    format!(
+                        "row `{row}` of `{callee}` cannot include `{name}`, because `{callee}` takes `{name}` off it (`needs {row} + {{ {name}: ... }}`); this call binds `{row}` to {clash}"
+                    ),
+                );
+            }
         }
     }
 
@@ -8681,8 +8882,22 @@ impl ProjectTypeChecker {
                     .get(parameter)
                     .is_some_and(|argument| self.type_mentions_generics(*argument, parameters))
         });
-        constrains_member_parameter.then_some(
-            "it compares or orders a value of a member type parameter, which the interface does not promise",
+        if constrains_member_parameter {
+            return Some(
+                "it compares or orders a value of a member type parameter, which the interface does not promise",
+            );
+        }
+        // A provider that takes a need off one of its rows (`T4225`) may supply
+        // that need itself, which is sound only if every caller of the member
+        // keeps it off the row too.
+        let takes_off_more = own.iter().any(|parameter| {
+            substitution
+                .needs
+                .get(parameter)
+                .is_some_and(|bound| !self.row_lack_clashes(*parameter, *bound).is_empty())
+        });
+        takes_off_more.then_some(
+            "it takes a need off a needs row that the interface member leaves on it (`needs R + { name: ... }` in the provider only)",
         )
     }
 
@@ -9686,6 +9901,7 @@ impl ProjectTypeChecker {
                     },
                 });
             }
+            self.check_row_lacks(module_id, range, callee_symbol, &parameters, substitution);
             let unresolved = self.unresolved_call_parameters(&parameters, substitution);
             // A copy, so recording the instantiation cannot bind parameters
             // the call left open.
