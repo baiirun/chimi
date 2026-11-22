@@ -116,6 +116,59 @@ command, the spin in place:
   is what addresses this, not the wake.
 - Parallel work is unchanged.
 
+## Where start, stop and messaging spend their time (step 4)
+
+Before step 4 split anything, this run asked what bounds the gates that do
+not scale. Same host, 2026-11-22, main at `b4e0f69`; the host ran about 20%
+slower than on 11-21 (one-carrier counting 2,991 ms against 2,381), so
+compare within the table, not with the ones above.
+
+| Measurement | 1 carrier | 2 | 4 | 8 |
+| --- | ---: | ---: | ---: | ---: |
+| Parallel counting, 8 processes (ms) | 2,991 | 1,500 | 962 | 766 |
+| Parallel messaging, 8 pairs of 20,000 round trips (ms) | 758 | 1,265 | 2,133 | 1,591 |
+| Serial round trip (µs) | 3.8 | 8.9 | 11.8 | 42.3 |
+| PG04 µs per start | 29.4 | 44.1 | 50.6 | 53.1 |
+| PG04 µs per stop | 21.1 | 64.9 | 84.7 | 81.7 |
+
+Parallel messaging (`scripts/carriers/app/pairs.chimi`) puts each client
+and its echo process on one carrier, so the pairs share nothing but the
+kernel. It gets slower with every carrier: 2.8 times slower on four than on
+one.
+
+- **Parallel messaging is bound by the kernel lock.** Stack samples of the
+  four-carrier run (gdb, 25 samples of every thread) found 61 of about 100
+  thread samples waiting for the kernel lock; most of the others were in
+  kernel code or running a fiber. Every request a fiber makes takes the
+  lock (a send, a receive and a reply are each one), so the pairs' requests
+  run one at a time. They also cost more: four carriers spend 13 µs per
+  round trip (2,133 ms over 160,000), against 4.7 µs on one carrier, which
+  does all the same work alone. The kernel's maps and queues move between
+  cores with the lock.
+  Spinning on the lock instead of sleeping on it (20,000 tries before the
+  futex) changed 2,133 ms to about 2,060, so the cost is the shared state,
+  not how a waiter waits.
+- **Process stop is bound by hand-off latency, not by the lock.** A
+  supervisor stops its members one at a time, and consecutive members live
+  on different carriers, so each stop hands the work to another carrier and
+  waits for it. Stack samples of a 20,000-member stop on four carriers put
+  86 of 155 thread samples in `poll`, asleep: at any moment about one
+  carrier works. A carrier's 50 µs spin rarely catches the next hand-off,
+  since the chain comes back to it only after visiting the other three.
+  With a 5 ms spin (an experiment, not a change), stop at four carriers
+  fell from 92.7 to 55.8 µs, still well above 23.7 on one carrier:
+  sleeping is part of the cost and each cross-carrier step is the rest.
+  The samples also found `munmap` of a finished fiber's stack (7 of 155)
+  and lock waits (5 of 155).
+- **Start** grows less (29 to 51 µs): main starts each process and keeps
+  going, while the new process runs to its first park on its own carrier.
+
+So the two fixes are different. Messaging needs requests between owners on
+one carrier to stop taking a lock the other carriers take: the kernel
+split by owner. Stop needs the hand-off chain to stay on one carrier: an
+idle carrier that takes a ready task homed on a sleeping carrier instead of
+waking it. parallel-scheduler.md "Step 4 plan" orders the two.
+
 ## One carrier
 
 `chimi-process-lab performance` on the same host and commit: every gate
@@ -142,3 +195,10 @@ are not compared with its numbers.
   10,000 round trips over 90,000, so process start cancels out.
 - The host ceiling runs n one-carrier copies of the counting program at
   once, each with 1/n of the work, so nothing is shared between them.
+- `scripts/carriers/app/pairs.chimi` starts eight echo processes and then
+  eight clients and gives each client its echo. Echo i has membership id i
+  and its client 8 + i, so at 1, 2, 4 or 8 carriers each pair shares a
+  carrier.
+- Stack samples: `gdb -p <pid> -batch -ex "thread apply all bt"` in a loop
+  while the program runs, counting each thread's innermost frames. A sample
+  stops the program, so the counts are shares, not times.

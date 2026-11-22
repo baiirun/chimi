@@ -3,9 +3,9 @@
 ## Status
 
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
-thread would take, so that later work does not close the door on it. Steps 1
-(the carrier struct) and 2 (the shared handle table) are done; programs still
-run on one thread.
+thread takes. Steps 1 to 3 are done: `--carriers=<n>` runs processes on n
+threads around one kernel lock, and the default stays one carrier
+(decisions.md, 2026-11-21). Step 4 is planned below ("Step 4 plan").
 
 ## Why
 
@@ -311,7 +311,8 @@ keeps its observable meaning through a different mechanism.
 
    Epochs are already process-wide and atomic, and the shared values are
    already created at startup.
-4. Shard the kernel and the channel registry by owner, and add stealing.
+4. Shard the kernel and the channel registry by owner, and add stealing
+   ("Step 4 plan": stealing first, then the shards).
 5. Publish multi-core baselines next to the single-thread ones (R2).
 
 ## Step 3 plan
@@ -1039,6 +1040,72 @@ four keep one carrier.
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.
+
+## Step 4 plan
+
+Step 4 was written as "shard the kernel and the channel registry by owner,
+and add stealing". Measuring first (multi-carrier-baseline.md, "Where
+start, stop and messaging spend their time") showed that the two halves
+fix different things, so they land as two tracks, stealing first:
+
+- Parallel messaging is bound by the kernel lock. Eight pairs that share
+  nothing but the kernel run 2.8 times slower on four carriers than on
+  one, and most thread samples wait for the lock. Only sharding fixes it.
+- Process stop is bound by hand-off latency. A supervisor stops its
+  members one at a time, each on the next carrier, and that carrier is
+  usually asleep. Stealing fixes it: an idle carrier runs the hand-off
+  itself instead of waking the task's home. The lock is a small part of
+  this cost.
+
+Stealing is smaller, independent of the kernel's shape, and is the change
+the gates measure, so it goes first.
+
+1. **4a: measure (this plan).** `scripts/carriers/app/pairs.chimi` and
+   its row in `scripts/measure_carriers.py`; the evidence above.
+2. **4b: a started fiber may move to another carrier.** Today a fiber
+   never leaves the thread of its first resume (`PinnedFiber`), because a
+   compiler may keep a thread-local's address in a register across a call
+   ("Runtime state by owner", rules). This PR makes that safe:
+   - In `runtime.c` the carrier is read through an accessor that the
+     compiler cannot keep across a call that parks.
+   - The fiber crate's thread-locals get the same audit.
+   - `PinnedFiber` gives way to a home the kernel may change while the
+     fiber is parked.
+   The PR moves nothing by itself; a test moves fibers between real
+   threads, alongside the simulation build that already moves every
+   resume. The accessor's cost on one carrier is measured with PG01 and
+   PG06, and it must stay within their noise.
+3. **4c: an idle carrier steals.** Before it parks, an idle carrier takes
+   the oldest ready task of a carrier that is parked asleep and makes
+   itself that task's home, so a hand-off to a sleeping carrier runs at
+   once. It never takes from a carrier that is running or spinning, and
+   never takes the root or a task waiting on carrier 0's descriptors.
+   - Goal: PG04's stop within 1.5 times its one-carrier value on four
+     carriers.
+   - Parallel counting must not get slower.
+   - A stolen process keeps its membership's home for restarts.
+4. **4d: the kernel split by owner, still under one lock.** Per carrier:
+   the tasks homed on it, its ready queue, jobs and timers, the mailboxes
+   of incarnations homed on it, and the channels created on it. Shared:
+   supervisors, names, the membership-to-home table, ids and telemetry
+   order. This has no behaviour change, as step 3's PR 2 did, and may take
+   several PRs: today one `Scheduler` method can touch all of these.
+5. **4e: a lock per shard.** A request whose state is all in its own
+   carrier's shard takes only that shard's lock: a send to a local
+   mailbox, a receive, a channel operation on a local channel, a yield or
+   a sleep. Every other request takes every shard's lock in carrier order,
+   as one lock does today. Goal: parallel messaging at four carriers
+   faster than at one, and as close to the host ceiling as the
+   measurement allows.
+6. **4f: cross-shard requests without the global order,** for example a
+   send to another carrier's mailbox queued to that carrier's inbox. Only
+   if 4e's measurements show that the all-locks path matters.
+
+The ordering rules ("Ordering rules under several carriers") hold through
+both tracks. Each mailbox and each channel queue stays in one shard and
+changes only under that shard's lock. Supervisor decisions stay in the
+shared part. `--clock=virtual` and the lab keep one carrier, where neither
+stealing nor shards change the order of anything.
 
 ## Risks
 

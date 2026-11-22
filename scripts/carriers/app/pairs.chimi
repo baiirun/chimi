@@ -1,0 +1,102 @@
+import std/channel as Channel.{Receive, Sender}
+import std/duration as Duration
+import std/int as Int
+import std/list as List
+import std/process as Process.{Inbox}
+import std/supervisor as Supervisor
+
+// Parallel messaging: eight client processes each ask their own echo
+// process N questions and wait for each answer, all at once. Echo i has
+// membership id i and its client 8 + i, so with 1, 2, 4 or 8 carriers each
+// pair shares a carrier (membership id modulo the count) and the pairs
+// share nothing but the kernel. The outcome is 8 * N.
+
+/// What a client asks its echo process.
+pub enum Echo {
+  Ping(reply: Sender<Int>)
+}
+
+/// The job main gives a client: its echo and how many round trips.
+pub enum Client {
+  Go(echo: Process.Address<Echo>, rounds: Int, done: Sender<Int>)
+}
+
+fn echo(inbox: Inbox<Echo>) -> Void {
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Echo.Ping(reply) -> {
+        Channel.send(reply, 1)
+        handled + 1
+      }
+    }
+  }
+  Void
+}
+
+fn received(next: Receive<Int>) -> Int {
+  case next {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}
+
+fn client(inbox: Inbox<Client>) -> Void {
+  loop handled = 0 {
+    case Process.receive(inbox) {
+      Client.Go(target, rounds, done) -> {
+        let replies = Channel.bounded(1)
+        let total = loop state = (0, 0) {
+          let (asked, sum) = state
+          case asked == rounds {
+            True -> break sum
+            False -> {
+              Process.send(target, Echo.Ping(replies.sender))
+              (asked + 1, sum + received(Channel.receive(replies.receiver)))
+            }
+          }
+        }
+        Channel.send(done, total)
+        handled + 1
+      }
+    }
+  }
+  Void
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let rounds = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let root = Supervisor.start(Supervisor.policy([], 16, Supervisor.restarts(0, Duration.seconds(30))))
+  let echo_spec = Process.spec(echo, 4, Duration.seconds(1))
+  let client_spec = Process.spec(client, 4, Duration.seconds(1))
+  let echoes = loop state = (0, []) {
+    let (made, list) = state
+    case made == 8 {
+      True -> break list
+      False -> (made + 1, List.append(list, [Supervisor.address(Supervisor.start_process(root, echo_spec, Supervisor.Restart.Never))]))
+    }
+  }
+  let done = Channel.bounded(8)
+  let started = loop state = (0, echoes) {
+    let (made, rest) = state
+    case List.first(rest) {
+      None -> break made
+      Some(target) -> {
+        let address = Supervisor.address(Supervisor.start_process(root, client_spec, Supervisor.Restart.Never))
+        Process.send(address, Client.Go(target, rounds, done.sender))
+        (made + 1, List.drop(rest, 1))
+      }
+    }
+  }
+  let total = loop state = (0, 0) {
+    let (got, sum) = state
+    case got == started {
+      True -> break sum
+      False -> (got + 1, sum + received(Channel.receive(done.receiver)))
+    }
+  }
+  Supervisor.stop(root)
+  total
+}
