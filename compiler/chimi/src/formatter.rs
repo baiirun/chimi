@@ -391,8 +391,11 @@ fn format_parse(parsed: &ParseResult) -> String {
                     next == Some(TokenKind::LeftBrace) && is_requirement_syntax(token);
                 let continues_header = next_significant_token(&tokens, index + 1)
                     .is_some_and(|next| opens_header_body(&next));
+                // A struct pattern's `}` continues its arm, clause or binding.
+                let ends_pattern = token.parent().kind() == NodeKind::Pattern;
                 if !continues_requirement
                     && !continues_header
+                    && !ends_pattern
                     && !matches!(
                         next,
                         Some(TokenKind::Comma | TokenKind::RightParen | TokenKind::Using)
@@ -611,7 +614,9 @@ const SHORT_RECORD_WIDTH: usize = 60;
 fn in_short_record(token: &SyntaxToken<'_>) -> bool {
     let mut node = Some(token.parent());
     while let Some(current) = node {
-        if current.kind() == NodeKind::RecordExpression && is_short_record(&current) {
+        if (current.kind() == NodeKind::RecordExpression || is_struct_pattern(&current))
+            && is_short_record(&current)
+        {
             return true;
         }
         node = current.parent();
@@ -650,6 +655,15 @@ fn is_short_lambda(function: &crate::syntax::SyntaxNode<'_>) -> bool {
     true
 }
 
+/// Whether `node` is a struct pattern, `Name { field: pattern, .. }`.
+fn is_struct_pattern(node: &crate::syntax::SyntaxNode<'_>) -> bool {
+    node.kind() == NodeKind::Pattern
+        && node
+            .child_tokens()
+            .iter()
+            .any(|token| token.kind() == TokenKind::LeftBrace)
+}
+
 fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
     let mut width = 0_usize;
     for token in record.descendant_tokens() {
@@ -659,7 +673,7 @@ fn is_short_record(record: &crate::syntax::SyntaxNode<'_>) -> bool {
             TokenKind::LeftBrace | TokenKind::RightBrace
                 if !matches!(
                     token.parent().kind(),
-                    NodeKind::RecordExpression | NodeKind::RecordType
+                    NodeKind::RecordExpression | NodeKind::RecordType | NodeKind::Pattern
                 ) && !in_short_lambda(&token) =>
             {
                 return false;
@@ -759,10 +773,12 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     // A type argument list's `>` is written tight, so the word after it, as in
     // `fn(T) -> Option<U> errors E`, needs its own space.
     // A record type's `}` before a signature's `errors` or `needs`, as in
-    // `-> { status: Status } needs { ... }`, needs one too.
+    // `-> { status: Status } needs { ... }`, needs one too, as does a struct pattern's
+    // `}` before a guard or an alias, as in `Money { cents: c, .. } if c > 0`.
     (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
-        || previous == TokenKind::RightBrace && matches!(current, TokenKind::Errors | TokenKind::Needs)
+        || previous == TokenKind::RightBrace
+            && matches!(current, TokenKind::Errors | TokenKind::Needs | TokenKind::If | TokenKind::As)
 }
 
 const fn word_kind(kind: TokenKind) -> bool {

@@ -7109,24 +7109,24 @@ fn inspecting_a_single_clause_function_name_reports_its_contract() {
 // Struct, alias, and literal patterns (patterns-and-function-clauses.md, "Patterns").
 
 #[test]
-fn a_struct_pattern_destructures_fields_by_position() {
+fn a_struct_pattern_destructures_fields_by_name() {
     let source = concat!(
         "struct Money {\n",
         "  cents: Int\n",
         "  currency: Text\n",
         "}\n",
-        "fn cents(Money(amount, _)) -> Int {\n",
+        "fn cents(Money { cents: amount, .. }) -> Int {\n",
         "  amount\n",
         "}\n",
         "fn label(money: Money) -> Text {\n",
         "  case money {\n",
-        "    Money(0, currency) -> currency\n",
-        "    Money(_, _) -> \"some\"\n",
+        "    Money { currency: currency, cents: 0 } -> currency\n",
+        "    Money { .. } -> \"some\"\n",
         "  }\n",
         "}\n",
         "pub fn main() -> List<Text> {\n",
         "  let total = cents(Money { cents: 250, currency: \"EUR\" }) + cents(Money { cents: 5, currency: \"EUR\" })\n",
-        "  let doubled = fn(Money(amount, _)) { amount * 2 }\n",
+        "  let doubled = fn(Money { cents: amount, currency: _ }) { amount * 2 }\n",
         "  [Int.to_text(total + doubled(Money { cents: 10, currency: \"EUR\" })), label(Money { cents: 0, currency: \"USD\" }), label(Money { cents: 1, currency: \"USD\" })]\n",
         "}\n",
     );
@@ -7138,19 +7138,19 @@ fn a_struct_pattern_destructures_fields_by_position() {
 }
 
 #[test]
-fn a_struct_pattern_with_the_wrong_field_count_is_a_type_error() {
+fn a_struct_pattern_with_an_unknown_field_is_a_type_error() {
     let codes = check_codes(concat!(
         "struct Money {\n",
         "  cents: Int\n",
         "}\n",
         "fn cents(money: Money) -> Int {\n",
         "  case money {\n",
-        "    Money(a, b) -> a\n",
+        "    Money { cents: a, value: b } -> a\n",
         "  }\n",
         "}\n",
         "pub fn main() -> Int { cents(Money { cents: 1 }) }\n",
     ));
-    assert_eq!(codes, ["T4230"]);
+    assert_eq!(codes, ["T4205"]);
 }
 
 #[test]
@@ -7159,14 +7159,14 @@ fn a_refutable_field_makes_a_struct_pattern_refutable() {
         "struct Money {\n",
         "  cents: Int\n",
         "}\n",
-        "fn free(Money(0)) -> Bool {\n",
+        "fn free(Money { cents: 0 }) -> Bool {\n",
         "  True\n",
         "}\n",
         "pub fn main() -> Bool { free(Money { cents: 0 }) }\n",
     ));
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert_eq!(messages[0].0, "T4231");
-    assert!(messages[0].1.contains("`free(Money(1))`"), "{messages:?}");
+    assert!(messages[0].1.contains("`free(Money { cents: 1 })`"), "{messages:?}");
 }
 
 // TP-04
@@ -7217,7 +7217,7 @@ fn a_struct_pattern_outside_its_module_is_private() {
 
 // TP-05
 #[test]
-fn a_labelled_pattern_is_a_syntax_error_about_positional_patterns() {
+fn a_labelled_pattern_is_a_syntax_error_that_names_the_braces() {
     let messages = coded_messages(concat!(
         "struct Money {\n",
         "  cents: Int\n",
@@ -7233,7 +7233,7 @@ fn a_labelled_pattern_is_a_syntax_error_about_positional_patterns() {
     assert!(
         messages
             .iter()
-            .any(|(code, message)| code == "S1001" && message.contains("positional")),
+            .any(|(code, message)| code == "S1001" && message.contains("`Name { field: pattern }`")),
         "{messages:?}"
     );
 }
@@ -13204,4 +13204,103 @@ fn a_type_alias_is_formatted_on_one_line() {
         "{}",
         formatted.text()
     );
+}
+
+// A struct pattern names its fields in any order; `..` matches the rest. It
+// works in clause heads, `case` arms, function literal parameters and `let`.
+#[test]
+fn a_struct_pattern_matches_fields_by_name() {
+    let source = concat!(
+        "struct Money {\n",
+        "  cents: Int\n",
+        "  currency: Text\n",
+        "}\n",
+        "\n",
+        "enum Shape {\n",
+        "  Circle(radius: Int)\n",
+        "}\n",
+        "\n",
+        "fn free(Money { cents: 0, .. }) -> Bool {\n",
+        "  True\n",
+        "}\n",
+        "fn free(Money { currency: \"XXX\", cents: _ }) {\n",
+        "  True\n",
+        "}\n",
+        "fn free(_) {\n",
+        "  False\n",
+        "}\n",
+        "\n",
+        "fn cents(value: Money) -> Int {\n",
+        "  case value {\n",
+        "    Money { cents: n, .. } if n > 100 -> 0\n",
+        "    Money { currency: c, cents: n } -> n\n",
+        "  }\n",
+        "}\n",
+        "\n",
+        "fn label(shape: Shape) -> Int {\n",
+        "  case shape {\n",
+        "    Shape.Circle(r) -> r\n",
+        "  }\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let m = Money { cents: 5, currency: \"EUR\" }\n",
+        "  let take = fn(Money { cents: amount, .. }) { amount * 2 }\n",
+        "  let Money { cents: k, .. } as whole = m\n",
+        "  case free(m) {\n",
+        "    True -> 0\n",
+        "    False -> cents(whole) + take(m) + label(Shape.Circle(100)) + k\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(run_both("struct-pattern-names", source), "\"outcome\":\"success\",\"value\":120");
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert_eq!(formatted.text(), source);
+}
+
+#[test]
+fn a_struct_pattern_names_each_field_once_or_ends_with_rest() {
+    let program = |arm: &str| {
+        format!(
+            "struct Money {{\n  cents: Int\n  currency: Text\n}}\n\nenum Shape {{\n  Circle(radius: Int)\n}}\n\nfn f(value: Money, shape: Shape) -> Int {{\n  case value {{\n    {arm} -> 1\n  }}\n}}\n\npub fn main() -> Int {{\n  1\n}}\n"
+        )
+    };
+    assert_eq!(check_codes(&program("Money { cents: n }")), ["T4215"]);
+    assert_eq!(check_codes(&program("Money { cents: n, cents: m, .. }")), ["T4211"]);
+    let repeated = "struct Money {\n  cents: Int\n  currency: Text\n}\n\nfn f(value: Money) -> Int {\n  case value {\n    Money { cents: n, cents: m, .. } -> n + m\n  }\n}\n\npub fn main() -> Int {\n  1\n}\n";
+    assert_eq!(check_codes(repeated), ["T4211"]);
+    assert_eq!(check_codes(&program("Money { dollars: n, .. }")), ["T4205"]);
+    assert_eq!(check_codes(&program("Money { .., cents: n }")), ["S1001"]);
+    let source = program("Money(0, currency)");
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source.as_str()))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    assert_eq!(report.diagnostics()[0].code(), "T4216");
+    assert_eq!(
+        report.diagnostics()[0].fixes()[0].replacement(),
+        "Money { cents: 0, currency: currency }"
+    );
+    let variant = "enum Shape {\n  Circle(radius: Int)\n}\n\nfn r(shape: Shape) -> Int {\n  case shape {\n    Shape.Circle { radius: r } -> r\n  }\n}\n\npub fn main() -> Int {\n  1\n}\n";
+    assert_eq!(check_codes(variant), ["T4217"]);
+}
+
+#[test]
+fn a_long_struct_pattern_keeps_its_arm_on_the_closing_line() {
+    let source = concat!(
+        "struct Order {\n",
+        "  identifier: Int\n",
+        "  customer_name: Text\n",
+        "  shipping_address: Text\n",
+        "}\n",
+        "\n",
+        "fn describe(order: Order) -> Int {\n",
+        "  case order {\n",
+        "    Order { identifier: identifier, customer_name: customer_name, shipping_address: _ } -> identifier\n",
+        "  }\n",
+        "}\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(formatted.text().contains("    } -> identifier\n"), "{}", formatted.text());
+    let again = Compiler::format(SourceSnapshot::from_text("main.chimi", formatted.text()));
+    assert_eq!(again.text(), formatted.text());
 }
