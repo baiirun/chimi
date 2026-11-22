@@ -1,0 +1,13 @@
+# mutation run at 24bd45a0c4de3b4f4791dd7a85af1c3b01fe29a5
+# steal_mutations.py: 9 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (24s)
+KILLED       no carrier steals [lib] (8s)
+KILLED       a carrier that is awake is stolen from [lib] (8s)
+KILLED       a task that never ran is stolen [lib] (9s)
+KILLED       carrier 0 is stolen from [lib] (7s)
+KILLED       a steal keeps the victim's wake [lib] (9s)
+KILLED       a steal always drops the victim's wake [lib] (9s)
+KILLED       a steal drops the wake while the victim still has a job [lib] (7s)
+KILLED       a stale entry is moved [lib] (7s)
+KILLED       a stolen task keeps its old home [lib] (9s)
+# result: every mutant killed
