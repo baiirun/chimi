@@ -729,8 +729,9 @@ A function value whose needs include a row parameter, such as `twice` in
 `fn twice<R>(h: fn() -> Text needs R) -> Text needs R + { greeter: Greeter }`,
 cannot have a provider fixed this way (`T4219`). The row's needs are the
 caller's, and a call may bind it to the same name, which would leave one
-need with two providers. Supplying the provider where the value is called
-works as before.
+need with two providers. A provider can be supplied where the value is
+called instead; a call that binds the row to the same name still merges the
+two needs into one there, an open problem tracked as CHI-297.
 
 Each provider of a clause is evaluated where the `using` is written, before
 the expression, and a provider's own needs come from there: a provider never
