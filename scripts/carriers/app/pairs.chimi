@@ -6,10 +6,11 @@ import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
 
 // Parallel messaging: eight client processes each ask their own echo
-// process N questions and wait for each answer, all at once. Echo i has
-// membership id i and its client 8 + i, so with 1, 2, 4 or 8 carriers each
-// pair shares a carrier (membership id modulo the count) and the pairs
-// share nothing but the kernel. The outcome is 8 * N.
+// process N questions and wait for each answer, all at once. Membership
+// ids count from 1 in start order: echo i has id i and its client 8 + i, so
+// with a carrier count that divides 8 each pair shares a carrier
+// (membership id modulo the count), and pairs share no process, only the
+// kernel. The outcome is 8 * N.
 
 /// What a client asks its echo process.
 pub enum Echo {

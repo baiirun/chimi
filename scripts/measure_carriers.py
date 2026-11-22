@@ -15,8 +15,8 @@ These measurements, each at every carrier count given:
   trip between main and two echo processes, the difference between two sizes
   divided by the difference in rounds, so process start cancels out.
 - Parallel messaging, `scripts/carriers/app/pairs.chimi`: eight client and
-  echo pairs, each pair on one carrier, exchange --pair-rounds round trips
-  each at once. The wall time; the pairs share only the kernel.
+  echo pairs exchange --pair-rounds round trips each at once. At a carrier
+  count that divides 8 each pair is on one carrier. The wall time.
 
 Every timing is the median of --samples runs after one unmeasured run, and
 every run must end with its expected outcome. Usage, from the repository

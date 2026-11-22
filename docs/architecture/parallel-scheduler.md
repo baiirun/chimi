@@ -1050,7 +1050,8 @@ fix different things, so they land as two tracks, stealing first:
 
 - Parallel messaging is bound by the kernel lock. Eight pairs that share
   nothing but the kernel run 2.8 times slower on four carriers than on
-  one, and most thread samples wait for the lock. Only sharding fixes it.
+  one, and most thread samples wait for the lock. Sharding is the expected
+  fix; 4e measures whether it is.
 - Process stop is bound by hand-off latency. A supervisor stops its
   members one at a time, each on the next carrier, and that carrier is
   usually asleep. Stealing fixes it: an idle carrier runs the hand-off
@@ -1060,7 +1061,7 @@ fix different things, so they land as two tracks, stealing first:
 Stealing is smaller, independent of the kernel's shape, and is the change
 the gates measure, so it goes first.
 
-1. **4a: measure (this plan).** `scripts/carriers/app/pairs.chimi` and
+1. **4a: measure (done with this plan).** `scripts/carriers/app/pairs.chimi` and
    its row in `scripts/measure_carriers.py`; the evidence above.
 2. **4b: a started fiber may move to another carrier.** Today a fiber
    never leaves the thread of its first resume (`PinnedFiber`), because a
@@ -1071,9 +1072,13 @@ the gates measure, so it goes first.
    - The fiber crate's thread-locals get the same audit.
    - `PinnedFiber` gives way to a home the kernel may change while the
      fiber is parked.
-   The PR moves nothing by itself; a test moves fibers between real
-   threads, alongside the simulation build that already moves every
-   resume. The accessor's cost on one carrier is measured with PG01 and
+   A fiber that never ran can already start on any carrier
+   (`prepare_run`), so only started fibers need this. The asserts that a
+   fiber resumes and is destroyed on its home (`PinnedFiber::enter`, its
+   `Drop`, and `prepare_run`'s) become checks that the kernel moved it
+   while it was parked. Programs move nothing yet; a test moves fibers
+   between real threads, alongside the simulation build that already moves
+   every resume. The accessor's cost on one carrier is measured with PG01 and
    PG06, and it must stay within their noise.
 3. **4c: an idle carrier steals.** Before it parks, an idle carrier takes
    the oldest ready task of a carrier that is parked asleep and makes
