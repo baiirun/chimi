@@ -1,0 +1,8 @@
+# mutation run at af97fdaddb2d160b1bdfedbf4e87c20d0d815449
+# build_lock_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok  [build_lock] (81s)
+KILLED       an application build takes no lock [build_lock] (34s)
+KILLED       the lock is released before the build [build_lock] (35s)
+KILLED       the lock is shared [build_lock] (8s)
+KILLED       a test run takes no lock [build_lock] (9s)
+# result: every mutant killed
