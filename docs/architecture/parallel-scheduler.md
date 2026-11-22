@@ -1210,10 +1210,16 @@ the gates measure, so it goes first.
    - PRs, each behaviour-preserving, run with the simulation build, and
      measured (pairs on 1, 2 and 4 carriers; pairs under callgrind; PG01
      to PG06 on one carrier):
-     - 4d-3: take the hot globals off the hot path. Per-task signal-wait
-       and child-wait flags, as `io_wait` is, so the global lists are
-       touched only when set; signal collection and delivery on carrier 0
-       only, which owns signals and the root.
+     - 4d-3: signal collection and delivery on carrier 0 only, which owns
+       the root and whose idle wait watches the signal pipe.
+       - As landed: `between_resumes` reads the signal words only on
+         carrier 0, so the other carriers' holds no longer swap the user
+         signal word or read the root's record. One carrier is unchanged.
+         A signal that arrives while carrier 0 runs a fiber is delivered at
+         its next hold, as with one carrier. The waiter lists
+         (`withdraw_signal_wait`, `clear_child_wait`) stayed: a `retain`
+         over an empty list costs nothing, and 4e's local path can read
+         whether they are empty under any lock.
      - 4d-4: immutable configuration into a `KernelConfig`.
      - 4d-5: a channel operation moves into its task's record, so channel
        state is per channel and per task.

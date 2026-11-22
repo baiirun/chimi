@@ -4520,7 +4520,8 @@ mod tests {
         let root = start_parked(&mut scheduler);
         scheduler.set_signal_root(root);
         user_word = 1;
-        signal_word = 15;
+        // SAFETY: the scheduler reads the word through the pointer it was given.
+        unsafe { (&raw mut signal_word).write(15) };
         scheduler.enter_carrier(ready::Carrier(1));
         scheduler.between_resumes();
         assert_eq!(user_word, 1, "carrier 1 left the user signal");
