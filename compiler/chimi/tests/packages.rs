@@ -618,3 +618,29 @@ fn a_rev_may_be_a_commit_no_branch_reaches() {
         text(&output.stderr)
     );
 }
+
+#[test]
+fn an_update_rejects_an_unknown_name_before_fetching() {
+    let scratch = git_dependency_scratch("git-typo", 1);
+    // The repository is gone, so any fetch would fail with a git error.
+    std::fs::remove_dir_all(scratch.path("repo")).unwrap();
+    let cache = scratch.path("cache");
+    let app = scratch.path("app");
+    let output = chimi_with_cache(
+        &cache,
+        &[
+            "deps",
+            "update",
+            "--root",
+            app.to_str().unwrap(),
+            "json_tool",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains("`json_tool` is not a git dependency of the workspace"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(!cache.exists(), "nothing was fetched");
+}
