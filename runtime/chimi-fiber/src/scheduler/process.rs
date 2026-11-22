@@ -1691,7 +1691,7 @@ impl Scheduler {
     /// every root task defects, and every other root stops.
     fn terminate_program(&mut self) {
         self.kernel.program_terminated = true;
-        let roots: Vec<_> = self
+        let mut roots: Vec<_> = self
             .tasks
             .iter()
             .filter(|(_, record)| {
@@ -1701,6 +1701,7 @@ impl Scheduler {
             })
             .map(|(task, _)| *task)
             .collect();
+        roots.sort_unstable();
         for task in roots {
             self.force_terminal(
                 task,

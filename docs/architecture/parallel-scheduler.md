@@ -1172,6 +1172,17 @@ the gates measure, so it goes first.
      messaging on four carriers went from 1625 to 925 ms, level with one
      carrier (multi-carrier-baseline.md, "Spinning on the kernel lock").
      It does not make more carriers faster; the split does.
+   - 4d-2, before the split: the task table is a hash map with a one-
+     multiplication hash of the id (`scheduler/id_map.rs`), not a
+     `BTreeMap`. A kernel step looks its task up many times, and each
+     B-tree lookup walked the tree's levels. On pairs (one carrier, 2000
+     rounds, callgrind) the kernel's instructions fell by a third and the
+     whole program's by 12% (multi-carrier-baseline.md, "A hash map for
+     the task table"). The table is unordered now, so what lists tasks
+     sorts them by id, as the tree's order gave before: the deadlock report
+     and its trace events, the roots a program termination forces, and the
+     unrun contexts released at the end. A hash map does not shrink, so its memory stays at the run's
+     peak task count.
 4. **4d: the kernel split by owner, still under one lock.** Per carrier:
    the tasks homed on it, its ready queue, jobs and timers, the mailboxes
    of incarnations homed on it, and the channels created on it. Shared:
