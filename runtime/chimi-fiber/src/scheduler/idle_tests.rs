@@ -650,7 +650,7 @@ unsafe extern "C" fn take_test_release(_context: *mut std::ffi::c_void, kind: *m
 fn a_carrier_drains_its_host_releases_before_it_waits() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(2);
-    scheduler.take_release = Some((take_test_release, ptr::null_mut()));
+    scheduler.config.take_release = Some((take_test_release, ptr::null_mut()));
     let _busy = start_sleeper(&mut scheduler, 1, 0);
     for carrier in [0, 1] {
         let done = start_sleeper(&mut scheduler, carrier, 0);

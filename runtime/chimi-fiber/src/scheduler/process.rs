@@ -2218,8 +2218,8 @@ impl Scheduler {
     }
 
     pub(super) fn emit_process(&mut self, kind: ProcessEventKind) {
-        if self.trace_mode == TraceMode::Off
-            || matches!(kind, ProcessEventKind::Sent { .. }) && self.trace_mode != TraceMode::Full
+        if self.config.trace_mode == TraceMode::Off
+            || matches!(kind, ProcessEventKind::Sent { .. }) && self.config.trace_mode != TraceMode::Full
         {
             return;
         }
