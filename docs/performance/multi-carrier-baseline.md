@@ -252,6 +252,34 @@ Same host and command as above, release binaries at the 4c commit; the
   the woken carrier found nothing to run but took the kernel lock from the
   carrier that was working.
 
+## Spinning on the kernel lock (step 4 PR 4d-1)
+
+`scripts/carriers/app/pairs.chimi` with 20,000 rounds, the base (main at
+7d9284f) and the change built from separate target directories, run
+alternately ten times each at each carrier count on the same host. The host
+was slower than for the tables above (one carrier about 900 ms against 720),
+so compare the two columns, not these with earlier rows.
+
+| Carriers | Base, median ms | Spin, median ms |
+| --- | --- | --- |
+| 1 | 917 | 961 |
+| 4 | 1625 | 925 |
+| 8 | 1244 | 878 |
+| 32 (single runs) | 1342 to 1532 | 927 to 1107 |
+
+- A kernel hold lasts about a microsecond. With std's mutex a carrier that
+  finds it held blocks in the kernel's futex and sleeps until the holder
+  wakes it, so with several carriers sending at once most of the time went
+  to sleeping and waking. Retrying for up to 20 µs first keeps the carriers
+  awake. The one-carrier difference is within the runs' spread (832 to
+  1047 ms).
+- More carriers are now level with one carrier, not faster: the lock still
+  serialises every request. That is what 4d and 4e address.
+- PG04 start on eight carriers measured 43 to 45 µs with the spin against
+  54 µs before it, inside the 50 µs limit (single runs of the lab).
+- With more carriers than cores (8 and 32 on this 4-core host) the spin
+  still helped, unlike the wake spin (step 3 PR 6c), which is off then.
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08
