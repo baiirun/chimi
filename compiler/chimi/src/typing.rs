@@ -17,6 +17,7 @@ use crate::standard::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod aliases;
 mod clock;
 mod combinators;
 mod constants;
@@ -462,6 +463,14 @@ impl TypeFormatter<'_> {
 
     pub(crate) fn format_contract_result(&self, contract: &CallableContract) -> String {
         let mut result = self.format_type(contract.success);
+        result.push_str(&self.format_contract_rows(contract));
+        result
+    }
+
+    /// A contract's `errors` and `needs` rows, each with its leading space, or
+    /// nothing for empty rows.
+    fn format_contract_rows(&self, contract: &CallableContract) -> String {
+        let mut result = String::new();
         let failures = &self.failure_rows[contract.failures.raw() as usize];
         if !failures.variants.is_empty() || !failures.parameters.is_empty() {
             result.push_str(" errors ");
@@ -778,6 +787,12 @@ impl TypedProject {
     /// when they are not empty.
     pub(crate) fn format_contract_result(&self, contract: &CallableContract) -> String {
         self.formatter().format_contract_result(contract)
+    }
+
+    /// A contract's `errors` and `needs` rows, as `format_contract_result`
+    /// writes them after the success type.
+    pub(crate) fn format_contract_rows(&self, contract: &CallableContract) -> String {
+        self.formatter().format_contract_rows(contract)
     }
 
     pub(crate) fn format_type(&self, id: TypeId) -> String {
@@ -1710,6 +1725,10 @@ struct ProjectTypeChecker {
     /// instead of recursing.
     expanding_groups: HashSet<SymbolId>,
     cyclic_groups: HashSet<SymbolId>,
+    /// The type each type alias names, once lowered.
+    alias_types: HashMap<SymbolId, TypeId>,
+    /// Aliases whose type is being lowered, so a cycle of aliases stops.
+    aliases_in_progress: HashSet<SymbolId>,
 }
 
 #[derive(Clone, Debug)]
@@ -1948,6 +1967,8 @@ impl ProjectTypeChecker {
             function_input_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            alias_types: HashMap::new(),
+            aliases_in_progress: HashSet::new(),
         };
         checker.intern_type(CanonicalType::Poison);
         checker.intern_failure_row(FailureRow {
@@ -2972,6 +2993,8 @@ impl ProjectTypeChecker {
             bounded_inference_variables: HashSet::new(),
             expanding_groups: HashSet::new(),
             cyclic_groups: HashSet::new(),
+            alias_types: HashMap::new(),
+            aliases_in_progress: HashSet::new(),
         }
     }
 
@@ -3271,6 +3294,7 @@ impl ProjectTypeChecker {
                         .insert((module_id, declaration.semantic_id), declared);
                 }
             }
+            ModuleDeclarationKind::TypeAlias => self.check_type_alias(module_id, declaration),
             ModuleDeclarationKind::ProcessName => {
                 if let Some(annotation) = &declaration.annotation {
                     let message = self.lower_value_type(module_id, annotation, &generic_symbols);
@@ -3422,6 +3446,7 @@ impl ProjectTypeChecker {
             | ModuleDeclarationKind::Enum
             | ModuleDeclarationKind::Interface
             | ModuleDeclarationKind::NativeType
+            | ModuleDeclarationKind::TypeAlias
             | ModuleDeclarationKind::ProcessName
             | ModuleDeclarationKind::NeedsGroup => false,
         }
@@ -8530,6 +8555,11 @@ impl ProjectTypeChecker {
                     (Some(_), Some(symbol)) if self.is_failure_variant(symbol) => {
                         self.variant_failure_set_type(symbol)
                     }
+                    (Some(name), Some(symbol))
+                        if self.resolved.symbol(symbol).kind == ProjectSymbolKind::TypeAlias =>
+                    {
+                        self.alias_use_type(module_id, symbol, name, arguments)
+                    }
                     (Some(name), Some(symbol)) => {
                         let kind = self.resolved.symbol(symbol).kind;
                         if kind == ProjectSymbolKind::GenericParameter {
@@ -11412,6 +11442,7 @@ impl ProjectTypeChecker {
             ModuleDeclarationKind::ProcessName => ProjectSymbolKind::ProcessName,
             ModuleDeclarationKind::NativeType => ProjectSymbolKind::NativeType,
             ModuleDeclarationKind::NeedsGroup => ProjectSymbolKind::NeedsGroup,
+            ModuleDeclarationKind::TypeAlias => ProjectSymbolKind::TypeAlias,
         };
         self.find_symbol(
             module_id,
