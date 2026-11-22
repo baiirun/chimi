@@ -39,6 +39,7 @@ mod standard;
 mod standard_tree;
 mod syntax;
 pub mod testing;
+mod trace_export;
 mod trace_view;
 mod typing;
 
@@ -50,6 +51,7 @@ pub use compiler::{
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use doc_site::{DocPage, render_site};
+pub use trace_export::export_trace_otlp;
 pub use trace_view::{Locate, TraceError, render_trace};
 pub use formatter::FormatReport;
 pub use hints::TypeHint;

@@ -14,6 +14,7 @@ const USAGE: &str = concat!(
     "chimi doc [--json] --root <project-dir> <module> | chimi doc [--json] std/<module> | ",
     "chimi doc --html <directory> (<path> | <directory> | --root <project-dir> <module> | std) | ",
     "chimi trace show [--all] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
+    "chimi trace export --otlp [--service-name <name>] (<trace> | -) [<path> | <directory> | --root <project-dir> <entry-module>] | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
     "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
@@ -68,6 +69,13 @@ enum Command {
         /// The program the trace came from, to name source locations.
         source: Option<Input>,
         all: bool,
+    },
+    /// Writes one run's telemetry as an OTLP/JSON trace.
+    TraceExport {
+        trace: PathBuf,
+        /// The program the trace came from, to name source locations.
+        source: Option<Input>,
+        service_name: Option<String>,
     },
     /// Prints one module's public surface.
     Doc {
@@ -716,15 +724,21 @@ fn parse_doc_command(arguments: impl Iterator<Item = OsString>) -> Result<Comman
     }
 }
 
-/// Parses `chimi trace show [--all] <trace> [<path> | <directory> | --root <project> <entry>]`.
+/// Parses `chimi trace show [--all] <trace> [<source>]` and
+/// `chimi trace export --otlp [--service-name <name>] <trace> [<source>]`, where
+/// `<source>` is `<path> | <directory> | --root <project> <entry>`.
 fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut arguments = arguments.peekable();
-    if arguments
-        .next()
-        .is_none_or(|subcommand| subcommand != "show")
+    let subcommand = arguments.next();
+    if subcommand
+        .as_ref()
+        .is_some_and(|subcommand| subcommand == "export")
     {
+        return parse_trace_export(arguments);
+    }
+    if subcommand.is_none_or(|subcommand| subcommand != "show") {
         return Err(UsageError {
-            message: "trace requires the show subcommand",
+            message: "trace requires the show or export subcommand",
         });
     }
     let all = arguments.next_if(|argument| argument == "--all").is_some();
@@ -733,17 +747,66 @@ fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Comm
             message: "trace show requires a trace file, or - for standard input",
         });
     };
+    let source = parse_trace_source(&mut arguments, "trace show")?;
+    Ok(Command::TraceShow {
+        trace: PathBuf::from(trace),
+        source,
+        all,
+    })
+}
+
+fn parse_trace_export(
+    mut arguments: std::iter::Peekable<impl Iterator<Item = OsString>>,
+) -> Result<Command, UsageError> {
+    if arguments.next_if(|argument| argument == "--otlp").is_none() {
+        return Err(UsageError {
+            message: "trace export requires a format; --otlp is the only one",
+        });
+    }
+    let service_name = match arguments.next_if(|argument| argument == "--service-name") {
+        None => None,
+        Some(_) => match arguments.next().map(OsString::into_string) {
+            Some(Ok(name)) if !name.is_empty() => Some(name),
+            _ => {
+                return Err(UsageError {
+                    message: "trace export --service-name requires a non-empty UTF-8 name",
+                });
+            }
+        },
+    };
+    let Some(trace) = arguments.next() else {
+        return Err(UsageError {
+            message: "trace export requires a trace file, or - for standard input",
+        });
+    };
+    let source = parse_trace_source(&mut arguments, "trace export")?;
+    Ok(Command::TraceExport {
+        trace: PathBuf::from(trace),
+        source,
+        service_name,
+    })
+}
+
+/// The optional program after a trace file, and nothing after it.
+fn parse_trace_source(
+    arguments: &mut impl Iterator<Item = OsString>,
+    command: &'static str,
+) -> Result<Option<Input>, UsageError> {
     let source = match arguments.next() {
         None => None,
         Some(flag) if flag == "--root" => {
             let (Some(root), Some(entry)) = (arguments.next(), arguments.next()) else {
                 return Err(UsageError {
-                    message: "trace show --root requires a project directory and an entry module",
+                    message: if command == "trace show" {
+                        "trace show --root requires a project directory and an entry module"
+                    } else {
+                        "trace export --root requires a project directory and an entry module"
+                    },
                 });
             };
             let Ok(entry) = entry.into_string() else {
                 return Err(UsageError {
-                    message: "trace show module paths must be valid UTF-8",
+                    message: "trace module paths must be valid UTF-8",
                 });
             };
             Some(Input::Project {
@@ -762,14 +825,14 @@ fn parse_trace_command(arguments: impl Iterator<Item = OsString>) -> Result<Comm
     };
     if arguments.next().is_some() {
         return Err(UsageError {
-            message: "trace show received unexpected arguments",
+            message: if command == "trace show" {
+                "trace show received unexpected arguments"
+            } else {
+                "trace export received unexpected arguments"
+            },
         });
     }
-    Ok(Command::TraceShow {
-        trace: PathBuf::from(trace),
-        source,
-        all,
-    })
+    Ok(source)
 }
 
 /// Parses `chimi lint [--json] (<path> | <directory> | --root <project> <module>)`.
@@ -855,6 +918,11 @@ fn execute(
         Command::Doc { target, output } => doc(target, &standard, output),
         Command::Lint { input, output } => lint(input, &standard, output),
         Command::TraceShow { trace, source, all } => trace_show(&trace, source, &standard, all),
+        Command::TraceExport {
+            trace,
+            source,
+            service_name,
+        } => trace_export(&trace, source, &standard, service_name.as_deref()),
         Command::Inspect {
             input,
             module_path,
@@ -943,6 +1011,47 @@ fn trace_show(
                      give the same file, directory or project the run was built from"
                 );
             }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("chimi: {}: {error}", trace.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn trace_export(
+    trace: &std::path::Path,
+    source: Option<Input>,
+    standard: &StandardTree,
+    service_name: Option<&str>,
+) -> ExitCode {
+    let text = if trace.as_os_str() == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text)
+    } else {
+        std::fs::read_to_string(trace)
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("chimi: cannot read {}: {error}", trace.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let locator: Box<dyn Fn(u32, u32) -> Option<String>> = match source {
+        None => Box::new(|_, _| None),
+        Some(input) => {
+            let Some(project) = load_project(input, standard) else {
+                return ExitCode::FAILURE;
+            };
+            Box::new(project.source_locator())
+        }
+    };
+    match chimi::export_trace_otlp(&text, &*locator, service_name) {
+        Ok(document) => {
+            // A closed pipe, as in `| head`, is not an error.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), document.as_bytes());
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1581,7 +1690,7 @@ mod tests {
             })
         );
         for (command, message) in [
-            (&["trace"][..], "trace requires the show subcommand"),
+            (&["trace"][..], "trace requires the show or export subcommand"),
             (
                 &["trace", "show"][..],
                 "trace show requires a trace file, or - for standard input",
@@ -1589,6 +1698,67 @@ mod tests {
             (
                 &["trace", "show", "a.jsonl", "a.chimi", "b"][..],
                 "trace show received unexpected arguments",
+            ),
+        ] {
+            assert_eq!(
+                parse_command(arguments(command)),
+                Err(UsageError { message }),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_trace_export() {
+        assert_eq!(
+            parse_command(arguments(&["trace", "export", "--otlp", "run.jsonl"])),
+            Ok(Command::TraceExport {
+                trace: PathBuf::from("run.jsonl"),
+                source: None,
+                service_name: None,
+            })
+        );
+        assert_eq!(
+            parse_command(arguments(&[
+                "trace",
+                "export",
+                "--otlp",
+                "--service-name",
+                "checkout",
+                "-",
+                "--root",
+                "svc",
+                "app"
+            ])),
+            Ok(Command::TraceExport {
+                trace: PathBuf::from("-"),
+                source: Some(Input::Project {
+                    root: PathBuf::from("svc"),
+                    entry: "app".to_owned(),
+                }),
+                service_name: Some("checkout".to_owned()),
+            })
+        );
+        for (command, message) in [
+            (
+                &["trace", "export", "run.jsonl"][..],
+                "trace export requires a format; --otlp is the only one",
+            ),
+            (
+                &["trace", "export", "--otlp"][..],
+                "trace export requires a trace file, or - for standard input",
+            ),
+            (
+                &["trace", "export", "--otlp", "--service-name"][..],
+                "trace export --service-name requires a non-empty UTF-8 name",
+            ),
+            (
+                &["trace", "export", "--otlp", "a.jsonl", "--root", "svc"][..],
+                "trace export --root requires a project directory and an entry module",
+            ),
+            (
+                &["trace", "export", "--otlp", "a.jsonl", "a.chimi", "b"][..],
+                "trace export received unexpected arguments",
             ),
         ] {
             assert_eq!(
