@@ -460,6 +460,25 @@ impl PackageGraph {
             Self::own_packages(&workspace, true)?.expect("the workspace root holds a manifest");
         let path = workspace.join(LOCK_FILE);
         let previous = Lockfile::read(&path).map_err(PackageError::Lock)?;
+        // A name to move is checked before anything is fetched, so a typo
+        // fails at once: it must be a git dependency a member names, or a
+        // package the lockfile already pins (a dependency's own git
+        // dependency, say). The check after resolving catches the rest.
+        let known = |name: &str| {
+            previous
+                .entries
+                .keys()
+                .any(|locked| locked.as_str() == name)
+                || found.packages.iter().any(|(_, _, manifest)| {
+                    manifest.dependencies.iter().any(|dependency| {
+                        dependency.name.as_str() == name
+                            && matches!(dependency.source, DependencySource::Git(_))
+                    })
+                })
+        };
+        if let Some(name) = moving.iter().find(|name| !known(name)) {
+            return Err(PackageError::NotAGitDependency { name: name.clone() });
+        }
         let mut pins = Pins::Updating {
             previous,
             moving,
