@@ -245,16 +245,23 @@ pub fn build_executable(
 /// the lock one build can replace `program_data.o` or the runtime archive
 /// while another links them.
 fn lock_artifact_directory(directory: &Path) -> Result<std::fs::File, String> {
+    lock_directory(directory, ".build-lock")
+}
+
+/// Waits for, then holds, the exclusive lock file `name` in `directory` until
+/// the returned file is dropped. Locks of different names never wait for each
+/// other, so a holder of one may take another.
+pub fn lock_directory(directory: &Path, name: &str) -> Result<std::fs::File, String> {
     std::fs::create_dir_all(directory)
-        .map_err(|error| format!("create native artifact directory: {error}"))?;
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(directory.join(".build-lock"))
-        .map_err(|error| format!("open native build lock: {error}"))?;
+        .open(directory.join(name))
+        .map_err(|error| format!("open {name}: {error}"))?;
     lock.lock()
-        .map_err(|error| format!("lock native artifact directory: {error}"))?;
+        .map_err(|error| format!("lock {}: {error}", directory.display()))?;
     Ok(lock)
 }
 

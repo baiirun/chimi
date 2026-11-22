@@ -227,8 +227,12 @@ commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
   root's `target/chimi/`, whatever the current directory; a plain project
   keeps them under the current directory's `target/`, as before.
 - Native builds that share an artifact directory (`target/chimi/<name>/`)
-  take turns: each holds the directory's `.build-lock` until it has linked,
-  so two builds started in one place never link each other's files.
+  take turns: each holds the directory's `.build-lock` file until it has
+  linked, so two builds started in one place never link each other's files.
+  Test runs of one input in one place take turns the same way, through
+  `target/chimi/<name>/test/.test-lock`, held until the run has reported,
+  because they share the test executable and the traces directory. The lock
+  files stay in place between builds.
 - The language server finds the package of an open file by walking up to the
   nearest `chimi.toml`, with the same function the commands use, and resolves
   imports as a build would.

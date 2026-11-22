@@ -25,4 +25,8 @@ MUTATIONS = [
         "    lock.lock()\n",
         "    lock.lock_shared()\n",
     )]),
+    dict(name="a test run takes no lock", file="src/main.rs", targets=["build_lock"], filter="", edits=[(
+        "    let _run_lock = match chimi::backend::native::lock_directory(artifact_directory, \".test-lock\") {",
+        "    let _run_lock = match Ok::<(), String>(()) {",
+    )]),
 ]
