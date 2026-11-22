@@ -376,18 +376,28 @@ struct WrittenTypes {
 
 impl WrittenTypes {
     fn of(function: &SyntaxNode<'_>, text: &str) -> Self {
+        // A comment inside a written type cannot be kept on one line; such a
+        // type is shown as the checker formats it.
         let written = |node: &SyntaxNode<'_>| {
+            if node
+                .descendant_tokens()
+                .iter()
+                .any(|token| token.kind() == TokenKind::Comment)
+            {
+                return None;
+            }
             let range = node.range();
             text[range.start() as usize..range.end() as usize]
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
+                .into()
         };
         let type_of = |node: &SyntaxNode<'_>| {
             node.child_nodes()
                 .into_iter()
                 .find(|child| child.kind() == NodeKind::Type)
-                .map(|child| written(&child))
+                .and_then(|child| written(&child))
         };
         let children = function.child_nodes();
         let parameters = children

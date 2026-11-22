@@ -12400,11 +12400,13 @@ fn a_type_alias_cannot_name_itself() {
         "\n",
         "type Second = List<First>\n",
         "\n",
+        "type Provider = fn() -> Int needs { source: Provider }\n",
+        "\n",
         "pub fn main() -> Int {\n",
         "  1\n",
         "}\n",
     ));
-    assert_eq!(codes, ["T4361", "T4361", "T4361", "T4361"]);
+    assert_eq!(codes, ["T4361", "T4361", "T4361", "T4361", "T4361"]);
 }
 
 #[test]
@@ -12511,4 +12513,42 @@ fn a_type_alias_reports_the_errors_of_its_type_once() {
         "}\n",
     ));
     assert_eq!(codes, ["T4211"]);
+}
+
+#[test]
+fn a_type_alias_takes_no_type_arguments_where_it_is_used() {
+    let codes = check_codes(concat!(
+        "enum Bad {\n",
+        "  Broken\n",
+        "}\n",
+        "\n",
+        "type Count = Int\n",
+        "\n",
+        "type Failing = Bad\n",
+        "\n",
+        "fn run(count: Count<Text>, step: fn() -> Int errors Failing<Int>) -> Int {\n",
+        "  count\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4362", "T4362"]);
+}
+
+#[test]
+fn a_type_alias_is_formatted_on_one_line() {
+    let formatted = Compiler::format(SourceSnapshot::from_text(
+        "main.chimi",
+        "enum A {\n  X\n}\n\nenum B {\n  Y\n}\n\npub   type  Either =\n  A |\n  B\n\ntype Pair = {\n  left: Int,\n  right: Int\n}\n",
+    ));
+    assert!(!formatted.is_blocked(), "{}", formatted.render_diagnostics());
+    assert!(
+        formatted
+            .text()
+            .ends_with("pub type Either = A | B\n\ntype Pair = { left: Int, right: Int }\n"),
+        "{}",
+        formatted.text()
+    );
 }

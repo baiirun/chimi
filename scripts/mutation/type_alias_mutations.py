@@ -1,4 +1,9 @@
-"""Mutants for type aliases (CHI-279): each reintroduces a plausible bug."""
+"""Mutants for type aliases (CHI-279): each reintroduces a plausible bug.
+
+Dropped as equivalent: removing the diagnostics truncation in `alias_type`. With
+it removed, an alias type holding an error still reported that error once (tried
+with uses above and below the declaration), so no test can observe it.
+"""
 
 CRATE = "compiler/chimi"
 
@@ -39,11 +44,32 @@ MUTATIONS = [
         filter="alias",
     ),
     dict(
-        name="a use of an alias repeats its type's errors",
+        name="type arguments on an alias are ignored",
         file="src/typing/aliases.rs",
-        edits=[("        self.diagnostics.truncate(diagnostics);\n", "")],
+        edits=[("        if !arguments.is_empty() {\n            self.type_error(", "        if false {\n            self.type_error(")],
         targets=["language"],
         filter="alias",
+    ),
+    dict(
+        name="a cycle through a needs row is not followed",
+        file="src/typing/aliases.rs",
+        edits=[("                    RequirementTermUse::Field { interface, .. } => Some(interface),", "                    RequirementTermUse::Field { .. } => None,")],
+        targets=["language"],
+        filter="alias",
+    ),
+    dict(
+        name="a type alias keeps its line breaks when formatted",
+        file="src/formatter.rs",
+        edits=[("            || token_has_ancestor(token, &[NodeKind::TypeAliasDeclaration])\n", "")],
+        targets=["language"],
+        filter="alias",
+    ),
+    dict(
+        name="doc keeps comments inside a written type",
+        file="src/doc.rs",
+        edits=[("                .any(|token| token.kind() == TokenKind::Comment)\n            {\n                return None;", "                .any(|token| token.kind() == TokenKind::Comment && false)\n            {\n                return None;")],
+        targets=["doc"],
+        filter="written_type",
     ),
     dict(
         name="generic aliases are accepted",

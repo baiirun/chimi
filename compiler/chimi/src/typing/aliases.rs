@@ -8,7 +8,7 @@
 use super::ProjectTypeChecker;
 use crate::ids::{ModuleId, SymbolId, TypeId};
 use crate::resolution::ProjectSymbolKind;
-use crate::semantic::{ModuleDeclaration, TypeUse};
+use crate::semantic::{ModuleDeclaration, Name, RequirementTermUse, TypeUse};
 use std::collections::{HashMap, HashSet};
 
 impl ProjectTypeChecker {
@@ -38,6 +38,26 @@ impl ProjectTypeChecker {
         self.aliases_in_progress.remove(&alias);
         self.alias_types.insert(alias, type_id);
         type_id
+    }
+
+    /// The type a written use of `alias` denotes. Ensures: type arguments on the
+    /// use are `T4362` and ignored, because an alias takes none.
+    pub(super) fn alias_use_type(
+        &mut self,
+        module_id: ModuleId,
+        alias: SymbolId,
+        name: &Name,
+        arguments: &[TypeUse],
+    ) -> TypeId {
+        if !arguments.is_empty() {
+            self.type_error(
+                module_id,
+                "T4362",
+                name,
+                format!("type alias `{}` takes no type arguments", name.text),
+            );
+        }
+        self.alias_type(alias)
     }
 
     /// Checks one alias declaration and reports what its type reports. Ensures:
@@ -113,11 +133,16 @@ impl ProjectTypeChecker {
                 inputs,
                 success,
                 failures,
+                requirements,
                 ..
             } => {
                 children.extend(inputs.iter());
                 children.push(success);
                 children.extend(failures.iter().map(|failures| &**failures));
+                children.extend(requirements.terms.iter().filter_map(|term| match term {
+                    RequirementTermUse::Field { interface, .. } => Some(interface),
+                    RequirementTermUse::Variable { .. } => None,
+                }));
             }
             TypeUse::Tuple { elements, .. } | TypeUse::Union {
                 members: elements, ..

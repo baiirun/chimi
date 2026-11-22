@@ -342,3 +342,19 @@ fn a_signature_keeps_the_type_alias_it_was_written_with() {
         "{text}"
     );
 }
+
+#[test]
+fn a_written_type_holding_a_comment_is_shown_as_checked() {
+    let path = scratch_file(
+        "alias-comment",
+        "pub fn total(pair: {\n  left: Int, // the first\n  right: Int\n}) -> Int {\n  pair.left + pair.right\n}\n",
+    );
+    let output = chimi(&["doc", &path]);
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert!(
+        text.contains("\npub fn total(pair: { left: Int, right: Int }) -> Int\n"),
+        "{text}"
+    );
+}

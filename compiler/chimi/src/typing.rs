@@ -8369,10 +8369,10 @@ impl ProjectTypeChecker {
                     (Some(_), Some(symbol)) if self.is_failure_variant(symbol) => {
                         self.variant_failure_set_type(symbol)
                     }
-                    (Some(_), Some(symbol))
+                    (Some(name), Some(symbol))
                         if self.resolved.symbol(symbol).kind == ProjectSymbolKind::TypeAlias =>
                     {
-                        self.alias_type(symbol)
+                        self.alias_use_type(module_id, symbol, name, arguments)
                     }
                     (Some(name), Some(symbol)) => {
                         let kind = self.resolved.symbol(symbol).kind;

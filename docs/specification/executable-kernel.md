@@ -228,12 +228,13 @@ PaymentError`. An alias of any other type after `errors` is `T4102`.
   module alias (`Http.Settings`) or a member import. Using a private alias
   from another module is `E_PRIVATE_SYMBOL`.
 - An alias MUST NOT reach itself through aliases alone (`T4361`), as in
-  `type Wrapped = Option<Wrapped>`: an alias names a type that already
+  `type Wrapped = Option<Wrapped>`, including through a function type's
+  `needs` row: an alias names a type that already
   exists, so a recursive type is a struct or enum. A struct or enum in
   between ends the chain, so `type Tree = { root: Node }` with a `Node` field
   of type `List<Tree>` is valid.
-- An alias takes no type parameters (`L2130`). Declare a generic struct or
-  enum instead.
+- An alias takes no type parameters (`L2130`), and a use of one takes no type
+  arguments (`T4362`). Declare a generic struct or enum instead.
 - `chimi doc` shows a signature with the alias names it was written with.
   Diagnostics and hover show the type the alias names.
 
