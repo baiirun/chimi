@@ -27,6 +27,14 @@ MUTATIONS = [
         "            self.check_row_lacks(module_id, range, callee_symbol, &parameters, substitution);\n",
         "",
     )]),
+    mutant("a generic value's instantiation never checks the lacks", [(
+        "        if self.member_conformance_depth == 0 {\n            self.check_row_lacks(",
+        "        if false {\n            self.check_row_lacks(",
+    )]),
+    mutant("a returned function takes nothing off the row", [(
+        "        self.collect_row_peels(contract.success, parameter, &mut names, &mut seen);\n        let own",
+        "        let own",
+    )]),
     mutant("a forwarded name is still lacked", [(
         "            names.retain(|name| !own.entries.iter().any(|need| &need.lexical_name == name));\n",
         "",

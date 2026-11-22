@@ -1723,6 +1723,9 @@ struct ProjectTypeChecker {
     /// is inside. A function input is contravariant, so there `Never` matches
     /// only `Never`: a `fn(Never)` must not pass for a `fn(Int)`.
     function_input_depth: u32,
+    /// Inside a generic member conformance check, which reports a provider
+    /// that takes off more than its member as `T4213`, not as `T4226`.
+    member_conformance_depth: u32,
     /// Set just before lowering an interface member's declared type, the one
     /// place a generic function type `fn<A>(..)` may appear; any nested type
     /// lowers with it cleared.
@@ -1978,6 +1981,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            member_conformance_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
             alias_types: HashMap::new(),
@@ -3014,6 +3018,7 @@ impl ProjectTypeChecker {
             arm_types: HashMap::new(),
             undetermined_constants: HashSet::new(),
             function_input_depth: 0,
+            member_conformance_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
             expanding_groups: HashSet::new(),
@@ -8464,6 +8469,9 @@ impl ProjectTypeChecker {
         for input in &contract.inputs {
             self.collect_row_peels(*input, parameter, &mut names, &mut seen);
         }
+        // A returned function that takes a name off `R` (`-> fn(fn() -> T needs
+        // R + { name: I }) -> T needs R`) is the signature's own.
+        self.collect_row_peels(contract.success, parameter, &mut names, &mut seen);
         let own = &self.needs_rows[contract.needs.raw() as usize];
         if own.parameters.contains(&parameter) {
             names.retain(|name| !own.entries.iter().any(|need| &need.lexical_name == name));
@@ -8515,9 +8523,9 @@ impl ProjectTypeChecker {
                         .iter()
                         .find(|other| !self.row_lacked_names(**other).contains(&name))
                         .map(|other| {
+                            let other = &self.resolved.symbol(*other).name;
                             format!(
-                                "`{}`, which may include `{name}`",
-                                self.resolved.symbol(*other).name
+                                "`{other}`, which may include `{name}` (a parameter whose function type is `needs {other} + {{ {name}: ... }}` takes it off `{other}`)"
                             )
                         })
                 };
@@ -8615,7 +8623,7 @@ impl ProjectTypeChecker {
                     "T4226",
                     range,
                     format!(
-                        "row `{row}` of `{callee}` cannot include `{name}`, because `{callee}` takes `{name}` off it (`needs {row} + {{ {name}: ... }}`); this call binds `{row}` to {clash}"
+                        "row `{row}` of `{callee}` cannot include `{name}`, because `{callee}` takes `{name}` off it (`needs {row} + {{ {name}: ... }}`); here `{row}` is bound to {clash}"
                     ),
                 );
             }
@@ -8834,7 +8842,9 @@ impl ProjectTypeChecker {
         let bounded = self.bounded_inference_variables.clone();
         let property_checks = self.property_checks.len();
         let existing_variables = self.next_inference_variable;
+        self.member_conformance_depth += 1;
         let reason = self.generic_member_mismatch(actual, parameters, contract);
+        self.member_conformance_depth -= 1;
         let reason = reason.or_else(|| {
             let escapes = (0..existing_variables).any(|variable| {
                 let bound = self.inference_bindings.get(&variable).copied();
@@ -11554,6 +11564,10 @@ impl ProjectTypeChecker {
             return;
         };
         let owner = self.polymorphic_owners.get(parameters).copied();
+        // Instantiating a generic value binds its rows as a call does.
+        if self.member_conformance_depth == 0 {
+            self.check_row_lacks(module_id, range, owner, parameters, substitution);
+        }
         for parameter in parameters {
             let callee = owner.map_or_else(
                 || self.generic_owner_name(*parameter),

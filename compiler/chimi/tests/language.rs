@@ -13947,3 +13947,52 @@ pub fn main() -> Text { traced(hello) using { greeter: g("caller") } }
         .collect();
     assert_eq!(codes, ["T4225"], "{supplying}");
 }
+
+// Using a generic function value at a function type binds its rows as a call
+// does, so the lacks rule holds there too; and a name a parameter's type
+// takes off a row deep inside it (a callback that returns a callback) counts.
+#[test]
+fn a_generic_value_used_at_a_function_type_keeps_its_rows_lacks() {
+    const BOTH: &str = r#"
+fn both<R>(f: fn() -> Text needs R + { greeter: Greeter }, k: fn() -> Text needs R) -> Text needs R {
+  "${f()} ; ${k()}" using { greeter: g("fixed") }
+}
+"#;
+    let codes = |source: &str| -> Vec<String> {
+        diagnostics_of(source).into_iter().map(|(code, _)| code).collect()
+    };
+    let annotated = row_program(&format!(
+        r#"{BOTH}
+fn go<R>(k: fn() -> Text needs R) -> Text needs R {{
+  let b: fn(fn() -> Text needs R + {{ greeter: Greeter }}, fn() -> Text needs R) -> Text needs R = both
+  b(hello, k)
+}}
+pub fn main() -> Text {{ go(hello) using {{ greeter: g("caller") }} }}
+"#
+    ));
+    assert_eq!(codes(&annotated), ["T4226"], "{annotated}");
+    let returned = row_program(&format!(
+        r#"{BOTH}
+fn mk<R>() -> fn(fn() -> Text needs R + {{ greeter: Greeter }}, fn() -> Text needs R) -> Text needs R {{ both }}
+pub fn main() -> Text {{
+  let b = mk()
+  b(hello, hello) using {{ greeter: g("caller") }}
+}}
+"#
+    ));
+    assert_eq!(codes(&returned), ["T4226"], "{returned}");
+    let nested = row_program(
+        r#"
+fn both<R>(mk: fn() -> fn() -> Text needs R + { greeter: Greeter }, k: fn() -> Text needs R) -> Text needs R {
+  let f = mk()
+  "${f()} ; ${k()}" using { greeter: g("fixed") }
+}
+fn plain() -> Text { "plain" }
+pub fn main() -> Text { both(fn() { hello }, plain) }
+"#,
+    );
+    assert_eq!(
+        run_both("row-lacks-nested", &nested),
+        "\"outcome\":\"success\",\"value\":\"fixed x ; plain\""
+    );
+}
