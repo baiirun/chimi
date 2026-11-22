@@ -755,6 +755,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         } => std::iter::once(expression.as_ref())
             .chain(providers.iter().map(|provider| &provider.value))
             .collect(),
+        ModuleExpression::UsingRecord {
+            expression, record, ..
+        } => vec![record, expression],
         ModuleExpression::Block { items, .. } => items
             .iter()
             .map(|item| match item {

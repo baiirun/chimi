@@ -705,6 +705,34 @@ let checkout = submit(cart) using {
 Successfully supplied needs are removed from the resulting callable contract;
 unsupplied needs remain. The provider record MUST be nonempty.
 
+The provider record may also be a value: a name, a member, or a call, whose
+type is a record. Each of its fields is a provider under the field's name, so
+one set of providers is written once and supplied wherever it is needed:
+
+<!-- chimi: fragment -->
+```chimi
+let providers = { payment: fake_payment, inventory: fake_inventory }
+let first = submit(cart) using providers
+let second = submit(other_cart) using Fakes.all()
+```
+
+- The value MUST be evaluated once, before the expression it provides for.
+- Its fields follow the written form's rules: each MUST be a need of the
+  expression (`T4212`) and MUST conform to it (`T4213`).
+- A value whose type is not a record with at least one field, or whose type
+  is not known where `using` reads it, is `T4218`.
+- Any other expression after `using` goes in parentheses. A pipeline after a
+  provider record value is a syntax error, not part of the value.
+- Under a process spec, the record is shared or not as a whole, so a record
+  holding a provider that cannot be shared cannot supply the spec (`T4260`).
+- `using` clauses chain: `run() using providers using { clock: fake_clock }`
+  supplies both. Each need is supplied once: a later clause cannot replace a
+  provider an earlier one supplied (`T4212`). The last clause's providers are
+  evaluated first.
+- To replace one provider of a record value, update it:
+  `run() using { ..providers, clock: fake_clock }` supplies the updated
+  record.
+
 A provider shape mismatch leaves the need unresolved for analysis but marks the
 mismatch as explained. A later closed-root check SHOULD NOT emit a redundant
 missing-dependency diagnostic for that same need.

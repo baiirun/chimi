@@ -337,6 +337,12 @@ impl Checker<'_> {
                 visit(expression);
                 providers.iter().for_each(|provider| visit(&provider.value));
             }
+            ModuleExpression::UsingRecord {
+                expression, record, ..
+            } => {
+                visit(record);
+                visit(expression);
+            }
             ModuleExpression::Block { items, .. } => {
                 for item in items {
                     match item {

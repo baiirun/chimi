@@ -168,6 +168,23 @@ impl<'a> Verifier<'a> {
                 }
                 self.check_spec_body(call, *expression)
             }
+            // `using record` binds the record, then provides its fields.
+            CoreOperation::Sequence(steps)
+                if matches!(steps.last(), Some(CoreStep::Expression(last))
+                    if matches!(self.node(*last).operation, CoreOperation::Provision { .. })) =>
+            {
+                for step in steps {
+                    match step {
+                        CoreStep::Bind { value, .. } => {
+                            if let Some(violation) = not_shareable(*value, self.node(*value).type_id) {
+                                return Err(violation);
+                            }
+                        }
+                        CoreStep::Expression(last) => return self.check_spec_body(call, *last),
+                    }
+                }
+                Ok(())
+            }
             CoreOperation::Closure {
                 parameters,
                 captures,

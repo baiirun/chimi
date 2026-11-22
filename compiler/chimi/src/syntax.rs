@@ -2290,7 +2290,13 @@ impl<'source> Parser<'source> {
                 wrapped = true;
             }
             self.skip_newlines();
-            self.parse_record();
+            // A provider record is written out, `using { name: provider }`, or is
+            // a value: a name, member, or call, as in `using providers`.
+            if self.at(TokenKind::LeftBrace) {
+                self.parse_record();
+            } else {
+                self.parse_postfix();
+            }
         }
         if wrapped {
             self.finish();

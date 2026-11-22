@@ -654,6 +654,45 @@ impl CapabilityChecker<'_> {
                 self.spec_needs.append(&mut inner_spec_needs);
                 value
             }
+            ModuleExpression::UsingRecord {
+                semantic_id,
+                expression,
+                record,
+                ..
+            } => {
+                // The record is evaluated first, at run time as here, so a move
+                // into it is checked before the body reads.
+                let mut provided = self.evaluate(module_id, record, environment);
+                let outer_spec_needs = std::mem::take(&mut self.spec_needs);
+                let value = self.evaluate(module_id, expression, environment);
+                let mut inner_spec_needs = std::mem::take(&mut self.spec_needs);
+                // The record is shared or not as a whole, so each provider it
+                // supplies is judged by the record.
+                let names = self
+                    .typed
+                    .using_records
+                    .get(&(module_id, *semantic_id))
+                    .map(|fields| fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let nonshareable = provided.properties.shareable == PropertyDerivation::Never;
+                for name in &names {
+                    if inner_spec_needs.remove(name) && nonshareable {
+                        self.nonshareable_spec_provider(module_id, record.range(), name);
+                    }
+                }
+                if nonshareable {
+                    provided.nonshareable_provider = names.first().cloned();
+                }
+                self.transfer_carried(
+                    &provided,
+                    record.range(),
+                    TransferBoundary::ClosureCapture,
+                    environment,
+                );
+                self.spec_needs.extend(outer_spec_needs);
+                self.spec_needs.append(&mut inner_spec_needs);
+                value.combine(provided)
+            }
             ModuleExpression::Sequence { expressions, .. } => expressions
                 .iter()
                 .map(|child| self.evaluate(module_id, child, environment))
@@ -1491,6 +1530,9 @@ fn expression_children(expression: &ModuleExpression) -> Vec<&ModuleExpression> 
         } => std::iter::once(expression.as_ref())
             .chain(providers.iter().map(|provider| &provider.value))
             .collect(),
+        ModuleExpression::UsingRecord {
+            expression, record, ..
+        } => vec![record, expression],
         ModuleExpression::Block { items, .. } => items
             .iter()
             .map(|item| match item {
