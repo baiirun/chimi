@@ -1233,8 +1233,8 @@ the gates measure, so it goes first.
          sleeping on several carriers, on four carriers.
      - 4d-4: immutable configuration into a `KernelConfig`.
        - As landed: `Scheduler.config` holds the stack size, trace mode,
-         trace sink and its context, the host's release, copy-free take
-         and violation-report hooks. Field moves only: no behaviour
+         trace sink and its context, the host's release hooks, the
+         release take and the violation report. Field moves only: no behaviour
          change, so no mutants and no measurement. The trace sink is set
          once after construction (`set_trace_sink`), before any carrier
          runs. Channel config (`observe_*`, the copy hook) stays inside
