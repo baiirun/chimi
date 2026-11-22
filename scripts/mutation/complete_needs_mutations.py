@@ -38,4 +38,12 @@ MUTATIONS = [
         "                    if owned && !written.contains(&parameter.name.as_str()) {",
         "                    if false && owned {",
     )], filter="reached_row_parameter"),
+    mutant("a name reached with two interfaces counts as written", [(
+        "                    if !others.is_empty() {",
+        "                    if false {",
+    )], filter="must_name_its_interface"),
+    mutant("main is told to list a need only using can close", [(
+        "                        || (is_main && !self.runner_closes(need))\n",
+        "",
+    )], filter="main_with_a_written"),
 ]

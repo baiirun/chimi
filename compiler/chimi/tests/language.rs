@@ -6766,6 +6766,28 @@ fn a_written_needs_clause_must_list_a_reached_row_parameter() {
     );
 }
 
+// Writing a need under a reached name with another interface is a conflict,
+// not a listed need: the program would otherwise defect at run time.
+#[test]
+fn a_written_need_under_a_reached_name_must_name_its_interface() {
+    let source = format!(
+        "{PAY_PRELUDE}{}",
+        concat!(
+            "interface Other {\n  ping: fn() -> Int\n}\n",
+            "fn renamed() -> Void needs { pay: Other } {\n  charge(1)\n}\n",
+            "pub fn main() -> Int { 0 }\n",
+        )
+    );
+    assert_eq!(
+        diagnostics_of(&source),
+        [(
+            "T4103".to_owned(),
+            "renamed reaches the need `pay` as `Other` and `Pay`; one name needs one interface"
+                .to_owned()
+        )]
+    );
+}
+
 // `main` follows the rule too, so a written clause can no longer hide a
 // runner-closed need (CHI-285).
 #[test]
@@ -6778,6 +6800,11 @@ fn main_with_a_written_clause_lists_its_runner_needs() {
     assert_eq!(check_codes(source), ["T4204"]);
     let listed = source.replace("{ console: Console }", "{ console: Console, clock: Clock }");
     assert_eq!(check_codes(&listed), Vec::<String>::new());
+    // A need only `using` can close is the root check's to report, once.
+    let unclosed = format!(
+        "{PAY_PRELUDE}pub fn main() -> Int needs {{ console: Console }} {{\n  charge(1)\n  0\n}}\n"
+    );
+    assert_eq!(check_codes(&unclosed), ["E5002"]);
 }
 
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
