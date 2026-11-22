@@ -352,7 +352,13 @@ impl Evaluator<'_> {
                 Control::Success(RuntimeValue::Void)
             }
             (StandardFunction::MetricsHostEnabled, []) => {
-                Control::Success(RuntimeValue::Boolean(self.config.metrics_file.is_some()))
+                Control::Success(RuntimeValue::Boolean(
+                    self.config.metrics_file.is_some() || self.metrics.reading,
+                ))
+            }
+            (StandardFunction::MetricsHostDocument, []) => {
+                self.metrics.reading = true;
+                Control::Success(RuntimeValue::Text(self.metrics.render()))
             }
             (
                 StandardFunction::MetricsHostRecord,
@@ -528,6 +534,9 @@ pub(super) struct MetricsAggregate {
     series_per_name: std::collections::BTreeMap<String, usize>,
     dropped_label_sets: u64,
     dropped_kind_conflicts: u64,
+    /// Set by the first `Metrics.runner_document`: from then on the provider
+    /// records without `--metrics-file`.
+    reading: bool,
 }
 
 impl MetricsAggregate {

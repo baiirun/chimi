@@ -17,11 +17,51 @@
 /// `chimi.metrics.dropped_label_sets` and `chimi.metrics.dropped_kind_conflicts`,
 /// written only when not zero.
 
+import std/bytes as Bytes
+import std/clock as Clock.{Clock}
+import std/debug as Debug
+import std/duration as Duration.{Duration}
+import std/http as Http
 import std/json as Json.{Number, Value}
 import std/list as List
 import std/map as Map.{Map}
+import std/metrics as Metrics.{Metrics}
+import std/net.{Network}
 import std/option as Option.{None, Option, Some}
+import std/resource as Resource
+import std/result as Result.{Ok}
+import std/task as Task
 import std/text as Text
+
+// 1. Public types.
+
+/// Where and how often `Otel.export` pushes, the type of `Otel.defaults`.
+/// `endpoint` is the collector's OTLP/HTTP base URL; metrics go to
+/// `<endpoint>/v1/metrics`. `headers` are sent with every push, such as an
+/// API key. `timeout` bounds one push, and `flush_within` the last one,
+/// when the body ends. `client` is the HTTP client's settings, such as its
+/// roots for `https`.
+pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings }
+
+/// The defaults, to update with what differs:
+/// `{ ..Otel.defaults, endpoint: "http://collector:4318", service_name: "checkout" }`.
+/// They push to a collector on this machine every 10 s, give a push 5 s
+/// and the last push 5 s, and name the service `unknown_service`, as
+/// OpenTelemetry names an unnamed one.
+pub const defaults: Settings = {
+  endpoint: "http://localhost:4318",
+  service_name: "unknown_service",
+  interval: Duration.seconds(10),
+  timeout: Duration.seconds(5),
+  flush_within: Duration.seconds(5),
+  headers: [],
+  client: Http.client_defaults,
+}
+
+/// A running export, which `Otel.export` passes to its body.
+pub struct Exporter {
+  settings: Settings,
+}
 
 // 2. Failure types.
 
@@ -79,7 +119,85 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text {
   ]))
 }
 
+// 6. Exporting.
+
+/// Runs `body` while the runner's metrics are pushed to the collector that
+/// `settings` names, and returns what `body` returns. Metrics are pushed
+/// every `settings.interval`, and once more when `body` ends, however it
+/// ends: returns, fails, defects or is stopped, as on `SIGTERM`.
+///
+/// ```text
+/// pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics } {
+///   let settings = { ..Otel.defaults, endpoint: "http://collector:4318", service_name: "checkout" }
+///   Otel.export(settings, fn(_) { serve() })
+/// }
+/// ```
+///
+/// What is pushed is what the runner's `metrics` provider records,
+/// cumulative from the run's start: the first thing `export` does is read
+/// the aggregate, which turns recording on (`Metrics.runner_document`), so
+/// call it first in `main`. A push that fails (the collector is down,
+/// slow, or answers other than 2xx) is dropped and counted as
+/// `chimi.otel.failed_exports`; the next push carries the totals, so a
+/// collector that comes back sees every count. A push never fails `body`.
+/// Each `export` pushes on its own, so nested exports push twice.
+///
+/// Fails with: what `body` fails with.
+/// Defects when: `settings.interval`, `timeout` or `flush_within` is not
+/// positive.
+pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E needs R) -> T needs R + {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  case settings.interval <= Duration.zero or settings.timeout <= Duration.zero or settings.flush_within <= Duration.zero {
+    True -> Debug.crash("Otel.export: interval, timeout and flush_within must be positive")
+    False -> Void
+  }
+  let _ = Metrics.runner_document()
+  let exporter = Exporter { settings: settings }
+  Resource.scoped(fn() {
+    Task.start(fn() { push_every(settings) })
+  }, fn(pushing) {
+    Task.cancel(pushing)
+    push_within(settings, settings.flush_within)
+  }, fn(_) { body(exporter) })
+}
+
 // 8. Private helpers.
+
+fn push_every(settings: Settings) -> Void needs {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  loop _pushed = Void {
+    Clock.sleep(settings.interval)
+    push_within(settings, settings.timeout)
+  }
+}
+
+// One push of the aggregate as it stands, given at most `limit`. A failed
+// push is counted, never raised.
+fn push_within(settings: Settings, limit: Duration) -> Void needs {
+  network: Network,
+  clock: Clock,
+  metrics: Metrics
+} {
+  let pushed = Result.capture(fn() {
+    Task.timeout(fn() {
+      let body = metrics_request(Metrics.runner_document(), settings.service_name)
+      let headers = List.append([("content-type", "application/json")], settings.headers)
+      let reply = Http.send(Http.Method.Post, "${settings.endpoint}/v1/metrics", headers, Bytes.from_text(body), { ..settings.client, timeout: limit })
+      let status = Http.status(reply)
+      status >= 200 and status < 300
+    }, limit)
+  })
+  case pushed {
+    Ok(True) -> Void
+    _ -> Metrics.count("chimi.otel.failed_exports", 1, [])
+  }
+}
 
 // AGGREGATION_TEMPORALITY_CUMULATIVE.
 const cumulative = 2

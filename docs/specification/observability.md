@@ -4,9 +4,10 @@
 
 This is the normative contract for the Phase 7c observability modules
 (CHI-289): `std/log` and `std/metrics`, and `std/otel`'s OpenTelemetry
-encoding (CHI-296). Offline export is `chimi trace export --otlp` and
-`chimi metrics export --otlp` (tooling.md); pushing to a collector while the
-program runs is being built in CHI-296 and is not specified yet. The words MUST, MUST NOT,
+encoding and metrics push (CHI-296). Offline export is
+`chimi trace export --otlp` and `chimi metrics export --otlp` (tooling.md);
+`Otel.export` pushes metrics to a collector while the program runs. Pushing
+logs is being built in CHI-296 and is not specified yet. The words MUST, MUST NOT,
 SHOULD, SHOULD NOT, and MAY are normative. The modules follow the
 [standard library conventions](standard-library-conventions.md) and the
 [runner-provided capability rules](system-modules.md#runner-provided-capabilities).
@@ -140,6 +141,8 @@ pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs
 pub fn observe(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs { metrics: Metrics }
 
 pub fn seconds(duration: Duration) -> Float
+
+pub fn runner_document() -> Text needs { metrics: Metrics }
 ```
 
 <!-- chimi: check -->
@@ -170,8 +173,9 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 ### The runner's aggregate
 
 - The provider MUST record nothing unless the runner option
-  `--metrics-file=<path>` is given; it reads that once, when `main` starts,
-  and without it a label set is never encoded.
+  `--metrics-file=<path>` is given or the program has called
+  `runner_document`; it asks the runtime on each measurement, and until one
+  of them holds a label set is never encoded.
 - It MUST add each measurement into one aggregate per name and label set.
   A label set is the labels as one JSON object, so the order they were
   written in does not matter and a label written twice keeps its last value.
@@ -230,20 +234,85 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
 - The interpreter's provider MUST aggregate the same way and write the same
   document to `ExecutionConfig::with_metrics_file`.
 
+### Reading the aggregate while main runs
+
+- `runner_document` MUST return the runner's aggregate as it stands, as the
+  document above, with `time_unix_ns` the start plus the execution clock's
+  reading at the call. Every measurement recorded before it returns, on any
+  carrier, is in it.
+- From its first call on, the provider MUST record without
+  `--metrics-file`, on every carrier. What was recorded before that call
+  without the file is not in the aggregate, so an exporter reads it first,
+  at the top of `main`.
+- With `--metrics-file`, the file at exit is what a read at the end of
+  `main` would return, apart from `time_unix_ns`, which is when it is
+  written.
+- With `--benchmark-repeats`, the repeats share the aggregate, as they do
+  for the file, and the first read: a repeat after it records from its
+  start, and its reads include the earlier repeats.
+- It reads the runner's aggregate whatever provider closes `metrics`: under
+  a fake it returns what the runner's provider recorded, which is nothing
+  in a test. The need says that the function reads metrics.
+- The interpreter's provider MUST return the same document, with both times
+  0.
+
 ### Not in this slice
 
-- Metrics are written once, at exit. `chimi metrics export --otlp` turns the
-  file into OpenTelemetry metrics (tooling.md). There is no export while the
-  program runs; that is CHI-296.
+- The file is written once, at exit. `chimi metrics export --otlp` turns it
+  into OpenTelemetry metrics (tooling.md). A program reads the aggregate
+  while it runs with `runner_document`; pushing it to a collector is
+  `std/otel` (CHI-296).
 - There are no custom histogram bounds and no up-down counter.
 
 ## std/otel
 
 ```text
+pub type Settings = { endpoint: Text, service_name: Text, interval: Duration, timeout: Duration, flush_within: Duration, headers: List<(Text, Text)>, client: Http.ClientSettings }
+pub const defaults: Settings
+pub struct Exporter
+
 pub enum DocumentError { Invalid(message: Text) }
 
+pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E needs R) -> T needs R + { network: Network, clock: Clock, metrics: Metrics }
 pub fn metrics_request(document: Text, service_name: Text) -> Text
 ```
+
+### Pushing metrics
+
+```text
+pub fn main() -> Void needs { network: Network, clock: Clock, metrics: Metrics } {
+  let settings = { ..Otel.defaults, endpoint: "http://collector:4318", service_name: "checkout" }
+  Otel.export(settings, fn(_) { serve() })
+}
+```
+
+- `export` MUST read the runner's aggregate (`Metrics.runner_document`)
+  before anything else, so recording is on from then on, then run `body`
+  with an `Exporter` and return what it returns, or fail with what it fails
+  with.
+- While `body` runs, it MUST push the aggregate every `settings.interval`,
+  and once more when `body` ends, however it ends: it returns, fails,
+  defects, or is stopped, as on `SIGTERM`. The last push is a release
+  (scope-owned-resources.md), so a stop waits for it.
+- A push is `POST <endpoint>/v1/metrics` with `content-type:
+  application/json`, then `settings.headers`, and the body
+  `metrics_request(Metrics.runner_document(), settings.service_name)`,
+  sent with `Http.send` and `settings.client` (network-modules.md). Each
+  push holds the totals since the run's start (cumulative temporality), so
+  a lost push loses no count.
+- A push succeeds on a 2xx status. Any other status, a connection or TLS
+  failure, or a push past its limit MUST be dropped, never raised into
+  `body`, and counted as the count `chimi.otel.failed_exports`, which the
+  next push carries. A periodic push is given `settings.timeout`; the last,
+  `settings.flush_within`, so a collector that is down or slow delays the
+  program's end by at most that.
+- The defaults are `http://localhost:4318`, `unknown_service`, a 10 s
+  interval, 5 s for a push and 5 s for the last one, no headers, and
+  `Http.client_defaults`.
+- It needs the native runtime, as `Http.send` does: the interpreter refuses
+  the program (`E5204`).
+
+### Encoding
 
 - `metrics_request` MUST turn a `chimi.metrics.v1` document ("The runner's
   aggregate") into the body of an OTLP/JSON `ExportMetricsServiceRequest`:
@@ -263,8 +332,8 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text
 
 ### Not in this slice
 
-- Sending the body to a collector, while the program runs and at exit, and
-  pushing logs (CHI-296). Traces stay offline: a trace has one span per
+- Pushing logs (CHI-296), retries within an interval, compression and
+  protobuf. Traces stay offline: a trace has one span per
   operation, too fine to push live, and an explicit span API is a later
   ticket.
 
@@ -287,5 +356,13 @@ pub fn metrics_request(document: Text, service_name: Text) -> Text
 | Recording functions build the measurement and reach a fake through `using`, on both backends; `seconds` | `tests/std_metrics.rs` `a_test_records_measurements_through_a_fake` |
 | A test without a `metrics` provider is `T4400` | `tests/std_metrics.rs` `a_test_without_a_metrics_provider_is_rejected` |
 | The interpreter's provider writes the same document | `tests/std_metrics.rs` `the_interpreter_writes_the_same_document` |
+| `runner_document` reads the aggregate mid-run with the read's time, turns recording on without the file, and matches the exit file, on both backends | `tests/std_metrics.rs` `the_aggregate_can_be_read_while_main_runs` |
+| After a read, tasks on four carriers record without the file | `tests/std_metrics.rs` `a_read_turns_recording_on_for_every_carrier` |
 | `metrics_request` matches `chimi metrics export --otlp` as JSON, on both backends | `tests/std_otel.rs` `a_metrics_request_is_what_the_cli_exports` |
 | An unreadable document fails with the CLI's reason | `tests/std_otel.rs` `a_document_that_is_not_metrics_fails_with_the_reason` |
+| `export` pushes every interval and when the body ends, to `/v1/metrics` with the content type and headers | `tests/std_otel.rs` `metrics_are_pushed_every_interval_and_when_the_body_ends` |
+| A refused, 5xx or silent collector is counted once per failed push, not raised | `tests/std_otel.rs` `a_collector_that_is_down_slow_or_failing_is_counted_not_raised` |
+| The last push is bounded by `flush_within` | `tests/std_otel.rs` `the_last_push_is_bounded_by_flush_within` |
+| A body that defects still pushes | `tests/std_otel.rs` `a_body_that_defects_still_pushes` |
+| Settings that are not positive are a defect | `tests/std_otel.rs` `settings_that_are_not_positive_are_a_defect` |
+| A stopped program pushes before it exits | `tests/std_otel.rs` `a_stopped_program_pushes_before_it_exits` |
