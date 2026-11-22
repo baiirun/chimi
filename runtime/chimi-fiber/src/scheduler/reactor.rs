@@ -127,9 +127,7 @@ impl Reactor {
     /// withdrawn.
     pub(super) fn is_withdrawn(&self, resource: u64) -> bool {
         let (slot, generation) = key_parts(resource);
-        self.withdrawn
-            .get(&slot)
-            .is_some_and(|newest| generation <= *newest)
+        self.withdrawn.get(&slot).is_some_and(|newest| generation <= *newest)
     }
 
     /// The tasks waiting on `resource`, in registration order.
@@ -264,10 +262,7 @@ mod sys {
         {
             return None;
         }
-        for poll in polls[watched.len()..]
-            .iter()
-            .filter(|poll| poll.revents != 0)
-        {
+        for poll in polls[watched.len()..].iter().filter(|poll| poll.revents != 0) {
             crate::scheduler::signal::drain(poll.fd);
         }
         Some(

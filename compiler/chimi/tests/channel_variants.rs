@@ -698,10 +698,7 @@ fn an_event_cannot_outlive_its_receiver() {
         "  Select.first([event])\n",
         "}\n",
     ));
-    assert!(
-        rebound.is_empty(),
-        "a receiver rebound in its own task: {rebound:?}"
-    );
+    assert!(rebound.is_empty(), "a receiver rebound in its own task: {rebound:?}");
 }
 
 // ----- Interpreter --------------------------------------------------------------
@@ -770,8 +767,5 @@ fn sending_a_channel_its_own_only_receiver_defects() {
              }}\n"
         ),
     );
-    assert!(
-        shared.contains("\"outcome\":\"success\",\"value\":7"),
-        "{shared}"
-    );
+    assert!(shared.contains("\"outcome\":\"success\",\"value\":7"), "{shared}");
 }

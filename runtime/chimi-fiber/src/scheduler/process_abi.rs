@@ -1,12 +1,10 @@
 //! C ABI for supervised processes: request records, policy parsing, and the
 //! configurable scheduler entry point. Layouts match `chimi_fiber.h`.
 
-use super::carrier::{KernelAccess, Locked};
 use super::process::{
     Address, HandleKind, IncarnationId, Member, MembershipId, MonitorId, NameId, Policy,
     ProcessSpec, Receipt, Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
-use super::ready::Carrier;
 use super::{
     CapabilityViolationReport, MessageRelease, ProcessDefectReport, ReleaseTake, SendFailure,
     SpecContextRelease, TaskContextRelease, ValueCopy, ValueRelease,
@@ -18,6 +16,8 @@ use super::{
     RESPONSE_UNAVAILABLE, SCHEDULER_DEFECT_CODE, Scheduler, SchedulerOptions, SchedulerOutcome,
     SchedulerTraceSink, TaskId, TaskOutcome, TaskPhase, TaskResult, TraceMode,
 };
+use super::carrier::{KernelAccess, Locked};
+use super::ready::Carrier;
 use crate::{ChimiFiberCommand, ChimiFiberEntry, ChimiFiberState};
 use std::ffi::c_void;
 use std::num::NonZeroU32;
@@ -389,8 +389,7 @@ impl Scheduler {
                 // The notice carries its capabilities as a message does: in
                 // flight until the watcher receives it, ended if it is
                 // dropped unread.
-                self.channels
-                    .dispatch_carried(owner, input.message as usize, &carried);
+                self.channels.dispatch_carried(owner, input.message as usize, &carried);
                 let monitor = self.process_monitor(watcher, target, input.message);
                 self.respond(waiter, RESPONSE_OK, |r| r.monitor = monitor.get());
             }
@@ -724,10 +723,7 @@ impl Scheduler {
         deadlock: &mut Vec<ParkedTask>,
     ) -> RootStep {
         let root_live = |scheduler: &Self| {
-            scheduler
-                .tasks
-                .get(&root)
-                .is_some_and(|record| record.phase.is_live())
+            scheduler.tasks.get(&root).is_some_and(|record| record.phase.is_live())
         };
         match idle {
             Idle::AwaitingHost => return RootStep::Continue,
@@ -863,10 +859,7 @@ pub(super) fn run_on_carriers(
         // Before any carrier starts, so none sees the last run's end and
         // leaves before carrier 0's `run_root` would clear it.
         held.begin_run(root);
-        assert!(
-            held.run_end.is_none(),
-            "a carrier would start into the last run's end"
-        );
+        assert!(held.run_end.is_none(), "a carrier would start into the last run's end");
         // Work the caller queued through the kernel directly marked the
         // carriers it is for without waking them. Every carrier of the run
         // drives before it first waits, so it finds that work anyway; the
@@ -900,18 +893,9 @@ pub(super) fn run_on_carriers(
             }
         }
         gate.open(true);
-        abort_on_panic(|| {
-            run_root(
-                &mut Locked::new(&kernel, Carrier::default()),
-                root,
-                deadlock_code,
-            )
-        })
+        abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
     });
-    (
-        run,
-        kernel.into_inner().unwrap_or_else(PoisonError::into_inner),
-    )
+    (run, kernel.into_inner().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Spawns carrier `index`'s thread in `scope`.
@@ -973,10 +957,7 @@ impl StartGate {
             if let Some(run) = *decision {
                 return run;
             }
-            decision = self
-                .opened
-                .wait(decision)
-                .unwrap_or_else(PoisonError::into_inner);
+            decision = self.opened.wait(decision).unwrap_or_else(PoisonError::into_inner);
         }
     }
 }
@@ -1002,12 +983,8 @@ pub(super) fn run_root_on_threads(
 ) -> RootRun {
     let placeholder = Scheduler::new(scheduler.stack_bytes, scheduler.trace_mode);
     let carriers = scheduler.ready.carriers();
-    let (run, kernel) = run_on_carriers(
-        std::mem::replace(scheduler, placeholder),
-        root,
-        deadlock_code,
-        None,
-    );
+    let (run, kernel) =
+        run_on_carriers(std::mem::replace(scheduler, placeholder), root, deadlock_code, None);
     drop(std::mem::replace(scheduler, kernel));
     assert!(
         carriers == 1 || run.outcome.state != ChimiFiberState::Parked as u32,

@@ -440,17 +440,8 @@ fn task_cancel_of_a_task_waiting_in_a_combinator_ends_it_cancelled() {
                 combinator = combinator
             ),
         );
-        assert_eq!(
-            run.process.status.code(),
-            Some(130),
-            "{combinator}: {}",
-            run.outcome
-        );
-        assert!(
-            run.outcome.contains("\"outcome\":\"cancellation\""),
-            "{combinator}: {}",
-            run.outcome
-        );
+        assert_eq!(run.process.status.code(), Some(130), "{combinator}: {}", run.outcome);
+        assert!(run.outcome.contains("\"outcome\":\"cancellation\""), "{combinator}: {}", run.outcome);
     }
 }
 

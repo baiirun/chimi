@@ -614,11 +614,7 @@ fn the_engine_reads_past_records_without_data() {
         .arg(&executable)
         .output()
         .expect("run cc");
-    assert!(
-        built.status.success(),
-        "{}",
-        String::from_utf8_lossy(&built.stderr)
-    );
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let run = Command::new(&executable)
         .arg(manifest.join("tests/fixtures/tls"))
         .output()

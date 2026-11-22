@@ -651,11 +651,7 @@ fn scratch_directory(name: &str) -> PathBuf {
 fn build(scratch: &Path, name: &str, program: &str) -> PathBuf {
     let path = scratch.join(format!("{name}.chimi"));
     let executable = scratch.join(name);
-    std::fs::write(
-        &path,
-        format!("{IMPORTS}import std/debug as Debug\n{program}"),
-    )
-    .unwrap();
+    std::fs::write(&path, format!("{IMPORTS}import std/debug as Debug\n{program}")).unwrap();
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .current_dir(scratch)
         .arg("build")
@@ -664,11 +660,7 @@ fn build(scratch: &Path, name: &str, program: &str) -> PathBuf {
         .arg(&executable)
         .output()
         .expect("build native program");
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     executable
 }
 
@@ -698,17 +690,13 @@ fn run(executable: &Path, scratch: &Path, carriers: u32) -> (Output, String) {
         std::thread::sleep(Duration::from_millis(10));
     }
     let process = child.wait_with_output().expect("collect the program");
-    (
-        process,
-        std::fs::read_to_string(&outcome).unwrap_or_default(),
-    )
+    (process, std::fs::read_to_string(&outcome).unwrap_or_default())
 }
 
 /// True when the runtime is built as the carrier simulation, which refuses
 /// more than one carrier.
 fn simulation() -> bool {
-    std::env::var("CHIMI_TEST_RUNTIME_DEFINES")
-        .is_ok_and(|defines| defines.contains("CHIMI_CARRIER_SIMULATION"))
+    std::env::var("CHIMI_TEST_RUNTIME_DEFINES").is_ok_and(|defines| defines.contains("CHIMI_CARRIER_SIMULATION"))
 }
 
 fn success(value: i64) -> String {
@@ -728,11 +716,7 @@ fn stress(name: &str, program: &str, expected: i64, runs: usize) {
                 process.status.success(),
                 "{name}, {count} carriers, run {run_index}: {process:?}"
             );
-            assert_eq!(
-                outcome,
-                success(expected),
-                "{name}, {count} carriers, run {run_index}"
-            );
+            assert_eq!(outcome, success(expected), "{name}, {count} carriers, run {run_index}");
         }
     }
     std::fs::remove_dir_all(scratch).unwrap();

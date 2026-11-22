@@ -95,9 +95,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Parsed, String> {
                     .filter(|count| count.bytes().all(|byte| byte.is_ascii_digit()))
                     .and_then(|count| count.parse::<u32>().ok())
                     .filter(|count| (1..=256).contains(count))
-                    .ok_or_else(|| {
-                        format!("`{count}` is not a carrier count from 1 through 256")
-                    })?;
+                    .ok_or_else(|| format!("`{count}` is not a carrier count from 1 through 256"))?;
             }
             "--baseline" => baseline = Some(PathBuf::from(value("--baseline")?)),
             "all" if kinds.is_none() => kinds = Some(Kind::ALL.to_vec()),

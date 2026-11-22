@@ -157,11 +157,8 @@ fn refused_url(url: Text) -> Text needs { clock: Clock } {
 "#;
 
 fn run_tests(name: &str, tests: &str, clock: &str) -> Run {
-    Scratch::new(name, &format!("{PRELUDE}\n{tests}")).chimi(&[
-        "test",
-        "cases.chimi",
-        &format!("--clock={clock}"),
-    ])
+    Scratch::new(name, &format!("{PRELUDE}\n{tests}"))
+        .chimi(&["test", "cases.chimi", &format!("--clock={clock}")])
 }
 
 fn assert_passed(run: &Run, count: usize) {

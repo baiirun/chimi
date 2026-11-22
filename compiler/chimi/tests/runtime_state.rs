@@ -160,9 +160,7 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
         // An nm format this test cannot read would otherwise pass vacuously.
         for expected in ["carrier_first", "main_heap"] {
             assert!(
-                symbols
-                    .iter()
-                    .any(|symbol| symbol.trim_start_matches('_') == expected),
+                symbols.iter().any(|symbol| symbol.trim_start_matches('_') == expected),
                 "{expected} missing from {symbols:?}"
             );
         }
@@ -204,11 +202,7 @@ fn run_thread_fixture(fixture: &str) {
     } else {
         eprintln!("{fixture}: ThreadSanitizer unavailable, plain build");
         let plain = compile(&[]);
-        assert!(
-            plain.status.success(),
-            "{}",
-            String::from_utf8_lossy(&plain.stderr)
-        );
+        assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
     }
     let run = Command::new(&executable)
         .env("TSAN_OPTIONS", "halt_on_error=1")

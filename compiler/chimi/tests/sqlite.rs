@@ -106,11 +106,11 @@ fn users(db: Database) -> Void {
 "#;
 
 fn run_tests(name: &str, tests: &str) -> Run {
-    Scratch::new(
-        name,
-        &format!("{PRELUDE}\nimport std/debug as Debug\n{tests}"),
-    )
-    .chimi(&["test", "cases.chimi", "--clock=virtual"])
+    Scratch::new(name, &format!("{PRELUDE}\nimport std/debug as Debug\n{tests}")).chimi(&[
+        "test",
+        "cases.chimi",
+        "--clock=virtual",
+    ])
 }
 
 fn assert_passed(run: &Run, count: usize) {
@@ -498,12 +498,7 @@ fn the_vendored_sqlite_matches_its_manifest() {
     let manifest = std::fs::read_to_string(root.join("MANIFEST.sha256")).unwrap();
     let listed: std::collections::BTreeSet<String> = manifest
         .lines()
-        .map(|line| {
-            line.split_once("  ")
-                .expect("a sha256sum line")
-                .1
-                .to_owned()
-        })
+        .map(|line| line.split_once("  ").expect("a sha256sum line").1.to_owned())
         .collect();
     let present: std::collections::BTreeSet<String> = std::fs::read_dir(&root)
         .unwrap()

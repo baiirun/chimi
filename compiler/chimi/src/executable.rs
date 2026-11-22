@@ -2386,13 +2386,10 @@ impl CoreLowerer {
             let symbol = self.typed.resolved.symbol(provider);
             let function_type = self.typed.declaration_types[&(
                 symbol.module_id.expect("a provider is a module function"),
-                symbol
-                    .semantic_id
-                    .expect("a provider has semantic identity"),
+                symbol.semantic_id.expect("a provider has semantic identity"),
             )];
             let provider_type = self.typed.contracts[&provider].success;
-            let callee =
-                self.synthetic_node(origin, function_type, CoreOperation::Reference(provider));
+            let callee = self.synthetic_node(origin, function_type, CoreOperation::Reference(provider));
             let call = self.synthetic_node(
                 origin,
                 provider_type,
@@ -2416,12 +2413,7 @@ impl CoreLowerer {
         )
     }
 
-    fn synthetic_node(
-        &mut self,
-        origin: OriginId,
-        type_id: TypeId,
-        operation: CoreOperation,
-    ) -> CoreNodeId {
+    fn synthetic_node(&mut self, origin: OriginId, type_id: TypeId, operation: CoreOperation) -> CoreNodeId {
         let id = CoreNodeId::new(self.nodes.len() as u32);
         self.nodes.push(CoreNode {
             id,

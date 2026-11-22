@@ -6,8 +6,9 @@
 
 use super::process::Down;
 use super::process_abi::{
-    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, ChimiInjectedSignal, MEMBER_PROCESS,
-    MEMBER_SUPERVISOR, RESTART_NEVER, RESTART_ON_DEFECT, chimi_scheduler_run,
+    ChimiInjectedSignal,
+    ADDRESS_DIRECT, ADDRESS_NAMED, CLOCK_VIRTUAL, MEMBER_PROCESS, MEMBER_SUPERVISOR, RESTART_NEVER,
+    RESTART_ON_DEFECT, chimi_scheduler_run,
 };
 use super::*;
 use crate::{ChimiFiberResult, FIXTURE_LOCK, chimi_fiber_park, chimi_fiber_request};
@@ -3151,9 +3152,7 @@ unsafe extern "C" fn takes_then_stops(context: *mut c_void) -> ChimiFiberResult 
     receive.channel = bounded.channel;
     receive.owner = bounded.owner;
     receive.token = bounded.token;
-    while scheduler_call(&mut receive) == ChimiFiberCommand::Resume
-        && receive.status == RESPONSE_PENDING
-    {}
+    while scheduler_call(&mut receive) == ChimiFiberCommand::Resume && receive.status == RESPONSE_PENDING {}
     assert_eq!(receive.value, 1, "the first value");
     let mut stop = ChimiProcessRequest::new(REQUEST_SUPERVISOR_STOP);
     stop.supervisor = context as u64;
@@ -3169,9 +3168,7 @@ unsafe extern "C" fn sends_twice(_context: *mut c_void) -> ChimiFiberResult {
         let mut request = blank_request(REQUEST_CHANNEL_SEND);
         request.channel = channel;
         request.value = value;
-        while scheduler_call(&mut request) == ChimiFiberCommand::Resume
-            && request.status == RESPONSE_PENDING
-        {}
+        while scheduler_call(&mut request) == ChimiFiberCommand::Resume && request.status == RESPONSE_PENDING {}
         if value == 2 {
             log(|log| log.outcomes.push(request.status));
         }
@@ -3202,10 +3199,7 @@ fn a_force_leaves_the_answer_of_a_woken_bodys_send_alone() {
         .expect("admitted");
     let _ = lab.scheduler.run_until_idle();
     assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK]);
-    assert_eq!(
-        timed_terminations(&lab),
-        [(1_000_000, TerminalCause::Forced)]
-    );
+    assert_eq!(timed_terminations(&lab), [(1_000_000, TerminalCause::Forced)]);
 }
 
 thread_local! {
@@ -4487,11 +4481,7 @@ fn stop_from_carrier_zero(carriers: u32) -> (Vec<String>, bool) {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![
-                counter_member(COUNTER),
-                counter_member(PEER),
-                counter_member(THIRD),
-            ],
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
             0,
         ))
         .unwrap();
@@ -4500,10 +4490,7 @@ fn stop_from_carrier_zero(carriers: u32) -> (Vec<String>, bool) {
     let _ = lab.scheduler.stop_supervisor(root);
     let waited = lab.terminations().is_empty();
     lab.settle_carriers();
-    assert_eq!(
-        lab.scheduler.supervisor_state(root),
-        Some(SupervisorState::Stopped)
-    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
     (lab.transcript(), waited)
 }
 
@@ -4541,35 +4528,20 @@ fn a_deadline_fired_on_another_carrier_forces_the_body_at_its_home() {
     // The body's home runs its cleanup, which lingers, and parks.
     lab.scheduler.enter_carrier(ready::Carrier(1));
     lab.scheduler.drive();
-    assert!(
-        lab.terminations().is_empty(),
-        "the stubborn cleanup lingers"
-    );
-    assert!(matches!(
-        lab.scheduler.idle_step(),
-        carrier::IdleStep::Park(_)
-    ));
+    assert!(lab.terminations().is_empty(), "the stubborn cleanup lingers");
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Park(_)));
     // Carrier 0 alone is left: time jumps to the deadline, which fires.
     lab.scheduler.enter_carrier(ready::Carrier(0));
     lab.scheduler.drive();
-    assert!(matches!(
-        lab.scheduler.idle_step(),
-        carrier::IdleStep::Continue
-    ));
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Continue));
     lab.scheduler.drive();
-    assert!(
-        lab.terminations().is_empty(),
-        "the force waits for the body's home"
-    );
+    assert!(lab.terminations().is_empty(), "the force waits for the body's home");
     lab.settle_carriers();
     assert_eq!(
         timed_terminations(&lab).last(),
         Some(&(stopped_at + second.as_nanos() as i64, TerminalCause::Forced))
     );
-    assert_eq!(
-        lab.scheduler.supervisor_state(root),
-        Some(SupervisorState::Stopped)
-    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
 }
 
 /// A body that never ran, forced from another carrier, is cancelled there
@@ -4593,10 +4565,7 @@ fn a_body_that_never_ran_forced_from_another_carrier_moves_its_home_there() {
         .find(|(_, record)| record.process.is_some())
         .expect("the member's body")
         .0;
-    assert!(
-        !lab.scheduler.tasks[&task].ran,
-        "carrier 1 has not run the body yet"
-    );
+    assert!(!lab.scheduler.tasks[&task].ran, "carrier 1 has not run the body yet");
     lab.scheduler.enter_carrier(ready::Carrier(0));
     let _ = lab.scheduler.stop_supervisor(root);
     assert_eq!(
@@ -4608,10 +4577,7 @@ fn a_body_that_never_ran_forced_from_another_carrier_moves_its_home_there() {
         assert_eq!(record.carrier, ready::Carrier(0));
     }
     lab.settle_carriers();
-    assert_eq!(
-        lab.scheduler.supervisor_state(root),
-        Some(SupervisorState::Stopped)
-    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
 }
 
 /// Dropping a kernel whose processes live on several carriers tears them
@@ -4661,27 +4627,14 @@ fn a_finished_run_gives_a_process_left_its_shutdown_deadline() {
     let mut deadlock = Vec::new();
     let mut step = |lab: &mut Lab| {
         lab.scheduler.enter_carrier(ready::Carrier(0));
-        lab.scheduler
-            .root_step(root, Idle::Quiescent, 1, &mut deadlock)
+        lab.scheduler.root_step(root, Idle::Quiescent, 1, &mut deadlock)
     };
-    assert!(
-        matches!(step(&mut lab), process_abi::RootStep::Continue),
-        "the stop runs on carrier 1"
-    );
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "the stop runs on carrier 1");
     lab.scheduler.enter_carrier(ready::Carrier(1));
     lab.scheduler.drive();
-    assert!(matches!(
-        lab.scheduler.idle_step(),
-        carrier::IdleStep::Park(_)
-    ));
-    assert!(
-        matches!(step(&mut lab), process_abi::RootStep::Continue),
-        "its deadline is pending"
-    );
-    assert!(
-        lab.terminations().is_empty(),
-        "nothing is forced before the deadline"
-    );
+    assert!(matches!(lab.scheduler.idle_step(), carrier::IdleStep::Park(_)));
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "its deadline is pending");
+    assert!(lab.terminations().is_empty(), "nothing is forced before the deadline");
     assert_eq!(lab.scheduler.run_end, None);
     lab.settle_carriers();
     assert_eq!(
@@ -4704,10 +4657,7 @@ fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![Member::Process(
-                spec_with(&PARKS, Some(COUNTER), 64),
-                Restart::Never,
-            )],
+            vec![Member::Process(spec_with(&PARKS, Some(COUNTER), 64), Restart::Never)],
             0,
         ))
         .unwrap();
@@ -4724,13 +4674,9 @@ fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
     let mut deadlock = Vec::new();
     let mut step = |lab: &mut Lab| {
         lab.scheduler.enter_carrier(ready::Carrier(0));
-        lab.scheduler
-            .root_step(main, Idle::Quiescent, 1, &mut deadlock)
+        lab.scheduler.root_step(main, Idle::Quiescent, 1, &mut deadlock)
     };
-    assert!(
-        matches!(step(&mut lab), process_abi::RootStep::Continue),
-        "the run forces it"
-    );
+    assert!(matches!(step(&mut lab), process_abi::RootStep::Continue), "the run forces it");
     assert_eq!(lab.scheduler.run_end, None);
     assert_eq!(
         lab.terminations().is_empty(),
@@ -4739,10 +4685,7 @@ fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
     );
     lab.settle_carriers();
     assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
-    assert_eq!(
-        lab.scheduler.supervisor_state(root),
-        Some(SupervisorState::Stopped)
-    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
     assert!(matches!(step(&mut lab), process_abi::RootStep::Finished));
     assert!(!lab.scheduler.force_survivors(), "nothing is left to move");
     lab.transcript()
@@ -4754,10 +4697,7 @@ fn force_survivors_from_carrier_zero(carriers: u32) -> Vec<String> {
 #[test]
 fn forcing_the_processes_left_ends_them_at_home_as_one_carrier_does() {
     let two = force_survivors_from_carrier_zero(2);
-    assert!(
-        two.iter().any(|event| event.ends_with("cause=forced")),
-        "{two:?}"
-    );
+    assert!(two.iter().any(|event| event.ends_with("cause=forced")), "{two:?}");
     assert_eq!(two, force_survivors_from_carrier_zero(1));
 }
 
@@ -4781,12 +4721,7 @@ fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
         .unwrap();
     lab.settle_carriers();
     assert!(
-        carriers == 1
-            || lab
-                .scheduler
-                .incarnation_homes()
-                .iter()
-                .all(|&(_, home)| home != 0),
+        carriers == 1 || lab.scheduler.incarnation_homes().iter().all(|&(_, home)| home != 0),
         "both members off carrier 0, so the stuck one is forced through its home"
     );
     lab.scheduler.enter_carrier(ready::Carrier(0));
@@ -4803,10 +4738,7 @@ fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
     let mut deadlock = Vec::new();
     for _ in 0..8 {
         lab.scheduler.enter_carrier(ready::Carrier(0));
-        match lab
-            .scheduler
-            .root_step(main, Idle::Quiescent, 1, &mut deadlock)
-        {
+        match lab.scheduler.root_step(main, Idle::Quiescent, 1, &mut deadlock) {
             process_abi::RootStep::Finished => {
                 return (lab.transcript(), lab.scheduler.now().as_nanos() - start);
             }
@@ -4823,14 +4755,8 @@ fn end_run_after_a_stuck_sibling(carriers: u32) -> (Vec<String>, i64) {
 #[test]
 fn forcing_a_stuck_member_leaves_its_sibling_a_graceful_stop() {
     let (three, took) = end_run_after_a_stuck_sibling(3);
-    assert!(
-        three.iter().any(|event| event.ends_with("cause=forced")),
-        "{three:?}"
-    );
-    assert!(
-        three.iter().any(|event| event.ends_with("cause=cancelled")),
-        "{three:?}"
-    );
+    assert!(three.iter().any(|event| event.ends_with("cause=forced")), "{three:?}");
+    assert!(three.iter().any(|event| event.ends_with("cause=cancelled")), "{three:?}");
     assert_eq!(took, 0);
     assert_eq!((three, took), end_run_after_a_stuck_sibling(1));
 }
@@ -4844,31 +4770,18 @@ fn a_process_no_plan_waits_on_is_forced_as_a_last_resort() {
     lab.scheduler.enter_carrier(ready::Carrier(1));
     lab.scheduler
         .start_supervisor(policy(
-            vec![Member::Process(
-                spec_with(&PARKS, Some(COUNTER), 64),
-                Restart::Never,
-            )],
+            vec![Member::Process(spec_with(&PARKS, Some(COUNTER), 64), Restart::Never)],
             0,
         ))
         .unwrap();
     lab.settle_carriers();
     lab.scheduler.enter_carrier(ready::Carrier(0));
     assert!(lab.scheduler.force_survivors());
-    assert!(
-        lab.terminations().is_empty(),
-        "the force waits for the body's home"
-    );
-    assert_eq!(
-        lab.scheduler.timers.earliest(),
-        None,
-        "no deadline is left queued"
-    );
+    assert!(lab.terminations().is_empty(), "the force waits for the body's home");
+    assert_eq!(lab.scheduler.timers.earliest(), None, "no deadline is left queued");
     lab.settle_carriers();
     assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
-    assert_eq!(
-        lab.terminations().last().map(|(_, cause)| *cause),
-        Some(TerminalCause::Forced)
-    );
+    assert_eq!(lab.terminations().last().map(|(_, cause)| *cause), Some(TerminalCause::Forced));
 }
 
 /// Starts a supervisor of three counters from carrier 0, its members not
@@ -4881,20 +4794,11 @@ fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
     let root = lab
         .scheduler
         .start_supervisor(policy(
-            vec![
-                counter_member(COUNTER),
-                counter_member(PEER),
-                counter_member(THIRD),
-            ],
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
             0,
         ))
         .unwrap();
-    let mut homes: Vec<u32> = lab
-        .scheduler
-        .incarnation_homes()
-        .iter()
-        .map(|&(_, home)| home)
-        .collect();
+    let mut homes: Vec<u32> = lab.scheduler.incarnation_homes().iter().map(|&(_, home)| home).collect();
     homes.sort_unstable();
     let mut expected: Vec<u32> = (1..=3).map(|membership| membership % carriers).collect();
     expected.sort_unstable();
@@ -4902,10 +4806,7 @@ fn stop_members_at_the_end_of_a_run_on_threads(carriers: u32) -> Vec<String> {
     let main = lab.scheduler.start_root(finishes_at_once).unwrap();
     let run = process_abi::run_root_on_threads(&mut lab.scheduler, main, DEADLOCK_DEFECT_CODE);
     assert_eq!(run.outcome.state, ChimiFiberState::Succeeded as u32);
-    assert_eq!(
-        lab.scheduler.supervisor_state(root),
-        Some(SupervisorState::Stopped)
-    );
+    assert_eq!(lab.scheduler.supervisor_state(root), Some(SupervisorState::Stopped));
     assert_eq!(lab.scheduler.process_metrics().incarnations, 0);
     lab.transcript()
 }
@@ -4936,22 +4837,14 @@ fn members_spread_over_the_carriers_and_a_restart_stays_put() {
     lab.scheduler.enter_carrier(ready::Carrier(2));
     lab.scheduler
         .start_supervisor(policy(
-            vec![
-                counter_member(COUNTER),
-                counter_member(PEER),
-                counter_member(THIRD),
-            ],
+            vec![counter_member(COUNTER), counter_member(PEER), counter_member(THIRD)],
             2,
         ))
         .unwrap();
     lab.settle_carriers();
     let homes = lab.scheduler.incarnation_homes();
     assert_eq!(homes.len(), 3);
-    assert!(
-        homes
-            .iter()
-            .all(|&(membership, home)| u64::from(home) == membership % 3)
-    );
+    assert!(homes.iter().all(|&(membership, home)| u64::from(home) == membership % 3));
     let mut carriers: Vec<u32> = homes.iter().map(|&(_, home)| home).collect();
     carriers.sort_unstable();
     assert_eq!(carriers, [0, 1, 2], "one member per carrier");
@@ -4962,24 +4855,12 @@ fn members_spread_over_the_carriers_and_a_restart_stays_put() {
     lab.deliver(named(PEER), Msg::Crash);
     lab.settle_carriers();
     assert_eq!(lab.started().len(), 4, "the crashed member restarted");
-    assert_eq!(
-        lab.scheduler.incarnation_homes(),
-        homes,
-        "on the same carrier"
-    );
+    assert_eq!(lab.scheduler.incarnation_homes(), homes, "on the same carrier");
 
     let mut one = Lab::new();
     one.scheduler
-        .start_supervisor(policy(
-            vec![counter_member(COUNTER), counter_member(PEER)],
-            0,
-        ))
+        .start_supervisor(policy(vec![counter_member(COUNTER), counter_member(PEER)], 0))
         .unwrap();
     one.settle();
-    assert!(
-        one.scheduler
-            .incarnation_homes()
-            .iter()
-            .all(|&(_, home)| home == 0)
-    );
+    assert!(one.scheduler.incarnation_homes().iter().all(|&(_, home)| home == 0));
 }

@@ -13,9 +13,9 @@
 //! primitive has differential coverage.
 
 use chimi::project::{LoadedProject, StandardTree};
+use std::ffi::OsStr;
 use chimi::{Compiler, ProjectSource};
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -63,11 +63,7 @@ fn test_modules() -> Vec<PathBuf> {
 /// --json` on `std-tests` under `backend`, in report order.
 fn test_outcomes(backend: &str) -> Vec<(String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("std-tests");
-    runner_outcomes(
-        "std-tests",
-        &[OsStr::new("test"), root.as_os_str()],
-        backend,
-    )
+    runner_outcomes("std-tests", &[OsStr::new("test"), root.as_os_str()], backend)
 }
 
 /// `chimi <command> --backend=<backend> --json`, run from a scratch directory:
@@ -93,9 +89,7 @@ fn runner_outcomes(name: &str, command: &[&OsStr], backend: &str) -> Vec<(String
         String::from_utf8_lossy(&output.stderr)
     );
     let field = |line: &str, name: &str| {
-        let start = line
-            .find(&format!("\"{name}\":\""))
-            .map(|start| start + name.len() + 4)?;
+        let start = line.find(&format!("\"{name}\":\"")).map(|start| start + name.len() + 4)?;
         let end = line[start..].find('"')? + start;
         Some(line[start..end].to_owned())
     };
@@ -244,11 +238,7 @@ fn standard_programs_match_their_expected_outcomes_on_both_backends() {
 fn standard_tests_pass_on_both_backends() {
     let native = test_outcomes("native");
     let interpreted = test_outcomes("interpreter");
-    assert_eq!(
-        native.len(),
-        test_modules().len(),
-        "one test per module: {native:?}"
-    );
+    assert_eq!(native.len(), test_modules().len(), "one test per module: {native:?}");
     let failures: Vec<String> = native
         .iter()
         .chain(&interpreted)
@@ -257,14 +247,8 @@ fn standard_tests_pass_on_both_backends() {
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert_eq!(
-        native
-            .iter()
-            .map(|(identity, _)| identity)
-            .collect::<Vec<_>>(),
-        interpreted
-            .iter()
-            .map(|(identity, _)| identity)
-            .collect::<Vec<_>>(),
+        native.iter().map(|(identity, _)| identity).collect::<Vec<_>>(),
+        interpreted.iter().map(|(identity, _)| identity).collect::<Vec<_>>(),
         "the backends ran different tests"
     );
 }

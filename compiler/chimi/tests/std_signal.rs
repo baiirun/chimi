@@ -217,12 +217,7 @@ fn each_signal_wakes_the_oldest_waiter() {
 ",
         &["HUP@1s", "HUP@2s"],
     );
-    assert_eq!(
-        run.outcome,
-        success("\"a:hangup b:hangup\""),
-        "{:?}",
-        run.output
-    );
+    assert_eq!(run.outcome, success("\"a:hangup b:hangup\""), "{:?}", run.output);
 }
 
 // A waiter woken for a signal but cancelled before it runs again (here by
@@ -248,12 +243,7 @@ fn a_woken_waiter_that_is_cancelled_passes_its_signal_on() {
 ",
         &["HUP@1s"],
     );
-    assert_eq!(
-        run.outcome,
-        success("\"a:timeout b:hangup\""),
-        "{:?}",
-        run.output
-    );
+    assert_eq!(run.outcome, success("\"a:timeout b:hangup\""), "{:?}", run.output);
 }
 
 // A signal handed to a waiter is its own until it runs again: a task that
@@ -278,12 +268,7 @@ fn a_new_wait_does_not_take_a_signal_handed_to_an_older_waiter() {
 ",
         &["USR1@1s", "HUP@1s", "HUP@3s"],
     );
-    assert_eq!(
-        run.outcome,
-        success("\"user1 hangup a:hangup\""),
-        "{:?}",
-        run.output
-    );
+    assert_eq!(run.outcome, success("\"user1 hangup a:hangup\""), "{:?}", run.output);
 }
 
 // SIGHUP never stops the program: after a reload, SIGTERM still drains and
@@ -301,15 +286,8 @@ fn a_hangup_reloads_and_a_later_terminate_still_drains() {
         &["HUP@1s", "TERM@2s"],
     );
     assert_eq!(run.output.status.code(), Some(143), "{:?}", run.output);
-    assert!(
-        run.outcome.contains("\"outcome\":\"cancellation\""),
-        "{}",
-        run.outcome
-    );
-    assert_eq!(
-        run.signals,
-        [(1000, i64::from(SIGHUP)), (2000, i64::from(SIGTERM))]
-    );
+    assert!(run.outcome.contains("\"outcome\":\"cancellation\""), "{}", run.outcome);
+    assert_eq!(run.signals, [(1000, i64::from(SIGHUP)), (2000, i64::from(SIGTERM))]);
 }
 
 // A task waiting for a signal nobody will send is stuck: under the virtual
@@ -383,12 +361,7 @@ fn the_signal_option_takes_the_three_signals_under_the_virtual_clock_only() {
     assert_eq!(real.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&real.stderr).contains("--signal requires --clock=virtual"));
     let unknown = Command::new(&executable)
-        .args([
-            "--chimi-runner",
-            "--clock=virtual",
-            "--signal=WINCH@1s",
-            "--",
-        ])
+        .args(["--chimi-runner", "--clock=virtual", "--signal=WINCH@1s", "--"])
         .output()
         .unwrap();
     assert_eq!(unknown.status.code(), Some(64));
@@ -625,9 +598,7 @@ fn the_interpreter_needs_the_native_runtime_to_wait() {
     // An empty list defects with the native runtime's message.
     std::fs::write(
         &program,
-        format!(
-            "{IMPORTS}\npub fn main() -> Text needs {{ signals: Signals }} {{\n  waited([])\n}}\n"
-        ),
+        format!("{IMPORTS}\npub fn main() -> Text needs {{ signals: Signals }} {{\n  waited([])\n}}\n"),
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -732,10 +703,6 @@ pub fn main() -> Int needs { clock: Clock, console: Console } {
         &["TERM@1s"],
     );
     assert_eq!(run.output.status.code(), Some(143), "{:?}", run.output);
-    assert!(
-        run.outcome.contains("\"outcome\":\"cancellation\""),
-        "{}",
-        run.outcome
-    );
+    assert!(run.outcome.contains("\"outcome\":\"cancellation\""), "{}", run.outcome);
     assert_eq!(String::from_utf8_lossy(&run.output.stdout), "released\n");
 }

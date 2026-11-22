@@ -52,13 +52,8 @@ pub(crate) fn format_examples(text: &str, format: impl Fn(&str) -> Option<String
     let mut output: Vec<String> = Vec::with_capacity(lines.len());
     let mut copied = 0;
     for (_, block) in example_blocks(&lines) {
-        output.extend(
-            lines[copied..block.code.start]
-                .iter()
-                .map(|line| (*line).to_owned()),
-        );
-        let indent =
-            &lines[block.open][..lines[block.open].len() - lines[block.open].trim_start().len()];
+        output.extend(lines[copied..block.code.start].iter().map(|line| (*line).to_owned()));
+        let indent = &lines[block.open][..lines[block.open].len() - lines[block.open].trim_start().len()];
         let code: Vec<&str> = block
             .code
             .clone()
@@ -72,11 +67,7 @@ pub(crate) fn format_examples(text: &str, format: impl Fn(&str) -> Option<String
                     format!("{indent}/// {line}")
                 }
             })),
-            None => output.extend(
-                lines[block.code.clone()]
-                    .iter()
-                    .map(|line| (*line).to_owned()),
-            ),
+            None => output.extend(lines[block.code.clone()].iter().map(|line| (*line).to_owned())),
         }
         copied = block.code.end;
     }
@@ -182,9 +173,7 @@ pub(crate) fn doc_comment_before(text: &str, item_line: usize) -> Option<String>
     {
         lines.next();
     }
-    let mut doc: Vec<&str> = lines
-        .map_while(|line| doc_content(line).map(|_| line))
-        .collect();
+    let mut doc: Vec<&str> = lines.map_while(|line| doc_content(line).map(|_| line)).collect();
     doc.reverse();
     doc_text(&doc)
 }
@@ -262,18 +251,10 @@ fn item_name(line: &str) -> Option<String> {
             words = rest.trim_start();
         }
     }
-    let rest = [
-        "fn ",
-        "struct ",
-        "enum ",
-        "interface ",
-        "const ",
-        "process name ",
-        "type ",
-    ]
-    .iter()
-    .find_map(|keyword| words.strip_prefix(keyword))?
-    .trim_start();
+    let rest = ["fn ", "struct ", "enum ", "interface ", "const ", "process name ", "type "]
+        .iter()
+        .find_map(|keyword| words.strip_prefix(keyword))?
+        .trim_start();
     let name: String = rest
         .chars()
         .take_while(|character| *character == '_' || character.is_ascii_alphanumeric())
@@ -300,16 +281,9 @@ fn example_module(lines: &[&str], block: &Block, name: &str) -> String {
         .clone()
         .take_while(|&index| Some(index) != body)
         .any(|index| code(index).starts_with("import "));
-    let header = format!(
-        "test \"{}\" {{",
-        name.replace('\\', "\\\\").replace('"', "\\\"")
-    );
+    let header = format!("test \"{}\" {{", name.replace('\\', "\\\\").replace('"', "\\\""));
     let opening = if imports {
-        body.and_then(|body| {
-            (block.code.start..body)
-                .rev()
-                .find(|&index| code(index).is_empty())
-        })
+        body.and_then(|body| (block.code.start..body).rev().find(|&index| code(index).is_empty()))
     } else {
         Some(block.open)
     };
@@ -410,23 +384,9 @@ mod tests {
         let found = examples(text);
         let names: Vec<&str> = found.iter().map(|example| example.item.as_str()).collect();
         assert_eq!(names, ["run", "run", "Point"]);
-        assert!(
-            found[2]
-                .text
-                .contains("    import std/test as Test\ntest \"Point example 1\" {Void }"),
-            "{}",
-            found[2].text
-        );
-        assert!(
-            found[0]
-                .text
-                .contains("test \"run example 1\" {\n    first\n}")
-        );
-        assert!(
-            found[1]
-                .text
-                .contains("test \"run example 2\" {\n    second\n}")
-        );
+        assert!(found[2].text.contains("    import std/test as Test\ntest \"Point example 1\" {Void }"), "{}", found[2].text);
+        assert!(found[0].text.contains("test \"run example 1\" {\n    first\n}"));
+        assert!(found[1].text.contains("test \"run example 2\" {\n    second\n}"));
     }
 
     #[test]

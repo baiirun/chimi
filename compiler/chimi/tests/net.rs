@@ -669,9 +669,7 @@ fn main_gets_the_real_network_by_declaring_the_need() {
     );
     let run = scratch.chimi(&["build", "cases.chimi", "-o", "served"]);
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
-    let output = Command::new(scratch.0.join("served"))
-        .output()
-        .expect("run the program");
+    let output = Command::new(scratch.0.join("served")).output().expect("run the program");
     let run = Run {
         status: output.status.code(),
         stdout: String::from_utf8(output.stdout).unwrap(),
@@ -696,9 +694,7 @@ fn only_a_test_that_asks_gets_the_real_network() {
 
     let unsupplied = run_tests(
         "unsupplied",
-        &format!(
-            "{ECHO}\ntest \"reaches out\" {{\n  echo_once(\"127.0.0.1\", \"x\") |> Test.assert_equal(\"x\")\n}}\n"
-        ),
+        &format!("{ECHO}\ntest \"reaches out\" {{\n  echo_once(\"127.0.0.1\", \"x\") |> Test.assert_equal(\"x\")\n}}\n"),
     );
     assert_ne!(unsupplied.status, Some(0));
     assert!(unsupplied.stderr.contains("T4400"), "{}", unsupplied.stderr);

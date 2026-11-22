@@ -342,12 +342,7 @@ pub fn main() -> Int needs { console: Console } {
     stdout.read_exact(&mut bytes).unwrap();
     drop(stdout);
     let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     assert!(child.wait().unwrap().success());
     assert!(bytes[..100000].iter().all(|byte| *byte == b'a'));
     assert_eq!(

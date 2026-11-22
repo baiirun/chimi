@@ -386,11 +386,7 @@ pub fn main() -> List<Text> needs { files: Files } {
         .arg(&executable)
         .output()
         .unwrap();
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let outcome = scratch.join("outcome.jsonl");
     command(&executable, &scratch, &[])
         .arg("--chimi-runner")

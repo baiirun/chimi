@@ -29,10 +29,7 @@ impl FormatReport {
         let formatted = crate::doc_examples::format_examples(&format_parse(parsed), |code| {
             let example = SourceSnapshot::from_text(source.path(), code.to_owned());
             let parsed = parse(&example);
-            parsed
-                .diagnostics()
-                .is_empty()
-                .then(|| format_parse(&parsed))
+            parsed.diagnostics().is_empty().then(|| format_parse(&parsed))
         });
         Self {
             formatted,
@@ -112,18 +109,14 @@ fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
             continue;
         }
         seen_paths.push(&line.path);
-        let same_path: Vec<&ImportLine> = lines
-            .iter()
-            .filter(|other| other.path == line.path)
-            .collect();
+        let same_path: Vec<&ImportLine> =
+            lines.iter().filter(|other| other.path == line.path).collect();
         let aliases: Vec<&&ImportLine> = same_path
             .iter()
             .filter(|other| other.alias.is_some())
             .collect();
-        let member_lines: Vec<&&ImportLine> = same_path
-            .iter()
-            .filter(|other| other.members.is_some())
-            .collect();
+        let member_lines: Vec<&&ImportLine> =
+            same_path.iter().filter(|other| other.members.is_some()).collect();
         let [alias_line] = aliases.as_slice() else {
             continue;
         };
@@ -186,9 +179,7 @@ fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<Imp
     // Another item or a trailing comment on the same line keeps it as written.
     let joinable = source[line_start..start].trim().is_empty()
         && source[end..line_end].trim().is_empty()
-        && !tokens
-            .iter()
-            .any(|token| token.kind() == TokenKind::Comment);
+        && !tokens.iter().any(|token| token.kind() == TokenKind::Comment);
     let mut path = Vec::new();
     let mut alias = None;
     let mut members = None;
@@ -761,8 +752,7 @@ fn needs_space(previous: Option<TokenKind>, current: TokenKind, line: &str) -> b
     // `-> { status: Status } needs { ... }`, needs one too.
     (word_kind(previous) || previous == TokenKind::Greater) && word_kind(current)
         || matches!(previous, TokenKind::RightParen | TokenKind::RightBracket)
-        || previous == TokenKind::RightBrace
-            && matches!(current, TokenKind::Errors | TokenKind::Needs)
+        || previous == TokenKind::RightBrace && matches!(current, TokenKind::Errors | TokenKind::Needs)
 }
 
 const fn word_kind(kind: TokenKind) -> bool {
@@ -1004,16 +994,8 @@ mod tests {
         );
         let formatted = format(source);
         assert!(!formatted.is_blocked());
-        assert!(
-            formatted
-                .text()
-                .starts_with("/// ```chimi\n/// let x = add(1, 2)\n/// ```\n")
-        );
-        assert!(
-            formatted
-                .text()
-                .contains("/// let a=1\n/// }\n/// fn g()->Int{2}\n")
-        );
+        assert!(formatted.text().starts_with("/// ```chimi\n/// let x = add(1, 2)\n/// ```\n"));
+        assert!(formatted.text().contains("/// let a=1\n/// }\n/// fn g()->Int{2}\n"));
     }
 
     /// A record return type keeps a space before the signature's `needs`.
@@ -1022,11 +1004,7 @@ mod tests {
         let source = "fn f() -> { a: Int } needs { x: X } {\n  { a: 1 }\n}\n";
         let formatted = format(source);
         assert!(!formatted.is_blocked());
-        assert!(
-            formatted.text().starts_with("fn f() -> { a: Int } needs {"),
-            "{}",
-            formatted.text()
-        );
+        assert!(formatted.text().starts_with("fn f() -> { a: Int } needs {"), "{}", formatted.text());
         assert_eq!(format(formatted.text()).text(), formatted.text());
     }
 

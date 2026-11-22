@@ -281,10 +281,7 @@ pub(super) fn round_robin(kernel: &mut Scheduler) -> Idle {
                 IdleStep::Io(_) | IdleStep::Sleep(..) | IdleStep::Continue => {}
             }
         }
-        assert!(
-            ran,
-            "every carrier parked with no wake pending and no verdict"
-        );
+        assert!(ran, "every carrier parked with no wake pending and no verdict");
     }
 }
 

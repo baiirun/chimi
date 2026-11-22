@@ -218,12 +218,7 @@ test "the date" {
             &format!("date-{}", &start[..10]),
             &format!("{PRELUDE}\n{}", tests.replace("DATE", date)),
         )
-        .chimi(&[
-            "test",
-            "cases.chimi",
-            "--clock=virtual",
-            &format!("--clock-start={start}"),
-        ]);
+        .chimi(&["test", "cases.chimi", "--clock=virtual", &format!("--clock-start={start}")]);
         assert_passed(&run, 1);
     }
 }

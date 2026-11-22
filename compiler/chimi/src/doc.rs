@@ -9,9 +9,9 @@
 //! are left out.
 
 use crate::doc_examples::{doc_comment_before, module_comment};
-use crate::json::write_json_string_escaping_controls;
 use crate::occurrences::symbol_at;
 use crate::resolution::ProjectSymbolKind;
+use crate::json::write_json_string_escaping_controls;
 use crate::semantic::{
     ImportBinding, ModuleDeclaration, ModuleDeclarationKind, SemanticModule, is_generated_name,
 };
@@ -179,23 +179,16 @@ pub(crate) fn alias_members(
     if is_comment_or_text_at(&module.source, offset) {
         return None;
     }
-    let imported = module
-        .imports
-        .iter()
-        .find_map(|import| match &import.binding {
-            ImportBinding::Alias(name) if name.text == alias => Some(import.path.as_str()),
-            _ => None,
-        })?;
+    let imported = module.imports.iter().find_map(|import| match &import.binding {
+        ImportBinding::Alias(name) if name.text == alias => Some(import.path.as_str()),
+        _ => None,
+    })?;
     document_module(typed, imported)
 }
 
 /// The `///` doc comment of the item named at `offset` in `module_path`, at
 /// a reference to it or at its declaration, in any module.
-pub(crate) fn doc_comment_at(
-    typed: &TypedProject,
-    module_path: &str,
-    offset: usize,
-) -> Option<String> {
+pub(crate) fn doc_comment_at(typed: &TypedProject, module_path: &str, offset: usize) -> Option<String> {
     let resolved = &typed.resolved;
     let module = resolved
         .semantic
@@ -227,6 +220,7 @@ pub(crate) fn doc_comment_at(
     ItemNodes::new(declaring).doc(declaration)
 }
 
+
 pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     match kind {
         ModuleDeclarationKind::Struct => "struct",
@@ -239,6 +233,7 @@ pub(crate) const fn kind_name(kind: ModuleDeclarationKind) -> &'static str {
     }
 }
 
+
 /// The item's doc comment. Only an item that begins its line has one, so the
 /// second of two items on one line does not take the first one's.
 fn item_doc(text: &str, start: usize) -> Option<String> {
@@ -250,11 +245,7 @@ fn item_doc(text: &str, start: usize) -> Option<String> {
         .flatten()
 }
 
-fn signature(
-    typed: &TypedProject,
-    nodes: &ItemNodes<'_>,
-    declaration: &ModuleDeclaration,
-) -> String {
+fn signature(typed: &TypedProject, nodes: &ItemNodes<'_>, declaration: &ModuleDeclaration) -> String {
     let module = nodes.module;
     let text = module.source.text();
     let start = nodes.item_start(declaration);

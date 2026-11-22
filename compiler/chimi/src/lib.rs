@@ -5,10 +5,10 @@ mod compiler;
 #[doc(hidden)]
 pub mod concurrency_lab;
 mod decimal;
-pub mod diagnostic;
 mod doc;
-mod doc_examples;
 mod doc_site;
+mod doc_examples;
+pub mod diagnostic;
 mod duration;
 mod executable;
 pub mod execution;
@@ -21,9 +21,9 @@ mod hints;
 mod ids;
 mod inspection;
 mod json;
-pub mod line_index;
 mod lint;
 mod manifest;
+pub mod line_index;
 mod numeric;
 mod occurrences;
 mod operations;
@@ -45,12 +45,12 @@ mod typing;
 pub use backend::{BackendOperationProfile, BackendProfile, BackendProgram, BackendValueProfile};
 pub use compiler::{
     CheckReport, Compiler, CompilerSession, GenericParameterKind, IncrementalStatistics,
-    IncrementalTypeReport, ModuleDiagnostics, ModuleOrigin, NameReport, ProjectPathError,
-    ProjectSource, ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport,
-    ValuePropertyStatus,
+    IncrementalTypeReport, ModuleDiagnostics, ModuleOrigin, NameReport, ProjectPathError, ProjectSource,
+    ReferenceInfo, SymbolHandle, SymbolInfo, TypeArenaStats, TypeReport, ValuePropertyStatus,
 };
 pub use doc::{ItemDocumentation, ModuleDocumentation};
 pub use doc_site::{DocPage, render_site};
+pub use trace_view::{Locate, TraceError, render_trace};
 pub use formatter::FormatReport;
 pub use hints::TypeHint;
 pub use inspection::{
@@ -59,4 +59,3 @@ pub use inspection::{
 };
 pub use occurrences::{Occurrence, SymbolOccurrences};
 pub use operations::StandardTreeVerification;
-pub use trace_view::{Locate, TraceError, render_trace};

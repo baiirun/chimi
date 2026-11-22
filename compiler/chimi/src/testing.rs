@@ -611,10 +611,7 @@ impl TestSuite {
             command.arg(format!("--clock-start={start}"));
         }
         command
-            .arg(format!(
-                "--random-seed={}",
-                self.random_seed(index, options)
-            ))
+            .arg(format!("--random-seed={}", self.random_seed(index, options)))
             .arg(format!("--outcome-file={}", outcome_path.display()))
             .arg(format!("--execution-id={}", Self::execution_id(index)))
             .arg(format!("--test={index}"));

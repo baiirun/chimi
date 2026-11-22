@@ -6608,10 +6608,7 @@ fn one_import_line_binds_an_alias_and_its_members() {
         "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) }\n",
         "pub fn main() -> Int { sized(Map.empty()) + 7 }\n",
     );
-    assert_eq!(
-        run_both("combined_import", source),
-        "\"outcome\":\"success\",\"value\":7"
-    );
+    assert_eq!(run_both("combined_import", source), "\"outcome\":\"success\",\"value\":7");
 }
 
 #[test]
@@ -6648,11 +6645,7 @@ fn the_formatter_joins_split_imports_of_one_path() {
         "pub fn main() -> Int { 0 }\n",
     );
     let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
-    assert!(
-        !formatted.is_blocked(),
-        "{}",
-        formatted.render_diagnostics()
-    );
+    assert!(!formatted.is_blocked(), "{}", formatted.render_diagnostics());
     assert!(
         formatted.text().starts_with(concat!(
             "import std/map as Map.{Map}\n",
@@ -6670,11 +6663,7 @@ fn the_formatter_joins_split_imports_of_one_path() {
         formatted.text()
     );
     assert_formatter_round_trips(source);
-    assert!(
-        check_codes(formatted.text()).is_empty(),
-        "{:?}",
-        check_codes(formatted.text())
-    );
+    assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
 }
 
 // A member imported twice is a conflict; joining would hide it.
@@ -6687,13 +6676,7 @@ fn the_formatter_keeps_a_repeated_member_import_as_written() {
         "pub fn main() -> Int { 0 }\n",
     );
     let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
-    assert!(
-        formatted
-            .text()
-            .starts_with(source.split("pub").next().unwrap()),
-        "{}",
-        formatted.text()
-    );
+    assert!(formatted.text().starts_with(source.split("pub").next().unwrap()), "{}", formatted.text());
     assert_eq!(check_codes(formatted.text()), ["E_IMPORT_MEMBER_CONFLICT"]);
 }
 
@@ -6710,12 +6693,7 @@ fn diagnostics_of(source: &str) -> Vec<(String, String)> {
     Compiler::type_project(vec![module])
         .diagnostics()
         .iter()
-        .map(|diagnostic| {
-            (
-                diagnostic.code().to_owned(),
-                diagnostic.message().to_owned(),
-            )
-        })
+        .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.message().to_owned()))
         .collect()
 }
 
@@ -10271,10 +10249,7 @@ fn a_qualified_constructor_is_a_declaration_not_a_field_read() {
     };
     assert!(check_codes(&program("  Channel.send(asks, Ask.Done)\n")).is_empty());
     assert!(
-        check_codes(&program(
-            "  let ask = Ask.Done\n  Channel.send(asks, ask)\n"
-        ))
-        .is_empty()
+        check_codes(&program("  let ask = Ask.Done\n  Channel.send(asks, ask)\n")).is_empty()
     );
     assert_eq!(
         check_codes(&program(concat!(
@@ -10321,15 +10296,9 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
     let holds = "fn() {\n    let _ = child\n    1\n  }";
     for send in [
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn({holds}))\n"),
-        format!(
-            "  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"
-        ),
-        format!(
-            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"
-        ),
-        format!(
-            "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"
-        ),
+        format!("  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Some({holds}))\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Success({holds}))\n"),
     ] {
@@ -10383,10 +10352,7 @@ fn a_process_body_closure_may_bind_values_that_are_not_shareable() {
     .unwrap();
     let outcome = native_outcome(&scratch, &path);
     std::fs::remove_dir_all(scratch).unwrap();
-    assert_eq!(
-        outcome,
-        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}"
-    );
+    assert_eq!(outcome, "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}");
 }
 
 // Rejects a formatter that drops or rewrites the declaration, and a parser that
@@ -12401,10 +12367,7 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
         "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
         "pub fn main() -> Int {\n  call(Box(fail))\n}\n",
     );
-    assert_eq!(
-        run_both("failure-set-argument-declared-after", declared_after),
-        expected
-    );
+    assert_eq!(run_both("failure-set-argument-declared-after", declared_after), expected);
     let nested_after = concat!(
         "pub enum Oops {\n  Bad\n}\n\n",
         "fn call<E>(outer: Outer<E>) -> Int {\n  outer.inner.run()\n}\n\n",
@@ -12413,10 +12376,7 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
         "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
         "pub fn main() -> Int {\n  call(Outer(Box(fail)))\n}\n",
     );
-    assert_eq!(
-        run_both("failure-set-argument-nested-after", nested_after),
-        expected
-    );
+    assert_eq!(run_both("failure-set-argument-nested-after", nested_after), expected);
 }
 
 // An unannotated result is re-read on every pass: a record of functions built

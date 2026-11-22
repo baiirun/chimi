@@ -167,11 +167,7 @@ fn build(scratch: &Path, name: &str, source: &str) -> PathBuf {
         .arg(&executable)
         .output()
         .expect("build native program");
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     executable
 }
 
@@ -187,25 +183,20 @@ fn run(executable: &Path, scratch: &Path, flags: &[&str]) -> (Output, String) {
         .arg("--")
         .output()
         .expect("run native program");
-    (
-        process,
-        std::fs::read_to_string(&outcome).unwrap_or_default(),
-    )
+    (process, std::fs::read_to_string(&outcome).unwrap_or_default())
 }
 
 /// True when the runtime is built as the carrier simulation, whose two
 /// carriers share one thread, so `--carriers` above 1 is refused.
 fn simulation() -> bool {
-    std::env::var("CHIMI_TEST_RUNTIME_DEFINES")
-        .is_ok_and(|defines| defines.contains("CHIMI_CARRIER_SIMULATION"))
+    std::env::var("CHIMI_TEST_RUNTIME_DEFINES").is_ok_and(|defines| defines.contains("CHIMI_CARRIER_SIMULATION"))
 }
 
 /// Checks that the simulation build refused `process` with exit 64.
 fn refused_in_simulation(process: &Output) {
     assert_eq!(process.status.code(), Some(64), "{process:?}");
     assert!(
-        String::from_utf8_lossy(&process.stderr)
-            .contains("not available in the carrier simulation build"),
+        String::from_utf8_lossy(&process.stderr).contains("not available in the carrier simulation build"),
         "{process:?}"
     );
 }
@@ -269,41 +260,21 @@ fn a_stop_that_forces_busy_processes_ends_alike_on_several_carriers() {
 fn the_runner_refuses_a_bad_carrier_count() {
     let scratch = scratch_directory("refused");
     let executable = build(&scratch, "refused", "pub fn main() -> Int {\n  7\n}\n");
-    for value in [
-        "0",
-        "-1",
-        "",
-        "two",
-        "4x",
-        "257",
-        "18446744073709551617",
-        "+4",
-        " 4",
-        "-18446744073709551612",
-    ] {
+    for value in ["0", "-1", "", "two", "4x", "257", "18446744073709551617", "+4", " 4", "-18446744073709551612"] {
         let flag = format!("--carriers={value}");
         let (process, outcome) = run(&executable, &scratch, &[&flag]);
-        assert_eq!(
-            process.status.code(),
-            Some(64),
-            "--carriers={value}: {process:?}"
-        );
+        assert_eq!(process.status.code(), Some(64), "--carriers={value}: {process:?}");
         assert!(
-            String::from_utf8_lossy(&process.stderr)
-                .contains("--carriers requires an integer from 1 through 256"),
+            String::from_utf8_lossy(&process.stderr).contains("--carriers requires an integer from 1 through 256"),
             "{process:?}"
         );
         assert_eq!(outcome, "", "nothing ran");
     }
-    for clock in [
-        &["--clock=virtual", "--carriers=2"][..],
-        &["--carriers=2", "--clock=virtual"],
-    ] {
+    for clock in [&["--clock=virtual", "--carriers=2"][..], &["--carriers=2", "--clock=virtual"]] {
         let (process, outcome) = run(&executable, &scratch, clock);
         assert_eq!(process.status.code(), Some(64), "{process:?}");
         assert!(
-            String::from_utf8_lossy(&process.stderr)
-                .contains("--carriers above 1 requires --clock=real"),
+            String::from_utf8_lossy(&process.stderr).contains("--carriers above 1 requires --clock=real"),
             "{process:?}"
         );
         assert_eq!(outcome, "");

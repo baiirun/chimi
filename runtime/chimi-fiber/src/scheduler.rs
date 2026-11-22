@@ -1,10 +1,10 @@
 //! Deterministic structured lifecycle for finite Chimi tasks, supervised
 //! processes, and the execution clock.
 
-mod carrier;
 mod child;
 #[cfg(test)]
 mod child_tests;
+mod carrier;
 mod clock;
 #[cfg(test)]
 mod idle_tests;
@@ -13,10 +13,12 @@ mod process;
 mod process_abi;
 #[cfg(test)]
 mod process_tests;
+#[cfg(test)]
+mod thread_tests;
 mod reactor;
+mod ready;
 #[cfg(test)]
 mod reactor_tests;
-mod ready;
 #[cfg(test)]
 mod release_tests;
 mod scope;
@@ -24,12 +26,11 @@ mod select;
 #[cfg(test)]
 mod select_tests;
 mod signal;
-#[cfg(test)]
-mod thread_tests;
 mod wake;
 
 use self::clock::{Clock, TimerQueue, TimerTarget};
 pub use self::clock::{ClockMode, Instant, TimerId};
+pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 use self::process::ProcessKernel;
 pub use self::process::{
     Address, ChimiProcessTermination, IncarnationId, Member, MembershipId, MessageRelease, NameId,
@@ -41,7 +42,6 @@ pub use self::process_abi::{
     ChimiDeadlockWaiter, ChimiProcessRequest, ChimiProcessSpec, ChimiSchedulerConfig,
     ChimiSupervisorMember, ChimiSupervisorPolicy, DeadlockReport, RootRun,
 };
-pub use self::reactor::{IO_ERROR, IO_HANGUP, IO_READABLE, IO_WRITABLE};
 pub use self::scope::{
     ScopeExit, ScopeId, chimi_fiber_cancel_is_terminal, chimi_fiber_scope_cancel_pending,
 };
@@ -390,9 +390,12 @@ impl ChimiCapabilityViolation {
                 Some(channel),
                 None,
             ),
-            ChannelError::WrongKind(channel) => {
-                (VIOLATION_WRONG_KIND, CAPABILITY_NONE, Some(channel), None)
-            }
+            ChannelError::WrongKind(channel) => (
+                VIOLATION_WRONG_KIND,
+                CAPABILITY_NONE,
+                Some(channel),
+                None,
+            ),
             ChannelError::CapabilityInFlight { channel, kind } => (
                 VIOLATION_IN_FLIGHT,
                 match kind {
@@ -557,8 +560,7 @@ impl Home {
 
     /// True when the fiber never ran or runs on the current thread.
     fn is_here(&self) -> bool {
-        self.0
-            .is_none_or(|home| home == std::thread::current().id())
+        self.0.is_none_or(|home| home == std::thread::current().id())
     }
 }
 
@@ -602,10 +604,7 @@ fn resume_fiber(fiber: NonNull<ChimiFiber>, command: ChimiFiberCommand) -> Chimi
 
 impl Drop for PinnedFiber {
     fn drop(&mut self) {
-        assert!(
-            self.home.is_here(),
-            "a fiber destroyed off its home carrier"
-        );
+        assert!(self.home.is_here(), "a fiber destroyed off its home carrier");
         unsafe {
             chimi_fiber_destroy(self.fiber.as_ptr());
         }
@@ -1212,11 +1211,7 @@ impl Scheduler {
     /// Panics otherwise: such a fiber could only be destroyed off its home.
     fn retire_carrier(&self) {
         let current = self.current;
-        assert!(
-            self.jobs.is_empty_for(current),
-            "a finished run left a job on carrier {}",
-            current.0
-        );
+        assert!(self.jobs.is_empty_for(current), "a finished run left a job on carrier {}", current.0);
         let held = self
             .tasks
             .iter()
@@ -1393,10 +1388,7 @@ impl Scheduler {
     /// Makes `carrier` the one running the loop until the next entry: the
     /// queue it pops and the home of the tasks it starts without a parent.
     fn enter_carrier(&mut self, carrier: ready::Carrier) {
-        debug_assert!(
-            carrier.0 < self.ready.carriers(),
-            "unknown carrier {carrier:?}"
-        );
+        debug_assert!(carrier.0 < self.ready.carriers(), "unknown carrier {carrier:?}");
         self.current = carrier;
         self.parked[carrier.0 as usize] = false;
     }
@@ -1419,10 +1411,7 @@ impl Scheduler {
     /// Gives a kernel with no ready task or job `carriers` carriers. The
     /// kernel is unchanged when a wake pipe fails.
     fn install_carriers(&mut self, carriers: u32) -> Result<(), SchedulerError> {
-        assert!(
-            self.ready.is_empty() && self.jobs.is_empty(),
-            "set before any work"
-        );
+        assert!(self.ready.is_empty() && self.jobs.is_empty(), "set before any work");
         let wakes = wake::Wakes::new(carriers)
             .map_err(|error| SchedulerError::CarrierSetupFailed(error.raw_os_error()))?;
         self.ready = ready::ReadyQueues::new(carriers);
@@ -1443,8 +1432,7 @@ impl Scheduler {
 
     #[cfg(test)]
     fn set_carriers(&mut self, carriers: u32) {
-        self.install_carriers(carriers)
-            .expect("a wake pipe per carrier");
+        self.install_carriers(carriers).expect("a wake pipe per carrier");
     }
 
     /// Wakes `carrier` once the kernel lock is released, so an idle wait
@@ -1465,11 +1453,7 @@ impl Scheduler {
     /// its wake pipe, and on carrier 0, which owns signals, the signal pipe.
     fn idle_wake_fds(&self) -> wake::WakeFds {
         let mut fds = wake::WakeFds::default();
-        if let Some(fd) = self
-            .signals
-            .wake_fd()
-            .filter(|_| self.current == ready::Carrier(0))
-        {
+        if let Some(fd) = self.signals.wake_fd().filter(|_| self.current == ready::Carrier(0)) {
             fds.push(fd);
         }
         if let Some(fd) = self.wakes.read_fd(self.current) {
@@ -1722,7 +1706,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(receiver)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_SUBSCRIBE, None)
+            }
         }
     }
 
@@ -1738,7 +1724,9 @@ impl Scheduler {
                 self.apply_channel_transition(transition);
                 Ok(added)
             }
-            Err(error) => self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None),
+            Err(error) => {
+                self.channel_violation(task, error, REQUEST_CHANNEL_ADD_RECEIVER, None)
+            }
         }
     }
 
@@ -1931,7 +1919,8 @@ impl Scheduler {
             .tasks
             .get_mut(&task)
             .ok_or(SchedulerError::UnknownTask(task))?;
-        let live_root = record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
+        let live_root =
+            record.parent.is_none() && !matches!(record.phase, TaskPhase::Terminal(_));
         if record.process.is_some() || record.handle_released || live_root {
             return Err(SchedulerError::TaskStillLive(task));
         }
@@ -2228,10 +2217,7 @@ impl Scheduler {
                     self.any_carrier || record.carrier == self.current,
                     "a job run off its home carrier"
                 );
-                debug_assert!(
-                    matches!(record.phase, TaskPhase::Draining(_)),
-                    "an unwind job's task drains"
-                );
+                debug_assert!(matches!(record.phase, TaskPhase::Draining(_)), "an unwind job's task drains");
                 let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL);
                 Some(carrier::Runnable {
                     task,
@@ -2261,20 +2247,14 @@ impl Scheduler {
 
     /// Applies what `task`'s resume returned: its park and request, or its end.
     fn complete_run(&mut self, task: TaskId, event: ChimiFiberEvent) {
-        let end = self
-            .tasks
-            .get_mut(&task)
-            .and_then(|record| record.pending_end.take());
+        let end = self.tasks.get_mut(&task).and_then(|record| record.pending_end.take());
         self.apply_step(task, event);
         // An end decided while the fiber ran on this carrier applies as if
         // decided just after this step: the step's park is served first, as
         // one carrier always serves it, and an end the step already reached
         // is not overridden.
         if let Some(end) = end
-            && self
-                .tasks
-                .get(&task)
-                .is_some_and(|record| record.phase.is_live())
+            && self.tasks.get(&task).is_some_and(|record| record.phase.is_live())
         {
             if end.forced {
                 self.force_terminal(task, end.outcome, false);
@@ -2791,8 +2771,7 @@ impl Scheduler {
             // job there resumes it, then ends the task.
             let forced = self.forcing > 0;
             let carrier = self.tasks[&task].carrier;
-            self.jobs
-                .push_back(carrier, jobs::Job::Unwind { task, forced });
+            self.jobs.push_back(carrier, jobs::Job::Unwind { task, forced });
             self.wake_carrier(carrier);
             return;
         }
@@ -2811,17 +2790,12 @@ impl Scheduler {
     fn record_pending_end(&mut self, task: TaskId, outcome: TaskOutcome) {
         let forced = self.forcing > 0;
         let record = self.tasks.get_mut(&task).expect("running task");
-        debug_assert_ne!(
-            record.carrier, self.current,
-            "a running task ends on its own carrier"
-        );
+        debug_assert_ne!(record.carrier, self.current, "a running task ends on its own carrier");
         record.pending_end = Some(match record.pending_end {
-            Some(recorded) if recorded.outcome.is_defect() || !outcome.is_defect() => {
-                jobs::PendingEnd {
-                    outcome: recorded.outcome,
-                    forced: recorded.forced || forced,
-                }
-            }
+            Some(recorded) if recorded.outcome.is_defect() || !outcome.is_defect() => jobs::PendingEnd {
+                outcome: recorded.outcome,
+                forced: recorded.forced || forced,
+            },
             Some(recorded) => jobs::PendingEnd {
                 outcome,
                 forced: recorded.forced || forced,
@@ -2833,12 +2807,7 @@ impl Scheduler {
     /// Finishes a draining task whose fiber's cancellation unwind returned
     /// `cleanup`: a defect, an overflow or a park in the unwind decides the
     /// outcome unless it already is a defect.
-    fn end_after_unwind(
-        &mut self,
-        task: TaskId,
-        mut outcome: TaskOutcome,
-        cleanup: &ChimiFiberEvent,
-    ) {
+    fn end_after_unwind(&mut self, task: TaskId, mut outcome: TaskOutcome, cleanup: &ChimiFiberEvent) {
         self.keep_task_value(task, cleanup);
         let cleanup_parked = cleanup.state == ChimiFiberState::Parked as u32;
         if !outcome.is_defect() {
@@ -2967,9 +2936,7 @@ impl Scheduler {
             }
         } else if outcome.is_defect()
             && let Some(parent) = parent.filter(|parent| {
-                self.tasks
-                    .get(parent)
-                    .is_some_and(|record| record.phase.is_live())
+                self.tasks.get(parent).is_some_and(|record| record.phase.is_live())
             })
             && !self.absorbs_child_defect(parent)
         {
@@ -3048,10 +3015,9 @@ impl Scheduler {
     pub(super) fn has_live_descendants(&self, task: TaskId) -> bool {
         self.tasks.get(&task).is_some_and(|record| {
             record.children.iter().any(|child| {
-                self.tasks
-                    .get(child)
-                    .is_some_and(|record| record.phase.is_live())
-                    || self.has_live_descendants(*child)
+                self.tasks.get(child).is_some_and(|record| {
+                    record.phase.is_live()
+                }) || self.has_live_descendants(*child)
             })
         })
     }
@@ -3127,11 +3093,7 @@ impl Scheduler {
         let Some(owner) = owner else {
             return;
         };
-        if self
-            .tasks
-            .get(&owner)
-            .is_some_and(|record| record.phase.is_live())
-        {
+        if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
@@ -3448,10 +3410,7 @@ mod tests {
     #[test]
     fn a_fiber_home_is_the_thread_of_its_first_resume() {
         let mut home = Home::default();
-        assert!(
-            home.is_here(),
-            "an unstarted fiber may be destroyed anywhere"
-        );
+        assert!(home.is_here(), "an unstarted fiber may be destroyed anywhere");
         let mut elsewhere = std::thread::spawn(move || {
             assert!(home.enter());
             assert!(home.enter());
@@ -3641,11 +3600,7 @@ mod tests {
         );
         scheduler.enter_carrier(one);
         scheduler.drive();
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Parked,
-            "its home ran it"
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked, "its home ran it");
     }
 
     /// Starts a parked root on `home` with one parked child, cancels the
@@ -3653,10 +3608,7 @@ mod tests {
     /// terminal. Returns the kernel, the two tasks, and whether a job was
     /// waiting (with the root still draining and the child live) before
     /// `home` ran.
-    fn cancel_from_carrier_zero(
-        carriers: u32,
-        home: ready::Carrier,
-    ) -> (Scheduler, TaskId, TaskId, bool) {
+    fn cancel_from_carrier_zero(carriers: u32, home: ready::Carrier) -> (Scheduler, TaskId, TaskId, bool) {
         let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Full, carriers);
         scheduler.enter_carrier(home);
         let root = start_parked(&mut scheduler);
@@ -3694,14 +3646,8 @@ mod tests {
         let (two, root, child, waiting) = cancel_from_carrier_zero(2, ready::Carrier(1));
         assert!(waiting, "the root drains with its fiber until its job runs");
         assert!(two.jobs.is_empty());
-        assert_eq!(
-            two.tasks[&root].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
-        assert_eq!(
-            two.tasks[&child].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(two.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+        assert_eq!(two.tasks[&child].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
 
         let (one, one_root, one_child, inline) = cancel_from_carrier_zero(1, ready::Carrier(0));
         assert!(!inline, "one carrier unwinds inline");
@@ -3722,10 +3668,7 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, task).expect("cancel");
         assert!(scheduler.jobs.is_empty());
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     thread_local! {
@@ -3746,8 +3689,9 @@ mod tests {
             entry: None,
             context: std::ptr::null_mut(),
         };
-        let mut command =
-            unsafe { crate::chimi_fiber_request((&raw mut request).cast(), std::ptr::null()) };
+        let mut command = unsafe {
+            crate::chimi_fiber_request((&raw mut request).cast(), std::ptr::null())
+        };
         SERVED_STATUS.with(|served| served.set(request.status));
         while command != ChimiFiberCommand::Cancel {
             command = unsafe { crate::chimi_fiber_park(std::ptr::null()) };
@@ -3780,10 +3724,7 @@ mod tests {
         let event = resume_fiber(runnable.fiber, runnable.command);
         scheduler.complete(runnable, event);
         assert_eq!(SERVED_STATUS.with(std::cell::Cell::get), RESPONSE_OK);
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     thread_local! {
@@ -3809,9 +3750,7 @@ mod tests {
         UNWIND_TERMINAL.with(|terminal| terminal.set(u32::MAX));
         let mut scheduler = Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2);
         scheduler.enter_carrier(ready::Carrier(1));
-        let recorder = scheduler
-            .start_root(record_terminal_unwind)
-            .expect("recorder");
+        let recorder = scheduler.start_root(record_terminal_unwind).expect("recorder");
         let defecting = scheduler
             .start_root(chimi_fixture_generated_cancel_defect)
             .expect("defecting");
@@ -3824,10 +3763,7 @@ mod tests {
         assert_eq!(UNWIND_TERMINAL.with(std::cell::Cell::get), 1);
         assert_eq!(
             scheduler.tasks[&defecting].phase,
-            TaskPhase::Terminal(TaskOutcome::Defected {
-                origin: defecting,
-                code: 88
-            })
+            TaskPhase::Terminal(TaskOutcome::Defected { origin: defecting, code: 88 })
         );
     }
 
@@ -3874,26 +3810,17 @@ mod tests {
             .and_then(|task| scheduler.prepare_run(task))
             .expect("runnable");
         scheduler.enter_carrier(ready::Carrier(0));
-        let defect = TaskOutcome::Defected {
-            origin: task,
-            code: 5,
-        };
+        let defect = TaskOutcome::Defected { origin: task, code: 5 };
         scheduler.cancel_task(task, TaskOutcome::Cancelled);
         scheduler.cancel_task(task, defect);
         assert_eq!(
             scheduler.tasks[&task].pending_end,
-            Some(jobs::PendingEnd {
-                outcome: defect,
-                forced: false
-            })
+            Some(jobs::PendingEnd { outcome: defect, forced: false })
         );
         scheduler.force_terminal(task, TaskOutcome::Cancelled, false);
         assert_eq!(
             scheduler.tasks[&task].pending_end,
-            Some(jobs::PendingEnd {
-                outcome: defect,
-                forced: true
-            })
+            Some(jobs::PendingEnd { outcome: defect, forced: true })
         );
         // The fiber is left parked; its record is forgotten at drop.
         scheduler.tasks.get_mut(&task).expect("task").pending_end = None;
@@ -3922,10 +3849,7 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(1));
         let event = resume_fiber(runnable.fiber, runnable.command);
         scheduler.complete(runnable, event);
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     /// A forced job's unwind ends the task's children at once, even one
@@ -3950,24 +3874,15 @@ mod tests {
         assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Parked);
         scheduler.enter_carrier(ready::Carrier(1));
         scheduler.drive();
-        assert_eq!(
-            scheduler.tasks[&child].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
-        assert_eq!(
-            scheduler.tasks[&root].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
+        assert_eq!(scheduler.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     thread_local! {
         static TERMINAL_EVENTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
 
-    unsafe extern "C" fn count_terminal_events(
-        _context: *mut c_void,
-        event: *const SchedulerTraceEvent,
-    ) {
+    unsafe extern "C" fn count_terminal_events(_context: *mut c_void, event: *const SchedulerTraceEvent) {
         // SAFETY: the scheduler passes a valid event for the call's length.
         let (family, kind) = unsafe { ((*event).family, (*event).kind) };
         if family == SCHEDULER_TRACE_TASK && kind == TaskEventKind::Terminal as u32 + 1 {
@@ -4006,20 +3921,14 @@ mod tests {
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, root).expect("cancel root");
         scheduler.cancel(Some(root), child).expect("cancel child");
-        assert_eq!(
-            scheduler.tasks[&child].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
         assert!(
             matches!(scheduler.tasks[&root].phase, TaskPhase::Draining(_)),
             "the root waits for its unwind"
         );
         scheduler.enter_carrier(ready::Carrier(1));
         scheduler.drive();
-        assert_eq!(
-            scheduler.tasks[&root].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&root].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     /// A forced end decided on another carrier is marked forced on its job.
@@ -4053,24 +3962,13 @@ mod tests {
             .expect("runnable");
         scheduler.enter_carrier(ready::Carrier(0));
         scheduler.cancel(None, task).expect("cancel");
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Running,
-            "the fiber still runs"
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Running, "the fiber still runs");
         assert!(scheduler.jobs.is_empty());
         scheduler.enter_carrier(ready::Carrier(1));
         let event = resume_fiber(runnable.fiber, runnable.command);
-        assert_eq!(
-            event.state,
-            ChimiFiberState::Parked as u32,
-            "the step ran as it was"
-        );
+        assert_eq!(event.state, ChimiFiberState::Parked as u32, "the step ran as it was");
         scheduler.complete(runnable, event);
-        assert_eq!(
-            scheduler.tasks[&task].phase,
-            TaskPhase::Terminal(TaskOutcome::Cancelled)
-        );
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Terminal(TaskOutcome::Cancelled));
     }
 
     /// A child is homed on its parent's carrier, not on the carrier that
@@ -4088,18 +3986,10 @@ mod tests {
             .expect("child");
         assert_eq!(scheduler.tasks[&child].carrier, one);
         scheduler.drive();
-        assert_eq!(
-            scheduler.tasks[&child].phase,
-            TaskPhase::Runnable,
-            "carrier 0 does not run it"
-        );
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Runnable, "carrier 0 does not run it");
         scheduler.enter_carrier(one);
         scheduler.drive();
-        assert_eq!(
-            scheduler.tasks[&child].phase,
-            TaskPhase::Parked,
-            "its home ran it"
-        );
+        assert_eq!(scheduler.tasks[&child].phase, TaskPhase::Parked, "its home ran it");
     }
 
     /// Each kernel lock tells the kernel which carrier holds it: a task
@@ -4118,20 +4008,11 @@ mod tests {
             .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
             .expect("task");
         carrier::drive(&mut zero);
-        let phase = |kernel: &std::sync::Mutex<Scheduler>| {
-            kernel.lock().expect("kernel").tasks[&task].phase
-        };
-        assert_eq!(
-            phase(&kernel),
-            TaskPhase::Runnable,
-            "carrier 0 does not run it"
-        );
+        let phase = |kernel: &std::sync::Mutex<Scheduler>| kernel.lock().expect("kernel").tasks[&task].phase;
+        assert_eq!(phase(&kernel), TaskPhase::Runnable, "carrier 0 does not run it");
         carrier::drive(&mut one);
         assert_eq!(phase(&kernel), TaskPhase::Parked);
-        assert_eq!(
-            kernel.lock().expect("kernel").tasks[&task].carrier,
-            ready::Carrier(1)
-        );
+        assert_eq!(kernel.lock().expect("kernel").tasks[&task].carrier, ready::Carrier(1));
     }
 
     /// True when `fd` has a byte to read, without consuming it.
@@ -4147,10 +4028,7 @@ mod tests {
 
     fn wake_fd(kernel: &std::sync::Mutex<Scheduler>, carrier: u32) -> i32 {
         let kernel = kernel.lock().expect("kernel");
-        kernel
-            .wakes
-            .read_fd(ready::Carrier(carrier))
-            .expect("a wake pipe")
+        kernel.wakes.read_fd(ready::Carrier(carrier)).expect("a wake pipe")
     }
 
     fn two_carriers() -> std::sync::Mutex<Scheduler> {
@@ -4166,21 +4044,14 @@ mod tests {
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(1)));
         let failed = Scheduler::with_options_carriers(options, 3).err();
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
-        assert_eq!(
-            failed,
-            Some(SchedulerError::CarrierSetupFailed(Some(libc::EMFILE)))
-        );
+        assert_eq!(failed, Some(SchedulerError::CarrierSetupFailed(Some(libc::EMFILE))));
 
         let mut kernel = Scheduler::with_options(options);
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(Some(1)));
         let failed = kernel.install_carriers(3);
         wake::test_hooks::FAIL_OPEN_AFTER.with(|left| left.set(None));
         assert!(failed.is_err());
-        assert_eq!(
-            kernel.ready.carriers(),
-            1,
-            "a failed install changes nothing"
-        );
+        assert_eq!(kernel.ready.carriers(), 1, "a failed install changes nothing");
         assert_eq!(kernel.parked.len(), 1);
         assert_eq!(kernel.wakes.read_fd(ready::Carrier(0)), None);
 
@@ -4207,10 +4078,7 @@ mod tests {
             .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
             .expect("task");
         carrier::drive(&mut one);
-        assert!(
-            !readable(fd0) && !readable(fd1),
-            "carrier 1 queued for itself"
-        );
+        assert!(!readable(fd0) && !readable(fd1), "carrier 1 queued for itself");
 
         zero.with(|kernel| {
             kernel.wake(task).expect("wake");
@@ -4235,12 +4103,8 @@ mod tests {
             .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
             .expect("task");
         carrier::drive(&mut one);
-        zero.with(|kernel| kernel.cancel(None, task))
-            .expect("cancel");
-        assert!(
-            !kernel.lock().expect("kernel").jobs.is_empty(),
-            "the unwind is a job"
-        );
+        zero.with(|kernel| kernel.cancel(None, task)).expect("cancel");
+        assert!(!kernel.lock().expect("kernel").jobs.is_empty(), "the unwind is a job");
         assert!(readable(wake_fd(&kernel, 1)));
     }
 
@@ -4394,14 +4258,8 @@ mod tests {
         let (signal_read, signal_write) = test_pipe();
         let mut signal_word = 0_i32;
         scheduler.set_signal_source(&raw mut signal_word, signal_read);
-        let fd0 = scheduler
-            .wakes
-            .read_fd(ready::Carrier(0))
-            .expect("a wake pipe");
-        let fd1 = scheduler
-            .wakes
-            .read_fd(ready::Carrier(1))
-            .expect("a wake pipe");
+        let fd0 = scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe");
+        let fd1 = scheduler.wakes.read_fd(ready::Carrier(1)).expect("a wake pipe");
         let wake = |scheduler: &mut Scheduler, carrier: u32| {
             scheduler.wakes.mark(ready::Carrier(carrier));
             scheduler.take_wakes().write();
@@ -4409,23 +4267,12 @@ mod tests {
 
         scheduler.enter_carrier(ready::Carrier(1));
         let task = start_parked(&mut scheduler);
-        let later = scheduler
-            .clock
-            .now()
-            .saturating_add(std::time::Duration::from_secs(60));
+        let later = scheduler.clock.now().saturating_add(std::time::Duration::from_secs(60));
         scheduler.start_wake_timer(task, later).expect("timer");
-        assert_eq!(
-            scheduler.idle_wake_fds().as_slice(),
-            [fd1],
-            "the signal pipe is carrier 0's"
-        );
+        assert_eq!(scheduler.idle_wake_fds().as_slice(), [fd1], "the signal pipe is carrier 0's");
         wake(&mut scheduler, 1);
         let started = std::time::Instant::now();
-        assert_eq!(
-            carrier::wait_idle(&mut scheduler),
-            carrier::Waited::Again,
-            "the wake ended the park"
-        );
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again, "the wake ended the park");
         assert!(started.elapsed() < quick, "the park ended at the wake");
         assert!(!readable(fd1), "the park emptied the pipe");
 
@@ -4434,10 +4281,7 @@ mod tests {
         write_byte(signal_write);
         wake(&mut scheduler, 0);
         assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again);
-        assert!(
-            !readable(fd0) && !readable(signal_read),
-            "a sleep empties every pipe that woke it"
-        );
+        assert!(!readable(fd0) && !readable(signal_read), "a sleep empties every pipe that woke it");
 
         let mut io = SchedulerRequest {
             kind: REQUEST_IO_WAIT,
@@ -4460,11 +4304,7 @@ mod tests {
         write_byte(signal_write);
         wake(&mut scheduler, 0);
         let started = std::time::Instant::now();
-        assert_eq!(
-            carrier::wait_idle(&mut scheduler),
-            carrier::Waited::Again,
-            "the wake ended the wait"
-        );
+        assert_eq!(carrier::wait_idle(&mut scheduler), carrier::Waited::Again, "the wake ended the wait");
         assert!(started.elapsed() < quick);
         assert!(
             !readable(fd0) && !readable(signal_read),
@@ -4510,10 +4350,7 @@ mod tests {
         let process_abi::RootStep::WaitForSignal(fds) = step else {
             panic!("a root waiting for a signal stalls until one");
         };
-        let fd0 = scheduler
-            .wakes
-            .read_fd(ready::Carrier(0))
-            .expect("a wake pipe");
+        let fd0 = scheduler.wakes.read_fd(ready::Carrier(0)).expect("a wake pipe");
         assert_eq!(fds.as_slice(), [signal_read, fd0]);
         scheduler.withdraw_signal_wait(root);
         drop(scheduler);

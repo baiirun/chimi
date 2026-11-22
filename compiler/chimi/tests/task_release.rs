@@ -25,8 +25,10 @@ struct Run {
 }
 
 fn run(name: &str, body: &str) -> Run {
-    let scratch =
-        std::env::temp_dir().join(format!("chimi-task-release-{name}-{}", std::process::id()));
+    let scratch = std::env::temp_dir().join(format!(
+        "chimi-task-release-{name}-{}",
+        std::process::id()
+    ));
     if scratch.exists() {
         std::fs::remove_dir_all(&scratch).unwrap();
     }
@@ -60,10 +62,7 @@ fn run(name: &str, body: &str) -> Run {
         .expect("execute native task program");
     let outcome = std::fs::read_to_string(outcome_path).unwrap_or_default();
     let report = std::fs::read_to_string(report_path).unwrap_or_else(|_| {
-        panic!(
-            "no memory report: {}",
-            String::from_utf8_lossy(&process.stderr)
-        )
+        panic!("no memory report: {}", String::from_utf8_lossy(&process.stderr))
     });
     std::fs::remove_dir_all(scratch).unwrap();
     Run {

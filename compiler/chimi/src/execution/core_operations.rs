@@ -130,12 +130,7 @@ impl Evaluator<'_> {
             (StandardFunction::TestRecord, [RuntimeValue::TestLog(recorder), value])
                 if recorder.kind == TestLogKind::Recorder =>
             {
-                recorder
-                    .values
-                    .lock()
-                    .expect("a test log")
-                    .0
-                    .push_back(value.clone());
+                recorder.values.lock().expect("a test log").0.push_back(value.clone());
                 Control::Success(RuntimeValue::Void)
             }
             (StandardFunction::TestRecorded, [RuntimeValue::TestLog(recorder)])

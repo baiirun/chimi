@@ -216,15 +216,8 @@ fn piped_streams_are_not_terminals() {
         .stderr(std::process::Stdio::piped())
         .output()
         .expect("run the probe");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "[False, False, False]\nNone\n"
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[False, False, False]\nNone\n");
 }
 
 // Rejects a provider that misses a terminal, reads another stream's
@@ -239,16 +232,8 @@ fn a_pseudo_terminal_is_one_and_has_its_size() {
         on_pty(&scratch, 30, 100),
         "[False, True, False]\nSome({ columns: 100, rows: 30 })\n"
     );
-    assert_eq!(
-        on_pty(&scratch, 30, 0),
-        "[False, True, False]\nNone\n",
-        "zero columns"
-    );
-    assert_eq!(
-        on_pty(&scratch, 0, 100),
-        "[False, True, False]\nNone\n",
-        "zero rows"
-    );
+    assert_eq!(on_pty(&scratch, 30, 0), "[False, True, False]\nNone\n", "zero columns");
+    assert_eq!(on_pty(&scratch, 0, 100), "[False, True, False]\nNone\n", "zero rows");
 }
 
 /// The probe's output on a pseudo-terminal of `rows` by `columns`.
@@ -277,20 +262,10 @@ os.waitpid(pid, 0)
 sys.stdout.write(out.decode().replace("\r\n", "\n"))
 "#;
     let output = Command::new("python3")
-        .args([
-            "-c",
-            script,
-            scratch.0.join("probe").to_str().unwrap(),
-            &rows.to_string(),
-            &columns.to_string(),
-        ])
+        .args(["-c", script, scratch.0.join("probe").to_str().unwrap(), &rows.to_string(), &columns.to_string()])
         .output()
         .expect("run python3");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
@@ -298,18 +273,10 @@ sys.stdout.write(out.decode().replace("\r\n", "\n"))
 // binding, which only native code calls (E5204).
 #[test]
 fn the_interpreter_cannot_ask_the_host_terminal() {
-    let scratch = Scratch::new(
-        "interpreter",
-        &format!("{IMPORTS}import std/list as List\n{PROBE}"),
-    );
+    let scratch = Scratch::new("interpreter", &format!("{IMPORTS}import std/list as List\n{PROBE}"));
     let run = scratch.chimi(&["run", "cases.chimi"]);
     assert_ne!(run.status, Some(0));
-    assert!(
-        run.stdout.contains("E5204") || run.stderr.contains("E5204"),
-        "{}{}",
-        run.stdout,
-        run.stderr
-    );
+    assert!(run.stdout.contains("E5204") || run.stderr.contains("E5204"), "{}{}", run.stdout, run.stderr);
 }
 
 // Rejects a test that reaches the terminal without supplying it: the need is
@@ -322,10 +289,5 @@ fn a_test_must_supply_the_terminal() {
         &[],
     );
     assert_ne!(run.status, Some(0));
-    assert!(
-        run.stdout.contains("T4400") || run.stderr.contains("T4400"),
-        "{}{}",
-        run.stdout,
-        run.stderr
-    );
+    assert!(run.stdout.contains("T4400") || run.stderr.contains("T4400"), "{}{}", run.stdout, run.stderr);
 }
