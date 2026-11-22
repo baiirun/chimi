@@ -23,8 +23,8 @@ MUTATIONS = [
         "  case by < -1 {",
     )]),
     mutant("gauge builds an observation", S, [(
-        "  metrics.record(Measurement { kind: Kind.Gauge, name: name, value: value, labels: labels })",
-        "  metrics.record(Measurement { kind: Kind.Observe, name: name, value: value, labels: labels })",
+        "    kind: Kind.Gauge, name: name, value: value, labels: labels",
+        "    kind: Kind.Observe, name: name, value: value, labels: labels",
     )]),
     mutant("the provider drops the labels", S, [(
         "          labels_key(measurement.labels),",

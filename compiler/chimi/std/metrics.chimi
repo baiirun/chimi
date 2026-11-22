@@ -99,7 +99,9 @@ pub fn count(name: Text, by: Int, labels: List<(Text, Text)>) -> Void needs {
     True -> Debug.crash("Metrics: count must not be negative, got ${Int.to_text(by)}")
     False -> Void
   }
-  metrics.record(Measurement { kind: Kind.Count, name: name, value: Float.from_int(by), labels: labels })
+  metrics.record(Measurement {
+    kind: Kind.Count, name: name, value: Float.from_int(by), labels: labels
+  })
 }
 
 /// Sets the gauge `name` with `labels` to `value`.
@@ -108,7 +110,9 @@ pub fn count(name: Text, by: Int, labels: List<(Text, Text)>) -> Void needs {
 pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs {
   metrics: Metrics
 } {
-  metrics.record(Measurement { kind: Kind.Gauge, name: name, value: value, labels: labels })
+  metrics.record(Measurement {
+    kind: Kind.Gauge, name: name, value: value, labels: labels
+  })
 }
 
 /// Counts `value` into the histogram `name` with `labels`. A duration is
@@ -118,7 +122,9 @@ pub fn gauge(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs
 pub fn observe(name: Text, value: Float, labels: List<(Text, Text)>) -> Void needs {
   metrics: Metrics
 } {
-  metrics.record(Measurement { kind: Kind.Observe, name: name, value: value, labels: labels })
+  metrics.record(Measurement {
+    kind: Kind.Observe, name: name, value: value, labels: labels
+  })
 }
 
 // 7. Conversions.
