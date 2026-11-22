@@ -564,7 +564,9 @@ impl MetricsAggregate {
             Series::Gauge(last) => *last = value,
             Series::Observe { count, sum, buckets } => {
                 *count += 1;
-                *sum += value;
+                // A sum past the largest Float saturates there, so it stays finite.
+                let total = *sum + value;
+                *sum = if total.is_finite() { total } else { f64::MAX.copysign(total) };
                 let bucket = METRIC_BOUNDS
                     .iter()
                     .position(|bound| value <= *bound)

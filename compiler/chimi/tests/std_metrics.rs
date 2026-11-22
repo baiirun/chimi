@@ -143,6 +143,14 @@ fn the_metrics_file_option_is_checked_before_main_runs() {
     let respelled = format!("--metrics-file={}/./same.json", scratch.0.display());
     let clash = runner(&program, &[&log, &respelled]);
     assert_eq!((clash.status, clash.stderr.as_str()), (Some(64), expected), "another spelling");
+    // The memory report and profile are opened only at exit.
+    for later in ["--memory-report-file", "--profile-file"] {
+        let file = scratch.0.join(format!("{}.json", &later[2..]));
+        let metrics = format!("--metrics-file={}", file.display());
+        let respelled = format!("{later}={}/./{}.json", scratch.0.display(), &later[2..]);
+        let clash = runner(&program, &[&metrics, &respelled]);
+        assert_eq!((clash.status, clash.stderr.as_str()), (Some(64), expected), "{later} under another spelling");
+    }
     let missing = runner(&program, &["--metrics-file=/nonexistent/dir/metrics.json"]);
     assert_eq!(missing.status, Some(74));
     assert!(missing.stderr.starts_with("cannot open metrics file /nonexistent/dir/metrics.json"), "{}", missing.stderr);
@@ -178,20 +186,25 @@ fn one_name_keeps_at_most_a_thousand_label_sets() {
     assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
 }
 
-const CARRIERS: &str = r#"import std/list as List
+const CARRIERS: &str = r#"import std/int as Int
+import std/list as List
 import std/metrics as Metrics.{Metrics}
 import std/task as Task
 
-fn work() -> Int needs { metrics: Metrics } {
-  List.each(List.repeat(0, 500), fn(_) {
+fn work(task: Int) -> Int needs { metrics: Metrics } {
+  List.each(List.enumerate(List.repeat(0, 500)), fn(pair) {
+    let (index, _) = pair
     Metrics.count("done", 1, [])
     Metrics.observe("size", 1.0, [])
+    // New label sets while every task records, so the tables grow under
+    // contention: 8 tasks times 50 label sets.
+    Metrics.count("by_task", 1, [("task", Int.to_text(task)), ("slot", Int.to_text(index % 50))])
   })
   0
 }
 
 pub fn main() -> Void needs { metrics: Metrics } {
-  let tasks = List.map(List.repeat(0, 8), fn(_) { Task.start(work) })
+  let tasks = List.map([1, 2, 3, 4, 5, 6, 7, 8], fn(task) { Task.start(fn() { work(task) }) })
   List.each(tasks, fn(task) {
     let _ = Task.result(task)
     Void
@@ -212,25 +225,88 @@ fn tasks_on_several_carriers_record_into_one_aggregate() {
     let written = std::fs::read_to_string(&file).unwrap();
     assert!(written.contains(r#"{"name":"done","labels":{},"kind":"count","value":4000}"#), "{written}");
     assert!(written.contains(r#""kind":"observe","count":4000,"sum":4000.0,"#), "{written}");
+    assert_eq!(written.matches(r#""name":"by_task""#).count(), 400, "{written}");
+    assert_eq!(written.matches(r#""kind":"count","value":10}"#).count(), 400, "{written}");
 }
 
 const NEGATIVE: &str = r#"import std/metrics as Metrics.{Metrics}
 
 pub fn main() -> Void needs { metrics: Metrics } {
+  Metrics.count("refunds", 1, [])
   Metrics.count("refunds", -1, [])
 }
 "#;
 
-// Rejects a counter that can go down.
+const AFTER_ONE: &str = r#"{"schema":"chimi.metrics.v1","metrics":[{"name":"refunds","labels":{},"kind":"count","value":1}],"dropped":{"label_sets":0,"kind_conflicts":0}}"#;
+
+// Rejects a counter that can go down, and a runner that writes the metrics
+// only when `main` succeeds.
 #[test]
 fn a_negative_count_is_a_defect() {
     let scratch = Scratch::new("negative", NEGATIVE);
     let program = scratch.build();
     let outcome = scratch.0.join("outcome.json");
-    let output = runner(&program, &[&format!("--outcome-file={}", outcome.display())]);
+    let metrics = scratch.0.join("metrics.json");
+    let output = runner(&program, &[
+        &format!("--outcome-file={}", outcome.display()),
+        &format!("--metrics-file={}", metrics.display()),
+    ]);
     assert_eq!(output.status, Some(70), "{}", output.stderr);
     let outcome = std::fs::read_to_string(&outcome).unwrap();
     assert!(outcome.contains("Metrics: count must not be negative, got -1"), "{outcome}");
+    assert_eq!(std::fs::read_to_string(&metrics).unwrap(), format!("{AFTER_ONE}\n"));
+}
+
+// Rejects a runner that reports success when the document cannot be written.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_metrics_write_is_a_sink_failure() {
+    let scratch = Scratch::new("full", PROGRAM);
+    let program = scratch.build();
+    let output = runner(&program, &["--metrics-file=/dev/full"]);
+    assert_eq!(output.status, Some(74), "{}", output.stderr);
+}
+
+const EDGES: &str = r#"import std/metrics as Metrics.{Metrics}
+
+pub fn main() -> Void needs { metrics: Metrics } {
+  Metrics.count("big", 9223372036854775807, [])
+  Metrics.count("big", 9223372036854775807, [])
+  Metrics.observe("huge", 1.0e308, [])
+  Metrics.observe("huge", 1.0e308, [])
+  Metrics.observe("huge", -1.0e308, [])
+  Metrics.gauge("text", 1.0, [("ключ", "é\u{1}\"\\"), ("ключ", "last"), ("a", "é\u{1}\"\\")])
+}
+"#;
+
+// Rejects a count that wraps past the largest Int, a sum that becomes
+// infinite, and labels escaped differently by the two runtimes.
+#[test]
+fn counts_and_sums_saturate_and_both_runtimes_agree() {
+    use chimi::execution::{ExecutionConfig, TraceMode};
+    use chimi::source::SourceSnapshot;
+    use chimi::{Compiler, ProjectSource};
+    let scratch = Scratch::new("edges", EDGES);
+    let program = scratch.build();
+    let native = scratch.0.join("native.json");
+    let output = runner(&program, &[&format!("--metrics-file={}", native.display())]);
+    assert_eq!(output.status, Some(0), "{}", output.stderr);
+    let native = std::fs::read_to_string(&native).unwrap();
+    assert!(native.contains(r#"{"name":"big","labels":{},"kind":"count","value":9223372036854775807}"#), "{native}");
+    // The largest Float, then less 1.0e308.
+    assert!(native.contains(r#""count":3,"sum":7.976931348623157e307,"#), "{native}");
+    assert!(native.contains(r#""labels":{"a":"é\u0001\"\\","ключ":"last"}"#), "{native}");
+    let interpreted = scratch.0.join("interpreted.json");
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", EDGES)).expect("valid module path");
+    Compiler::run_project(
+        vec![module],
+        ExecutionConfig::new("metrics")
+            .unwrap()
+            .with_metrics_file(interpreted.to_string_lossy())
+            .with_trace_mode(TraceMode::Off),
+    )
+    .expect("the program compiles");
+    assert_eq!(std::fs::read_to_string(&interpreted).unwrap(), native);
 }
 
 const TESTS: &str = r#"import std/duration as Duration
@@ -317,6 +393,8 @@ fn the_interpreter_writes_the_same_document() {
     let written = std::fs::read_to_string(&file).unwrap();
     assert_eq!(written.matches(r#""name":"ids""#).count(), 1000);
     assert!(written.ends_with("\"dropped\":{\"label_sets\":2,\"kind_conflicts\":0}}\n"));
+    run(NEGATIVE, config());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{AFTER_ONE}\n"));
     std::fs::remove_file(&file).unwrap();
     run(PROGRAM, ExecutionConfig::new("metrics").unwrap());
     assert!(!file.exists());

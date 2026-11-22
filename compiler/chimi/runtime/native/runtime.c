@@ -8,6 +8,7 @@
 #include "chimi_fiber.h"
 
 #include <inttypes.h>
+#include <float.h>
 #include <math.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -7314,7 +7315,9 @@ static void metrics_record(int64_t kind, const char *name, size_t name_length, d
     case 1: series->last = value; break;
     default: {
       ++series->count;
-      series->sum += value;
+      /* A sum past the largest Float saturates there, so it stays finite. */
+      double sum = series->sum + value;
+      series->sum = isfinite(sum) ? sum : sum > 0 ? DBL_MAX : -DBL_MAX;
       size_t bucket = 0;
       while (bucket < CHIMI_METRIC_BOUND_COUNT && !(value <= metric_bounds[bucket])) ++bucket;
       ++series->buckets[bucket];
@@ -7392,6 +7395,7 @@ static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t in
   if (argument_count != 4 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
       arguments[2]->kind != VALUE_FLOAT || arguments[3]->kind != VALUE_TEXT)
     return intrinsic_shape_defect(call_node);
+  if (runtime->cancel) return cancelled();
   if (runtime->metrics_file) {
     pthread_mutex_lock(&metrics_lock);
     metrics_record(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
@@ -13723,6 +13727,17 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (runtime.log_file) fclose(runtime.log_file);
       return 74;
     }
+    /* The memory report and profile are opened only at exit, so their
+       spellings are compared with the file just opened. */
+    const char *later[] = {memory_report_path, profile_path};
+    struct stat opened_status;
+    for (size_t file = 0; file < 2; ++file)
+      if (later[file] && stat(later[file], &open_status) == 0 &&
+          fstat(fileno(runtime.metrics_file), &opened_status) == 0 && !S_ISCHR(opened_status.st_mode) &&
+          open_status.st_dev == opened_status.st_dev && open_status.st_ino == opened_status.st_ino) {
+        fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
+        return 64;
+      }
   }
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;

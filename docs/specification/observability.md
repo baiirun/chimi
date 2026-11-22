@@ -174,13 +174,14 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
   A label set is the labels as one JSON object, so the order they were
   written in does not matter and a label written twice keeps its last value.
   - A count adds to a running total, kept as a whole number that saturates
-    at the largest `Int`.
+    at the largest `Int`. `count` passes `by` as a `Float`, so a `by` above
+    2^53 is rounded to a nearby whole number first.
   - A gauge keeps the last value set.
   - An observation adds to a count, a sum, and a histogram whose buckets
     have the upper bounds `0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25,
     0.5, 0.75, 1, 2.5, 5, 7.5, 10` (OpenTelemetry's defaults) and one more
     bucket for larger values. A value equal to a bound falls in that bound's
-    bucket.
+    bucket. The sum saturates at the largest `Float`, so it stays finite.
 - A name keeps the kind it was first recorded with. A measurement of
   another kind under that name MUST be dropped and counted in
   `dropped.kind_conflicts`.
@@ -189,8 +190,13 @@ fn charge(cents: Int) -> Void needs { metrics: Metrics } {
   holding an unbounded value such as a user id cannot use up memory.
 - Tasks on every carrier MUST record into the one aggregate, and no
   measurement is lost.
-- When the program ends, however it ends, the runner MUST write one JSON
-  document to the file, replacing what it held:
+- When `main` ends, whether it returns, fails, defects or is stopped, the
+  runner MUST write one JSON document to the file, replacing what it held.
+  A run that ends before `main` starts, or on a fatal runtime error, leaves
+  the file empty. With `--benchmark-repeats`, every repeat records into the
+  one aggregate.
+
+  The document looks like this:
 
   ```text
   {"schema":"chimi.metrics.v1","metrics":[
