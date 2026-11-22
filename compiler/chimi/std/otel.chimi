@@ -215,8 +215,8 @@ pub fn export<T, E, R>(settings: Settings, body: fn(Exporter) -> T errors E need
 /// An entry is stamped with the wall-clock time it was written and pushed
 /// within an interval, or with the last push when the body ends. Writing
 /// never waits for the collector: an entry that finds `settings.log_buffer`
-/// entries already waiting is dropped and counted as
-/// `chimi.otel.dropped_logs`.
+/// entries already waiting, in the mailbox or held for the next push, is
+/// dropped and counted as `chimi.otel.dropped_logs`.
 ///
 /// Cost: what the outer provider's `write` costs, plus O(1).
 pub fn log(exporter: Exporter) -> { write: fn(Log.Entry) -> Void } needs {

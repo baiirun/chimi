@@ -328,22 +328,26 @@ Otel.export(settings, fn(exporter) {
   the `log` provider it is built under, unchanged, and then, when
   `Log.at_least(level, settings.log_level)`, sends it with the wall-clock
   Unix time of the write to the exporter's logs process.
-- The send never waits: the logs process's mailbox holds `log_buffer`
-  entries, and an entry that finds it full MUST be dropped and counted as
-  `chimi.otel.dropped_logs`.
+- The send never waits. At most `log_buffer` entries wait to be pushed,
+  in the logs process's mailbox and again in what it holds between pushes;
+  an entry over either bound MUST be dropped and counted as
+  `chimi.otel.dropped_logs`. A request to flush does not go through the
+  mailbox, so a full one cannot lose it.
 - The logs process MUST push the entries waiting at each interval's end to
   `<endpoint>/v1/logs`, as `logs_request` writes them, under the same rules
   as a metrics push (headers, `timeout`, failures counted as
   `chimi.otel.failed_exports`). An interval with no entries pushes nothing.
-- When the body ends, however it ends, the entries waiting MUST be pushed
-  before the last metrics push, within `flush_within`, and then the logs
-  process stops. An entry is pushed once.
+- When the body ends, however it ends, the entries waiting MUST be pushed,
+  those still in the mailbox included, while the last metrics push runs:
+  the two share one `flush_within`. Then the logs process stops. An entry
+  is pushed once.
 - `logs_request` writes one `logRecord` per entry, in order, with
   `timeUnixNano` and `observedTimeUnixNano` the entry's time, the severity
   number and text (`Debug` 5 `DEBUG`, `Info` 9 `INFO`, `Warn` 13 `WARN`,
   `Error` 17 `ERROR`), the message as a string body, and each field as an
   attribute: text a `stringValue`, a number `Json.number_to_int` accepts an
-  `intValue`, another number a `doubleValue`, a boolean a `boolValue`, an
+  `intValue` in decimal digits (`1e3` is `"1000"`), another number a
+  `doubleValue` as spelled, a boolean a `boolValue`, an
   array an `arrayValue`, an object a `kvlistValue`, and `null` an empty
   value.
 - It needs the native runtime, as `Http.send` does: the interpreter refuses
@@ -406,3 +410,6 @@ Otel.export(settings, fn(exporter) {
 | `Otel.log` writes to the outer log, filters by level, and pushes each entry once with typed attributes | `tests/std_otel.rs` `logs_are_pushed_and_still_written` |
 | A full log buffer drops and counts | `tests/std_otel.rs` `a_full_log_buffer_drops_and_counts` |
 | A stopped program pushes its waiting logs | `tests/std_otel.rs` `a_stopped_program_pushes_its_waiting_logs` |
+| Entries waiting behind a slow push are flushed; the flush is not lost to a full mailbox | `tests/std_otel.rs` `entries_waiting_behind_a_slow_push_are_flushed` |
+| At most `log_buffer` entries wait while the process is idle | `tests/std_otel.rs` `at_most_log_buffer_entries_wait` |
+| The last logs and metrics pushes share `flush_within` | `tests/std_otel.rs` `the_last_pushes_share_flush_within` |
