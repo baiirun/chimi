@@ -58,32 +58,29 @@ struct Reservation {
   id: Text
 }
 
-fn submit(cart: Cart)
-  needs {
-    payment: Payment,
-    inventory: Inventory,
-  }
-{
+fn submit(cart: Cart) needs {
+  payment: Payment,
+  inventory: Inventory,
+} {
   case inventory.reserve(cart.items) {
     Failure(error) -> Failure(InventoryFailed(error))
     Success(_reservation) -> case payment.charge(cart.total) {
       Failure(error) -> Failure(PaymentFailed(error))
-      Success(_receipt) -> Order(OrderId("order-1"))
+      Success(_receipt) -> Order { id: OrderId { value: "order-1" } }
     }
   }
 }
 
 const fake_inventory = {
-  reserve: fn(_items: List<Item>) { Reservation("reservation-1") },
+  reserve: fn(_items: List<Item>) {
+    Reservation { id: "reservation-1" }
+  },
 }
 
 const fake_payment = {
-  charge: fn(_total: Money) { Receipt("receipt-1") },
+  charge: fn(_total: Money) { Receipt { id: "receipt-1" } },
 }
 
 pub fn main() {
-  submit(Cart([], Money(0))) using {
-    payment: fake_payment,
-    inventory: fake_inventory,
-  }
+  submit(Cart { items: [], total: Money { cents: 0 } }) using { payment: fake_payment, inventory: fake_inventory }
 }

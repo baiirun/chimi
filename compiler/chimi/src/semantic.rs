@@ -5,7 +5,7 @@ use crate::syntax::{
     self, DeclarationSyntax, FileSyntax, FunctionDeclarationSyntax, NodeKind, ParseResult,
     StructDeclarationSyntax, SyntaxNode, SyntaxToken, TextEscape, TokenKind, TypedSyntaxNode,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -734,6 +734,7 @@ pub(crate) enum ModuleExpression {
         callee: Box<Self>,
         arguments: Vec<CallArgument>,
         range: TextRange,
+        form: CallForm,
     },
     List {
         semantic_id: SemanticId,
@@ -903,6 +904,19 @@ impl ModuleExpression {
             | Self::Interpolation { range, .. } => *range,
         }
     }
+}
+
+/// How a call was written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallForm {
+    /// `f(a, b)`, or the call a pipeline makes.
+    Positional,
+    /// `Name { field: value, ... }`. When `ordered`, lowering found `Name` among
+    /// its module's structs with every field named once, and the arguments are
+    /// the field values in declaration order with no labels. Otherwise the
+    /// arguments keep their labels in source order: for a struct of the module,
+    /// lowering has reported why, and typing reports any other callee.
+    Fields { ordered: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -1087,6 +1101,7 @@ pub(crate) fn discover_imports(parsed: &ParseResult) -> Vec<ModuleImport> {
     let mut lowerer = ProjectLowerer {
         next_semantic_id: 0,
         diagnostics: Vec::new(),
+        struct_fields: HashMap::new(),
     };
     parsed
         .root()
@@ -1101,6 +1116,9 @@ struct ProjectLowerer {
     next_semantic_id: u32,
     /// Literal diagnostics (`S1002`, `S1003`), with a placeholder file id until the module is done.
     diagnostics: Vec<Diagnostic>,
+    /// The field names of each struct the module declares, in declaration order,
+    /// so a struct literal can lower to its constructor call.
+    struct_fields: HashMap<String, Vec<String>>,
 }
 
 impl ProjectLowerer {
@@ -1115,6 +1133,7 @@ impl ProjectLowerer {
         let mut lowerer = Self {
             next_semantic_id: 0,
             diagnostics: Vec::new(),
+            struct_fields: struct_field_names(&root),
         };
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
@@ -2225,12 +2244,205 @@ impl ProjectLowerer {
                         callee: Box::new(expression),
                         arguments,
                         range: significant_range(node),
+                        form: CallForm::Positional,
                     };
+                }
+                NodeKind::RecordExpression => {
+                    expression = self.lower_struct_literal(
+                        expression,
+                        &suffix,
+                        suffix_semantic_id,
+                        significant_range(node),
+                    );
                 }
                 _ => {}
             }
         }
         expression
+    }
+
+    /// Lowers `callee { field: value, ... }`. Ensures: for a struct of this
+    /// module with every field named once, the constructor call with the values
+    /// in declaration order, inside a block that first binds them in source
+    /// order when the two orders differ, so evaluation follows the source. A
+    /// missing field is `T4215`, an unknown one `T4205`, a repeated one `T4211`,
+    /// and `..base` is `S1001`; any other callee keeps its labelled arguments
+    /// for typing to report.
+    fn lower_struct_literal(
+        &mut self,
+        callee: ModuleExpression,
+        fields: &SyntaxNode<'_>,
+        semantic_id: SemanticId,
+        range: TextRange,
+    ) -> ModuleExpression {
+        if let Some(spread) = direct_child(fields, NodeKind::RecordSpread) {
+            self.diagnostics.push(Diagnostic::error(
+                DiagnosticStage::Syntax,
+                "S1001",
+                FileId::new(0),
+                significant_range(&spread),
+                "a struct literal names every field; to copy a value with some fields \
+                 changed, write a record update `{ ..base, field: value }`",
+            ));
+            return ModuleExpression::Empty { semantic_id, range };
+        }
+        let written = fields
+            .child_nodes()
+            .into_iter()
+            .filter(|field| field.kind() == NodeKind::RecordField)
+            .filter_map(|field| {
+                let name = direct_identifier(&field)?;
+                let value = self.lower_expression(&direct_expression_child(&field)?);
+                Some((name, value))
+            })
+            .collect::<Vec<_>>();
+        let declared = match &callee {
+            ModuleExpression::Name { name, .. } => self.struct_fields.get(&name.text).cloned(),
+            _ => None,
+        };
+        let order = declared.and_then(|declared| {
+            let struct_name = match &callee {
+                ModuleExpression::Name { name, .. } => name.text.clone(),
+                _ => String::new(),
+            };
+            self.struct_field_order(&struct_name, &declared, &written, range)
+        });
+        let Some(order) = order else {
+            return ModuleExpression::Call {
+                semantic_id,
+                callee: Box::new(callee),
+                arguments: written
+                    .into_iter()
+                    .map(|(name, value)| CallArgument {
+                        label: Some(name),
+                        value,
+                    })
+                    .collect(),
+                range,
+                form: CallForm::Fields { ordered: false },
+            };
+        };
+        if order.iter().enumerate().all(|(index, source)| index == *source) {
+            return ModuleExpression::Call {
+                semantic_id,
+                callee: Box::new(callee),
+                arguments: written
+                    .into_iter()
+                    .map(|(_, value)| CallArgument { label: None, value })
+                    .collect(),
+                range,
+                form: CallForm::Fields { ordered: true },
+            };
+        }
+        let names = written
+            .iter()
+            .map(|(name, _)| Name {
+                text: format!("{GENERATED_NAME_PREFIX}{}", name.text),
+                range: name.range,
+            })
+            .collect::<Vec<_>>();
+        let arguments = order
+            .iter()
+            .map(|source| CallArgument {
+                label: None,
+                value: ModuleExpression::Name {
+                    semantic_id: self.allocate_semantic_id(),
+                    name: names[*source].clone(),
+                },
+            })
+            .collect();
+        let mut items = names
+            .into_iter()
+            .zip(written)
+            .map(|(name, (_, value))| ModuleBlockItem::Binding {
+                name,
+                type_use: None,
+                value,
+            })
+            .collect::<Vec<_>>();
+        items.push(ModuleBlockItem::Expression(ModuleExpression::Call {
+            semantic_id: self.allocate_semantic_id(),
+            callee: Box::new(callee),
+            arguments,
+            range,
+            form: CallForm::Fields { ordered: true },
+        }));
+        ModuleExpression::Block {
+            semantic_id,
+            items,
+            range,
+        }
+    }
+
+    /// For each field of `declared`, the index of the written field that gives
+    /// it, or `None` after reporting why there is no such order.
+    fn struct_field_order(
+        &mut self,
+        struct_name: &str,
+        declared: &[String],
+        written: &[(Name, ModuleExpression)],
+        range: TextRange,
+    ) -> Option<Vec<usize>> {
+        let mut valid = true;
+        for (index, (name, _)) in written.iter().enumerate() {
+            if written[..index].iter().any(|(earlier, _)| earlier.text == name.text) {
+                self.type_error(
+                    "T4211",
+                    name.range,
+                    format!("field `{}` is named more than once", name.text),
+                );
+                valid = false;
+            } else if !declared.contains(&name.text) {
+                self.type_error(
+                    "T4205",
+                    name.range,
+                    format!("`{struct_name}` has no field `{}`", name.text),
+                );
+                valid = false;
+            }
+        }
+        let missing = declared
+            .iter()
+            .filter(|field| !written.iter().any(|(name, _)| name.text == **field))
+            .map(|field| format!("`{field}`"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let (noun, list) = if missing.len() == 1 {
+                ("field", missing[0].clone())
+            } else {
+                ("fields", missing.join(", "))
+            };
+            self.type_error(
+                "T4215",
+                range,
+                format!("`{struct_name}` needs every field; add {noun} {list}"),
+            );
+            valid = false;
+        }
+        if !valid {
+            return None;
+        }
+        Some(
+            declared
+                .iter()
+                .map(|field| {
+                    written
+                        .iter()
+                        .position(|(name, _)| name.text == *field)
+                        .expect("every declared field is written")
+                })
+                .collect(),
+        )
+    }
+
+    fn type_error(&mut self, code: &'static str, range: TextRange, message: String) {
+        self.diagnostics.push(Diagnostic::error(
+            DiagnosticStage::Type,
+            code,
+            FileId::new(0),
+            range,
+            message,
+        ));
     }
 
     fn lower_binary(&mut self, node: &SyntaxNode<'_>, semantic_id: SemanticId) -> ModuleExpression {
@@ -2296,7 +2508,10 @@ impl ProjectLowerer {
                 (
                     None,
                     ModuleExpression::Call {
-                        callee, arguments, ..
+                        callee,
+                        arguments,
+                        form: CallForm::Positional,
+                        ..
                     },
                 ) => insert_pipeline_subject(semantic_id, left, *callee, arguments, range),
                 // `x |> f` is exactly the call `f(x)`.
@@ -3078,6 +3293,24 @@ fn direct_child<'tree>(node: &SyntaxNode<'tree>, kind: NodeKind) -> Option<Synta
         .find(|child| child.kind() == kind)
 }
 
+/// The field names of each struct declared at the top of `root`, in order.
+fn struct_field_names(root: &SyntaxNode<'_>) -> HashMap<String, Vec<String>> {
+    root.child_nodes()
+        .into_iter()
+        .filter(|node| node.kind() == NodeKind::StructDeclaration)
+        .filter_map(|node| {
+            let name = direct_token_after(&node, TokenKind::Struct, TokenKind::Identifier)?;
+            let fields = node
+                .child_nodes()
+                .into_iter()
+                .filter(|field| field.kind() == NodeKind::Field)
+                .filter_map(|field| direct_identifier(&field).map(|name| name.text))
+                .collect();
+            Some((name.text().to_owned(), fields))
+        })
+        .collect()
+}
+
 fn direct_identifier(node: &SyntaxNode<'_>) -> Option<Name> {
     node.child_tokens()
         .into_iter()
@@ -3171,6 +3404,7 @@ fn insert_pipeline_subject(
         callee: Box::new(callee),
         arguments: piped,
         range,
+        form: CallForm::Positional,
     }
 }
 

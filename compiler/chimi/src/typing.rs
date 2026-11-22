@@ -9,7 +9,7 @@ use crate::semantic::{
     ModuleDeclarationKind, ModuleExpression, Pattern, PatternLiteral, RequirementRowUse,
     RequirementTermUse, TypeUse, UnaryOperator,
 };
-use crate::semantic::{BindingKind, CaseOrigin};
+use crate::semantic::{BindingKind, CallForm, CaseOrigin};
 use crate::standard::{
     DurationUnitRole, StandardConstant, StandardConstructor, StandardFunction, StandardGeneric,
     StandardGenericKind, StandardSymbol, StandardType,
@@ -24,6 +24,7 @@ pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
 mod select;
+mod struct_literals;
 
 mod properties;
 
@@ -3591,6 +3592,9 @@ impl ProjectTypeChecker {
                         failures: FailureRowId::new(0),
                         needs,
                     }
+                } else if self.is_struct_constructor(symbol) {
+                    self.reject_constructor_value(module_id, symbol, expression_range(expression));
+                    self.poison_expression_fact()
                 } else if self.is_builtin_value(symbol, "Success")
                     || self.is_builtin_value(symbol, "Failure")
                 {
@@ -3668,11 +3672,46 @@ impl ProjectTypeChecker {
                 callee,
                 arguments,
                 range,
+                form,
                 ..
             } => {
                 let callee_symbol = self.expression_value_symbol(module_id, callee);
-                let labelled_order =
-                    self.reject_argument_labels(module_id, callee, callee_symbol, arguments);
+                if *form == (CallForm::Fields { ordered: false }) {
+                    return self.infer_unordered_fields(
+                        module_id,
+                        callee,
+                        callee_symbol,
+                        arguments,
+                        generics,
+                        bindings,
+                    );
+                }
+                let directly_named = matches!(
+                    callee.as_ref(),
+                    ModuleExpression::Name { .. } | ModuleExpression::Select { .. }
+                );
+                if *form == CallForm::Positional
+                    && directly_named
+                    && let Some(constructor) =
+                        callee_symbol.filter(|symbol| self.is_struct_constructor(*symbol))
+                    && arguments.iter().all(|argument| argument.label.is_none())
+                {
+                    self.reject_positional_construction(
+                        module_id, constructor, callee, arguments, *range,
+                    );
+                    // The construction is rejected as written; its arity and
+                    // field types are not checked again.
+                    return self.infer_unordered_fields(
+                        module_id, callee, None, arguments, generics, bindings,
+                    );
+                }
+                let labelled_order = self.reject_argument_labels(
+                    module_id,
+                    callee,
+                    callee_symbol,
+                    arguments,
+                    *range,
+                );
                 self.reject_empty_event_list(module_id, callee_symbol, arguments);
                 if callee_symbol.is_some_and(|symbol| {
                     self.is_builtin_value(symbol, "Success")
@@ -9189,6 +9228,7 @@ impl ProjectTypeChecker {
         callee: &ModuleExpression,
         callee_symbol: Option<SymbolId>,
         arguments: &[crate::semantic::CallArgument],
+        range: TextRange,
     ) -> Option<Vec<usize>> {
         let first_label = arguments
             .iter()
@@ -9231,6 +9271,41 @@ impl ProjectTypeChecker {
             .source
             .text();
         let slice = |range: TextRange| &source[range.start() as usize..range.end() as usize];
+        // A struct is built by field name: the labels already name the fields,
+        // so braces in place of the parentheses are the fix.
+        if callee_symbol.is_some_and(|symbol| self.is_struct_constructor(symbol)) {
+            let labelled = arguments
+                .iter()
+                .map(|argument| {
+                    argument
+                        .label
+                        .as_ref()
+                        .map(|label| format!("{}: {}", label.text, slice(argument.value.range())))
+                })
+                .collect::<Option<Vec<_>>>();
+            let mut diagnostic = Diagnostic::error(
+                DiagnosticStage::Type,
+                "T4216",
+                self.resolved.semantic.modules[module_id.raw() as usize]
+                    .source
+                    .file_id(),
+                range,
+                format!(
+                    "a struct is built by field name in braces: `{} {{ field: value, ... }}`",
+                    slice(callee.range())
+                ),
+            );
+            if let Some(labelled) = labelled
+                && range.start() == callee.range().start()
+            {
+                diagnostic = diagnostic.with_fix(
+                    range,
+                    format!("{} {{ {} }}", slice(callee.range()), labelled.join(", ")),
+                );
+            }
+            self.push_type_diagnostic(diagnostic);
+            return order;
+        }
         let message = match &order {
             Some(order) => format!(
                 "Chimi arguments are positional; write `{}({})`",

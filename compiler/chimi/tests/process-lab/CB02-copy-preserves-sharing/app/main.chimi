@@ -32,19 +32,23 @@ struct Walk {
 }
 
 fn depth(tree: Tree) -> Int {
-  loop state = Walk(tree, 0) {
+  loop state = Walk { tree: tree, depth: 0 } {
     case state.tree {
       Tree.Leaf -> break state.depth
-      Tree.Node(left, _) -> Walk(left, state.depth + 1)
+      Tree.Node(left, _) -> Walk { tree: left, depth: state.depth + 1 }
     }
   }
 }
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
-pub fn main() -> Int needs { clock: Clock } {
+pub fn main() -> Int needs {
+  clock: Clock
+} {
   let replies = Channel.bounded(1)
   let reply = replies.sender
   let walker = fn(inbox: Inbox<Tree>) -> Void {

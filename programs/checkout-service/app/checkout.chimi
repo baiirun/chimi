@@ -94,7 +94,7 @@ pub interface Notifier {
 
 /// An order for `sku` at `cents`.
 pub fn order(id: Int, sku: Text, cents: Int) -> Order {
-  Order(id, sku, cents)
+  Order { id: id, sku: sku, cents: cents }
 }
 
 /// The order's id.
@@ -114,7 +114,7 @@ pub fn cents(order: Order) -> Int {
 
 /// A hold on stock of `sku`.
 pub fn reservation(sku: Text, hold: Int) -> Reservation {
-  Reservation(sku, hold)
+  Reservation { sku: sku, hold: hold }
 }
 
 /// A one-line summary of a receipt for the log.
@@ -222,7 +222,13 @@ fn checkout(order: Order) -> Receipt needs {
   let charged = fn() { charge(order) }
   |> Cause.context("charging order ${order.id}")
   let carrier = ship(order)
-  Receipt(order.id, reservation.hold, charged, carrier, notify(order))
+  Receipt {
+    order: order.id,
+    hold: reservation.hold,
+    charge: charged,
+    carrier: carrier,
+    notified: notify(order),
+  }
 }
 
 /// Runs one checkout under `deadline` and stores its outcome, so a worker can

@@ -131,7 +131,7 @@ pub struct Driver {
 ///
 /// Cost: O(1).
 pub fn driver(connect: fn(Text) -> Connection errors SqlError) -> Driver {
-  Driver(connect)
+  Driver { connect: connect }
 }
 
 /// A connection from its operations, for writing a driver. Tasks that share
@@ -157,7 +157,14 @@ pub fn connection(
   reset: fn() -> Void errors SqlError,
   close: fn() -> Void,
 ) -> Connection {
-  Connection(run, begin, commit, rollback, reset, close)
+  Connection {
+    run: run,
+    begin: begin,
+    commit: commit,
+    rollback: rollback,
+    reset: reset,
+    close: close,
+  }
 }
 
 /// A statement's result, for writing a driver: the column names, the rows
@@ -165,7 +172,7 @@ pub fn connection(
 ///
 /// Cost: O(1).
 pub fn reply(columns: List<Text>, rows: List<List<Value>>, affected: Int) -> Reply {
-  Reply(columns, rows, affected)
+  Reply { columns: columns, rows: rows, affected: affected }
 }
 
 /// What a fake driver was asked to do.
@@ -188,34 +195,43 @@ pub enum Call {
 ///
 /// Cost: O(1).
 pub fn fake(answer: fn(Call) -> Reply errors SqlError) -> Driver {
-  Driver(fn(target) {
-    let _ = answer(Call.Connected(target))
-    Connection(fn(sql, params) {
-      answer(Call.Ran(sql, params))
-    }, fn(depth) {
-      let _ = answer(Call.Began(depth))
-      Void
-    }, fn(depth) {
-      let _ = answer(Call.Committed(depth))
-      Void
-    }, fn(depth) {
-      let _ = answer(Call.RolledBack(depth))
-      Void
-    }, fn() {
-      let _ = answer(Call.Reset)
-      Void
-    }, fn() {
-      let _ = Result.capture(fn() { answer(Call.Closed) })
-      Void
-    })
-  })
+  Driver {
+    connect: fn(target) {
+      let _ = answer(Call.Connected(target))
+      Connection {
+        run: fn(sql, params) {
+          answer(Call.Ran(sql, params))
+        },
+        begin: fn(depth) {
+          let _ = answer(Call.Began(depth))
+          Void
+        },
+        commit: fn(depth) {
+          let _ = answer(Call.Committed(depth))
+          Void
+        },
+        rollback: fn(depth) {
+          let _ = answer(Call.RolledBack(depth))
+          Void
+        },
+        reset: fn() {
+          let _ = answer(Call.Reset)
+          Void
+        },
+        close: fn() {
+          let _ = Result.capture(fn() { answer(Call.Closed) })
+          Void
+        },
+      }
+    },
+  }
 }
 
 /// An empty reply, for a fake driver's answer to a call that returns no rows.
 ///
 /// Cost: O(1).
 pub fn done() -> Reply {
-  Reply([], [], 0)
+  Reply { columns: [], rows: [], affected: 0 }
 }
 
 // 3. Pools and statements.
@@ -262,9 +278,13 @@ pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: 
     True -> Void
     False -> Debug.crash("Sql: max_connections, wait_timeout and reset_timeout must be positive")
   }
-  let bounds = Limits(settings.max_connections, settings.wait_timeout, settings.reset_timeout)
+  let bounds = Limits {
+    size: settings.max_connections,
+    wait: settings.wait_timeout,
+    reset: settings.reset_timeout,
+  }
   let made = Channel.bounded(64)
-  let keeper = Keeper(made.receiver)
+  let keeper = Keeper { asks: made.receiver }
   let running = Task.start(fn() { keep(keeper, bounds.size) })
   let asks = made.sender
   Resource.scoped(fn() { asks }, fn(sender) {
@@ -274,7 +294,9 @@ pub fn open<T, E, R>(driver: Driver, target: Text, settings: { max_connections: 
     })
     Void
   }, fn(sender) {
-    use(Database(Place.Pooled(sender, driver, target, bounds)))
+    use(Database {
+      place: Place.Pooled(sender, driver, target, bounds)
+    })
   })
 }
 
@@ -293,7 +315,9 @@ pub fn execute(db: Database, sql: Text, params: List<Value>) -> Int {
 /// `SqlError.TransactionEnded` on an ended transaction's database.
 pub fn query(db: Database, sql: Text, params: List<Value>) -> List<Row> {
   let answer = run(db, sql, params)
-  List.map(answer.rows, fn(values) { Row(answer.columns, values) })
+  List.map(answer.rows, fn(values) {
+    Row { columns: answer.columns, values: values }
+  })
 }
 
 /// Runs a query that must give exactly one row, and gives it.
@@ -555,7 +579,9 @@ fn gated<T, E, R>(connection: Connection, depth: Int, enclosing: List<Watch.Publ
     let _ = Result.capture(fn() { Watch.publish(ending, True) })
     Channel.close(live.completion)
   }, fn(live) {
-    body(Database(Place.Pinned(connection, depth, List.append([live.publisher], enclosing))))
+    body(Database {
+      place: Place.Pinned(connection, depth, List.append([live.publisher], enclosing)),
+    })
   })
 }
 
@@ -625,7 +651,7 @@ struct Pool {
 // an idle connection keeps no slot, so `held + idle` never passes `size`
 // for longer than the moment between a `Return` and its `Done`.
 fn keep(keeper: Keeper, size: Int) -> Void {
-  loop pool = Pool([], 0, []) {
+  loop pool = Pool { idle: [], held: 0, waiting: [] } {
     let asks = keeper.asks
     let next = case Channel.receive(asks) {
       Success(received) -> received
@@ -641,9 +667,21 @@ fn keep(keeper: Keeper, size: Int) -> Void {
         List.each(pool.waiting, refuse)
         break shut(keeper, pool.held)
       }
-      Receive.Received(Ask.Take(reply)) -> serve_waiting(Pool(pool.idle, pool.held, List.push(pool.waiting, reply)), size)
-      Receive.Received(Ask.Return(connection)) -> serve_waiting(Pool(List.push(pool.idle, connection), pool.held, pool.waiting), size)
-      Receive.Received(Ask.Done) -> serve_waiting(Pool(pool.idle, pool.held - 1, pool.waiting), size)
+      Receive.Received(Ask.Take(reply)) -> serve_waiting(Pool {
+        idle: pool.idle,
+        held: pool.held,
+        waiting: List.push(pool.waiting, reply),
+      }, size)
+      Receive.Received(Ask.Return(connection)) -> serve_waiting(Pool {
+        idle: List.push(pool.idle, connection),
+        held: pool.held,
+        waiting: pool.waiting,
+      }, size)
+      Receive.Received(Ask.Done) -> serve_waiting(Pool {
+        idle: pool.idle,
+        held: pool.held - 1,
+        waiting: pool.waiting,
+      }, size)
     }
   }
 }
@@ -687,13 +725,17 @@ fn serve_waiting(pool: Pool, size: Int) -> Pool {
     case (state.waiting, state.idle, state.held + List.length(state.idle) < size) {
       ([], _, _) -> break state
       ([waiter, ..rest], [connection, ..idle], _) -> case offer(waiter, Grant.Idle(connection)) {
-        None -> Pool(idle, state.held + 1, rest)
-        Some(Grant.Idle(back)) -> Pool(List.append([back], idle), state.held, rest)
-        Some(_) -> Pool(idle, state.held, rest)
+        None -> Pool { idle: idle, held: state.held + 1, waiting: rest }
+        Some(Grant.Idle(back)) -> Pool {
+          idle: List.append([back], idle),
+          held: state.held,
+          waiting: rest,
+        }
+        Some(_) -> Pool { idle: idle, held: state.held, waiting: rest }
       }
       ([waiter, ..rest], [], True) -> case offer(waiter, Grant.Permit) {
-        None -> Pool([], state.held + 1, rest)
-        Some(_) -> Pool([], state.held, rest)
+        None -> Pool { idle: [], held: state.held + 1, waiting: rest }
+        Some(_) -> Pool { idle: [], held: state.held, waiting: rest }
       }
       ([_, .._], [], False) -> break state
     }

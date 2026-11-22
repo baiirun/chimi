@@ -11,6 +11,6 @@ cause of order 3: expected failure FraudError.Flagged(95) (app/checkout.chimi:14
   context: checking order 3 (app/checkout.chimi:220)
 cause of order 4: expected failure PaymentError.Declined("card refused") (app/fakes.chimi:59)
   context: charging order 4 (app/checkout.chimi:222)
-cause of order 5: expected failure Timeout.TimedOut(800ms) (app/checkout.chimi:239)
+cause of order 5: expected failure Timeout.TimedOut(800ms) (app/checkout.chimi:245)
 cause of order 6: expected failure ShippingError.NoRoute("express") (app/fakes.chimi:85)
 audit: 2 completed, 5 rejected, 4 heartbeats, 4000 cents taken

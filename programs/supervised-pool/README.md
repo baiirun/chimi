@@ -24,7 +24,7 @@ target/supervised-pool \
   --
 ```
 
-The outcome is `PoolResult(a: 3, b: 30, c: 300, stale: 99, rejected: 1)`:
+The outcome is `PoolResult { a: 3, b: 30, c: 300, stale: 99, rejected: 1 }`:
 
 - `a = 3` and `c = 300`: the peers kept their state across B's defect.
 - `b = 30`: B's replacement started from 0. `Add(20)` was accepted behind

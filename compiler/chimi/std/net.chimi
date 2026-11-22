@@ -211,7 +211,7 @@ pub fn port(address: Address) -> Int {
 ///
 /// Cost: O(1).
 pub fn address(host: Text, port: Int) -> Address {
-  Address(host, port)
+  Address { host: host, port: port }
 }
 
 /// A connection over `reader` and `writer`, which `close` releases, for a fake
@@ -225,7 +225,13 @@ pub fn connection(
   peer: Address,
   close: fn() -> Void,
 ) -> Connection {
-  Connection(reader, writer, local, peer, close)
+  Connection {
+    reader: reader,
+    writer: writer,
+    local: local,
+    peer: peer,
+    close: close,
+  }
 }
 
 /// A listener whose connections come from `accept`, which `close` stops, for a
@@ -233,7 +239,7 @@ pub fn connection(
 ///
 /// Cost: O(1).
 pub fn listener(accept: fn() -> Connection errors NetError, address: Address, close: fn() -> Void) -> Listener {
-  Listener(accept, address, close)
+  Listener { accept: accept, address: address, close: close }
 }
 
 /// Two connected fake connections, each reading what the other writes, with
@@ -248,8 +254,8 @@ pub fn listener(accept: fn() -> Connection errors NetError, address: Address, cl
 pub fn pair(capacity: Int) -> (Connection, Connection) {
   let (left_out, right_in) = Stream.pipe(capacity)
   let (right_out, left_in) = Stream.pipe(capacity)
-  let left = Address("fake", 1)
-  let right = Address("fake", 2)
+  let left = Address { host: "fake", port: 1 }
+  let right = Address { host: "fake", port: 2 }
   (fake_connection(left_in, left_out, left, right), fake_connection(right_in, right_out, right, left))
 }
 
@@ -259,11 +265,11 @@ fn fake_connection(
   local: Address,
   peer: Address,
 ) -> Connection {
-  Connection(
-    Stream.reader(fn() {
+  Connection {
+    reader: Stream.reader(fn() {
       read_to_net(fn() { Stream.read(input) })
     }, fn() { Stream.stop(input) }),
-    Stream.writer(
+    writer: Stream.writer(
       fn(bytes) {
         stream_to_net(fn() { Stream.write(output, bytes) })
       },
@@ -271,14 +277,14 @@ fn fake_connection(
         stream_to_net(fn() { Stream.close(output) })
       },
     ),
-    local,
-    peer,
-    fn() {
+    local: local,
+    peer: peer,
+    close: fn() {
       Stream.stop(input)
       let _ = Result.capture(fn() { Stream.close(output) })
       Void
     },
-  )
+  }
 }
 
 // A fake's read aborts when this side stopped or closed its reader, which a
@@ -339,7 +345,7 @@ fn named<T>(host: Text, operation: fn() -> T errors NetError) -> T {
 
 fn found_address(found: Result<(Text, Int), (Int, Text)>) -> Address {
   let (host, port) = net(found)
-  Address(host, port)
+  Address { host: host, port: port }
 }
 
 // Stopping the reader ends this side's reading only, so the writer can still
@@ -349,13 +355,13 @@ fn host_connection(socket: Socket) -> Connection {
   case Result.capture(fn() {
     (found_address(native_local_address(socket)), found_address(native_peer_address(socket)))
   }) {
-    Ok((local, peer)) -> Connection(
-      Stream.reader(fn() { net(native_read(socket)) }, fn() { native_stop_reading(socket) }),
-      Stream.writer(fn(bytes) { net(native_write(socket, bytes)) }, fn() { net(native_finish(socket)) }),
-      local,
-      peer,
-      fn() { native_close(socket) },
-    )
+    Ok((local, peer)) -> Connection {
+      reader: Stream.reader(fn() { net(native_read(socket)) }, fn() { native_stop_reading(socket) }),
+      writer: Stream.writer(fn(bytes) { net(native_write(socket, bytes)) }, fn() { net(native_finish(socket)) }),
+      local: local,
+      peer: peer,
+      close: fn() { native_close(socket) },
+    }
     Err(error) -> {
       native_close(socket)
       Failure(error)
@@ -372,13 +378,13 @@ fn host_listen(host: Text, port: Int) -> Listener {
   case Result.capture(fn() {
     found_address(native_listener_address(socket))
   }) {
-    Ok(address) -> Listener(
-      fn() {
+    Ok(address) -> Listener {
+      accept: fn() {
         host_connection(net(native_accept(socket)))
       },
-      address,
-      fn() { native_close_listener(socket) },
-    )
+      address: address,
+      close: fn() { native_close_listener(socket) },
+    }
     Err(error) -> {
       native_close_listener(socket)
       Failure(error)

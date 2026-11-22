@@ -190,8 +190,8 @@ enum Status {
   Paid(amount: Money)
 }
 
-const settled = Paid(Money(500)) == Paid(Money(500))      // True
-const changed = Paid(Money(500)) != Status.Pending         // True
+const settled = Paid(Money { cents: 500 }) == Paid(Money { cents: 500 })      // True
+const changed = Paid(Money { cents: 500 }) != Status.Pending         // True
 const pair_match = (1, "one") == (1, "one")                // True
 ```
 
@@ -293,7 +293,7 @@ struct Version {
   patch: Int,
 }
 
-const newer = Version(1, 10, 0) > Version(1, 9, 7)        // True
+const newer = Version { major: 1, minor: 10, patch: 0 } > Version { major: 1, minor: 9, patch: 7 }        // True
 const earlier = (2, "b") < (2, "c")                        // True
 const shorter = [1, 2] < [1, 2, 0]                         // True
 ```
@@ -954,8 +954,8 @@ outcome.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| E1 | `Paid(Money(5)) == Paid(Money(5))` | Run: `True` |
-| E2 | `Paid(Money(5)) == Pending` | Run: `False` |
+| E1 | `Paid(Money { cents: 5 }) == Paid(Money { cents: 5 })` | Run: `True` |
+| E2 | `Paid(Money { cents: 5 }) == Pending` | Run: `False` |
 | E3 | `[1, 2] == [1, 2]` built separately | Run: `True` |
 | E4 | `{a: 1, b: "x"} == {b: "x", a: 1}` | Run: `True` |
 | E5 | maps built by inserting the same entries in different orders compare with `==` | Run: `True` |
@@ -967,7 +967,7 @@ outcome.
 | E11 | `1 == 1.0` | Fail `T4302` |
 | E12 | `a == b == c` | Fail `S1006` |
 | E13 | `same_pair((f, g))` with function values | Fail `T4305`, labelling `left == right` in `same_pair` |
-| E14 | `same_pair((Box(1), Box(1)))` with `struct Box<T>` | Run: `True` |
+| E14 | `same_pair((Box { value: 1 }, Box { value: 1 }))` with `struct Box<T>` | Run: `True` |
 | E15 | `Json.decode("1.0") == Json.decode("1")` | Run: `True` |
 | E16 | `Json.decode("{\"a\":[1,2]}") == Json.decode("{ \"a\": [1, 2.0] }")` | Run: `True` |
 | E17 | `"é" == "e\u{301}"` | Run: `False` |
@@ -979,7 +979,7 @@ outcome.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| O1 | `Version(1, 10, 0) > Version(1, 9, 7)` | Run: `True` |
+| O1 | `Version { major: 1, minor: 10, patch: 0 } > Version { major: 1, minor: 9, patch: 7 }` | Run: `True` |
 | O2 | `(2, "b") < (2, "c")` | Run: `True` |
 | O3 | `[1, 2] < [1, 2, 0]` | Run: `True` |
 | O4 | `None < Some(0)` | Run: `True` |

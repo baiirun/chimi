@@ -100,7 +100,12 @@ pub fn driver(settings: { roots: Roots, connect_timeout: Duration }) -> Driver n
     True -> Void
     False -> Debug.crash("Postgres: connect_timeout must be positive")
   }
-  let given = Given(network, clock, settings.roots, settings.connect_timeout)
+  let given = Given {
+    network: network,
+    clock: clock,
+    roots: settings.roots,
+    timeout: settings.connect_timeout,
+  }
   Sql.driver(fn(target) { connect(given, target) })
 }
 
@@ -159,7 +164,14 @@ fn parse_target(text: Text) -> Target {
     True -> user
     False -> decoded(path)
   }
-  Target(host, port, user, password, database, secure_mode(query))
+  Target {
+    host: host,
+    port: port,
+    user: user,
+    password: password,
+    database: database,
+    secure: secure_mode(query),
+  }
 }
 
 fn bad_target(reason: Text) -> Never {
@@ -404,7 +416,7 @@ fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Boo
   let reader = Net.reader(connection)
   let writer = Net.writer(connection)
   write(writer, startup_message(target))
-  let ready = loop inbox = Inbox(reader, Bytes.empty(), 0) {
+  let ready = loop inbox = Inbox { reader: reader, bytes: Bytes.empty(), at: 0 } {
     let (kind, body, next) = receive(inbox)
     case kind {
       82 -> authenticate(next, writer, target, body)
@@ -418,7 +430,13 @@ fn started(connection: Net.Connection, target: Target, kept: Watch.Publisher<Boo
   }
   let (status, leftover) = ready
   store(kept, True)
-  Session(connection, reader, writer, native_gate(status, leftover), clock)
+  Session {
+    connection: connection,
+    reader: reader,
+    writer: writer,
+    gate: native_gate(status, leftover),
+    clock: clock,
+  }
 }
 
 fn startup_message(target: Target) -> Bytes {
@@ -439,7 +457,7 @@ fn startup_message(target: Target) -> Bytes {
 // One authentication request. SCRAM reads the server's next messages
 // itself, so the inbox after it is past the exchange.
 fn authenticate(inbox: Inbox, writer: Writer<NetError>, target: Target, body: Bytes) -> Inbox {
-  let (code, fields) = take_int32(Fields(body, 0))
+  let (code, fields) = take_int32(Fields { bytes: body, at: 0 })
   case code {
     0 -> inbox
     3 -> {
@@ -527,7 +545,7 @@ fn sasl(inbox: Inbox, code: Int) -> (Text, Inbox) {
   let (kind, body, next) = receive(inbox)
   case kind {
     82 -> {
-      let (found, fields) = take_int32(Fields(body, 0))
+      let (found, fields) = take_int32(Fields { bytes: body, at: 0 })
       case found == code {
         True -> (utf8(rest_of_fields(fields)), next)
         False -> connect_failed("the server broke off the SCRAM exchange")
@@ -662,7 +680,11 @@ fn run(session: Session, sql: Text, params: List<Value>) -> Answer {
     let open = native_depth(session.gate)
     let status = native_status(session.gate)
     case open > 0 and status == status_idle {
-      True -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      True -> Settled {
+        outcome: Err(SqlError.TransactionEnded),
+        rest: leftover,
+        status: status,
+      }
       False -> exchange(session, leftover, sql, params)
     }
   })
@@ -675,7 +697,11 @@ fn run(session: Session, sql: Text, params: List<Value>) -> Answer {
 fn exchange(session: Session, leftover: Bytes, sql: Text, params: List<Value>) -> Settled<Answer> {
   let status = native_status(session.gate)
   case List.any(List.push(texts(params), sql), fn(text) { Text.contains(text, "\u{0}") }) {
-    True -> Settled(Err(SqlError.Rejected("22021", "Postgres: a statement or parameter holds a NUL byte, which PostgreSQL text cannot")), leftover, status)
+    True -> Settled {
+      outcome: Err(SqlError.Rejected("22021", "Postgres: a statement or parameter holds a NUL byte, which PostgreSQL text cannot")),
+      rest: leftover,
+      status: status,
+    }
     False -> {
       write(session.writer, Bytes.concat([
         message(80, Bytes.concat([cstring(""), cstring(sql), int16(0)])),
@@ -684,7 +710,7 @@ fn exchange(session: Session, leftover: Bytes, sql: Text, params: List<Value>) -
         message(69, Bytes.append(cstring(""), int32(0))),
         message(83, Bytes.empty()),
       ]))
-      collect(session, Inbox(session.reader, leftover, 0))
+      collect(session, Inbox { reader: session.reader, bytes: leftover, at: 0 })
     }
   }
 }
@@ -708,24 +734,43 @@ struct Reading {
 }
 
 fn collect(session: Session, start: Inbox) -> Settled<Answer> {
-  loop state = (start, Reading([], [], "", None)) {
+  loop state = (start, Reading { columns: [], rows: [], tag: "", failure: None }) {
     let (inbox, reading) = state
     let (kind, body, next) = receive(inbox)
     case kind {
       // ReadyForQuery.
-      90 -> break Settled(answer(reading), rest_of(next), ready_status(body))
+      90 -> break Settled {
+        outcome: answer(reading),
+        rest: rest_of(next),
+        status: ready_status(body),
+      }
       // RowDescription.
-      84 -> (next, Reading(columns(body), reading.rows, reading.tag, reading.failure))
+      84 -> (next, Reading {
+        columns: columns(body),
+        rows: reading.rows,
+        tag: reading.tag,
+        failure: reading.failure,
+      })
       // DataRow.
       68 -> case reading.failure {
         Some(_) -> (next, reading)
         None -> case Result.capture(fn() { row(reading.columns, body) }) {
-          Ok(values) -> (next, Reading(reading.columns, List.push(reading.rows, values), reading.tag, None))
+          Ok(values) -> (next, Reading {
+            columns: reading.columns,
+            rows: List.push(reading.rows, values),
+            tag: reading.tag,
+            failure: None,
+          })
           Err(failure) -> (next, failed(reading, failure))
         }
       }
       // CommandComplete.
-      67 -> (next, Reading(reading.columns, reading.rows, utf8(Bytes.slice(body, 0..larger(Bytes.length(body) - 1, 0))), reading.failure))
+      67 -> (next, Reading {
+        columns: reading.columns,
+        rows: reading.rows,
+        tag: utf8(Bytes.slice(body, 0..larger(Bytes.length(body) - 1, 0))),
+        failure: reading.failure,
+      })
       // ErrorResponse.
       69 -> (next, failed(reading, sql_error(server_error(body))))
       // CopyInResponse: the server waits for data, so a CopyFail ends it.
@@ -756,7 +801,12 @@ fn collect(session: Session, start: Inbox) -> Settled<Answer> {
 fn failed(reading: Reading, failure: SqlError) -> Reading {
   case reading.failure {
     Some(_) -> reading
-    None -> Reading(reading.columns, reading.rows, reading.tag, Some(failure))
+    None -> Reading {
+      columns: reading.columns,
+      rows: reading.rows,
+      tag: reading.tag,
+      failure: Some(failure),
+    }
   }
 }
 
@@ -767,7 +817,12 @@ fn copy_refused() -> SqlError {
 fn answer(reading: Reading) -> Result<Answer, SqlError> {
   case reading.failure {
     Some(failure) -> Err(failure)
-    None -> Ok(Answer(List.map(reading.columns, fn(column) { column.name }), reading.rows, affected(reading.tag, not List.is_empty(reading.columns)), reading.tag))
+    None -> Ok(Answer {
+      columns: List.map(reading.columns, fn(column) { column.name }),
+      rows: reading.rows,
+      affected: affected(reading.tag, not List.is_empty(reading.columns)),
+      tag: reading.tag,
+    })
   }
 }
 
@@ -821,7 +876,7 @@ fn sized(bytes: Bytes) -> Bytes {
 }
 
 fn columns(body: Bytes) -> List<Column> {
-  let (count, start) = take_int16(Fields(body, 0))
+  let (count, start) = take_int16(Fields { bytes: body, at: 0 })
   let (_, found) = loop state = (start, []) {
     let (fields, found) = state
     case List.length(found) == count {
@@ -831,7 +886,7 @@ fn columns(body: Bytes) -> List<Column> {
         // The table's OID and the column's number, then the type's OID,
         // then its size, modifier and format.
         let (oid, after_oid) = take_int32(skip(after_name, 6))
-        (skip(after_oid, 8), List.push(found, Column(name, oid)))
+        (skip(after_oid, 8), List.push(found, Column { name: name, oid: oid }))
       }
     }
   }
@@ -839,7 +894,7 @@ fn columns(body: Bytes) -> List<Column> {
 }
 
 fn row(columns: List<Column>, body: Bytes) -> List<Value> {
-  let (count, start) = take_int16(Fields(body, 0))
+  let (count, start) = take_int16(Fields { bytes: body, at: 0 })
   case count == List.length(columns) {
     True -> Void
     False -> Failure(SqlError.Failed("Postgres: the server sent a row whose width does not match its columns"))
@@ -987,7 +1042,7 @@ struct ServerError {
 }
 
 fn server_error(body: Bytes) -> ServerError {
-  let fields = loop state = (Fields(body, 0), []) {
+  let fields = loop state = (Fields { bytes: body, at: 0 }, []) {
     let (left, found) = state
     let (kind, after_kind) = take_int8(left)
     case kind == 0 {
@@ -1002,7 +1057,12 @@ fn server_error(body: Bytes) -> ServerError {
     "" -> field(fields, 83)
     untranslated -> untranslated
   }
-  ServerError(severity, field(fields, 67), field(fields, 77), field(fields, 110))
+  ServerError {
+    severity: severity,
+    code: field(fields, 67),
+    message: field(fields, 77),
+    constraint: field(fields, 110),
+  }
 }
 
 fn field(fields: List<(Int, Text)>, kind: Int) -> Text {
@@ -1055,7 +1115,11 @@ fn begin(session: Session, depth: Int) -> Void {
     let open = native_depth(session.gate)
     let status = native_status(session.gate)
     case (open == depth, depth > 0 and status == status_idle) {
-      (_, True) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (_, True) -> Settled {
+        outcome: Err(SqlError.TransactionEnded),
+        rest: leftover,
+        status: status,
+      }
       (True, False) -> {
         let settled = exchange(session, leftover, begin_statement(depth), [])
         case settled.outcome {
@@ -1064,7 +1128,11 @@ fn begin(session: Session, depth: Int) -> Void {
         }
         done(settled)
       }
-      (False, False) -> Settled(Err(SqlError.Failed("Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another")), leftover, status)
+      (False, False) -> Settled {
+        outcome: Err(SqlError.Failed("Postgres: a nested transaction is already open on this transaction; nested transactions on one transaction run one after another")),
+        rest: leftover,
+        status: status,
+      }
     }
   })
 }
@@ -1084,7 +1152,11 @@ fn commit(session: Session, depth: Int) -> Void {
   exclusive(session, fn(leftover) {
     let status = native_status(session.gate)
     let settled = case (status == status_idle, depth == 0) {
-      (True, _) -> Settled(Err(SqlError.TransactionEnded), leftover, status)
+      (True, _) -> Settled {
+        outcome: Err(SqlError.TransactionEnded),
+        rest: leftover,
+        status: status,
+      }
       (False, True) -> exchange(session, leftover, "COMMIT", [])
       (False, False) -> exchange(session, leftover, "RELEASE SAVEPOINT chimi_${depth}", [])
     }
@@ -1092,7 +1164,11 @@ fn commit(session: Session, depth: Int) -> Void {
       Ok(answer) -> {
         native_set_depth(session.gate, depth)
         case answer.tag == "ROLLBACK" {
-          True -> Settled(Err(SqlError.Failed("Postgres: the transaction had failed and was rolled back")), settled.rest, settled.status)
+          True -> Settled {
+            outcome: Err(SqlError.Failed("Postgres: the transaction had failed and was rolled back")),
+            rest: settled.rest,
+            status: settled.status,
+          }
           False -> done(settled)
         }
       }
@@ -1111,14 +1187,20 @@ fn rollback(session: Session, depth: Int) -> Void {
     let status = native_status(session.gate)
     case (status == status_idle, depth == 0) {
       // Nothing is open: a statement already ended the transaction.
-      (True, _) -> Settled(Ok(Void), leftover, status)
+      (True, _) -> Settled {
+        outcome: Ok(Void), rest: leftover, status: status
+      }
       (False, True) -> done(exchange(session, leftover, "ROLLBACK", []))
       (False, False) -> {
         let undone = exchange(session, leftover, "ROLLBACK TO SAVEPOINT chimi_${depth}", [])
         case undone.outcome {
           Ok(_) -> done(exchange(session, undone.rest, "RELEASE SAVEPOINT chimi_${depth}", []))
           Err(SqlError.Failed(message)) -> case Text.starts_with(message, "Postgres: 3B001: ") {
-            True -> Settled(Ok(Void), undone.rest, undone.status)
+            True -> Settled {
+              outcome: Ok(Void),
+              rest: undone.rest,
+              status: undone.status,
+            }
             False -> done(undone)
           }
           Err(_) -> done(undone)
@@ -1135,7 +1217,9 @@ fn reset(session: Session) -> Void {
     native_set_depth(session.gate, 0)
     let status = native_status(session.gate)
     case status == status_idle {
-      True -> Settled(Ok(Void), leftover, status)
+      True -> Settled {
+        outcome: Ok(Void), rest: leftover, status: status
+      }
       False -> done(exchange(session, leftover, "ROLLBACK", []))
     }
   })
@@ -1143,8 +1227,16 @@ fn reset(session: Session) -> Void {
 
 fn done<T>(settled: Settled<T>) -> Settled<Void> {
   case settled.outcome {
-    Ok(_) -> Settled(Ok(Void), settled.rest, settled.status)
-    Err(failure) -> Settled(Err(failure), settled.rest, settled.status)
+    Ok(_) -> Settled {
+      outcome: Ok(Void),
+      rest: settled.rest,
+      status: settled.status,
+    }
+    Err(failure) -> Settled {
+      outcome: Err(failure),
+      rest: settled.rest,
+      status: settled.status,
+    }
   }
 }
 
@@ -1205,7 +1297,11 @@ fn receive(inbox: Inbox) -> (Int, Bytes, Inbox) {
   }
   let whole = filled(header, length + 1)
   let body = Bytes.slice(whole.bytes, (whole.at + 5)..(whole.at + length + 1))
-  (kind, body, Inbox(whole.reader, whole.bytes, whole.at + length + 1))
+  (kind, body, Inbox {
+    reader: whole.reader,
+    bytes: whole.bytes,
+    at: whole.at + length + 1,
+  })
 }
 
 fn malformed() -> Never {
@@ -1231,7 +1327,9 @@ fn filled(inbox: Inbox, count: Int) -> Inbox {
           }
         }
       }
-      Inbox(inbox.reader, Bytes.concat(parts), 0)
+      Inbox {
+        reader: inbox.reader, bytes: Bytes.concat(parts), at: 0
+      }
     }
   }
 }
@@ -1320,7 +1418,7 @@ fn rest_of_fields(fields: Fields) -> Bytes {
 }
 
 fn skip(fields: Fields, count: Int) -> Fields {
-  Fields(fields.bytes, fields.at + count)
+  Fields { bytes: fields.bytes, at: fields.at + count }
 }
 
 // 10. Base64 (RFC 4648), for SCRAM's nonce, salt, proof and signature.

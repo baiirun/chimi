@@ -16,7 +16,7 @@ enum PaymentError {
 }
 
 fn checkout(cents: Int) -> Money {
-  Money(cents)
+  Money { cents: cents }
 }
 
 fn run() -> Text {
@@ -24,7 +24,7 @@ fn run() -> Text {
     Debug.render(-42),
     Debug.render("say \"hi\"\n\t\\ \${x}"),
     Debug.render([True, False]),
-    Debug.render(Money(2500)),
+    Debug.render(Money { cents: 2500 }),
     Debug.render([
       PaymentError.GatewayUnavailable,
       PaymentError.Declined("card"),

@@ -138,46 +138,73 @@ fn read_int(value: Text) -> Option<Int> {
 /// A flag: `--long` or `-short`, `True` when given. `short` is one ASCII
 /// letter, or "" for none.
 pub fn flag(long: Text, short: Text, help: Text) -> Handle<Bool> {
-  Handle(named(Kind.Flag, long, short, help, ""), fn(values) { not List.is_empty(values) })
+  Handle {
+    spec: named(Kind.Flag, long, short, help, ""),
+    read: fn(values) { not List.is_empty(values) },
+  }
 }
 
 /// An option with a value: `--long value`, `--long=value`, `-s value` or
 /// `-svalue`. `None` when not given; the last one wins when repeated.
 pub fn option<T>(long: Text, short: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<Option<T>> {
   let spec = named(Kind.Named, long, short, help, parser.name)
-  Handle(spec, fn(values) {
-    case List.last(values) {
-      Some(value) -> Some(convert(spec, parser, value))
-      None -> None
-    }
-  })
+  Handle {
+    spec: spec,
+    read: fn(values) {
+      case List.last(values) {
+        Some(value) -> Some(convert(spec, parser, value))
+        None -> None
+      }
+    },
+  }
 }
 
 /// A required positional argument.
 pub fn argument<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<T> {
-  let spec = Spec(Kind.Positional, name, "", help, parser.name)
-  Handle(spec, fn(values) {
-    case values {
-      [value, .._] -> convert(spec, parser, value)
-      [] -> Failure(CliError.MissingArgument(name))
-    }
-  })
+  let spec = Spec {
+    kind: Kind.Positional,
+    name: name,
+    short: "",
+    help: help,
+    value: parser.name,
+  }
+  Handle {
+    spec: spec,
+    read: fn(values) {
+      case values {
+        [value, .._] -> convert(spec, parser, value)
+        [] -> Failure(CliError.MissingArgument(name))
+      }
+    },
+  }
 }
 
 /// Every remaining positional argument, zero or more. It must be declared last.
 pub fn rest<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<List<T>> {
-  let spec = Spec(Kind.Rest, name, "", help, parser.name)
-  Handle(spec, fn(values) {
-    List.map(values, fn(value) { convert(spec, parser, value) })
-  })
+  let spec = Spec {
+    kind: Kind.Rest,
+    name: name,
+    short: "",
+    help: help,
+    value: parser.name,
+  }
+  Handle {
+    spec: spec,
+    read: fn(values) {
+      List.map(values, fn(value) { convert(spec, parser, value) })
+    },
+  }
 }
 
 /// The handle as a member of a command's argument list.
 pub fn arg<T>(handle: Handle<T>) -> Arg {
-  Arg(handle.spec, fn(values) {
-    handle.read(values)
-    Void
-  })
+  Arg {
+    spec: handle.spec,
+    check: fn(values) {
+      handle.read(values)
+      Void
+    },
+  }
 }
 
 /// A command named `name`, as usage shows it. `--help` and `-h` are added.
@@ -191,7 +218,9 @@ pub fn command(name: Text, summary: Text, args: List<Arg>) -> Command {
   case (unique and not declares_help, rest_is_last(args)) {
     (False, _) -> Debug.crash("Cli.command: ${name} declares a name twice, or declares help")
     (True, False) -> Debug.crash("Cli.command: ${name} declares an argument after its rest")
-    (True, True) -> Command(name, summary, args, None)
+    (True, True) -> Command {
+      name: name, summary: summary, args: args, version: None
+    }
   }
 }
 
@@ -203,7 +232,12 @@ pub fn version(command: Command, version: Text) -> Command {
     List.contains(option_names(each.spec), "--version")
   }) {
     True -> Debug.crash("Cli.version: ${command.name} already declares --version")
-    False -> Command(command.name, command.summary, command.args, Some(version))
+    False -> Command {
+      name: command.name,
+      summary: command.summary,
+      args: command.args,
+      version: Some(version),
+    }
   }
 }
 
@@ -306,15 +340,23 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
   let empty = List.reduce(command.args, Map.empty(), fn(values, each) {
     Map.put(values, display(each.spec), [])
   })
-  let done = loop state = Scan(arguments, empty, []) {
+  let done = loop state = Scan { rest: arguments, values: empty, positionals: [] } {
     case state.rest {
       [] -> break state
-      ["--", ..rest] -> break Scan([], state.values, List.append(state.positionals, rest))
+      ["--", ..rest] -> break Scan {
+        rest: [],
+        values: state.values,
+        positionals: List.append(state.positionals, rest),
+      }
       [word, ..rest] -> case Text.strip_prefix(word, "--") {
         Some(long) -> scan_long(command, state, long, rest)
         None -> case is_cluster(word) {
           True -> scan_cluster(command, state, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))), rest)
-          False -> Scan(rest, state.values, List.push(state.positionals, word))
+          False -> Scan {
+            rest: rest,
+            values: state.values,
+            positionals: List.push(state.positionals, word),
+          }
         }
       }
     }
@@ -328,7 +370,7 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
       Err(error) -> Failure(Stop.Wrong(error))
     }
   })
-  Parsed(values)
+  Parsed { values: values }
 }
 
 fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Scan {
@@ -346,17 +388,33 @@ fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Sca
     }
   }
   case (spec.kind, inline, rest) {
-    (Kind.Flag, None, _) -> Scan(rest, add(state.values, spec, "true"), state.positionals)
+    (Kind.Flag, None, _) -> Scan {
+      rest: rest,
+      values: add(state.values, spec, "true"),
+      positionals: state.positionals,
+    }
     (Kind.Flag, Some(value), _) -> Failure(Stop.Wrong(CliError.UnexpectedValue("--${name}", value)))
-    (_, Some(value), _) -> Scan(rest, add(state.values, spec, value), state.positionals)
-    (_, None, [value, ..after]) -> Scan(after, add(state.values, spec, value), state.positionals)
+    (_, Some(value), _) -> Scan {
+      rest: rest,
+      values: add(state.values, spec, value),
+      positionals: state.positionals,
+    }
+    (_, None, [value, ..after]) -> Scan {
+      rest: after,
+      values: add(state.values, spec, value),
+      positionals: state.positionals,
+    }
     (_, None, []) -> Failure(Stop.Wrong(CliError.MissingValue("--${name}")))
   }
 }
 
 fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<Text>) -> Scan {
   case letters {
-    [] -> Scan(rest, state.values, state.positionals)
+    [] -> Scan {
+      rest: rest,
+      values: state.values,
+      positionals: state.positionals,
+    }
     [letter, ..more] -> {
       let spec = case List.find(command.args, fn(each) {
         not is_positional(each.spec) and each.spec.short == letter
@@ -368,10 +426,22 @@ fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<T
         }
       }
       case (spec.kind, more, rest) {
-        (Kind.Flag, _, _) -> scan_cluster(command, Scan(rest, add(state.values, spec, "true"), state.positionals), more, rest)
-        (_, [], [value, ..after]) -> Scan(after, add(state.values, spec, value), state.positionals)
+        (Kind.Flag, _, _) -> scan_cluster(command, Scan {
+          rest: rest,
+          values: add(state.values, spec, "true"),
+          positionals: state.positionals,
+        }, more, rest)
+        (_, [], [value, ..after]) -> Scan {
+          rest: after,
+          values: add(state.values, spec, value),
+          positionals: state.positionals,
+        }
         (_, [], []) -> Failure(Stop.Wrong(CliError.MissingValue("-${letter}")))
-        (_, _, _) -> Scan(rest, add(state.values, spec, Text.concat(more)), state.positionals)
+        (_, _, _) -> Scan {
+          rest: rest,
+          values: add(state.values, spec, Text.concat(more)),
+          positionals: state.positionals,
+        }
       }
     }
   }
@@ -416,7 +486,13 @@ fn convert<T>(spec: Spec, parser: { name: Text, read: fn(Text) -> Option<T> }, v
 fn named(kind: Kind, long: Text, short: Text, help: Text, value: Text) -> Spec {
   case Text.is_empty(long) or Text.starts_with(long, "-") or Text.contains(long, "=") or not (Text.is_empty(short) or is_letter(short)) {
     True -> Debug.crash("Cli: `${long}` with short `${short}` is not a long name and one short letter")
-    False -> Spec(kind, long, short, help, value)
+    False -> Spec {
+      kind: kind,
+      name: long,
+      short: short,
+      help: help,
+      value: value,
+    }
   }
 }
 

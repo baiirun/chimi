@@ -28,18 +28,18 @@ struct Summary {
   terminal_outcomes: Map<Text, Int>,
 }
 
-const empty_summary = Summary(
-  1,
-  0,
-  0,
-  None,
-  None,
-  None,
-  False,
-  Map.empty(),
-  Map.empty(),
-  Map.empty(),
-)
+const empty_summary = Summary {
+  line: 1,
+  records: 0,
+  events: 0,
+  previous_sequence: None,
+  execution_id: None,
+  computation: None,
+  terminal_seen: False,
+  operations: Map.empty(),
+  dependency_calls: Map.empty(),
+  terminal_outcomes: Map.empty(),
+}
 
 enum TraceError {
   InvalidArgumentCount(actual: Int)

@@ -21,12 +21,12 @@ fn names(users: List<User>) -> List<Text> {
 }
 
 fn run() -> List<Text> {
-  let users = [User("cy", 30), User("ada", 41), User("bo", 30), User("di", 41)]
+  let users = [User { name: "cy", age: 30 }, User { name: "ada", age: 41 }, User { name: "bo", age: 30 }, User { name: "di", age: 41 }]
   let by_age = Order.by(fn(user: User) { user.age })
   let by_name = Order.by(fn(user: User) { user.name })
   let results = [
     Debug.render([Order.compare(1, 2), Order.compare("b", "a"), Order.compare(Some(1), Some(1)), Order.compare(None, Some(0))]),
-    Debug.render([Order.min(Tagged(2, "x"), Tagged(1, "y")), Order.min(Tagged(1, "a"), Tagged(1, "b"))]),
+    Debug.render([Order.min(Tagged { key: 2, tag: "x" }, Tagged { key: 1, tag: "y" }), Order.min(Tagged { key: 1, tag: "a" }, Tagged { key: 1, tag: "b" })]),
     Debug.render([Order.max(3, 9), Order.max(9, 3)]),
     Debug.render(names(List.sort_by(users, by_age))),
     Debug.render(names(List.sort_by(users, Order.reverse(by_age)))),

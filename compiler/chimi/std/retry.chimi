@@ -32,7 +32,7 @@ pub struct Policy<E> {
 ///
 /// Cost: O(1).
 pub fn policy<E>(schedule: Schedule, retryable: fn(E) -> Bool) -> Policy<E> {
-  Policy(schedule, retryable)
+  Policy { schedule: schedule, retryable: retryable }
 }
 
 // 3. Running.

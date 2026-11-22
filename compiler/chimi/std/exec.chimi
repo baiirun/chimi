@@ -132,7 +132,17 @@ pub enum ExecError {
 ///
 /// Cost: O(1).
 pub fn command(program: Text, arguments: List<Text>) -> Command {
-  Command(program, arguments, [], True, None, Stdio.Inherit, Stdio.Inherit, Stdio.Inherit, Duration.seconds(5))
+  Command {
+    program: program,
+    arguments: arguments,
+    variables: [],
+    inherits_environment: True,
+    directory: None,
+    stdin: Stdio.Inherit,
+    stdout: Stdio.Inherit,
+    stderr: Stdio.Inherit,
+    stop_within: Duration.seconds(5),
+  }
 }
 
 /// The command with the environment variable `name` set to `value`, over
@@ -141,17 +151,17 @@ pub fn command(program: Text, arguments: List<Text>) -> Command {
 /// Defects when: `name` is empty or holds `=`, once the command starts.
 /// Cost: O(1).
 pub fn variable(command: Command, name: Text, value: Text) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    List.push(command.variables, (name, value)),
-    command.inherits_environment,
-    command.directory,
-    command.stdin,
-    command.stdout,
-    command.stderr,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: List.push(command.variables, (name, value)),
+    inherits_environment: command.inherits_environment,
+    directory: command.directory,
+    stdin: command.stdin,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command with exactly `variables` as its environment, inheriting none
@@ -160,17 +170,17 @@ pub fn variable(command: Command, name: Text, value: Text) -> Command {
 ///
 /// Cost: O(n).
 pub fn environment(command: Command, variables: Map<Text, Text>) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    Map.entries(variables),
-    False,
-    command.directory,
-    command.stdin,
-    command.stdout,
-    command.stderr,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: Map.entries(variables),
+    inherits_environment: False,
+    directory: command.directory,
+    stdin: command.stdin,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command run in `path` instead of the parent's working directory. A
@@ -178,68 +188,68 @@ pub fn environment(command: Command, variables: Map<Text, Text>) -> Command {
 ///
 /// Cost: O(1).
 pub fn directory(command: Command, path: Path) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    command.variables,
-    command.inherits_environment,
-    Some(path),
-    command.stdin,
-    command.stdout,
-    command.stderr,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: command.variables,
+    inherits_environment: command.inherits_environment,
+    directory: Some(path),
+    stdin: command.stdin,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command with its standard input connected to `stdio`.
 ///
 /// Cost: O(1).
 pub fn stdin(command: Command, stdio: Stdio) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    command.variables,
-    command.inherits_environment,
-    command.directory,
-    stdio,
-    command.stdout,
-    command.stderr,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: command.variables,
+    inherits_environment: command.inherits_environment,
+    directory: command.directory,
+    stdin: stdio,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command with its standard output connected to `stdio`.
 ///
 /// Cost: O(1).
 pub fn stdout(command: Command, stdio: Stdio) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    command.variables,
-    command.inherits_environment,
-    command.directory,
-    command.stdin,
-    stdio,
-    command.stderr,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: command.variables,
+    inherits_environment: command.inherits_environment,
+    directory: command.directory,
+    stdin: command.stdin,
+    stdout: stdio,
+    stderr: command.stderr,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command with its standard error connected to `stdio`.
 ///
 /// Cost: O(1).
 pub fn stderr(command: Command, stdio: Stdio) -> Command {
-  Command(
-    command.program,
-    command.arguments,
-    command.variables,
-    command.inherits_environment,
-    command.directory,
-    command.stdin,
-    command.stdout,
-    stdio,
-    command.stop_within,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: command.variables,
+    inherits_environment: command.inherits_environment,
+    directory: command.directory,
+    stdin: command.stdin,
+    stdout: command.stdout,
+    stderr: stdio,
+    stop_within: command.stop_within,
+  }
 }
 
 /// The command with `duration` as the time its child has to exit after
@@ -255,17 +265,17 @@ pub fn stop_within(command: Command, duration: Duration) -> Command {
     True -> Debug.crash("Exec: stop_within must not be negative, got ${Duration.to_text(duration)}")
     False -> Void
   }
-  Command(
-    command.program,
-    command.arguments,
-    command.variables,
-    command.inherits_environment,
-    command.directory,
-    command.stdin,
-    command.stdout,
-    command.stderr,
-    duration,
-  )
+  Command {
+    program: command.program,
+    arguments: command.arguments,
+    variables: command.variables,
+    inherits_environment: command.inherits_environment,
+    directory: command.directory,
+    stdin: command.stdin,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    stop_within: duration,
+  }
 }
 
 /// The program the command runs, as given.
@@ -421,7 +431,16 @@ pub fn child(
   kill: fn() -> Void,
   release: fn() -> Void,
 ) -> Child {
-  Child("", wait, terminate, kill, release, None, None, None)
+  Child {
+    program: "",
+    wait: wait,
+    terminate: terminate,
+    kill: kill,
+    release: release,
+    input: None,
+    output: None,
+    error_output: None,
+  }
 }
 
 /// The fake `child` with these streams as its piped input, output and
@@ -444,16 +463,16 @@ pub fn piped(
   output: Reader<StreamError>,
   error_output: Reader<StreamError>,
 ) -> Child {
-  Child(
-    child.program,
-    child.wait,
-    child.terminate,
-    child.kill,
-    child.release,
-    Some(fake_input(input)),
-    Some(fake_output(output)),
-    Some(fake_output(error_output)),
-  )
+  Child {
+    program: child.program,
+    wait: child.wait,
+    terminate: child.terminate,
+    kill: child.kill,
+    release: child.release,
+    input: Some(fake_input(input)),
+    output: Some(fake_output(output)),
+    error_output: Some(fake_output(error_output)),
+  }
 }
 
 // 6. Runner provider.
@@ -468,7 +487,16 @@ fn stdio_code(stdio: Stdio) -> Int {
 
 // The child as `Exec.start` hands it out, naming the program it runs.
 fn named(child: Child, program: Text) -> Child {
-  Child(program, child.wait, child.terminate, child.kill, child.release, child.input, child.output, child.error_output)
+  Child {
+    program: program,
+    wait: child.wait,
+    terminate: child.terminate,
+    kill: child.kill,
+    release: child.release,
+    input: child.input,
+    output: child.output,
+    error_output: child.error_output,
+  }
 }
 
 // A task reading every byte of `reader`. Its own function, so the task
@@ -609,14 +637,14 @@ fn host_start(command: Command) -> Child {
     command,
     native_spawn(builder, stdio_code(command.stdin), stdio_code(command.stdout), stdio_code(command.stderr)),
   )
-  Child(
-    command.program,
-    fn() {
+  Child {
+    program: command.program,
+    wait: fn() {
       status(waited(command, native_wait(process)))
     },
-    fn() { native_terminate(process) },
-    fn() { native_kill(process) },
-    fn() {
+    terminate: fn() { native_terminate(process) },
+    kill: fn() { native_kill(process) },
+    release: fn() {
       // Closed first: input's end is the gentlest stop, and a child flushing
       // output on SIGTERM must not wait on a reader that is gone.
       close_pipe(input_pipe)
@@ -625,16 +653,16 @@ fn host_start(command: Command) -> Child {
       native_stop(process, Duration.to_milliseconds(command.stop_within))
       native_release(process)
     },
-    Option.map(input_pipe, fn(pipe) {
+    input: Option.map(input_pipe, fn(pipe) {
       fn(_program) { host_writer(command, pipe) }
     }),
-    Option.map(output_pipe, fn(pipe) {
+    output: Option.map(output_pipe, fn(pipe) {
       fn(_program) { host_reader(command, pipe) }
     }),
-    Option.map(errors_pipe, fn(pipe) {
+    error_output: Option.map(errors_pipe, fn(pipe) {
       fn(_program) { host_reader(command, pipe) }
     }),
-  )
+  }
 }
 
 native type Builder
