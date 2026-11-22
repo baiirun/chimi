@@ -3203,6 +3203,60 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// `T4227`: a type's parameters stand for value types or failure sets. A
+    /// needs row parameter there would need a needs row as a type argument,
+    /// which `Runner<{ greeter: Greeter }>` does not write (it is a record
+    /// type), so the member would keep the bare parameter.
+    fn reject_type_needs_row_parameters(
+        &mut self,
+        module_id: ModuleId,
+        declaration: &ModuleDeclaration,
+        declaration_symbol: SymbolId,
+        generic_symbols: &HashMap<String, SymbolId>,
+    ) {
+        let mut rejected = CallSubstitution::default();
+        for name in &declaration.generic_parameters {
+            let Some(symbol) = generic_symbols.get(&name.text) else {
+                continue;
+            };
+            if self.generic_kinds.get(symbol) != Some(&GenericKind::NeedsRow) {
+                continue;
+            }
+            let hint = match declaration.kind {
+                ModuleDeclarationKind::Interface => format!(
+                    "make the member generic instead, as `run: fn<{row}>(..) -> T needs {row}`",
+                    row = name.text
+                ),
+                _ => "write the needs in the field's function type instead".to_owned(),
+            };
+            self.type_error_range(
+                module_id,
+                "T4227",
+                name.range,
+                format!(
+                    "type parameter `{row}` of `{owner}` is used as a needs row, which a type's parameters cannot be; {hint}",
+                    row = name.text,
+                    owner = declaration.name.text
+                ),
+            );
+            rejected.needs.insert(*symbol, NeedsRowId::new(0));
+        }
+        if rejected.needs.is_empty() {
+            return;
+        }
+        // The members drop the rejected row, so their uses report what they
+        // need rather than a row no caller declared.
+        let fields = self.fields[&declaration_symbol].clone();
+        let fields = fields
+            .into_iter()
+            .map(|field| FieldShape {
+                type_id: self.substitute_call_type(field.type_id, &mut rejected),
+                ..field
+            })
+            .collect();
+        self.fields.insert(declaration_symbol, fields);
+    }
+
     fn check_declaration(&mut self, module_id: ModuleId, declaration: &ModuleDeclaration) {
         let generic_symbols = self.generic_symbols(module_id, declaration);
         for symbol in generic_symbols.values() {
@@ -3283,6 +3337,12 @@ impl ProjectTypeChecker {
                         self.intern_type(CanonicalType::Function(contract));
                     }
                 }
+                self.reject_type_needs_row_parameters(
+                    module_id,
+                    declaration,
+                    declaration_symbol,
+                    &generic_symbols,
+                );
                 if declaration.kind == ModuleDeclarationKind::Struct {
                     let constructor_fields = self.fields[&declaration_symbol].clone();
                     let inputs = constructor_fields

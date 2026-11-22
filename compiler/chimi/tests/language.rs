@@ -14138,3 +14138,33 @@ pub fn main() -> Void needs { console: Console } { f() using { console: console 
     assert_eq!(calls, 1, "native");
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+// CHI-300: a type's parameters stand for value types or failure sets, never a
+// needs row; an interface makes the member generic instead.
+#[test]
+fn a_type_parameter_cannot_be_a_needs_row() {
+    let interface = row_program(
+        r#"
+interface Runner<R> {
+  run: fn(fn() -> Text needs R + { greeter: Greeter }, fn() -> Text needs R) -> Text needs R
+}
+fn go() -> Text needs { runner: Runner<{ greeter: Greeter }> } { "go" }
+pub fn main() -> Text { "main" }
+"#,
+    );
+    let structure = r#"
+struct Job<R> {
+  run: fn() -> Text needs R
+}
+fn plain() -> Text { "plain" }
+pub fn main() -> Text {
+  let job = Job { run: plain }
+  job.run()
+}
+"#;
+    for source in [interface.as_str(), structure] {
+        let diagnostics = diagnostics_of(source);
+        let codes: Vec<&str> = diagnostics.iter().map(|(code, _)| code.as_str()).collect();
+        assert_eq!(codes, ["T4227"], "{source}");
+    }
+}
