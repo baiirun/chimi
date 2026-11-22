@@ -36,7 +36,7 @@ pub struct Outcome {
 
 /// Settings that pause or resume the workers.
 pub fn settings(paused: Bool) -> Settings {
-  Settings(paused)
+  Settings { paused: paused }
 }
 
 /// The order an outcome is for.
@@ -79,7 +79,11 @@ fn handle(name: Text, order: Order, outcomes: Sender<Outcome>, events: Broadcast
     Result.Ok(_) -> Event.Completed(name, Checkout.id(order), Checkout.cents(order))
     Result.Err(_) -> Event.Rejected(name, Checkout.id(order))
   }
-  Channel.send(outcomes, Outcome(Checkout.id(order), Clock.since(started), result))
+  Channel.send(outcomes, Outcome {
+    order: Checkout.id(order),
+    took: Clock.since(started),
+    result: result,
+  })
   report(events, event)
 }
 

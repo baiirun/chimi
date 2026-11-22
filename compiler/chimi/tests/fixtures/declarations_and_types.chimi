@@ -16,5 +16,5 @@ interface Payment<Receipt> {
 }
 
 pub fn main() {
-  Box(42)
+  Box { value: 42 }
 }

@@ -102,7 +102,11 @@ pub enum FsError {
 ///
 /// Cost: O(1).
 pub fn metadata_of(kind: Kind, size: Int, modified: Timestamp) -> Metadata {
-  Metadata(kind, size, Clock.unix_nanoseconds(modified))
+  Metadata {
+    kind: kind,
+    size: size,
+    modified: Clock.unix_nanoseconds(modified),
+  }
 }
 
 // 5. Queries: metadata.
@@ -413,15 +417,15 @@ fn list_names(path: Path) -> List<Text> {
 fn metadata_host(path: Path) -> Metadata {
   let (status, kind, size, modified, message) = host_metadata(path)
   case status {
-    0 -> Metadata(
-      case kind {
+    0 -> Metadata {
+      kind: case kind {
         0 -> Kind.File
         1 -> Kind.Directory
         _ -> Kind.Special
       },
-      size,
-      modified,
-    )
+      size: size,
+      modified: modified,
+    }
     _ -> Failure(failure(path, status, message))
   }
 }

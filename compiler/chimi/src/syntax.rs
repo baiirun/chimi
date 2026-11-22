@@ -1409,6 +1409,12 @@ struct Parser<'source> {
     next_raw: usize,
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
+    /// Whether `Name { field: value }` may be read as a struct literal here. It
+    /// is not in a `case` subject, where the `{` opens arms that may start with
+    /// a typed binding `name: Type`; brackets around an expression allow it
+    /// again. A block cannot start with `name:`, so the start value of a `loop`
+    /// and a clause guard before a function body may end in a struct literal.
+    struct_literals: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -1430,7 +1436,34 @@ impl<'source> Parser<'source> {
             next_raw: 0,
             events: Vec::new(),
             diagnostics,
+            struct_literals: true,
         }
+    }
+
+    /// Runs `parse` with struct literals allowed or not, then restores the
+    /// surrounding setting.
+    fn with_struct_literals(&mut self, allowed: bool, parse: impl FnOnce(&mut Self)) {
+        let surrounding = std::mem::replace(&mut self.struct_literals, allowed);
+        parse(self);
+        self.struct_literals = surrounding;
+    }
+
+    /// Whether the `{` at the current position starts the fields of a struct
+    /// literal: `{` followed, after any line breaks, by `field:`, `..` or the
+    /// `}` of a struct with no fields. Empty braces are no block or record, so
+    /// `Name {}` is never anything else.
+    fn at_struct_fields(&self) -> bool {
+        if !self.struct_literals || !self.at(TokenKind::LeftBrace) {
+            return false;
+        }
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        self.kind_at(position) == TokenKind::DotDot
+            || self.kind_at(position) == TokenKind::RightBrace
+            || (self.kind_at(position) == TokenKind::Identifier
+                && self.kind_at(position + 1) == TokenKind::Colon)
     }
 
     fn parse(mut self) -> ParseResult {
@@ -2536,6 +2569,8 @@ impl<'source> Parser<'source> {
 
     fn parse_postfix(&mut self) {
         let marker = self.placeholder();
+        // A struct literal's `{` follows a name or a qualified name only.
+        let mut names_a_type = self.at(TokenKind::Identifier);
         self.parse_primary();
         let mut wrapped = false;
         loop {
@@ -2552,7 +2587,15 @@ impl<'source> Parser<'source> {
                     self.complete(marker, NodeKind::PostfixExpression);
                     wrapped = true;
                 }
-                self.parse_call_suffix();
+                names_a_type = false;
+                self.with_struct_literals(true, Self::parse_call_suffix);
+            } else if names_a_type && self.at_struct_fields() {
+                if !wrapped {
+                    self.complete(marker, NodeKind::PostfixExpression);
+                    wrapped = true;
+                }
+                names_a_type = false;
+                self.parse_struct_fields();
             } else {
                 break;
             }
@@ -2611,14 +2654,16 @@ impl<'source> Parser<'source> {
                 self.bump();
                 self.finish();
             }
-            TokenKind::TextStart => self.parse_interpolated_text(),
-            TokenKind::LeftParen => self.parse_parenthesized(),
-            TokenKind::LeftBracket => self.parse_list(),
-            TokenKind::LeftBrace => self.parse_brace_expression(),
-            TokenKind::Case => self.parse_case(),
-            TokenKind::Loop => self.parse_loop(),
+            TokenKind::TextStart => {
+                self.with_struct_literals(true, Self::parse_interpolated_text);
+            }
+            TokenKind::LeftParen => self.with_struct_literals(true, Self::parse_parenthesized),
+            TokenKind::LeftBracket => self.with_struct_literals(true, Self::parse_list),
+            TokenKind::LeftBrace => self.with_struct_literals(true, Self::parse_brace_expression),
+            TokenKind::Case => self.with_struct_literals(true, Self::parse_case),
+            TokenKind::Loop => self.with_struct_literals(true, Self::parse_loop),
             TokenKind::Break => self.parse_break(),
-            TokenKind::Fn => self.parse_function_expression(),
+            TokenKind::Fn => self.with_struct_literals(true, Self::parse_function_expression),
             TokenKind::If => self.parse_unsupported_if(),
             _ => self.missing(TokenKind::Identifier, "expression"),
         }
@@ -2893,6 +2938,24 @@ impl<'source> Parser<'source> {
     /// Parses a record literal or a record update `{ ..base, field: value }`.
     /// Ensures: a leading `..base` is a `RecordSpread` child; a spread anywhere else is
     /// `S1001` and is still parsed as a `RecordSpread` so lowering sees the base.
+    /// The braces of a struct literal: a record's fields, or none for a struct
+    /// without fields (`Marker {}`).
+    fn parse_struct_fields(&mut self) {
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if self.kind_at(position) != TokenKind::RightBrace {
+            self.parse_record();
+            return;
+        }
+        self.start(NodeKind::RecordExpression);
+        self.bump();
+        self.skip_newlines();
+        self.bump();
+        self.finish();
+    }
+
     fn parse_record(&mut self) {
         self.start(NodeKind::RecordExpression);
         let open = self.position;
@@ -3065,11 +3128,13 @@ impl<'source> Parser<'source> {
     fn parse_case(&mut self) {
         self.start(NodeKind::CaseExpression);
         self.bump();
-        self.parse_expression();
-        while self.accept(TokenKind::Comma) {
-            self.skip_newlines();
-            self.parse_expression();
-        }
+        self.with_struct_literals(false, |parser| {
+            parser.parse_expression();
+            while parser.accept(TokenKind::Comma) {
+                parser.skip_newlines();
+                parser.parse_expression();
+            }
+        });
         self.skip_newlines();
         self.expect(TokenKind::LeftBrace);
         self.skip_newlines();

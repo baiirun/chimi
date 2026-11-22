@@ -40,7 +40,9 @@ fn count_messages(inbox: Inbox<Message>) -> Void {
 pub process name counter: Message
 pub process name peer: Message
 
-fn settle() -> Void needs { clock: Clock } {
+fn settle() -> Void needs {
+  clock: Clock
+} {
   Clock.sleep(Duration.milliseconds(1))
 }
 
@@ -57,20 +59,22 @@ fn ask(address: Address<Message>) -> Int {
   reply_value(Channel.receive(replies.receiver))
 }
 
-pub fn main() -> Totals needs { clock: Clock } {
+pub fn main() -> Totals needs {
+  clock: Clock
+} {
   let first = Process.spec(count_messages, 4, Duration.seconds(1))
-    |> Process.register(counter)
-    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.OnDefect)
   let second = Process.spec(count_messages, 4, Duration.seconds(1))
-    |> Process.register(peer)
-    |> Supervisor.process(Supervisor.Restart.OnDefect)
+  |> Process.register(peer)
+  |> Supervisor.process(Supervisor.Restart.OnDefect)
   let root = Supervisor.start(Supervisor.policy([first, second], 2, Supervisor.restarts(1, Duration.seconds(30))))
   Process.send(counter, Message.Add(5))
   Process.send(peer, Message.Add(5))
   settle()
   Process.send(counter, Message.Crash)
   settle()
-  let totals = Totals(ask(counter), ask(peer))
+  let totals = Totals { counter: ask(counter), peer: ask(peer) }
   Supervisor.stop(root)
   totals
 }

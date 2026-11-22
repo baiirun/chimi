@@ -33,23 +33,25 @@ pub struct Rollback {
 
 pub fn main() -> Rollback {
   let holder = Process.spec(ignore, 1, Duration.seconds(1))
-    |> Process.register(counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let first = Supervisor.start(Supervisor.policy([holder], 2, Supervisor.restarts(0, Duration.seconds(30))))
   let other_member = Process.spec(ignore, 1, Duration.seconds(1))
-    |> Process.register(other)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(other)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let duplicate = Process.spec(ignore, 1, Duration.seconds(1))
-    |> Process.register(counter)
-    |> Supervisor.process(Supervisor.Restart.Never)
+  |> Process.register(counter)
+  |> Supervisor.process(Supervisor.Restart.Never)
   let taken = case Supervisor.start(Supervisor.policy([other_member, duplicate], 2, Supervisor.restarts(0, Duration.seconds(30)))) {
     Success(_) -> "started"
     Failure(StartError.NameTaken(name)) -> name
   }
-  let reused = case Supervisor.start_process(first, Process.spec(ignore, 1, Duration.seconds(1)) |> Process.register(other), Supervisor.Restart.Never) {
+  let reused = case Supervisor.start_process(first, Process.spec(ignore, 1, Duration.seconds(1))
+    |> Process.register(other), Supervisor.Restart.Never
+  ) {
     Success(_) -> 1
     Failure(_) -> 0
   }
   Supervisor.stop(first)
-  Rollback(taken, reused)
+  Rollback { taken: taken, reused: reused }
 }

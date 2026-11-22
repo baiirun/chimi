@@ -55,11 +55,13 @@ pub fn main() -> Int {
   let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(30))))
   let requests = Channel.bounded(1)
   let replies = Channel.bounded(1)
-  let accepted = Connection(requests.receiver, replies.sender)
+  let accepted = Connection {
+    requests: requests.receiver, replies: replies.sender
+  }
   let acceptor = Task.start(fn() -> Int { accept(root, accepted) })
   let started = Task.result(acceptor)
   let spare = Channel.bounded(1)
-  let refused = case Supervisor.start_handoff(root, connection, Connection(spare.receiver, replies.sender)) {
+  let refused = case Supervisor.start_handoff(root, connection, Connection { requests: spare.receiver, replies: replies.sender }) {
     Success(_) -> -10000
     Failure(HandoffError.CapacityReached(back)) -> {
       Channel.send(spare.sender, 3)

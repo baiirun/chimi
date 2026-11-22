@@ -1011,7 +1011,7 @@ fn pipeline_into_a_curried_call_inserts_the_subject_into_the_last_call() {
 }
 
 #[test]
-fn pipeline_into_member_constructor_and_empty_calls() {
+fn pipeline_into_member_function_and_empty_calls() {
     let outcome = run_both(
         "pipe-member-constructor-empty",
         concat!(
@@ -1027,8 +1027,9 @@ fn pipeline_into_member_constructor_and_empty_calls() {
             "  }\n",
             "}\n",
             "fn tenfold(value: Int) -> Int { value * 10 }\n",
+            "fn pair(left: Int, right: Int) -> Pair { Pair { left: left, right: right } }\n",
             "pub fn main() -> Int {\n",
-            "  let pair = 3 |> Pair(4)\n",
+            "  let pair = 3 |> pair(4)\n",
             "  let joined = \"x\" |> Text.append(\"y\")\n",
             "  (joined |> length()) + pair.left * 100 + (pair.right |> tenfold())\n",
             "}\n",
@@ -1100,8 +1101,8 @@ fn hover_on_a_later_stage_reports_that_stage_type() {
         "  label: Label\n",
         "  size: Int\n",
         "}\n",
-        "fn label(value: Int, text: Text) -> Label { Label(text) }\n",
-        "fn size(label: Label, size: Int) -> Sized { Sized(label, size) }\n",
+        "fn label(value: Int, text: Text) -> Label { Label { text: text } }\n",
+        "fn size(label: Label, size: Int) -> Sized { Sized { label: label, size: size } }\n",
         "pub fn main() -> Sized { 1 |> label(\"a\") |> size(5) }\n",
     );
     let hover = |needle: &str| {
@@ -1151,7 +1152,7 @@ fn inspecting_a_fieldless_variant_value_reports_no_callable() {
 // A constructor named as a value: one with fields is a callable, a fieldless
 // variant is the value itself.
 #[test]
-fn constructors_with_fields_are_callable_values() {
+fn variants_with_fields_are_callable_values() {
     let outcome = run_both(
         "constructor-callable-value",
         concat!(
@@ -1167,7 +1168,8 @@ fn constructors_with_fields_are_callable_values() {
             "}\n",
             "pub fn main() -> Int {\n",
             "  let wrap = Some\n",
-            "  total(1 |> Some) + total(wrap(20)) + apply(Meters, 300).value\n",
+            "  let meters = fn(value) { Meters { value: value } }\n",
+            "  total(1 |> Some) + total(wrap(20)) + apply(meters, 300).value\n",
             "}\n",
         ),
     );
@@ -2232,7 +2234,7 @@ fn float_text_round_trips_through_parse_for_sampled_values() {
             "fn same(a: Float, b: Float) -> Bool { not (a < b) and not (a > b) }\n",
             "struct Walk { x: Float, steps: Int, rendered: Text, misses: Int }\n",
             "fn walk(start: Float, factor: Float, steps: Int) -> Text {\n",
-            "  loop state = Walk(start, steps, \"\", 0) {\n",
+            "  loop state = Walk { x: start, steps: steps, rendered: \"\", misses: 0 } {\n",
             "    case state.steps {\n",
             "      0 -> break Text.append(state.rendered, Int.to_text(state.misses))\n",
             "      _ -> {\n",
@@ -2243,7 +2245,7 @@ fn float_text_round_trips_through_parse_for_sampled_values() {
             "          False -> 1\n",
             "        }\n",
             "        let rendered = Text.append(Text.append(state.rendered, text), \",\")\n",
-            "        Walk(state.x * factor, state.steps - 1, rendered, state.misses + miss)\n",
+            "        Walk { x: state.x * factor, steps: state.steps - 1, rendered: rendered, misses: state.misses + miss }\n",
             "      }\n",
             "    }\n",
             "  }\n",
@@ -3186,8 +3188,8 @@ fn a_local_binding_shadows_an_enum_of_the_same_name_in_a_selection() {
             "  Status.Done\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  let Status = Box(3, 4)\n",
-            "  Status.Done * 10 + Status.Other + score(Box(100, 0))\n",
+            "  let Status = Box { Done: 3, Other: 4 }\n",
+            "  Status.Done * 10 + Status.Other + score(Box { Done: 100, Other: 0 })\n",
             "}\n",
         ),
     );
@@ -3251,8 +3253,8 @@ fn a_generic_struct_field_has_the_instantiated_type() {
                 "}}\n",
                 "fn unbox<T>(boxed: Box<T>) -> T {{ boxed.value }}\n",
                 "pub fn main() -> Int {{\n",
-                "  let nested = Box(Box({}))\n",
-                "  nested.value.value + unbox(Box(1))\n",
+                "  let nested = Box {{ value: Box {{ value: {} }} }}\n",
+                "  nested.value.value + unbox(Box {{ value: 1 }})\n",
                 "}}\n",
             ),
             argument
@@ -3277,7 +3279,7 @@ fn a_lambda_body_reads_a_field_of_a_parameter_typed_by_the_callee() {
             "fn apply(money: Money, operation: fn(Money) -> Int) -> Int { operation(money) }\n",
             "fn with<T>(value: T, operation: fn(T) -> Int) -> Int { operation(value) }\n",
             "pub fn main() -> Int {\n",
-            "  apply(Money(3), fn(x) { x.cents }) + with(Money(40), fn(y) { y.cents })\n",
+            "  apply(Money { cents: 3 }, fn(x) { x.cents }) + with(Money { cents: 40 }, fn(y) { y.cents })\n",
             "}\n",
         ),
     );
@@ -3394,14 +3396,14 @@ fn generic_calls_with_function_arguments_bind_their_parameters_in_any_order() {
     assert_eq!(
         outcome(
             "lambda-result-forward",
-            "compose(3, fn(x) { Money(x) }, fn(m) { m.cents })"
+            "compose(3, fn(x) { Money { cents: x } }, fn(m) { m.cents })"
         ),
         "\"outcome\":\"success\",\"value\":3"
     );
     assert_eq!(
         outcome(
             "lambda-result-backward",
-            "later(fn(m) { m.cents }, fn() { Money(4) })"
+            "later(fn(m) { m.cents }, fn() { Money { cents: 4 } })"
         ),
         "\"outcome\":\"success\",\"value\":4"
     );
@@ -3616,7 +3618,7 @@ fn money_diagnostics(reader: &str) -> Vec<(String, String)> {
                 "  cents: Int\n",
                 "  currency: Text\n",
                 "}\n",
-                "pub fn make(cents: Int) -> Money { Money(cents, \"USD\") }\n",
+                "pub fn make(cents: Int) -> Money { Money { cents: cents, currency: \"USD\" } }\n",
                 "pub fn cents(money: Money) -> Int { money.cents }\n",
                 // Named like a field but not an accessor: it takes no Money.
                 "pub fn currency(code: Text) -> Text { code }\n",
@@ -3780,8 +3782,8 @@ fn constants_of_every_representable_kind_load_the_built_value() {
             "const ratio = 0.5\n",
             "const greeting = Text.append(\"hello \", \"world\")\n",
             "const ready = answer > base and True\n",
-            "const prices = [Money(1), Money(base)]\n",
-            "const status = Paid(Money(answer))\n",
+            "const prices = [Money { cents: 1 }, Money { cents: base }]\n",
+            "const status = Paid(Money { cents: answer })\n",
             "const missing: Option<Int> = None\n",
             "const present = Some(answer)\n",
             "const table = Map.put(Map.put(Map.empty(), \"b\", 2), \"a\", 1)\n",
@@ -3855,10 +3857,10 @@ fn a_public_constant_is_used_qualified_from_another_module() {
                     "pub struct Duration {\n",
                     "  nanoseconds: Int\n",
                     "}\n",
-                    "pub const zero = Duration(0)\n",
+                    "pub const zero = Duration { nanoseconds: 0 }\n",
                     "const scale = 1_000_000_000\n",
                     "pub fn seconds(count: Int) -> Duration {\n",
-                    "  Duration(count * scale)\n",
+                    "  Duration { nanoseconds: count * scale }\n",
                     "}\n",
                     "pub fn nanoseconds(duration: Duration) -> Int {\n",
                     "  duration.nanoseconds\n",
@@ -4618,11 +4620,11 @@ fn debug_render_follows_the_format_table_on_both_backends() {
             r#""say \"hi\" \\ \n\r\t\u{1b} $x \${hi} é""#,
             r#""say \"hi\" \\ \n\r\t\u{1b} $x \${hi} é""#,
         ),
-        ("Money(2500)", "Money { cents: 2500 }"),
+        ("Money { cents: 2500 }", "Money { cents: 2500 }"),
         ("GatewayUnavailable", "PaymentError.GatewayUnavailable"),
         ("Declined(\"card\")", r#"PaymentError.Declined("card")"#),
         (
-            "Open(Path(\"a.txt\"), \"denied\")",
+            "Open(Path { text: \"a.txt\" }, \"denied\")",
             r#"FileError.Open(path: Path { text: "a.txt" }, message: "denied")"#,
         ),
         ("Some(3)", "Some(3)"),
@@ -4651,7 +4653,7 @@ fn debug_render_follows_the_format_table_on_both_backends() {
         "struct Path {\n  text: Text\n}\n",
         "enum PaymentError {\n  GatewayUnavailable\n  Declined(reason: Text)\n}\n",
         "enum FileError {\n  Open(path: Path, message: Text)\n}\n",
-        "const stored = [Money(1), Money(2)]\n",
+        "const stored = [Money { cents: 1 }, Money { cents: 2 }]\n",
         "fn checkout(amount: Int) -> Int { amount }\n",
         "fn nothing() -> Option<Int> { None }\n",
         "fn no_items() -> List<Int> { [] }\n",
@@ -4685,7 +4687,7 @@ fn debug_render_indented_puts_each_part_on_its_own_line() {
             "fn no_items() -> List<Int> { [] }\n",
             "pub fn main() -> Text {\n",
             "  Debug.render_indented({\n",
-            "    items: [Money(1), Money(2)],\n",
+            "    items: [Money { cents: 1 }, Money { cents: 2 }],\n",
             "    empty: no_items(),\n",
             "    status: Declined(\"x\"),\n",
             "    table: Map.put(Map.empty(), \"k\", 1),\n",
@@ -4728,7 +4730,7 @@ fn equal_values_render_to_the_same_text() {
             "import std/debug as Debug\n",
             "import std/json as Json\n",
             "struct Duration {\n  nanoseconds: Int\n}\n",
-            "const job_timeout = Duration(30_000_000_000)\n",
+            "const job_timeout = Duration { nanoseconds: 30_000_000_000 }\n",
             "fn number(text: Text) -> Text {\n",
             "  case Json.decode(text) {\n",
             "    Success(value) -> Debug.render(value)\n",
@@ -4771,9 +4773,9 @@ const MONEY_STATUS: &str =
 #[test]
 fn equality_is_structural_and_inequality_is_its_negation() {
     let pairs = [
-        ("Paid(Money(5))", "Paid(Money(5))", true),
-        ("Paid(Money(5))", "Paid(Money(6))", false),
-        ("Paid(Money(5))", "Status.Pending", false),
+        ("Paid(Money { cents: 5 })", "Paid(Money { cents: 5 })", true),
+        ("Paid(Money { cents: 5 })", "Paid(Money { cents: 6 })", false),
+        ("Paid(Money { cents: 5 })", "Status.Pending", false),
         ("pair()", "[1, 2]", true),
         ("pair()", "[1, 2, 3]", false),
         ("{ a: 1, b: \"x\" }", "{ b: \"x\", a: 1 }", true),
@@ -5020,13 +5022,13 @@ fn structured_map_keys_survive_constants_and_debug_rendering() {
         "import std/debug as Debug\n",
         "import std/map as Map\n",
         "struct Point {\n  x: Int,\n  y: Int,\n}\n",
-        "const scores = Map.empty() |> Map.put(Point(2, 1), 20) |> Map.put(Point(1, 9), 10)\n",
+        "const scores = Map.empty() |> Map.put(Point { x: 2, y: 1 }, 20) |> Map.put(Point { x: 1, y: 9 }, 10)\n",
         "pub fn main() -> List<Text> {\n",
-        "  let reordered = Map.empty() |> Map.put(Point(1, 9), 10) |> Map.put(Point(2, 1), 20)\n",
+        "  let reordered = Map.empty() |> Map.put(Point { x: 1, y: 9 }, 10) |> Map.put(Point { x: 2, y: 1 }, 20)\n",
         "  let floats = Map.empty() |> Map.put(1.5, \"b\") |> Map.put(-0.0, \"a\")\n",
         "  let floats_reordered = Map.empty() |> Map.put(0.0, \"c\") |> Map.put(1.5, \"b\")\n",
         "  [\n",
-        "    Debug.render(scores |> Map.get(Point(2, 1))),\n",
+        "    Debug.render(scores |> Map.get(Point { x: 2, y: 1 })),\n",
         "    Debug.render(Debug.render(scores) == Debug.render(reordered)),\n",
         "    Debug.render(Debug.render(floats |> Map.put(0.0, \"c\")) == Debug.render(floats_reordered)),\n",
         "    Debug.render(scores),\n",
@@ -5068,14 +5070,14 @@ fn a_map_keyed_by_structured_values_finds_equal_keys() {
         "import std/map as Map\n",
         "struct Point { x: Int, y: Int }\n",
         "enum Shape {\n  Dot\n  Line(points: List<Point>)\n}\n",
-        "fn line() -> Shape { Line([Point(1, 2), Point(3, 4)]) }\n",
+        "fn line() -> Shape { Line([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]) }\n",
         "pub fn main() -> List<Option<Int>> {\n",
         "  let shapes = Map.empty() |> Map.put(line(), 1) |> Map.put(Dot, 2) |> Map.put(line(), 3)\n",
         "  let lists = Map.empty() |> Map.put([1, 2], 10) |> Map.put([1], 20)\n",
         "  [\n",
-        "    shapes |> Map.get(Line([Point(1, 2), Point(3, 4)])),\n",
+        "    shapes |> Map.get(Line([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }])),\n",
         "    shapes |> Map.get(Dot),\n",
-        "    shapes |> Map.get(Line([Point(1, 2)])),\n",
+        "    shapes |> Map.get(Line([Point { x: 1, y: 2 }])),\n",
         "    lists |> Map.get([1, 2]),\n",
         "    lists |> Map.get([1]),\n",
         "  ]\n",
@@ -5196,11 +5198,11 @@ fn deeply_nested_values_build_compare_render_and_free() {
         "enum Nest {\n  Leaf\n  Wrap(children: List<Nest>)\n}\n",
         "struct Build { depth: Int, nest: Nest }\n",
         "fn nested(depth: Int) -> Nest {\n",
-        "  let start = Build(depth, Leaf)\n",
+        "  let start = Build { depth: depth, nest: Leaf }\n",
         "  loop state = start {\n",
         "    case state.depth {\n",
         "      0 -> break state.nest\n",
-        "      _ -> Build(state.depth - 1, Wrap([state.nest]))\n",
+        "      _ -> Build { depth: state.depth - 1, nest: Wrap([state.nest]) }\n",
         "    }\n",
         "  }\n",
         "}\n",
@@ -5240,12 +5242,12 @@ fn json_encode_writes_a_deeply_nested_value() {
         "import std/map as Map\n",
         "struct Build { depth: Int, value: Json.Value }\n",
         "pub fn main() -> Text {\n",
-        "  let built = loop state = Build(100000, Json.Value.Null) {\n",
+        "  let built = loop state = Build { depth: 100000, value: Json.Value.Null } {\n",
         "    case state.depth {\n",
         "      0 -> break state.value\n",
         "      _ -> {\n",
         "        let fields = Map.put(Map.put(Map.empty(), \"b\", Json.Value.Text(\"q\\\"\")), \"a\", state.value)\n",
-        "        Build(state.depth - 1, Json.Value.Array([Json.Value.Object(fields), Json.Value.Boolean(True)]))\n",
+        "        Build { depth: state.depth - 1, value: Json.Value.Array([Json.Value.Object(fields), Json.Value.Boolean(True)]) }\n",
         "      }\n",
         "    }\n",
         "  }\n",
@@ -5279,10 +5281,10 @@ fn debug_render_nests_through_map_keys() {
         "enum N {\n  Leaf\n  W(m: Map<N, List<Int>>)\n}\n",
         "struct Build { depth: Int, n: N }\n",
         "fn nested(depth: Int) -> N {\n",
-        "  loop state = Build(depth, Leaf) {\n",
+        "  loop state = Build { depth: depth, n: Leaf } {\n",
         "    case state.depth {\n",
         "      0 -> break state.n\n",
-        "      _ -> Build(state.depth - 1, W(Map.put(Map.empty(), state.n, [0])))\n",
+        "      _ -> Build { depth: state.depth - 1, n: W(Map.put(Map.empty(), state.n, [0])) }\n",
         "    }\n",
         "  }\n",
         "}\n",
@@ -5321,10 +5323,10 @@ fn outcome_size_is_linear_in_map_key_nesting() {
         "enum N {\n  Leaf\n  W(m: Map<N, List<Int>>)\n}\n",
         "struct Build { depth: Int, n: N }\n",
         "fn nested(depth: Int) -> N {\n",
-        "  loop state = Build(depth, Leaf) {\n",
+        "  loop state = Build { depth: depth, n: Leaf } {\n",
         "    case state.depth {\n",
         "      0 -> break state.n\n",
-        "      _ -> Build(state.depth - 1, W(Map.put(Map.empty(), state.n, [0])))\n",
+        "      _ -> Build { depth: state.depth - 1, n: W(Map.put(Map.empty(), state.n, [0])) }\n",
         "    }\n",
         "  }\n",
         "}\n",
@@ -5349,7 +5351,7 @@ fn outcome_size_is_linear_in_map_key_nesting() {
 #[test]
 fn ordering_is_structural_in_declaration_order() {
     let pairs = [
-        ("Version(1, 9, 7)", "Version(1, 10, 0)"),
+        ("Version { major: 1, minor: 9, patch: 7 }", "Version { major: 1, minor: 10, patch: 0 }"),
         ("[1, 2]", "[1, 2, 0]"),
         ("[1, 2, 0]", "[1, 3]"),
         ("None", "Some(0)"),
@@ -5793,7 +5795,7 @@ fn a_generic_struct_instantiated_with_data_is_equatable() {
         concat!(
             "struct Box<T> { value: T }\n",
             "fn same<T>(left: T, right: T) -> Bool { left == right }\n",
-            "pub fn main() -> List<Bool> { [same(Box(1), Box(1)), same(Box(1), Box(2))] }\n",
+            "pub fn main() -> List<Bool> { [same(Box { value: 1 }, Box { value: 1 }), same(Box { value: 1 }, Box { value: 2 })] }\n",
         ),
     );
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":[true,false]");
@@ -5822,8 +5824,8 @@ fn order_compare_returns_the_structural_ordering() {
         "  [\n",
         "    Order.compare(3, 3),\n",
         "    Order.compare([1], [1, 0]),\n",
-        "    by_age_then_name(User(\"b\", 30), User(\"a\", 30)),\n",
-        "    by_age_then_name(User(\"a\", 30), User(\"b\", 31)),\n",
+        "    by_age_then_name(User { name: \"b\", age: 30 }, User { name: \"a\", age: 30 }),\n",
+        "    by_age_then_name(User { name: \"a\", age: 30 }, User { name: \"b\", age: 31 }),\n",
         "    apply(Order.compare),\n",
         "  ]\n",
         "}\n",
@@ -6517,7 +6519,7 @@ fn record_types_are_written_in_parameters_returns_and_fields() {
         "  f(point)\n",
         "}\n",
         "pub fn main() -> Int {\n",
-        "  let holder = Holder({ y: 20, x: 10 })\n",
+        "  let holder = Holder { point: { y: 20, x: 10 } }\n",
         "  sum(origin()) + apply(sum, holder.point)\n",
         "}\n",
     );
@@ -7123,9 +7125,9 @@ fn a_struct_pattern_destructures_fields_by_position() {
         "  }\n",
         "}\n",
         "pub fn main() -> List<Text> {\n",
-        "  let total = cents(Money(250, \"EUR\")) + cents(Money(5, \"EUR\"))\n",
+        "  let total = cents(Money { cents: 250, currency: \"EUR\" }) + cents(Money { cents: 5, currency: \"EUR\" })\n",
         "  let doubled = fn(Money(amount, _)) { amount * 2 }\n",
-        "  [Int.to_text(total + doubled(Money(10, \"EUR\"))), label(Money(0, \"USD\")), label(Money(1, \"USD\"))]\n",
+        "  [Int.to_text(total + doubled(Money { cents: 10, currency: \"EUR\" })), label(Money { cents: 0, currency: \"USD\" }), label(Money { cents: 1, currency: \"USD\" })]\n",
         "}\n",
     );
     let source = format!("import std/int as Int\n{source}");
@@ -7146,7 +7148,7 @@ fn a_struct_pattern_with_the_wrong_field_count_is_a_type_error() {
         "    Money(a, b) -> a\n",
         "  }\n",
         "}\n",
-        "pub fn main() -> Int { cents(Money(1)) }\n",
+        "pub fn main() -> Int { cents(Money { cents: 1 }) }\n",
     ));
     assert_eq!(codes, ["T4230"]);
 }
@@ -7160,7 +7162,7 @@ fn a_refutable_field_makes_a_struct_pattern_refutable() {
         "fn free(Money(0)) -> Bool {\n",
         "  True\n",
         "}\n",
-        "pub fn main() -> Bool { free(Money(0)) }\n",
+        "pub fn main() -> Bool { free(Money { cents: 0 }) }\n",
     ));
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert_eq!(messages[0].0, "T4231");
@@ -7178,7 +7180,7 @@ fn a_struct_pattern_outside_its_module_is_private() {
                 "pub struct Money {\n",
                 "  cents: Int\n",
                 "}\n",
-                "pub fn zero() -> Money { Money(0) }\n",
+                "pub fn zero() -> Money { Money { cents: 0 } }\n",
             ),
         ),
     )
@@ -7226,7 +7228,7 @@ fn a_labelled_pattern_is_a_syntax_error_about_positional_patterns() {
         "    _ -> False\n",
         "  }\n",
         "}\n",
-        "pub fn main() -> Bool { free(Money(0)) }\n",
+        "pub fn main() -> Bool { free(Money { cents: 0 }) }\n",
     ));
     assert!(
         messages
@@ -7488,7 +7490,7 @@ fn formatting_keeps_update_fields_in_source_order() {
         "  jobs: Int\n",
         "}\n",
         "pub fn main() -> Config {\n",
-        "  let base = Config(\"a\", 1)\n",
+        "  let base = Config { name: \"a\", jobs: 1 }\n",
         "  let updated = {   ..base,  name: \"b\",jobs: 2 }\n",
         "  updated\n",
         "}\n",
@@ -8057,7 +8059,7 @@ const CONFIG: &str = concat!(
 
 fn update_codes(update: &str) -> Vec<String> {
     check_codes(&format!(
-        "{CONFIG}fn change(config: Config) -> Config {{\n  {update}\n}}\npub fn main() -> Int {{ change(Config(\"a\", 1, False)).jobs }}\n"
+        "{CONFIG}fn change(config: Config) -> Config {{\n  {update}\n}}\npub fn main() -> Int {{ change(Config {{ name: \"a\", jobs: 1, verbose: False }}).jobs }}\n"
     ))
 }
 
@@ -8072,7 +8074,7 @@ fn an_update_copies_the_base_and_replaces_named_fields() {
             "  { ..config, jobs: jobs }\n",
             "}\n",
             "pub fn main() -> List<Text> {\n",
-            "  let base = Config(\"build\", 2, False)\n",
+            "  let base = Config { name: \"build\", jobs: 2, verbose: False }\n",
             "  let updated = { ..with_jobs(base, 4), verbose: True }\n",
             "  let point = { x: 1, y: 2 }\n",
             "  let moved = { ..point, y: 5 }\n",
@@ -8105,7 +8107,7 @@ fn an_update_on_the_line_after_a_call_or_record_is_its_own_item() {
         "{CONFIG}{}",
         concat!(
             "fn after_call() -> Config {\n",
-            "  let base = Config(\"a\", 1, False)\n",
+            "  let base = Config { name: \"a\", jobs: 1, verbose: False }\n",
             "  { ..base, jobs: 2 }\n",
             "}\n",
             "fn after_record(base: Config) -> Config {\n",
@@ -8113,7 +8115,7 @@ fn an_update_on_the_line_after_a_call_or_record_is_its_own_item() {
             "  { ..changed, verbose: True }\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  let record = after_record(Config(\"b\", 1, False))\n",
+            "  let record = after_record(Config { name: \"b\", jobs: 1, verbose: False })\n",
             "  after_call().jobs + record.jobs\n",
             "}\n",
         )
@@ -8156,7 +8158,7 @@ fn an_update_keeps_each_field_type() {
 #[test]
 fn an_update_without_fields_is_the_base() {
     let source = format!(
-        "{CONFIG}fn change(config: Config) -> Config {{\n  {{ ..config }}\n}}\npub fn main() -> Int {{ change(Config(\"a\", 1, False)).jobs }}\n"
+        "{CONFIG}fn change(config: Config) -> Config {{\n  {{ ..config }}\n}}\npub fn main() -> Int {{ change(Config {{ name: \"a\", jobs: 1, verbose: False }}).jobs }}\n"
     );
     let module = ProjectSource::new(
         "main",
@@ -8244,7 +8246,7 @@ fn an_update_type_error_spells_out_function_types() {
         "  run: fn() -> Int\n",
         "}\n",
         "pub fn main() -> Int {\n",
-        "  let hooks = Hooks(fn() { 1 })\n",
+        "  let hooks = Hooks { run: fn() { 1 } }\n",
         "  let changed = { ..hooks, run: fn() { \"x\" } }\n",
         "  changed.run()\n",
         "}\n",
@@ -8262,7 +8264,7 @@ fn an_update_type_error_spells_out_function_types() {
 #[test]
 fn an_update_of_an_unsolved_base_asks_for_an_annotation() {
     let messages = check_messages(&format!(
-        "{CONFIG}fn bump(0, config) -> Config {{\n  config\n}}\nfn bump(n, config) {{\n  {{ ..config, jobs: n }}\n}}\npub fn main() -> Int {{ bump(4, Config(\"a\", 1, False)).jobs }}\n"
+        "{CONFIG}fn bump(0, config) -> Config {{\n  config\n}}\nfn bump(n, config) {{\n  {{ ..config, jobs: n }}\n}}\npub fn main() -> Int {{ bump(4, Config {{ name: \"a\", jobs: 1, verbose: False }}).jobs }}\n"
     ));
     assert_eq!(
         messages,
@@ -8283,7 +8285,7 @@ fn an_update_of_another_modules_struct_is_private() {
                 "pub struct Config {\n",
                 "  jobs: Int\n",
                 "}\n",
-                "pub fn default() -> Config { Config(1) }\n",
+                "pub fn default() -> Config { Config { jobs: 1 } }\n",
             ),
         ),
     )
@@ -8390,7 +8392,7 @@ fn an_update_evaluates_the_base_then_each_value_in_order() {
                 "fn base(fails: Bool) -> Config {{\n",
                 "  case fails {{\n",
                 "    True -> Failure(Step.Base)\n",
-                "    False -> Config(\"a\", 1, False)\n",
+                "    False -> Config {{ name: \"a\", jobs: 1, verbose: False }}\n",
                 "  }}\n",
                 "}}\n",
                 "fn jobs(fails: Bool) -> Int {{\n",
@@ -8486,8 +8488,8 @@ fn a_function_field_accepts_a_value_with_fewer_failures() {
         "  }\n",
         "}\n",
         "pub fn main() -> List<Int> {\n",
-        "  let quiet = Hooks(fn() { 1 }, 2)\n",
-        "  let failing = Hooks(fn() { Failure(E.A) }, 2)\n",
+        "  let quiet = Hooks { run: fn() { 1 }, n: 2 }\n",
+        "  let failing = Hooks { run: fn() { Failure(E.A) }, n: 2 }\n",
         "  [total(quiet), total(failing), total({ ..quiet, run: fn() { 5 } })]\n",
         "}\n",
     );
@@ -8915,14 +8917,14 @@ fn a_never_arm_joins_with_any_type() {
             "{}",
             "fn route(method: Text) -> Response {{\n",
             "  case method {{\n",
-            "    \"GET\" -> Response(200)\n",
+            "    \"GET\" -> Response {{ code: 200 }}\n",
             "    other -> reject(other)\n",
             "  }}\n",
             "}}\n",
             "fn route_first(method: Text) {{\n",
             "  case method {{\n",
             "    \"PUT\" -> reject(method)\n",
-            "    _ -> Response(201)\n",
+            "    _ -> Response {{ code: 201 }}\n",
             "  }}\n",
             "}}\n",
             "pub fn main() -> List<Int> {{\n",
@@ -9287,7 +9289,7 @@ fn failure_variant_pattern_binds_a_generic_payload_at_its_instance_type() {
         "  }\n",
         "}\n",
         "pub fn main() -> Int {\n",
-        "  case send(Order(7)) {\n",
+        "  case send(Order { id: 7 }) {\n",
         "    Success(n) -> n\n",
         "    Failure(Bounce.Back(back)) -> back.id\n",
         "    Failure(Bounce.Lost) -> -1\n",
@@ -9319,7 +9321,7 @@ fn bound_generic_failure_keeps_its_instance_type() {
         "  }\n",
         "}\n",
         "pub fn main() -> Int {\n",
-        "  case send(Order(9)) {\n",
+        "  case send(Order { id: 9 }) {\n",
         "    Success(n) -> n\n",
         "    Failure(error) -> case error {\n",
         "      Bounce.Back(back) -> back.id\n",
@@ -10351,7 +10353,7 @@ fn an_update_of_a_local_base_evaluates_values_in_source_order() {
                 "  {{ ..config, verbose: verbose(verbose_fails), jobs: jobs(jobs_fails) }}\n",
                 "}}\n",
                 "pub fn main() -> Int {{\n",
-                "  let updated = change(Config(\"a\", 1, False), {}, {})\n",
+                "  let updated = change(Config {{ name: \"a\", jobs: 1, verbose: False }}, {}, {})\n",
                 "  case updated.verbose {{\n",
                 "    True -> updated.jobs\n",
                 "    False -> 0\n",
@@ -10489,10 +10491,10 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
     };
     let holds = "fn() {\n    let _ = child\n    1\n  }";
     for send in [
-        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn({holds}))\n"),
-        format!("  let made = Channel.bounded(1)\n  let conn = Conn({holds})\n  Channel.send(made.sender, conn)\n"),
-        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn({holds})))\n"),
-        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged({holds}, 1))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn {{ run: {holds} }})\n"),
+        format!("  let made = Channel.bounded(1)\n  let conn = Conn {{ run: {holds} }}\n  Channel.send(made.sender, conn)\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Ask.Return(Conn {{ run: {holds} }}))\n"),
+        format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Tagged {{ run: {holds}, tag: 1 }})\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Some({holds}))\n"),
         format!("  let made = Channel.bounded(1)\n  Channel.send(made.sender, Success({holds}))\n"),
     ] {
@@ -10501,7 +10503,7 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
     // A call other than a constructor is not followed: `Option.map` runs its
     // callback and does not keep it, so its result is judged by its type.
     for send in [
-        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn(fn() { 1 }))\n".to_owned(),
+        "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Conn { run: fn() { 1 } })\n".to_owned(),
         "  let made = Channel.bounded(1)\n  Channel.send(made.sender, Option.map(Some(1), fn(x: Int) -> Int {\n    let _ = child\n    x\n  }))\n".to_owned(),
     ] {
         assert!(check_codes(&program(&send)).is_empty(), "{send}");
@@ -11028,7 +11030,7 @@ const HAND_PROGRAM: &str = concat!(
     "enum Parcel {\n  Hold(hand: Hand)\n}\n",
     "fn wrap(r: Receiver<Int>) -> Hand {\n  Hand.Over(r)\n}\n",
     "struct Box {\n  inner: Receiver<Int>\n}\n",
-    "fn boxed(r: Receiver<Int>) -> Box {\n  Box(r)\n}\n",
+    "fn boxed(r: Receiver<Int>) -> Box {\n  Box { inner: r }\n}\n",
     "interface Store {\n  read: fn() -> Int\n}\n",
     "fn uses_store() -> Int needs { store: Store } {\n  store.read()\n}\n",
 );
@@ -11202,7 +11204,7 @@ fn reading_or_owning_an_exclusive_binding_does_not_move_it() {
             "  let a = first_of(rs)\n  let b = first_of(rs)\n  1\n}}\n",
             "struct Slot<T> {{\n  item: T\n}}\n",
             "fn slot_of(rs: Receiver<Receiver<Int>>) -> Slot<Receiver<Int>> {{\n",
-            "  Slot(rs_fallback())\n}}\n",
+            "  Slot {{ item: rs_fallback() }}\n}}\n",
             "fn slot_twice(rs: Receiver<Receiver<Int>>) -> Int {{\n",
             "  let a = slot_of(rs)\n  let b = slot_of(rs)\n  1\n}}\n",
             "fn closure_twice(r: Receiver<Int>) -> Int {{\n",
@@ -11673,22 +11675,25 @@ fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
     // for a handler of `UserError | OrderError`: it would be handed an
     // `OrderError` it cannot match. Only covariant arguments join by union,
     // and an input nested in another data type still counts.
-    let source = |declaration: &str, wrap: &str| {
+    let source = |declaration: &str, field: &str, wrap: &str| {
+        let user = wrap.replace('%', "user");
+        let order = wrap.replace('%', "order");
         format!(
             "{CAPTURE}enum UserError {{ Missing }}\nenum OrderError {{ Lost }}\n{declaration}\n\
              fn user(error: UserError) -> Int {{ 1 }}\n\
              fn order(error: OrderError) -> Int {{ 2 }}\n\
-             fn both() -> Int {{\n  let handlers = [Handler({wrap}(user)), Handler({wrap}(order))]\n  0\n}}\n"
+             fn both() -> Int {{\n  let handlers = [Handler {{ {field}: {user} }}, Handler {{ {field}: {order} }}]\n  0\n}}\n"
         )
     };
     assert_eq!(
-        check_codes(&source("struct Handler<E> { run: fn(E) -> Int }", "")),
+        check_codes(&source("struct Handler<E> { run: fn(E) -> Int }", "run", "%")),
         ["T4203"]
     );
     assert_eq!(
         check_codes(&source(
             "struct Handler<E> { run: Option<fn(E) -> Int> }",
-            "Some"
+            "run",
+            "Some(%)"
         )),
         ["T4203"]
     );
@@ -11697,7 +11702,8 @@ fn a_failure_set_argument_used_as_a_function_input_does_not_join() {
     assert_eq!(
         check_codes(&source(
             "struct Cell<E> { run: fn(E) -> Int }\nstruct Handler<E> { cell: Cell<E> }",
-            "Cell"
+            "cell",
+            "Cell { run: % }"
         )),
         ["T4203"]
     );
@@ -11711,7 +11717,7 @@ fn a_callback_for_a_narrower_failure_set_does_not_fit_a_wider_one() {
         fn takes_a(a: A) -> Text {\n  case a {\n    A.XA -> \"a\"\n  }\n}\n\
         fn run_ab(f: fn(A | B) -> Text) -> Text { f(B.XB) }\n\
         fn run_handler(h: Handler<A | B>) -> Text { (h.run)(B.XB) }\n\
-        pub fn main() -> Text { \"${run_ab(takes_a)} ${run_handler(Handler(takes_a))}\" }\n";
+        pub fn main() -> Text { \"${run_ab(takes_a)} ${run_handler(Handler { run: takes_a })}\" }\n";
     // Both name the variant the callback cannot take (`T4346`).
     assert_eq!(check_codes(rejected), ["T4346", "T4346"]);
 
@@ -11740,7 +11746,7 @@ fn a_generic_function_does_not_take_a_callback_for_a_narrower_failure_set() {
     assert_eq!(check_codes(&callback), ["T4346"]);
     let handler = format!(
         "{prelude}fn run_h<T>(h: Handler<A | B>, x: T) -> Text {{ (h.run)(B.XB) }}\n\
-         pub fn main() -> Text {{ run_h(Handler(takes_a), 1) }}\n"
+         pub fn main() -> Text {{ run_h(Handler {{ run: takes_a }}, 1) }}\n"
     );
     assert_eq!(check_codes(&handler), ["T4346"]);
 }
@@ -11753,7 +11759,7 @@ fn a_type_argument_used_only_as_an_input_takes_a_wider_set() {
         fn either(value: A | B) -> Text {\n  case value {\n    A.XA -> \"a\"\n    B.XB -> \"b\"\n  }\n}\n\
         fn run_a(h: Handler<A>) -> Text { (h.run)(A.XA) }\n\
         fn run_generic<T>(h: Handler<A>, x: T) -> Text { (h.run)(A.XA) }\n\
-        pub fn main() -> Text {\n  let h: Handler<A | B> = Handler(either)\n  \"${run_a(h)}${run_generic(h, 1)}\"\n}\n";
+        pub fn main() -> Text {\n  let h: Handler<A | B> = Handler { run: either }\n  \"${run_a(h)}${run_generic(h, 1)}\"\n}\n";
     assert_eq!(
         run_both("contravariant_handler", program),
         "\"outcome\":\"success\",\"value\":\"aa\""
@@ -11768,7 +11774,7 @@ fn a_type_argument_used_as_input_and_output_takes_only_its_own_set() {
         fn widen(value: A | B) -> A | B { B.XB }\n\
         fn run_a(codec: Codec<A>) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
         fn run_generic<T>(codec: Codec<A>, x: T) -> Int {\n  case (codec.run)(A.XA) {\n    A.XA -> 1\n  }\n}\n\
-        pub fn main() -> Int {\n  let codec: Codec<A | B> = Codec(widen)\n  run_a(codec) + run_generic(codec, 1)\n}\n";
+        pub fn main() -> Int {\n  let codec: Codec<A | B> = Codec { run: widen }\n  run_a(codec) + run_generic(codec, 1)\n}\n";
     assert_eq!(check_codes(program), ["T4203", "T4203"]);
 }
 
@@ -12136,7 +12142,7 @@ fn comparisons_past_the_inline_compare_steps_agree_with_the_interpreter() {
         (1..=40)
             .map(|index| {
                 let value = if index == 40 { last } else { index };
-                format!("Pair([{value}, {index}], {index})")
+                format!("Pair {{ left: [{value}, {index}], right: {index} }}")
             })
             .collect::<Vec<_>>()
             .join(", ")
@@ -12191,11 +12197,11 @@ fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
             "  by_id: Map<Int, Entry>,\n",
             "}\n",
             "fn grow(index: Index) -> Index {\n",
-            "  let entry = Entry(index.count, [index.count, index.count * 2])\n",
-            "  Index(index.count + 1, List.push(index.entries, entry), Map.put(index.by_id, index.count, entry))\n",
+            "  let entry = Entry { id: index.count, tags: [index.count, index.count * 2] }\n",
+            "  Index { count: index.count + 1, entries: List.push(index.entries, entry), by_id: Map.put(index.by_id, index.count, entry) }\n",
             "}\n",
             "fn shared() -> Int {\n",
-            "  let index = loop index = Index(0, [], Map.empty()) {\n",
+            "  let index = loop index = Index { count: 0, entries: [], by_id: Map.empty() } {\n",
             "    case index.count >= 300 {\n",
             "      True -> break index\n",
             "      False -> grow(index)\n",
@@ -12218,10 +12224,10 @@ fn values_kept_across_bump_allocated_passes_agree_with_the_interpreter() {
             "  [middle, small]\n",
             "}\n",
             "fn compacted() -> Int {\n",
-            "  let kept = loop state = Rounds(0, [[0]]) {\n",
+            "  let kept = loop state = Rounds { round: 0, kept: [[0]] } {\n",
             "    case state.round >= 50 {\n",
             "      True -> break state.kept\n",
-            "      False -> Rounds(state.round + 1, windows(state.round))\n",
+            "      False -> Rounds { round: state.round + 1, kept: windows(state.round) }\n",
             "    }\n",
             "  }\n",
             "  List.reduce(List.concat(kept), 0, fn(sum: Int, n: Int) -> Int { sum + n })\n",
@@ -12320,14 +12326,14 @@ fn values_kept_across_linked_and_bumped_passes_agree_with_the_interpreter() {
             "}\n",
             "fn keep(state: State) -> State {\n",
             "  let n = state.count\n",
-            "  State(n + 1, List.push(state.kept, [n, n * 3, n * 7]), state.scratch)\n",
+            "  State { count: n + 1, kept: List.push(state.kept, [n, n * 3, n * 7]), scratch: state.scratch }\n",
             "}\n",
             "fn churn(state: State) -> State {\n",
             "  let garbage = List.map(List.repeat(state.count, 60), fn(x: Int) -> Int { x + 1 })\n",
-            "  State(state.count + 1, state.kept, state.scratch + List.length(garbage))\n",
+            "  State { count: state.count + 1, kept: state.kept, scratch: state.scratch + List.length(garbage) }\n",
             "}\n",
             "pub fn main() -> Int {\n",
-            "  let final = loop state = State(0, [], 0) {\n",
+            "  let final = loop state = State { count: 0, kept: [], scratch: 0 } {\n",
             "    case state.count >= 400 {\n",
             "      True -> break state\n",
             "      False -> case (state.count / 40) % 2 {\n",
@@ -12544,13 +12550,13 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
     };
     let expected = "\"outcome\":\"expected_failure\",\"error\":{\"type\":\"Oops\",\"variant\":\"Bad\",\"fields\":{}}";
     assert_eq!(
-        run_both("failure-set-argument-direct", &program("  call(Box(fail))")),
+        run_both("failure-set-argument-direct", &program("  call(Box { run: fail })")),
         expected
     );
     assert_eq!(
         run_both(
             "failure-set-argument-annotated",
-            &program("  let boxed: Box<Oops> = Box(fail)\n  call(boxed)"),
+            &program("  let boxed: Box<Oops> = Box { run: fail }\n  call(boxed)"),
         ),
         expected
     );
@@ -12559,7 +12565,7 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
         "fn call<E>(boxed: Box<E>) -> Int {\n  boxed.run()\n}\n\n",
         "pub struct Box<E> {\n  run: fn() -> Int errors E,\n}\n\n",
         "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
-        "pub fn main() -> Int {\n  call(Box(fail))\n}\n",
+        "pub fn main() -> Int {\n  call(Box { run: fail })\n}\n",
     );
     assert_eq!(run_both("failure-set-argument-declared-after", declared_after), expected);
     let nested_after = concat!(
@@ -12568,7 +12574,7 @@ fn a_failure_set_type_argument_carries_its_failures_through_a_field_call() {
         "pub struct Outer<E> {\n  inner: Box<E>,\n}\n\n",
         "pub struct Box<E> {\n  run: fn() -> Int errors E,\n}\n\n",
         "fn fail() -> Int {\n  Failure(Oops.Bad)\n}\n\n",
-        "pub fn main() -> Int {\n  call(Outer(Box(fail)))\n}\n",
+        "pub fn main() -> Int {\n  call(Outer { inner: Box { run: fail } })\n}\n",
     );
     assert_eq!(run_both("failure-set-argument-nested-after", nested_after), expected);
 }
@@ -12634,6 +12640,252 @@ fn project_codes(modules: &[(&str, &str)]) -> Vec<String> {
         .collect()
 }
 
+const POINT: &str = concat!(
+    "struct Point {\n",
+    "  x: Int\n",
+    "  y: Int\n",
+    "}\n",
+    "\n",
+);
+
+#[test]
+fn a_struct_is_built_by_field_name_in_any_order() {
+    let source = format!(
+        "{POINT}{}",
+        concat!(
+            "struct Box<T> {\n",
+            "  value: T\n",
+            "}\n",
+            "\n",
+            "const origin: Point = Point { y: 0, x: 0 }\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let written = Point { x: 1, y: 2 }\n",
+            "  let swapped = Point { y: 20, x: 10 }\n",
+            "  let boxed = Box { value: \"seven\" }\n",
+            "  let same = case (Point { y: 2, x: 1 }) == written {\n",
+            "    True -> 1000\n",
+            "    False -> 0\n",
+            "  }\n",
+            "  let looped = loop state = Point { x: 0, y: 0 } {\n",
+            "    case state.x {\n",
+            "      3 -> break state\n",
+            "      _ -> Point { x: state.x + 1, y: state.y + 2 }\n",
+            "    }\n",
+            "  }\n",
+            "  written.x + written.y * 2 + swapped.x * 3 + swapped.y + origin.x + same + looped.y * 100 + Text.byte_length(boxed.value)\n",
+            "}\n",
+        )
+    );
+    let source = format!("import std/text as Text\n\n{source}");
+    let outcome = run_both("struct-by-name", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":1660");
+}
+
+#[test]
+fn struct_field_values_evaluate_in_source_order() {
+    let source = format!(
+        "{POINT}{}",
+        concat!(
+            "enum Stop {\n",
+            "  First\n",
+            "  Second\n",
+            "}\n",
+            "\n",
+            "fn fail(stop: Stop) -> Int {\n",
+            "  Failure(stop)\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let point = Point { y: fail(Stop.First), x: fail(Stop.Second) }\n",
+            "  point.x\n",
+            "}\n",
+        )
+    );
+    let outcome = run_both("struct-order", &source);
+    assert!(outcome.contains("\"outcome\":\"expected_failure\""), "{outcome}");
+    assert!(outcome.contains("First"), "{outcome}");
+    assert!(!outcome.contains("Second"), "{outcome}");
+}
+
+#[test]
+fn a_struct_literal_names_every_field_once() {
+    let program = |body: &str| format!("{POINT}pub fn main() -> Int {{\n  {body}\n  1\n}}\n");
+    assert_eq!(check_codes(&program("let p = Point { x: 1 }")), ["T4215"]);
+    assert_eq!(check_codes(&program("let p = Point { x: 1, y: 2, z: 3 }")), ["T4205"]);
+    assert_eq!(check_codes(&program("let p = Point { x: 1, x: 2, y: 3 }")), ["T4211"]);
+    assert_eq!(check_codes(&program("let p = Point { x: 1, y: \"two\" }")), ["T4203"]);
+    assert_eq!(check_codes(&program("let p = Point { ..origin, x: 1 }\n  let origin = 1")), ["S1001"]);
+}
+
+#[test]
+fn positional_struct_construction_is_rejected_with_the_named_form() {
+    let source = format!("{POINT}pub fn main() -> Int {{\n  let p = Point(1, 2)\n  p.x\n}}\n");
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source.as_str()))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let diagnostics = report.diagnostics();
+    assert_eq!(
+        diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>(),
+        ["T4216"]
+    );
+    let fix = &diagnostics[0].fixes()[0];
+    let range = fix.range();
+    assert_eq!(&source[range.start() as usize..range.end() as usize], "Point(1, 2)");
+    assert_eq!(fix.replacement(), "Point { x: 1, y: 2 }");
+    let program = |body: &str| format!("{POINT}pub fn main() -> Int {{\n  {body}\n  1\n}}\n");
+    assert_eq!(check_codes(&program("let p = Point(x: 1, y: 2)")), ["T4216"]);
+    assert_eq!(check_codes(&program("let make = Point")), ["T4216"]);
+    assert_eq!(check_codes(&program("let p = 1 |> Point(2)")), ["T4216"]);
+}
+
+#[test]
+fn braces_with_field_names_build_only_a_struct_of_the_module() {
+    let codes = check_codes(concat!(
+        "enum Shape {\n",
+        "  Circle(radius: Int)\n",
+        "}\n",
+        "\n",
+        "fn area(radius: Int) -> Int {\n",
+        "  radius\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let shape = Shape.Circle { radius: 1 }\n",
+        "  let value = area { radius: 2 }\n",
+        "  1\n",
+        "}\n",
+    ));
+    assert_eq!(codes, ["T4217", "T4217"]);
+    let library = concat!(
+        "pub struct Money {\n",
+        "  cents: Int\n",
+        "}\n",
+        "\n",
+        "pub fn zero() -> Money {\n",
+        "  Money { cents: 0 }\n",
+        "}\n",
+    );
+    let user = concat!(
+        "import lib/money as Cash\n",
+        "import lib/money.{Money}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let qualified = Cash.Money { cents: 1 }\n",
+        "  let imported = Money { cents: 2 }\n",
+        "  1\n",
+        "}\n",
+    );
+    let codes = project_codes(&[("lib/money", library), ("app/main", user)]);
+    // Fields of another module's struct are private, so neither form builds it;
+    // a member import binds the type, not a constructor.
+    assert_eq!(codes, ["E_PRIVATE_STRUCT_CONSTRUCTOR", "E_UNRESOLVED_VALUE"]);
+}
+
+// In a `case` subject the `{` opens the arms, so an arm that starts with a
+// typed binding is not read as a struct literal's field; brackets around the
+// subject allow a literal there. A clause guard may end in one.
+#[test]
+fn a_case_subject_needs_brackets_around_a_struct_literal_and_a_guard_does_not() {
+    let source = format!(
+        "{POINT}{}",
+        concat!(
+            "fn next(value: Int) -> Int {\n",
+            "  case value {\n",
+            "    count: Int -> count + 1\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "fn far(point: Point) -> Int if point != Point { x: 0, y: 0 } {\n",
+            "  100\n",
+            "}\n",
+            "fn far(point) {\n",
+            "  0\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  let bracketed = case (Point { x: 4, y: 5 }) {\n",
+            "    point -> point.x * 10 + point.y\n",
+            "  }\n",
+            "  next(1) + bracketed + far(Point { x: 1, y: 0 }) + far(Point { x: 0, y: 0 })\n",
+            "}\n",
+        )
+    );
+    let outcome = run_both("struct-case-subject", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":147");
+}
+
+// A literal is ordered by its written name, so the name must still be the
+// struct where it is used: a local or a parameter of that name is not one, and
+// neither is a field or any other value.
+#[test]
+fn braces_after_a_name_that_is_not_the_struct_are_rejected() {
+    let program = |body: &str| format!("{POINT}pub fn main() -> Int {{\n{body}\n}}\n");
+    assert_eq!(
+        check_codes(&program(
+            "  let Point = fn(a: Int, b: Int) -> Int { a * 10 + b }\n  Point { y: 2, x: 1 }"
+        )),
+        ["T4217"]
+    );
+    assert_eq!(
+        check_codes(&format!(
+            "{POINT}fn apply(Point: fn(Int, Int) -> Int) -> Int {{\n  Point {{ x: 1, y: 2 }}\n}}\n\npub fn main() -> Int {{\n  1\n}}\n"
+        )),
+        ["T4217"]
+    );
+    assert_eq!(
+        check_codes(&program(
+            "  let r = { make: fn(x: Int) -> Int { x } }\n  r.make { x: 1 }"
+        )),
+        ["T4217"]
+    );
+}
+
+#[test]
+fn a_struct_without_fields_is_built_with_empty_braces() {
+    let source = concat!(
+        "struct Marker {\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Int {\n",
+        "  let first = Marker {}\n",
+        "  let second = Marker {\n",
+        "  }\n",
+        "  case first == second {\n",
+        "    True -> 1\n",
+        "    False -> 0\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_eq!(run_both("struct-empty", source), "\"outcome\":\"success\",\"value\":1");
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(formatted.text().contains("  let second = Marker {}\n"), "{}", formatted.text());
+    let positional = "struct Marker {\n}\n\npub fn main() -> Int {\n  let m = Marker()\n  1\n}\n";
+    let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", positional))
+        .expect("valid module path");
+    let report = Compiler::type_project(vec![module]);
+    let codes = report.diagnostics().iter().map(|d| d.code()).collect::<Vec<_>>();
+    assert_eq!(codes, ["T4216"]);
+    assert_eq!(report.diagnostics()[0].fixes()[0].replacement(), "Marker {}");
+}
+
+// In a `case` subject the literal the fix writes needs brackets.
+#[test]
+fn the_named_form_fix_brackets_a_case_subject() {
+    for (call, replacement) in [
+        ("Point(1, 2)", "(Point { x: 1, y: 2 })"),
+        ("Point(y: 2, x: 1)", "(Point { y: 2, x: 1 })"),
+    ] {
+        let source = format!("{POINT}pub fn main() -> Int {{\n  case {call} {{\n    point -> point.x\n  }}\n}}\n");
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source.as_str()))
+            .expect("valid module path");
+        let report = Compiler::type_project(vec![module]);
+        let diagnostic = &report.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "T4216", "{}", diagnostic.message());
+        assert_eq!(diagnostic.fixes()[0].replacement(), replacement);
+    }
+}
+
 const CHECKOUT_ERRORS: &str = concat!(
     "enum StockError {\n",
     "  OutOfStock(sku: Text)\n",
@@ -12691,7 +12943,7 @@ fn a_type_alias_may_be_used_above_its_declaration() {
             "  total(both)\n",
             "}\n",
             "\n",
-            "const both: Pair = { left: 4, right: Inner(6).value }\n",
+            "const both: Pair = { left: 4, right: Inner { value: 6 }.value }\n",
             "\n",
             "type Pair = { left: Int, right: Int }\n",
             "\n",
@@ -12825,8 +13077,8 @@ fn a_struct_between_ends_an_alias_chain() {
             "}\n",
             "\n",
             "pub fn main() -> Int {\n",
-            "  let leaf: Tree = { root: Node([], 2) }\n",
-            "  let tree: Tree = { root: Node([leaf], 1) }\n",
+            "  let leaf: Tree = { root: Node { children: [], value: 2 } }\n",
+            "  let tree: Tree = { root: Node { children: [leaf], value: 1 } }\n",
             "  tree.root.value + List.length(tree.root.children)\n",
             "}\n",
         ),

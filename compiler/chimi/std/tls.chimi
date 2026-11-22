@@ -84,7 +84,7 @@ pub type Settings = { roots: Roots }
 /// A client's settings: start from these and name what differs, as
 /// `{ ..Tls.defaults, roots: Tls.roots(pem) }`. The default roots are the
 /// system's.
-pub const defaults: Settings = { roots: Roots(None) }
+pub const defaults: Settings = { roots: Roots { pem: None } }
 
 /// Roots that trust exactly the certificates in `pem`, one or more PEM
 /// `CERTIFICATE` blocks.
@@ -94,7 +94,7 @@ pub const defaults: Settings = { roots: Roots(None) }
 /// Cost: O(n) in the size of `pem`, parsed once here and again per client.
 pub fn roots(pem: Bytes) -> Roots {
   let _ = tls(native_check_roots(pem), "")
-  Roots(Some(pem))
+  Roots { pem: Some(pem) }
 }
 
 /// A server identity: a PEM certificate chain, leaf first, and the leaf's
@@ -104,7 +104,7 @@ pub fn roots(pem: Bytes) -> Roots {
 /// not match the certificate.
 pub fn identity(certificate: Bytes, key: Bytes) -> Identity {
   tls(native_check_identity(certificate, key), "")
-  Identity(certificate, key)
+  Identity { certificate: certificate, key: key }
 }
 
 // 4. Wrapping a connection.

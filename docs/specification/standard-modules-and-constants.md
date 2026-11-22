@@ -49,10 +49,10 @@ pub struct Duration {
   nanoseconds: Int
 }
 
-pub const zero = Duration(0)
+pub const zero = Duration { nanoseconds: 0 }
 
 pub fn seconds(count: Int) -> Duration {
-  Duration(count * 1_000_000_000)
+  Duration { nanoseconds: count * 1_000_000_000 }
 }
 ```
 
@@ -879,7 +879,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `pub native fn write_stdout(...)` in `std/io` | `N3106` |
 | Importing `std/io` and naming `IO.system_console` | private symbol |
 | Root needs `Console`; runner supplies `std/io.system_console` | runs; trace shows host boundary |
-| `pub const zero = Duration(0)` used as `Duration.zero` from another module | compiles; value loaded from program data |
+| `pub const zero = Duration { nanoseconds: 0 }` used as `Duration.zero` from another module | compiles; value loaded from program data |
 | `import std/duration.{zero}` | member imports cannot bind values |
 | `let limit = 32` at module level | `L2101` with an edit to `const` |
 | `const limit = 32` inside a function body | `S1103` |
@@ -905,7 +905,7 @@ chosen to avoid codes in use (`S1001`–`S1002`, `L2001`, `N3001`–`N3002`,
 | `"state: ${state}"` where `state` is an enum | `T4325` suggesting `Debug.render` |
 | `"${load(path)}"` where `load` returns `Text` and can fail | compiles; the failure joins the enclosing row |
 | `Debug.render(PaymentError.Declined("card"))` | `PaymentError.Declined("card")` |
-| `Debug.render(Money(2500))` | `Money { cents: 2500 }` |
+| `Debug.render(Money { cents: 2500 })` | `Money { cents: 2500 }` |
 | `Debug.render({ charge: fake_charge })` | `{ charge: <fn fake_charge> }` |
 | `Debug.render(receiver)` | `<Receiver>` |
 | A 1 MiB list escaping `main` as a failure payload | runner output truncated at 4096 bytes |
