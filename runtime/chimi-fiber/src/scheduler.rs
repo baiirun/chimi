@@ -3795,7 +3795,7 @@ mod tests {
         let _task = scheduler.start_root(read_the_clock_around_a_sleep).expect("task");
         let _ = scheduler.run_until_idle();
         let (before, after, answered) = CLOCK_READS.with(std::cell::Cell::get);
-        assert!(before >= 0 && before < 5_000_000, "before the sleep: {before}");
+        assert!((0..5_000_000).contains(&before), "before the sleep: {before}");
         assert!(after >= 5_000_000 && after <= answered, "after {after}, answered {answered}");
     }
 
