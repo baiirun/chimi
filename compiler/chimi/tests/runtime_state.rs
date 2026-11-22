@@ -85,6 +85,11 @@ const SHARED: &[&str] = &[
     "child_signal_installed",
     // Set by the first fatal exit, so only one thread runs exit.
     "runtime_exiting",
+    // Process-wide footprints and peaks, folded in by every carrier.
+    "process_footprint_bytes",
+    "process_peak_footprint_bytes",
+    "process_fragment_footprint_bytes",
+    "process_peak_fragment_footprint_bytes",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {

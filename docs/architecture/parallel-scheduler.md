@@ -94,7 +94,8 @@ function-local static, so new state gets an owner when it is added.
   `capture_transfer_probes`, `unscoped_allocated_bytes`,
   `process_heap_peak_value_bytes`, `scope_totals`). The counters are signed
   per-carrier deltas, since an allocation made on one carrier can be freed on
-  another; the report sums them and takes the largest peak (PR 5a).
+  another; the report sums them (PR 5a), and with several carrier threads its
+  peaks are process-wide ones kept within 64 KiB per carrier (PR 6b).
   Carrier 0 (`carrier_first`) is a static, and `carriers_create` allocates
   the others before any carrier thread starts. `carrier` is each thread's
   initial-exec thread-local pointer, set by `carrier_thread_enter`.
@@ -384,8 +385,8 @@ four keep one carrier.
    - The memory counters become signed per-carrier deltas. Moved to PR 5
      (decided 2026-11-21): with one carrier, and in the simulation, which
      carries one set of counters from carrier to carrier, no test can tell
-     deltas from today's counters. And a per-carrier peak of a delta means
-     nothing until PR 6 decides what the report's peaks mean. PR 5 has the
+     deltas from today's counters. A per-carrier peak of a delta means
+     nothing, so PR 6b gives the report process-wide peaks. PR 5 has the
      first allocation freed on another thread, so the change is tested
      there.
    - New test: a count reaches zero inside a release hook, on a carrier
@@ -1018,6 +1019,20 @@ four keep one carrier.
      µs to 8-10 µs; PG04's start and stop, which are kernel-lock bound, did
      not improve (stop got slower), so their fix is step 4's sharded kernel.
      Numbers: multi-carrier-baseline.md "Spinning before a carrier blocks".
+   - 6b as landed: the memory report's `heap_chunk_bytes_peak` and
+     `fragment_bytes_peak` mean the whole program's peak on several carriers
+     too. Each carrier folds its change into process-wide atomic counters
+     once it has moved 64 KiB either way since its last fold
+     (`footprint_fold`), and a fold raises the process peak with a
+     compare-and-swap. The report takes that peak, raised to the exact sum
+     at exit, so on n carriers it is within n × 64 KiB of the true peak;
+     one carrier and the simulation build still record it exactly, as
+     before. A per-carrier peak would drift without bound, since an
+     allocation made on one carrier can be freed on another. The other
+     peaks (a scope's, an incarnation heap's, a task's) have one owner each
+     and were already well defined. `fixtures/carrier-threads-stress.c`
+     allocates on one carrier and frees on another 1,000 times and checks
+     the process peaks against the true one.
 
 After step 5, `Task.start` fan-out still runs on one carrier. Only processes
 spread out until step 4 of "Order of work" adds stealing.

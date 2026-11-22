@@ -498,7 +498,40 @@ static ChimiValue *constant_window(void) {
   return constant;
 }
 
-/* On one carrier, a short window of a constant compacts it, as any list. */
+/* With several carriers the report's peaks are the process's: carrier 1
+   allocates what carrier 2 frees, again and again, so carrier 1's own count
+   climbs to a thousand times what is ever live at once, while the process
+   peaks at one allocation's worth, within the fold tolerance. */
+static void a_peak_counts_the_whole_process(void) {
+  enum { ROUNDS_OF_HANDOFF = 1000, BYTES = 100 * 1024 };
+  HeapTotals start = heap_totals_sum();
+  report_process_peaks(&start);
+  int64_t live = start.footprint_bytes, fragments = start.fragment_footprint_bytes;
+  for (int round = 0; round < ROUNDS_OF_HANDOFF; ++round) {
+    carrier_bind(carrier_at(1));
+    footprint_add(BYTES);
+    fragment_footprint_add(BYTES);
+    carrier_bind(carrier_at(2));
+    footprint_sub(BYTES);
+    fragment_footprint_sub(BYTES);
+  }
+  carrier_bind(&carrier_first);
+  CHECK(carrier_at(1)->heap_totals.peak_footprint_bytes >= (int64_t)ROUNDS_OF_HANDOFF * BYTES,
+        "carrier 1's own count did not drift");
+  HeapTotals end = heap_totals_sum();
+  report_process_peaks(&end);
+  int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_BYTES;
+  int64_t peak = start.peak_footprint_bytes > live + BYTES ? start.peak_footprint_bytes : live + BYTES;
+  int64_t fragment_peak = start.peak_fragment_footprint_bytes > fragments + BYTES
+                            ? start.peak_fragment_footprint_bytes : fragments + BYTES;
+  CHECK(end.footprint_bytes == live, "the footprint did not come back");
+  CHECK(end.peak_footprint_bytes >= peak - slack && end.peak_footprint_bytes <= peak + slack,
+        "process peak %" PRId64 ", true peak %" PRId64, end.peak_footprint_bytes, peak);
+  CHECK(end.peak_fragment_footprint_bytes >= fragment_peak - slack &&
+          end.peak_fragment_footprint_bytes <= fragment_peak + slack,
+        "process fragment peak %" PRId64 ", true peak %" PRId64, end.peak_fragment_footprint_bytes, fragment_peak);
+}
+
 /* One carrier sees the epochs and span ids a single shared counter would
    give: consecutive, across a block boundary. */
 static void a_carrier_alone_takes_consecutive_ids(void) {
@@ -510,6 +543,7 @@ static void a_carrier_alone_takes_consecutive_ids(void) {
         "one carrier's span ids are not consecutive");
 }
 
+/* On one carrier, a short window of a constant compacts it, as any list. */
 static void a_constant_compacts_on_one_carrier(void) {
   ChimiValue *constant = constant_window();
   ChimiValue *window = list_slice(constant, 1, 5);
@@ -627,6 +661,7 @@ int main(void) {
   a_carrier_alone_takes_consecutive_ids();
   carriers_create(THREADS + 1);
   CHECK(carrier_count == THREADS + 1, "%zu carriers", carrier_count);
+  a_peak_counts_the_whole_process();
   a_fiber_on_an_unbound_thread_aborts(start_a_task_unbound, "task");
 
   runtime.telemetry = tmpfile();
