@@ -1,0 +1,4 @@
+using_record_mutations.py, 2026-11-22: 10 mutants, 10 killed.
+First run at ee4421f: 8 of 8 killed. The two mutants added for the review
+fixes (a spread provider record lowered as a value, and needs explained after
+a rejected record) were killed with the rest at 3579d38.
