@@ -853,9 +853,9 @@ pub(super) fn run_on_carriers(
     deadlock_code: i64,
     enter: Option<EnterHook>,
 ) -> (RootRun, Scheduler) {
-    let kernel = Mutex::new(scheduler);
+    let kernel = super::carrier::Kernel::new(scheduler);
     let carriers = {
-        let mut held = kernel.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = kernel.lock_all();
         // Before any carrier starts, so none sees the last run's end and
         // leaves before carrier 0's `run_root` would clear it.
         held.begin_run(root);
@@ -895,7 +895,7 @@ pub(super) fn run_on_carriers(
         gate.open(true);
         abort_on_panic(|| run_root(&mut Locked::new(&kernel, Carrier::default()), root, deadlock_code))
     });
-    (run, kernel.into_inner().unwrap_or_else(PoisonError::into_inner))
+    (run, kernel.into_inner())
 }
 
 /// Spawns carrier `index`'s thread in `scope`.

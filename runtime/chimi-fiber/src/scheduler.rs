@@ -4190,7 +4190,7 @@ mod tests {
     fn the_kernel_lock_enters_its_carrier() {
         use carrier::{KernelAccess, Locked};
         let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
-        let kernel = std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2));
+        let kernel = carrier::Kernel::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2));
         let (mut zero, mut one) = (
             Locked::new(&kernel, ready::Carrier(0)),
             Locked::new(&kernel, ready::Carrier(1)),
@@ -4199,11 +4199,11 @@ mod tests {
             .with(|kernel| kernel.start_root(chimi_fixture_generated_many_parks))
             .expect("task");
         carrier::drive(&mut zero);
-        let phase = |kernel: &std::sync::Mutex<Scheduler>| kernel.lock().expect("kernel").tasks[&task].phase;
+        let phase = |kernel: &carrier::Kernel| kernel.lock_all().tasks[&task].phase;
         assert_eq!(phase(&kernel), TaskPhase::Runnable, "carrier 0 does not run it");
         carrier::drive(&mut one);
         assert_eq!(phase(&kernel), TaskPhase::Parked);
-        assert_eq!(kernel.lock().expect("kernel").tasks[&task].carrier, ready::Carrier(1));
+        assert_eq!(kernel.lock_all().tasks[&task].carrier, ready::Carrier(1));
     }
 
     /// True when `fd` has a byte to read, without consuming it.
@@ -4217,13 +4217,13 @@ mod tests {
         unsafe { libc::poll(&mut poll, 1, 0) > 0 }
     }
 
-    fn wake_fd(kernel: &std::sync::Mutex<Scheduler>, carrier: u32) -> i32 {
-        let kernel = kernel.lock().expect("kernel");
+    fn wake_fd(kernel: &carrier::Kernel, carrier: u32) -> i32 {
+        let kernel = kernel.lock_all();
         kernel.wakes.read_fd(ready::Carrier(carrier)).expect("a wake pipe")
     }
 
-    fn two_carriers() -> std::sync::Mutex<Scheduler> {
-        std::sync::Mutex::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
+    fn two_carriers() -> carrier::Kernel {
+        carrier::Kernel::new(Scheduler::with_carriers(64 * 1024, TraceMode::Off, 2))
     }
 
     /// A kernel whose wake pipe fails to open is an error, not a panic, and
@@ -4295,7 +4295,7 @@ mod tests {
             .expect("task");
         carrier::drive(&mut one);
         zero.with(|kernel| kernel.cancel(None, task)).expect("cancel");
-        assert!(!kernel.lock().expect("kernel").shards.no_jobs(), "the unwind is a job");
+        assert!(!kernel.lock_all().shards.no_jobs(), "the unwind is a job");
         assert!(readable(wake_fd(&kernel, 1)));
     }
 

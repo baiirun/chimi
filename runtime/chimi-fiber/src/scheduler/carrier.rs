@@ -27,6 +27,73 @@ impl KernelAccess for Scheduler {
     }
 }
 
+/// The kernel with one lock per carrier (parallel-scheduler.md, "Step 4
+/// plan", 4e-1). For now every access takes every lock, in carrier order,
+/// which is the one lock it was before: the locks exist so that 4e-2 can
+/// let a request whose state is all its own carrier's take only that
+/// carrier's lock.
+pub(crate) struct Kernel {
+    locks: Box<[PaddedLock]>,
+    state: std::cell::UnsafeCell<Scheduler>,
+}
+
+/// A lock on its own cache line, so carriers taking neighbouring locks do
+/// not share one.
+#[repr(align(128))]
+struct PaddedLock(Mutex<()>);
+
+// SAFETY: the scheduler is reached only while every lock is held
+// (`AllLocked`, `Locked::with`), which excludes every other access, and the
+// scheduler itself may move between threads (`Scheduler: Send`).
+unsafe impl Sync for Kernel {}
+
+impl Kernel {
+    /// One lock per carrier the scheduler has now.
+    pub(crate) fn new(scheduler: Scheduler) -> Self {
+        let carriers = scheduler.shards.carriers();
+        Self {
+            locks: (0..carriers).map(|_| PaddedLock(Mutex::new(()))).collect(),
+            state: std::cell::UnsafeCell::new(scheduler),
+        }
+    }
+
+    /// Every lock, blocking: for setup, teardown and tests.
+    pub(crate) fn lock_all(&self) -> AllLocked<'_> {
+        let mut guards = Vec::with_capacity(self.locks.len());
+        for lock in &self.locks {
+            guards.push(lock.0.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+        AllLocked { _guards: guards, state: &self.state }
+    }
+
+    pub(crate) fn into_inner(self) -> Scheduler {
+        self.state.into_inner()
+    }
+}
+
+/// The scheduler, while this holds every lock of its kernel.
+pub(crate) struct AllLocked<'kernel> {
+    _guards: Vec<std::sync::MutexGuard<'kernel, ()>>,
+    state: &'kernel std::cell::UnsafeCell<Scheduler>,
+}
+
+impl std::ops::Deref for AllLocked<'_> {
+    type Target = Scheduler;
+
+    fn deref(&self) -> &Scheduler {
+        // SAFETY: every lock is held for this guard's life.
+        unsafe { &*self.state.get() }
+    }
+}
+
+impl std::ops::DerefMut for AllLocked<'_> {
+    fn deref_mut(&mut self) -> &mut Scheduler {
+        // SAFETY: every lock is held for this guard's life, and the guard
+        // is borrowed mutably.
+        unsafe { &mut *self.state.get() }
+    }
+}
+
 /// The kernel behind its lock, as one carrier reaches it. Each access tells
 /// the kernel which carrier holds it, so ready work and wakes are routed by
 /// carrier rather than by whoever ran last, and wakes the carriers it handed
@@ -34,28 +101,38 @@ impl KernelAccess for Scheduler {
 /// while the lock is held aborts in `chimi_scheduler_run` (an `extern "C"`
 /// function), so a poisoned lock is only taken over, never reported.
 pub(crate) struct Locked<'kernel> {
-    kernel: &'kernel Mutex<Scheduler>,
+    kernel: &'kernel Kernel,
     carrier: Carrier,
-    /// How long this carrier retries the lock before it blocks (`lock_spin`).
+    /// How long this carrier retries a lock before it blocks (`lock_spin`).
     spin: std::time::Duration,
+    /// The guards of the access running now; kept to reuse its capacity.
+    guards: Vec<std::sync::MutexGuard<'kernel, ()>>,
 }
 
 impl<'kernel> Locked<'kernel> {
     /// Requires: `carrier` is one of the kernel's carriers, and no other
     /// thread reaches the kernel as `carrier`.
-    pub(crate) fn new(kernel: &'kernel Mutex<Scheduler>, carrier: Carrier) -> Self {
+    pub(crate) fn new(kernel: &'kernel Kernel, carrier: Carrier) -> Self {
         Self {
             kernel,
             carrier,
             spin: lock_spin(),
+            guards: Vec::with_capacity(kernel.locks.len()),
         }
     }
 }
 
 impl KernelAccess for Locked<'_> {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R {
+        // Every lock in carrier order, so two accesses never wait on each
+        // other's locks in a cycle.
+        for lock in &self.kernel.locks {
+            self.guards.push(lock_spinning(&lock.0, self.spin));
+        }
         let (result, wakes) = {
-            let mut kernel = lock_spinning(self.kernel, self.spin);
+            // SAFETY: every lock is held until `guards` is cleared below,
+            // and this reference does not outlive the block.
+            let kernel = unsafe { &mut *self.kernel.state.get() };
             #[cfg(test)]
             let _held = HeldMark::set();
             debug_assert!(
@@ -63,9 +140,10 @@ impl KernelAccess for Locked<'_> {
                 "every access that marks a carrier writes its wake on unlock"
             );
             kernel.enter_carrier(self.carrier);
-            let result = operation(&mut kernel);
+            let result = operation(kernel);
             (result, kernel.take_wakes())
         };
+        self.guards.clear();
         wakes.write();
         result
     }
