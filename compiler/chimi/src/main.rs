@@ -1,4 +1,4 @@
-use chimi::Compiler;
+use chimi::{Compiler, ModuleOrigin};
 use chimi::backend::native::{build_application, check_build_target};
 use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
 use chimi::project::{LoadedProject, StandardTree};
@@ -872,10 +872,13 @@ fn doc(target: DocTarget, standard: &StandardTree, output: DocOutput) -> ExitCod
         DocOutput::Html { directory } => {
             // A std target documents the standard tree; any other target only
             // its project's own modules.
-            let modules = report.documentation_of(|path| {
-                let in_std = path.starts_with("std/");
-                if standard_target { in_std } else { !in_std }
-            });
+            let wanted = if standard_target {
+                ModuleOrigin::Standard
+            } else {
+                ModuleOrigin::Own
+            };
+            let modules =
+                report.documentation_of(|path| project.origin_of(path) == Some(wanted));
             return write_doc_site(&directory, &title, &modules);
         }
         DocOutput::Text => report.documentation(&module).map(|doc| doc.render_text()),
