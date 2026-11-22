@@ -1,8 +1,6 @@
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
-import std/supervisor as Supervisor
-import std/supervisor.{StartError}
+import std/process as Process.{Inbox}
+import std/supervisor as Supervisor.{StartError}
 
 // SV06: after `Supervisor.stop`, a start fails with `Stopped` (an
 // `admission_rejected reason=stopped` event, outcome 1), while

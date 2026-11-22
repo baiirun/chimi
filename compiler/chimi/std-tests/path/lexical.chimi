@@ -2,8 +2,7 @@ import std/debug as Debug
 import std/io as IO
 import std/list as List
 import std/option as Option
-import std/path as Path
-import std/path.{Path}
+import std/path as Path.{Path}
 import std/test as Test
 
 fn show(paths: List<Path>) -> List<Text> {

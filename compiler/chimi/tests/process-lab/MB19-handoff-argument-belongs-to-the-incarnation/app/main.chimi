@@ -1,10 +1,7 @@
-import std/channel as Channel
-import std/channel.{Receive, Receiver, Sender}
+import std/channel as Channel.{Receive, Receiver, Sender}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
-import std/supervisor as Supervisor
-import std/supervisor.{HandoffError, Running}
+import std/process as Process.{Inbox}
+import std/supervisor as Supervisor.{HandoffError, Running}
 import std/task as Task
 
 // MB19: the argument of Supervisor.start_handoff belongs to the incarnation it

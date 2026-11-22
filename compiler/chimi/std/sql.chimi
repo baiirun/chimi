@@ -28,16 +28,13 @@
 /// inside a transaction is a savepoint.
 
 import std/bytes.{Bytes}
-import std/channel as Channel
-import std/channel.{Receive}
+import std/channel as Channel.{Receive}
 import std/debug as Debug
 import std/decimal.{Decimal}
-import std/duration as Duration
-import std/duration.{Duration}
+import std/duration as Duration.{Duration}
 import std/list as List
 import std/resource as Resource
-import std/result as Result
-import std/result.{Err, Ok}
+import std/result as Result.{Err, Ok}
 import std/task as Task
 import std/watch as Watch
 

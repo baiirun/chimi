@@ -1,10 +1,7 @@
-import std/channel as Channel
-import std/channel.{Receiver}
+import std/channel as Channel.{Receiver}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
-import std/supervisor as Supervisor
-import std/supervisor.{Running}
+import std/process as Process.{Inbox}
+import std/supervisor as Supervisor.{Running}
 
 enum Message {
   Stop

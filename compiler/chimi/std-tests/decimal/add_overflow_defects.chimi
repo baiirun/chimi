@@ -1,6 +1,5 @@
 // A sum past 38 digits defects like Int overflow.
-import std/decimal as Decimal
-import std/decimal.{Decimal}
+import std/decimal as Decimal.{Decimal}
 import std/test as Test
 
 fn run() -> Decimal {

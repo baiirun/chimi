@@ -8,8 +8,7 @@
 /// times.
 
 import std/debug as Debug
-import std/duration as Duration
-import std/duration.{Duration}
+import std/duration as Duration.{Duration}
 
 // 1. Public types.
 

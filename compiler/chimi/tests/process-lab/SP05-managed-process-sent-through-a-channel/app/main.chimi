@@ -1,9 +1,7 @@
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
-import std/channel as Channel
-import std/channel.{Receive, Receiver}
+import std/channel as Channel.{Receive, Receiver}
 import std/task as Task
 
 enum Request {

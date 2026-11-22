@@ -19,10 +19,8 @@
 /// Tie a stream to the code that uses it with `Resource.scoped`, releasing it
 /// with `Stream.stop` (a reader) or `Stream.close` (a writer).
 
-import std/bytes as Bytes
-import std/bytes.{Bytes}
-import std/channel as Channel
-import std/channel.{ChannelError, Receive, SendError}
+import std/bytes as Bytes.{Bytes}
+import std/channel as Channel.{ChannelError, Receive, SendError}
 import std/list as List
 import std/result as Result
 import std/task as Task

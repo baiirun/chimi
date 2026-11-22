@@ -6600,6 +6600,59 @@ fn a_formatted_member_import_stays_tight_and_still_checks() {
     );
 }
 
+// decisions.md 2026-11-22: one import line binds a module alias and members.
+#[test]
+fn one_import_line_binds_an_alias_and_its_members() {
+    let source = concat!(
+        "import std/map as Map.{Map}\n",
+        "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) }\n",
+        "pub fn main() -> Int { sized(Map.empty()) + 7 }\n",
+    );
+    assert_eq!(run_both("combined_import", source), "\"outcome\":\"success\",\"value\":7");
+}
+
+#[test]
+fn a_combined_import_of_an_unknown_module_is_reported_once() {
+    let source = "import app/missing as Missing.{Thing}\npub fn main() -> Int { 0 }\n";
+    assert_eq!(check_codes(source), ["E_UNRESOLVED_MODULE"]);
+}
+
+#[test]
+fn a_combined_import_still_checks_its_members() {
+    let source = "import std/map as Map.{Nope}\npub fn main() -> Int { 0 }\n";
+    assert_eq!(check_codes(source), ["E_UNRESOLVED_IMPORT_MEMBER"]);
+}
+
+// The formatter joins an alias import and a member import of one path, at the
+// first of the two lines, and leaves a commented line as written.
+#[test]
+fn the_formatter_joins_split_imports_of_one_path() {
+    let source = concat!(
+        "import std/map.{Map}\n",
+        "import std/text as Text\n",
+        "import std/map as Map\n",
+        "import std/bytes.{Bytes}\n",
+        "import std/bytes as Bytes // binary data\n",
+        "fn sized(map: Map<Int, Int>) -> Int { Map.size(map) + Text.byte_length(\"a\") }\n",
+        "fn none() -> Bytes { Bytes.empty() }\n",
+        "pub fn main() -> Int { 0 }\n",
+    );
+    let formatted = Compiler::format(SourceSnapshot::from_text("main.chimi", source));
+    assert!(!formatted.is_blocked(), "{}", formatted.render_diagnostics());
+    assert!(
+        formatted.text().starts_with(concat!(
+            "import std/map as Map.{Map}\n",
+            "import std/text as Text\n",
+            "import std/bytes.{Bytes}\n",
+            "import std/bytes as Bytes // binary data\n",
+        )),
+        "{}",
+        formatted.text()
+    );
+    assert_formatter_round_trips(source);
+    assert!(check_codes(formatted.text()).is_empty(), "{:?}", check_codes(formatted.text()));
+}
+
 // ts-65f575: `chimi run` holds as deep a recursion as a native build does.
 #[test]
 fn deep_runtime_recursion_completes_on_both_backends() {

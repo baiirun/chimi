@@ -1,6 +1,5 @@
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/list as List
 
 // MB10: the mailbox capacity is computed (the number of arguments, 0), so the

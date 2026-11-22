@@ -1,8 +1,6 @@
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/select as Select
 import std/supervisor as Supervisor
 

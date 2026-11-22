@@ -1,8 +1,6 @@
-import std/channel as Channel
-import std/channel.{Receiver}
+import std/channel as Channel.{Receiver}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
 
 // CB11: a handoff incarnation removed before its body runs still ends its

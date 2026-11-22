@@ -1,5 +1,4 @@
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
 
 // SG02: run with `--signal=INT@2s`. Main sleeps for an hour and runs no

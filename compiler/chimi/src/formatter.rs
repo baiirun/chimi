@@ -22,7 +22,11 @@ impl FormatReport {
             };
         }
 
-        let formatted = crate::doc_examples::format_examples(&format_parse(&parsed), |code| {
+        // Joining split imports edits the source, so the result is parsed again.
+        let joined = join_split_imports(source.text(), &parsed)
+            .map(|text| parse(&SourceSnapshot::from_text(source.path(), text)));
+        let parsed = joined.as_ref().unwrap_or(&parsed);
+        let formatted = crate::doc_examples::format_examples(&format_parse(parsed), |code| {
             let example = SourceSnapshot::from_text(source.path(), code.to_owned());
             let parsed = parse(&example);
             parsed.diagnostics().is_empty().then(|| format_parse(&parsed))
@@ -62,6 +66,135 @@ impl FormatReport {
         }
         output
     }
+}
+
+/// One file-scope import line, as the import join sees it.
+struct ImportLine {
+    path: String,
+    alias: Option<String>,
+    members: Option<Vec<String>>,
+    /// The import's own text, from `import` to its last token.
+    text: std::ops::Range<usize>,
+    /// The whole line or lines it fills, with the newline that ends it.
+    lines: std::ops::Range<usize>,
+}
+
+/// Joins `import p as A` with `import p.{T}` into `import p as A.{T}`
+/// (decisions.md 2026-11-22), at the first of the lines. A path is joined only
+/// when it has exactly one alias-only import, at least one member-only import,
+/// no combined import already, and no comment on any of those lines. Returns
+/// `None` when nothing is joined.
+fn join_split_imports(source: &str, parsed: &ParseResult) -> Option<String> {
+    let lines: Vec<ImportLine> = parsed
+        .root()
+        .child_nodes()
+        .into_iter()
+        .filter(|node| node.kind() == NodeKind::ImportDeclaration)
+        .filter_map(|node| import_line(source, &node))
+        .collect();
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let mut seen_paths: Vec<&str> = Vec::new();
+    for line in &lines {
+        if seen_paths.contains(&line.path.as_str()) {
+            continue;
+        }
+        seen_paths.push(&line.path);
+        let same_path: Vec<&ImportLine> =
+            lines.iter().filter(|other| other.path == line.path).collect();
+        let aliases: Vec<&&ImportLine> = same_path
+            .iter()
+            .filter(|other| other.alias.is_some())
+            .collect();
+        let member_lines: Vec<&&ImportLine> =
+            same_path.iter().filter(|other| other.members.is_some()).collect();
+        let [alias_line] = aliases.as_slice() else {
+            continue;
+        };
+        if member_lines.is_empty() || alias_line.members.is_some() {
+            continue;
+        }
+        let mut members: Vec<&str> = Vec::new();
+        for member in member_lines
+            .iter()
+            .flat_map(|other| other.members.iter().flatten())
+        {
+            if !members.contains(&member.as_str()) {
+                members.push(member);
+            }
+        }
+        let alias = alias_line.alias.as_deref().unwrap_or_default();
+        let joined = format!("import {} as {alias}.{{{}}}", line.path, members.join(", "));
+        edits.push((same_path[0].text.clone(), joined));
+        for other in &same_path[1..] {
+            edits.push((other.lines.clone(), String::new()));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut text = source.to_owned();
+    for (range, replacement) in edits {
+        text.replace_range(range, &replacement);
+    }
+    Some(text)
+}
+
+fn import_line(source: &str, node: &crate::syntax::SyntaxNode<'_>) -> Option<ImportLine> {
+    let tokens = node.descendant_tokens();
+    if tokens
+        .iter()
+        .any(|token| token.is_missing() || token.kind() == TokenKind::Comment)
+    {
+        return None;
+    }
+    let significant: Vec<_> = tokens
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind(),
+                TokenKind::Whitespace | TokenKind::Newline | TokenKind::End
+            )
+        })
+        .collect();
+    let start = significant.first()?.range().start() as usize;
+    let end = significant.last()?.range().end() as usize;
+    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[end..]
+        .find('\n')
+        .map_or(source.len(), |index| end + index + 1);
+    // Another item or a trailing comment on the same line keeps it as written.
+    if !source[line_start..start].trim().is_empty() || !source[end..line_end].trim().is_empty() {
+        return None;
+    }
+    let mut path = Vec::new();
+    let mut alias = None;
+    let mut members = None;
+    for child in node.child_nodes() {
+        let names: Vec<String> = child
+            .descendant_tokens()
+            .into_iter()
+            .filter(|token| token.kind() == TokenKind::Identifier)
+            .map(|token| token.text().to_owned())
+            .collect();
+        match child.kind() {
+            NodeKind::ImportAlias => alias = names.into_iter().next(),
+            NodeKind::ImportMembers => members = Some(names),
+            _ => {}
+        }
+    }
+    for token in node.child_tokens() {
+        if token.kind() == TokenKind::Identifier {
+            path.push(token.text().to_owned());
+        }
+    }
+    Some(ImportLine {
+        path: path.join("/"),
+        alias,
+        members,
+        text: start..end,
+        lines: line_start..line_end,
+    })
 }
 
 fn format_parse(parsed: &ParseResult) -> String {

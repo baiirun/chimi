@@ -1,7 +1,5 @@
-import std/cli as Cli
-import std/cli.{CliError, Exit}
-import std/result as Result
-import std/result.{Err}
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
 import std/test as Test
 
 test "a bad value names the argument it was for" {

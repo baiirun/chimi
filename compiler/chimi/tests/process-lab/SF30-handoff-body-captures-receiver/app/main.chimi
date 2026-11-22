@@ -1,8 +1,6 @@
-import std/channel as Channel
-import std/channel.{Receiver}
+import std/channel as Channel.{Receiver}
 import std/duration as Duration
-import std/process as Process
-import std/process.{HandoffSpec, Inbox}
+import std/process as Process.{HandoffSpec, Inbox}
 
 enum Message {
   Stop

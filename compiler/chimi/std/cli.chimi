@@ -26,13 +26,10 @@ import std/bytes as Bytes
 import std/debug as Debug
 import std/int as Int
 import std/list as List
-import std/map as Map
-import std/map.{Map}
-import std/option as Option
-import std/option.{None, Option, Some}
+import std/map as Map.{Map}
+import std/option as Option.{None, Option, Some}
 import std/path as Path
-import std/result as Result
-import std/result.{Err, Ok}
+import std/result as Result.{Err, Ok}
 import std/text as Text
 
 // 1. Public types.

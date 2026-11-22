@@ -1,8 +1,6 @@
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
-import std/supervisor as Supervisor
-import std/supervisor.{Running, StartError}
+import std/process as Process.{Inbox}
+import std/supervisor as Supervisor.{Running, StartError}
 
 // SV02: capacity 2. Two dynamic starts fill it, and a third returns
 // `CapacityReached` at once, with an `admission_rejected` event, instead of

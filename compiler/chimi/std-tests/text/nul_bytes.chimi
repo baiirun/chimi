@@ -3,8 +3,7 @@
 // path that stops at the first NUL drops the bytes after it.
 import std/debug as Debug
 import std/decimal as Decimal
-import std/json as Json
-import std/json.{DecodeError}
+import std/json as Json.{DecodeError}
 import std/text as Text
 import std/test as Test
 

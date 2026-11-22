@@ -1,7 +1,6 @@
 // Constants hold Decimal values of every size and sign, including a division
 // evaluated at build time, and an outcome record writes each in normalized form.
-import std/decimal as Decimal
-import std/decimal.{Decimal, Rounding}
+import std/decimal as Decimal.{Decimal, Rounding}
 
 const price = Decimal.of(1999, 2)
 const share = Decimal.divide(price * Decimal.of(3, 0), Decimal.of(4, 0), 2, Rounding.HalfEven)

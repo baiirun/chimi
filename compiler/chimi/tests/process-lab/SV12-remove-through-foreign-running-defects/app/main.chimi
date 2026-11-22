@@ -1,6 +1,5 @@
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
 
 // SV12: a handle started under the first root (supervisor 1) is removed

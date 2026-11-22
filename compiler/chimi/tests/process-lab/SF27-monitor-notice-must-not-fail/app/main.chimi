@@ -1,5 +1,4 @@
-import std/process as Process
-import std/process.{Address, Down, Inbox}
+import std/process as Process.{Address, Down, Inbox}
 
 // SF27: a monitor's notice runs inside the watcher's receive, so it may not
 // fail. A notice that can return `Failure` is a type mismatch.

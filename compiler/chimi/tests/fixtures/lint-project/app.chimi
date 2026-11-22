@@ -1,5 +1,4 @@
-import std/bytes as Bytes
-import std/bytes.{Bytes, DecodeError}
+import std/bytes as Bytes.{Bytes, DecodeError}
 import std/list as List
 import std/text as Text
 

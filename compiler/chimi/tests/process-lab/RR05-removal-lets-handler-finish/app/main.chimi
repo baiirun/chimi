@@ -1,10 +1,7 @@
-import std/channel as Channel
-import std/channel.{Receive, Sender}
-import std/clock as Clock
-import std/clock.{Clock}
+import std/channel as Channel.{Receive, Sender}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
 
 // RR05: the body handles `Nap` by sleeping for 1 s, then reporting 1. Main

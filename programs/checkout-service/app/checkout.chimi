@@ -3,12 +3,10 @@ import std/clock.{Clock, Instant}
 import std/debug as Debug
 import std/duration as Duration
 import std/list as List
-import std/result as Result
-import std/result.{Result}
+import std/result as Result.{Result}
 import std/retry as Retry
 import std/schedule as Schedule
-import std/task as Task
-import std/task.{Timeout}
+import std/task as Task.{Timeout}
 
 // One checkout: reserve stock and score fraud at once, charge the card with
 // a per-attempt timeout and backoff, ask two carriers for a quote and take

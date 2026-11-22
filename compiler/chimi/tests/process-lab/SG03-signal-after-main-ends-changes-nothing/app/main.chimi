@@ -1,8 +1,6 @@
-import std/clock as Clock
-import std/clock.{Clock}
+import std/clock as Clock.{Clock}
 import std/duration as Duration
-import std/process as Process
-import std/process.{Inbox}
+import std/process as Process.{Inbox}
 import std/supervisor as Supervisor
 
 // SG03: run with `--signal=TERM@10s`. Main starts a root, sleeps 1 s, and
