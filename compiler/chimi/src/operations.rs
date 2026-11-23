@@ -308,6 +308,8 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         StandardFunction::BytesReadIntCode,
     ),
     pure("std/bytes.int_bytes", 2, StandardFunction::BytesIntBytes),
+    // std/http's private byte scan.
+    pure("std/http.count_ends", 2, StandardFunction::HttpCountEnds),
     // std/embed: build-time only; see `CoreLowerer::embed`.
     pure("std/embed.text", 1, StandardFunction::EmbedText),
     pure("std/embed.bytes", 1, StandardFunction::EmbedBytes),

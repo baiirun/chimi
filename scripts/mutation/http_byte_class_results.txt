@@ -1,0 +1,44 @@
+# First run at 2fa8471: 24 of 28 killed. The four survivors (a bare CR in a value,
+# underscore in a host name, IPv6 g, a name whose only uppercase is Z) had no
+# test; tests were added and all four were killed at the next commits.
+# mutation run at 2fa8471448e72bf505d2ee552a959114c5a69b01
+# http_byte_class_mutations.py: 28 mutants against compiler/chimi
+BASELINE ok  [std_modules -- standard_tests_pass_on_both_backends] (106s)
+BASELINE ok  [http] (14s)
+BASELINE ok  [http_client] (4s)
+BASELINE ok  [lib -- count_ends] (43s)
+KILLED       a backquote is not a token character [std_modules -- standard_tests_pass_on_both_backends] (46s)
+KILLED       a parenthesis is a token character [http] (52s)
+KILLED       an empty name is a token [std_modules -- standard_tests_pass_on_both_backends] (47s)
+KILLED       a head may hold DEL [http] (52s)
+KILLED       a head may hold a unit separator [http] (51s)
+KILLED       a head may not hold non-ASCII [http] (52s)
+KILLED       a head may not hold HTAB [http] (52s)
+SURVIVED     a header value may hold CR [std_modules -- standard_tests_pass_on_both_backends] (48s)
+KILLED       a header value may hold DEL [std_modules -- standard_tests_pass_on_both_backends] (48s)
+KILLED       a visible character may be a space [http_client] (46s)
+SURVIVED     a host name may hold an underscore no more [http_client] (47s)
+SURVIVED     an IPv6 literal may hold letters past f [http_client] (46s)
+KILLED       a target may hold a backslash [http_client] (45s)
+KILLED       a query does not end the authority [http_client] (45s)
+KILLED       nine is not a digit [http_client] (46s)
+KILLED       a tab is not trimmed [http] (52s)
+KILLED       a no-break space is trimmed [http] (53s)
+KILLED       the end of a value is not trimmed [http] (62s)
+KILLED       the start of a value is not trimmed [http] (51s)
+KILLED       any text lowercases as Unicode [std_modules -- standard_tests_pass_on_both_backends] (48s)
+SURVIVED     Z counts as lowercase [std_modules -- standard_tests_pass_on_both_backends] (47s)
+KILLED       every byte counts as ASCII [std_modules -- standard_tests_pass_on_both_backends] (48s)
+KILLED       native: the last allowed byte is skipped [http] (54s)
+KILLED       native: the end is never counted [http] (49s)
+KILLED       native: the end counts from the start [http] (46s)
+KILLED       native: the start stops one short [std_modules -- standard_tests_pass_on_both_backends] (41s)
+KILLED       interpreter: the end counts from the start [lib -- count_ends] (42s)
+KILLED       interpreter: the start counts from the end [lib -- count_ends] (10s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# Rerun of the four survivors after the new tests:
+KILLED       a header value may hold CR
+KILLED       a host name may hold an underscore no more
+KILLED       an IPv6 literal may hold letters past f
+KILLED       Z counts as lowercase
+# result: 28 of 28 killed
