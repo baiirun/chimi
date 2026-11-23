@@ -666,16 +666,15 @@ impl Workload {
             let _ = std::fs::remove_file(path);
         }
         let mut command = Command::new(&self.executable);
+        // Several carriers need the real clock; the workloads measured
+        // there never sleep, so it changes no behaviour.
+        let real_clock = run.real_clock || carriers() > 1;
         command
             .arg("--chimi-runner")
-            // Several carriers need the real clock; the workloads measured
-            // there never sleep, so it changes no behaviour.
-            .arg(if run.real_clock || carriers() > 1 {
-                "--clock=real"
-            } else {
-                "--clock=virtual"
-            });
-        if carriers() > 1 {
+            .arg(if real_clock { "--clock=real" } else { "--clock=virtual" });
+        // Under the real clock a program takes a carrier per core unless
+        // told otherwise, and the gates were set on the count asked for.
+        if real_clock {
             command.arg(format!("--carriers={}", carriers()));
         }
         command

@@ -54,9 +54,9 @@ def run_once(executable, carriers, arguments, expected, scratch):
     outcome = scratch / "outcome.jsonl"
     if outcome.exists():
         outcome.unlink()
-    command = [str(executable), "--chimi-runner", "--clock=real", "--trace=off"]
-    if carriers > 1:
-        command.append(f"--carriers={carriers}")
+    # Always named: a program takes a carrier per core when it is not.
+    command = [str(executable), "--chimi-runner", "--clock=real", "--trace=off",
+               f"--carriers={carriers}"]
     command += [f"--outcome-file={outcome}", "--", *arguments]
     started = time.perf_counter_ns()
     finished = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True)
@@ -89,7 +89,7 @@ def independent_copies(executable, copies, arguments, expected, samples, scratch
         children = [
             subprocess.Popen(
                 [str(executable), "--chimi-runner", "--clock=real", "--trace=off",
-                 f"--outcome-file={outcome}", "--", *arguments],
+                 "--carriers=1", f"--outcome-file={outcome}", "--", *arguments],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )

@@ -24,6 +24,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 #include <signal.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -258,8 +261,9 @@ struct ChimiRuntime {
   bool full_trace;
   /* `--clock=virtual`: the scheduler's deterministic time source. */
   bool virtual_clock;
-  /* `--carriers=<n>`: how many carriers run the program's fibers, 1 by
-     default; carriers 1 and up run on threads the scheduler starts. */
+  /* `--carriers=<n>`: how many carriers run the program's fibers, by
+     default one per core the process may run on (default_carriers);
+     carriers 1 and up run on threads the scheduler starts. */
   uint32_t carriers;
   /* `--clock-start`: the virtual source's Timestamp at Instant zero, in Unix ns. */
   int64_t clock_start;
@@ -1473,6 +1477,29 @@ static void guard_host_stack(void) {
 /* The most carriers `--carriers` accepts: each has a wake pipe, so this
    bounds the descriptors they take. */
 enum { CARRIERS_MAX = 256 };
+
+/* The carrier count when `--carriers` is not given: one per core this
+   process may run on, at most CARRIERS_MAX. One when the program needs no
+   scheduler, under the virtual clock (time moves only when every carrier is
+   idle), and in the carrier simulation build, whose carriers share one
+   thread. On Linux the cores are those of the process's affinity mask, so
+   `taskset` and container CPU sets are respected. */
+static uint32_t default_carriers(bool virtual_clock) {
+#ifdef CHIMI_CARRIER_SIMULATION
+  (void)virtual_clock;
+  return 1;
+#else
+  if (!CHIMI_REQUIRES_SCHEDULER || virtual_clock) return 1;
+  long cores = 0;
+#ifdef __linux__
+  cpu_set_t allowed;
+  if (sched_getaffinity(0, sizeof(allowed), &allowed) == 0) cores = CPU_COUNT(&allowed);
+#endif
+  if (cores <= 0) cores = sysconf(_SC_NPROCESSORS_ONLN);
+  if (cores <= 1) return 1;
+  return cores > CARRIERS_MAX ? CARRIERS_MAX : (uint32_t)cores;
+#endif
+}
 
 /* Gives the calling thread carrier `index`, which carriers_create made, and
    then the stack check the main thread has, so a carrier thread does both
@@ -13618,6 +13645,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   uint32_t benchmark_repeats = 0;
   int64_t test_index = -1;
   bool clock_start_given = false;
+  bool carriers_given = false;
   const char *telemetry_path = NULL;
   const char *outcome_path = NULL;
   const char *memory_report_path = NULL;
@@ -13697,6 +13725,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         return 64;
       }
       runtime.carriers = (uint32_t)value;
+      carriers_given = true;
     }
     else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
     else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
@@ -13760,6 +13789,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     }
 #endif
   }
+  if (!carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);
   /* Before the program runs anything, so carriers 1 and up start zeroed. */
   carriers_create(runtime.carriers);
   if (!runtime.silent && telemetry_path == NULL) {
