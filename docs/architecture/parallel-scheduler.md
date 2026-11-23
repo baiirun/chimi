@@ -4,13 +4,13 @@
 
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
 thread takes. Steps 1 to 3 are done: `--carriers=<n>` runs processes on n
-threads around one kernel lock, and the default stays one carrier
-(decisions.md, 2026-11-21). Step 4 ("Step 4 plan") is done: fibers move between threads, an idle
+threads. Since 2026-11-23 a program takes one carrier per core it may run
+on when `--carriers` is not given (decisions.md). Step 4 ("Step 4 plan") is done: fibers move between threads, an idle
 carrier steals from a sleeping one, and a carrier serves its own messaging
 on the kernel lock's read side (4e-2). 4e-3 and 4f were dropped by
-measurement. What is left is the owner's choice of the default carrier
-count (step 3, item 6), with the measurements in
-`docs/performance/multi-carrier-baseline.md`, "After the local path".
+measurement. With those measurements
+(`docs/performance/multi-carrier-baseline.md`, "After the local path")
+the owner chose the default carrier count (step 3, item 6): one per core.
 
 ## Why
 
@@ -1020,6 +1020,14 @@ four keep one carrier.
      one); a carrier on a thread now takes span ids 4,096 at a time
      (`take_spans`), so they are unique but not dense across carriers.
      Kept at one carrier by default (decisions.md, 2026-11-21).
+   - The default as landed (2026-11-23, after step 4): without
+     `--carriers` a program takes one carrier per core of its affinity
+     mask on Linux (`sched_getaffinity`) or per online core elsewhere, at
+     most 256 (`default_carriers` in runtime.c). It takes one under the
+     virtual clock, when it needs no scheduler, and in the carrier
+     simulation build. `--carriers=<n>` still sets the count. The lab, the
+     measurement script and the traced output comparison name their
+     count, so their numbers and traces do not depend on the host.
    - 6c as landed: an idle carrier spins up to 50 µs on a wake flag
      (`WakeFds::spin`, set by `Marked::write` after the byte) before it
      blocks, and only when every carrier can have a core. A spin that sees
