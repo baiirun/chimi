@@ -7,7 +7,8 @@
 
 use super::reactor::IoWaitPlan;
 use super::ready::Carrier;
-use super::{ChimiFiberCommand, Idle, Scheduler, TaskId, clock, resume_fiber};
+use super::local::Local;
+use super::{ChimiFiberCommand, ChimiFiberEvent, Idle, Scheduler, TaskId, clock, resume_fiber};
 use crate::ChimiFiber;
 use std::ptr::NonNull;
 use std::sync::{PoisonError, RwLock, RwLockWriteGuard};
@@ -17,6 +18,12 @@ use std::time::Duration;
 /// `&mut self` methods and its unit tests, or through the kernel lock.
 pub(crate) trait KernelAccess {
     fn with<R>(&mut self, operation: impl FnOnce(&mut Scheduler) -> R) -> R;
+
+    /// One step of `drive` after a resume: applies what `runnable`'s
+    /// resume returned, does the housekeeping after it, and enters the next
+    /// task. It runs on the local path (`local.rs`) as far as it can, and
+    /// the rest through `with`.
+    fn step(&mut self, runnable: Runnable, event: ChimiFiberEvent, resumes: &mut u32) -> Option<Runnable>;
 }
 
 impl KernelAccess for Scheduler {
@@ -24,6 +31,20 @@ impl KernelAccess for Scheduler {
         let result = operation(self);
         self.take_wakes().write();
         result
+    }
+
+    fn step(&mut self, runnable: Runnable, event: ChimiFiberEvent, resumes: &mut u32) -> Option<Runnable> {
+        let carrier = self.current;
+        let local = {
+            // SAFETY: the scheduler is this function's alone until `local`
+            // is dropped at the end of this block.
+            let mut local = unsafe { Local::new(NonNull::from(&mut *self), carrier) };
+            local.step(runnable, event, resumes)
+        };
+        match local {
+            Ok(next) => next,
+            Err(phase) => self.with(|kernel| kernel.step_from(phase, runnable, event, resumes)),
+        }
     }
 }
 
@@ -34,7 +55,8 @@ impl KernelAccess for Scheduler {
 /// holding it may read what no reader writes and write only what is homed
 /// on it. Only one thread reaches the kernel as each carrier (`Locked`),
 /// so two readers never write the same record, and a reader needs no
-/// carrier lock of its own. For now every access takes the write side.
+/// carrier lock of its own. A `drive` step takes the read side first
+/// (`Locked::step`) and the write side for whatever the local path left.
 pub(crate) struct Kernel {
     lock: PaddedLock,
     state: std::cell::UnsafeCell<Scheduler>,
@@ -45,9 +67,13 @@ pub(crate) struct Kernel {
 #[repr(align(128))]
 struct PaddedLock(RwLock<()>);
 
-// SAFETY: the scheduler is reached only while the lock's write side is
-// held (`AllLocked`, `Locked::with`), which excludes every other access,
-// and the scheduler itself may move between threads (`Scheduler: Send`).
+// SAFETY: the scheduler is reached with the lock's write side held
+// (`AllLocked`, `Locked::with`), which excludes every other access, or its
+// read side held (`Locked::step`), where each carrier's thread writes only
+// what is homed on that carrier, through cells, and reads only what no
+// reader writes (`local.rs`). The scheduler may move between threads
+// (`Scheduler: Send`). The lock orders one holder's writes before the
+// next holder's reads on either side.
 unsafe impl Sync for Kernel {}
 
 impl Kernel {
@@ -139,6 +165,42 @@ impl KernelAccess for Locked<'_> {
         drop(guard);
         wakes.write();
         result
+    }
+
+    fn step(&mut self, runnable: Runnable, event: ChimiFiberEvent, resumes: &mut u32) -> Option<Runnable> {
+        let local = {
+            let _guard = read_spinning(&self.kernel.lock.0, self.spin);
+            #[cfg(test)]
+            let _held = HeldMark::set();
+            // SAFETY: the read side is held until the end of this block, and
+            // this thread is the only one acting as `self.carrier` (`new`).
+            let mut local = unsafe { Local::new(NonNull::new(self.kernel.state.get()).expect("a kernel"), self.carrier) };
+            local.step(runnable, event, resumes)
+        };
+        match local {
+            Ok(next) => next,
+            Err(phase) => self.with(|kernel| kernel.step_from(phase, runnable, event, resumes)),
+        }
+    }
+}
+
+/// Takes the kernel lock's read side, as `lock_spinning` takes its write
+/// side.
+fn read_spinning<T>(lock: &RwLock<T>, spin: std::time::Duration) -> std::sync::RwLockReadGuard<'_, T> {
+    let mut spin_until = None;
+    loop {
+        match lock.try_read() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let now = std::time::Instant::now();
+        if now >= *spin_until.get_or_insert(now + spin) {
+            return lock.read().unwrap_or_else(PoisonError::into_inner);
+        }
+        for _ in 0..32 {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -285,11 +347,7 @@ pub(super) fn drive(kernel: &mut impl KernelAccess) {
     });
     while let Some(runnable) = next {
         let event = resume_fiber(runnable.fiber, runnable.command);
-        next = kernel.with(|kernel| {
-            kernel.complete(runnable, event);
-            kernel.after_resume(&mut resumes);
-            kernel.next_runnable(&mut resumes)
-        });
+        next = kernel.step(runnable, event, &mut resumes);
     }
 }
 

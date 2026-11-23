@@ -2,10 +2,13 @@
 //! 4d-6): its ready queue, its jobs, and whether it is parked asleep. With
 //! one carrier there is one shard, the queues the scheduler always had.
 //!
-//! All shards sit under the one kernel lock for now. Step 4e gives each
-//! shard its own lock; what a carrier changes on its own hot path moves in
-//! here first.
+//! Each shard sits in its own `UnsafeCell` on its own cache lines: the
+//! shape the local path of step 4e needs, where a carrier on the kernel
+//! lock's read side writes its own shard while other carriers write
+//! theirs (the access model in the plan). The shared readers are for the
+//! write side only.
 
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 
 use super::TaskId;
@@ -24,10 +27,16 @@ struct Shard {
     parked: bool,
 }
 
+/// A shard on cache lines of its own, so carriers writing neighbouring
+/// shards do not share one.
+#[repr(align(128))]
+#[derive(Debug, Default)]
+struct ShardCell(UnsafeCell<Shard>);
+
 /// One shard per carrier, indexed by carrier.
 #[derive(Debug)]
 pub(super) struct Shards {
-    shards: Vec<Shard>,
+    shards: Box<[ShardCell]>,
 }
 
 impl Shards {
@@ -35,7 +44,7 @@ impl Shards {
     pub(super) fn new(carriers: u32) -> Self {
         assert!(carriers >= 1, "a scheduler has at least one carrier");
         Self {
-            shards: (0..carriers).map(|_| Shard::default()).collect(),
+            shards: (0..carriers).map(|_| ShardCell::default()).collect(),
         }
     }
 
@@ -44,11 +53,32 @@ impl Shards {
     }
 
     fn shard(&self, carrier: Carrier) -> &Shard {
-        &self.shards[carrier.0 as usize]
+        // SAFETY: a shard is written through `&mut self`, which cannot
+        // coexist with this borrow, or by its own carrier's local path
+        // (`own`), which never calls this; the write side, the only other
+        // caller, runs with no local path.
+        unsafe { &*self.shards[carrier.0 as usize].0.get() }
+    }
+
+    fn each(&self) -> impl Iterator<Item = &Shard> {
+        (0..self.carriers()).map(|carrier| self.shard(Carrier(carrier)))
     }
 
     fn shard_mut(&mut self, carrier: Carrier) -> &mut Shard {
-        &mut self.shards[carrier.0 as usize]
+        self.shards[carrier.0 as usize].0.get_mut()
+    }
+
+    /// `carrier`'s own shard, for the local path.
+    ///
+    /// # Safety
+    ///
+    /// As for `Homed::homed_mut`: the caller may write what is homed on
+    /// `carrier`, and holds no other reference to this shard.
+    #[allow(clippy::mut_from_ref)]
+    pub(super) unsafe fn own(&self, carrier: Carrier) -> &mut OwnShard {
+        // SAFETY: the caller's contract. `OwnShard` is `Shard` with only
+        // the operations a carrier does to its own shard.
+        unsafe { &mut *self.shards[carrier.0 as usize].0.get().cast::<OwnShard>() }
     }
 
     // ----- Ready queues --------------------------------------------------
@@ -86,7 +116,7 @@ impl Shards {
 
     /// True when no carrier has a task ready.
     pub(super) fn no_ready(&self) -> bool {
-        self.shards.iter().all(|shard| shard.ready.is_empty())
+        self.each().all(|shard| shard.ready.is_empty())
     }
 
     // ----- Jobs ----------------------------------------------------------
@@ -105,7 +135,7 @@ impl Shards {
 
     /// True when no carrier has a job waiting.
     pub(super) fn no_jobs(&self) -> bool {
-        self.shards.iter().all(|shard| shard.jobs.is_empty())
+        self.each().all(|shard| shard.jobs.is_empty())
     }
 
     // ----- Parking -------------------------------------------------------
@@ -120,7 +150,38 @@ impl Shards {
 
     /// True when every carrier but 0 is parked.
     pub(super) fn others_parked(&self) -> bool {
-        self.shards[1..].iter().all(|shard| shard.parked)
+        self.each().skip(1).all(|shard| shard.parked)
+    }
+}
+
+/// A carrier's own shard as the local path reaches it.
+#[repr(transparent)]
+pub(super) struct OwnShard(Shard);
+
+impl OwnShard {
+    pub(super) fn front_ready(&self) -> Option<TaskId> {
+        self.0.ready.front().copied()
+    }
+
+    pub(super) fn pop_ready(&mut self) -> Option<TaskId> {
+        self.0.ready.pop_front()
+    }
+
+    pub(super) fn push_ready(&mut self, task: TaskId, front: bool) {
+        if front {
+            self.0.ready.push_front(task);
+        } else {
+            self.0.ready.push_back(task);
+        }
+    }
+
+    pub(super) fn has_jobs(&self) -> bool {
+        !self.0.jobs.is_empty()
+    }
+
+    /// The carrier is awake: it is taking the lock.
+    pub(super) fn unpark(&mut self) {
+        self.0.parked = false;
     }
 }
 

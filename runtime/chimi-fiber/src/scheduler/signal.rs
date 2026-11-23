@@ -256,6 +256,26 @@ impl Scheduler {
         }
     }
 
+    /// True unless carrier 0's housekeeping (`collect_user_signals`, then
+    /// `deliver_signal`) would change nothing: no user signal bit is set,
+    /// and the root, if any, is live on carrier 0 and has either been
+    /// delivered its signal or has none pending. Reads only, for the local
+    /// path.
+    pub(super) fn signals_have_work(&self) -> bool {
+        if let Some(word) = self.signals.user_word
+            // SAFETY: as in `collect_user_signals`.
+            && unsafe { AtomicU32::from_ptr(word) }.load(Ordering::SeqCst) != 0
+        {
+            return true;
+        }
+        let Some(root) = self.signals.root else {
+            return false;
+        };
+        self.tasks.home(&root) != Some(super::ready::Carrier(0))
+            || !self.tasks.get(&root).is_some_and(|record| record.phase.is_live())
+            || !self.signals.delivered && self.signals.pending().is_some()
+    }
+
     /// True when a task is parked waiting for a `std/signal` signal.
     pub(super) fn has_signal_waiters(&self) -> bool {
         !self.signals.waiters.is_empty()
