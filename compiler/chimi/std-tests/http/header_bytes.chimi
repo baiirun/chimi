@@ -35,6 +35,8 @@ test "header names, values and lookups" {
   |> Test.assert_equal("Http: the value of the header a holds a control character")
   refusal("a", "x\u{7f}y")
   |> Test.assert_equal("Http: the value of the header a holds a control character")
+  refusal("a", "x\ry")
+  |> Test.assert_equal("Http: the value of the header a holds a control character")
   refusal("a", "\r\n")
   |> Test.assert_equal("Http: the value of the header a holds a control character")
   let response = Http.response(200, [("x-k", "kelvin"), ("content-type", "text/html")], Bytes.empty())
