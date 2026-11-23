@@ -11,7 +11,11 @@ mod idle_tests;
 #[cfg(test)]
 mod steal_tests;
 mod homed;
+mod local;
 mod id_map;
+pub(crate) use homed::Homed;
+pub(crate) use id_map::IdMap;
+pub(crate) use ready::Carrier;
 mod jobs;
 mod process;
 mod process_abi;
@@ -864,10 +868,12 @@ pub struct Scheduler {
 
 // SAFETY: `Scheduler` is not `Send` only because of what it holds, not
 // because any of it is tied to the thread that made it. The carriers share
-// it through `Mutex<Scheduler>` (`carrier::Locked`), which needs `Send` to be
-// `Sync`, and every use below happens with the lock held, so no two threads
-// ever touch these at once and the lock orders one thread's writes before
-// the next thread's reads:
+// it through `carrier::Kernel`, which needs `Send` to be `Sync`, and every
+// use below happens with the kernel lock held, so no two threads ever touch
+// these at once and the lock orders one thread's writes before the next
+// thread's reads. On the lock's read side (`local.rs`) several carriers run
+// at once, but each writes only records homed on it and touches none of
+// the items below that another carrier could reach at the same time:
 // - The host's context pointers (release hooks, trace sink, task entry
 //   contexts) are only stored and passed back to the host, whose contract
 //   keeps them valid for the whole execution; a hook may run on whichever
@@ -880,7 +886,9 @@ pub struct Scheduler {
 // - The signal words are also written by a signal handler, outside the
 //   lock, with volatile access, as with one carrier (`signal.rs`).
 // - The `Rc` process records and the channel copier box are reached and
-//   cloned only by kernel code, so their counts are never raced.
+//   cloned only by kernel code, and cloned or dropped only on the write
+//   side (the local path only reads through an incarnation's spec), so
+//   their counts are never raced.
 // - A started fiber is the one thing tied to a thread: its stack holds that
 //   thread's frames. `PinnedFiber` asserts every resume and destruction
 //   happens on its home thread, and a carrier resumes only the tasks homed
@@ -1422,6 +1430,7 @@ impl Scheduler {
     fn enter_carrier(&mut self, carrier: ready::Carrier) {
         debug_assert!(carrier.0 < self.shards.carriers(), "unknown carrier {carrier:?}");
         self.current = carrier;
+        self.channels.enter_carrier(carrier);
         self.shards.set_parked(carrier, false);
     }
 
@@ -1676,6 +1685,19 @@ impl Scheduler {
         false
     }
 
+    /// True while a test moves tasks itself on each wake (`rotating`),
+    /// which only `enqueue` does.
+    #[cfg(test)]
+    fn moves_tasks_for_test(&self) -> bool {
+        !self.rotating.is_empty()
+    }
+
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    fn moves_tasks_for_test(&self) -> bool {
+        false
+    }
+
     /// Makes `to` the home of `task`, which is not running, has no job
     /// queued and is in no ready queue.
     fn move_home(&mut self, task: TaskId, to: ready::Carrier) {
@@ -1687,7 +1709,11 @@ impl Scheduler {
         if let Some(fiber) = record.fiber.as_mut() {
             fiber.release_home();
         }
+        let process = record.process;
         self.tasks.set_home(&task, to);
+        if let Some(incarnation) = process {
+            self.kernel.incarnations.set_home(&incarnation, to);
+        }
     }
 
     pub fn wake(&mut self, task: TaskId) -> Result<(), SchedulerError> {
@@ -2268,12 +2294,21 @@ impl Scheduler {
             .filter(|(_, record)| record.phase == TaskPhase::Runnable)?;
         // A fiber that never ran may start here (`may_resume_here`): its
         // first resume makes this carrier its home, as `Home` records.
-        if !record.ran {
+        if !record.ran && *home != self.current {
             *home = self.current;
+            if let Some(incarnation) = record.process {
+                self.kernel.incarnations.set_home(&incarnation, self.current);
+            }
         }
         debug_assert!(
             self.any_carrier || *home == self.current,
             "a task resumed off its home carrier"
+        );
+        debug_assert!(
+            record
+                .process
+                .is_none_or(|incarnation| self.kernel.incarnations.home(&incarnation) == Some(*home)),
+            "an incarnation is homed with its body task"
         );
         let command = std::mem::replace(&mut record.command, ChimiFiberCommand::Resume);
         record.phase = TaskPhase::Running;
@@ -2349,6 +2384,24 @@ impl Scheduler {
                 })
             }
         }
+    }
+
+    /// The rest of a `drive` step on the write side, from the phase the
+    /// local path could not run (`local::Phase`).
+    fn step_from(
+        &mut self,
+        phase: local::Phase,
+        runnable: carrier::Runnable,
+        event: ChimiFiberEvent,
+        resumes: &mut u32,
+    ) -> Option<carrier::Runnable> {
+        if phase == local::Phase::Complete {
+            self.complete(runnable, event);
+        }
+        if phase <= local::Phase::AfterResume {
+            self.after_resume(resumes);
+        }
+        self.next_runnable(resumes)
     }
 
     /// Applies what a resume `drive` ran returned, as its kind says.

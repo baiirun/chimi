@@ -572,7 +572,9 @@ pub(super) struct ProcessKernel {
     supervisors: BTreeMap<SupervisorId, Supervision>,
     memberships: BTreeMap<MembershipId, Membership>,
     retired: BTreeMap<MembershipId, Retired>,
-    pub(super) incarnations: BTreeMap<IncarnationId, Incarnation>,
+    /// Homed on its body task's carrier, which `Scheduler::move_home`
+    /// and a first resume keep it on.
+    pub(super) incarnations: super::homed::Homed<IncarnationId, Incarnation>,
     names: BTreeMap<NameId, IncarnationId>,
     roots: Vec<SupervisorId>,
     blocked: BTreeMap<Blocker, Vec<Plan>>,
@@ -1435,13 +1437,16 @@ impl Scheduler {
     /// none left: a body then lingers until something forces it.
     #[cfg(test)]
     pub(super) fn disarm_shutdown_deadlines(&mut self) {
-        let timers: Vec<_> = self
+        let timers: Vec<(IncarnationId, _)> = self
             .kernel
             .incarnations
-            .values_mut()
-            .filter_map(|incarnation| incarnation.stopping.as_mut()?.timer.take())
+            .iter_mut()
+            .filter_map(|(id, incarnation)| Some((*id, incarnation.stopping.as_mut()?.timer.take()?)))
             .collect();
-        for timer in timers {
+        // Cancelled in incarnation order, as the table is unordered.
+        let mut timers = timers;
+        timers.sort_unstable_by_key(|(id, _)| *id);
+        for (_, timer) in timers {
             self.cancel_timer(timer);
         }
     }
@@ -1495,8 +1500,10 @@ impl Scheduler {
         if let Some(name) = spec.name {
             self.kernel.names.insert(name, incarnation);
         }
+        let home = self.tasks.home(&task).expect("a new incarnation's task");
         self.kernel.incarnations.insert(
             incarnation,
+            home,
             Incarnation {
                 membership,
                 supervisor,
@@ -2334,7 +2341,7 @@ impl Scheduler {
         {
             self.clear_blocker(blocker);
         }
-        let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        let leftover: Vec<_> = self.kernel.incarnations.ids_in_order();
         for incarnation in leftover {
             self.end_leftover(incarnation);
         }
@@ -2359,7 +2366,7 @@ impl Scheduler {
         if self.survivor_state() != before {
             return true;
         }
-        let leftover: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        let leftover: Vec<_> = self.kernel.incarnations.ids_in_order();
         for incarnation in leftover {
             if !self.kernel.incarnations.contains_key(&incarnation) {
                 continue;
@@ -2440,7 +2447,7 @@ impl Scheduler {
     /// leaves a survivor (a draining owner waits on supervisors teardown also
     /// ends), so this guards the memory report rather than a seen leak.
     pub(super) fn release_surviving_incarnations(&mut self) {
-        let survivors: Vec<_> = self.kernel.incarnations.keys().copied().collect();
+        let survivors: Vec<_> = self.kernel.incarnations.ids_in_order();
         for incarnation in survivors {
             let record = self
                 .kernel
@@ -2520,4 +2527,112 @@ fn is_supervisor_wait(kind: u32) -> bool {
             | super::REQUEST_SUPERVISOR_REMOVE_PROCESS
             | super::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR
     )
+}
+
+// ----- The local path (4e-2) -----------------------------------------------
+
+impl super::local::Local<'_> {
+    /// The incarnation `incarnation`, when it is homed on this carrier.
+    fn incarnation(&mut self, incarnation: IncarnationId) -> Option<&mut Incarnation> {
+        let carrier = self.carrier();
+        // SAFETY: `Local::new`'s contract; borrowed from `self`, so no other
+        // record reference of this path is live.
+        unsafe { self.processes().incarnations.homed_mut(&incarnation, carrier) }
+    }
+
+    /// True when `incarnation` is homed here and no stop is under way: its
+    /// body's sends and receives then go as without one.
+    pub(super) fn incarnation_runs(&mut self, incarnation: IncarnationId) -> bool {
+        self.incarnation(incarnation)
+            .is_some_and(|record| record.stopping.is_none())
+    }
+
+    /// `REQUEST_PROCESS_SEND` of a message that carries no capability, to a
+    /// direct address homed here that accepts it and has room. The target
+    /// is woken first, then the sender resumed next, as
+    /// `process_send_carrying` and `respond` do.
+    pub(super) fn process_send(
+        &mut self,
+        owner: TaskId,
+        request: *mut ChimiProcessRequest,
+    ) -> Result<(), super::local::Escalate> {
+        use super::local::Escalate;
+        // SAFETY: the parked owner's record stays valid until it resumes.
+        let input = unsafe { request.read() };
+        // SAFETY: as above, for the capabilities the record names.
+        if input.address_kind != super::process_abi::ADDRESS_DIRECT
+            || !unsafe { super::carried_capabilities(input.carried.cast_mut().cast()) }.is_empty()
+        {
+            return Err(Escalate);
+        }
+        let target = self
+            .incarnation(IncarnationId::from_raw(input.address))
+            .filter(|record| {
+                record.accepting
+                    && record.mailbox.len() - record.notices
+                        < record.spec.mailbox_capacity.get() as usize
+            })
+            .ok_or(Escalate)?;
+        let woken = target.receiving.then_some(target.task);
+        // A body sending to its own mailbox: the write side's wake finds it
+        // parked, so its reply is never written; leave that to the write side.
+        if woken.is_some_and(|task| task == owner || !self.is_local(task)) {
+            return Err(Escalate);
+        }
+        let target = self
+            .incarnation(IncarnationId::from_raw(input.address))
+            .expect("checked above");
+        target.mailbox.push_back(Entry::Message(input.message));
+        target.receiving = false;
+        if let Some(task) = woken {
+            self.wake(task, false);
+        }
+        // SAFETY: the owner is still parked on this record.
+        unsafe { (*request).status = super::RESPONSE_OK };
+        self.wake(owner, true);
+        Ok(())
+    }
+
+    /// `REQUEST_PROCESS_RECEIVE` by a body whose next entry is a message,
+    /// or whose mailbox is empty (it then waits).
+    pub(super) fn process_receive(
+        &mut self,
+        owner: TaskId,
+        request: *mut ChimiProcessRequest,
+    ) -> Result<(), super::local::Escalate> {
+        use super::local::Escalate;
+        let incarnation = self
+            .task(owner)
+            .and_then(|record| record.process)
+            .ok_or(Escalate)?;
+        // A delivered message's parcel would need the registry's write side.
+        if !self.channels().parcels_empty() {
+            return Err(Escalate);
+        }
+        let record = self.incarnation(incarnation).ok_or(Escalate)?;
+        if record.stopping.is_some() {
+            return Err(Escalate);
+        }
+        match record.mailbox.front() {
+            Some(Entry::Notice(_)) => Err(Escalate),
+            Some(Entry::Message(message)) => {
+                let message = *message;
+                record.mailbox.pop_front();
+                // SAFETY: the owner is still parked on this record.
+                unsafe {
+                    (*request).message = message;
+                    (*request).down = 0;
+                    (*request).status = super::RESPONSE_SUCCEEDED;
+                }
+                self.wake(owner, true);
+                Ok(())
+            }
+            None => {
+                record.receiving = true;
+                // SAFETY: as above.
+                unsafe { (*request).status = super::RESPONSE_PENDING };
+                Ok(())
+            }
+        }
+    }
 }

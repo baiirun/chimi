@@ -5,4 +5,4 @@
 /// A carrier thread's index, from 0. Carrier 0 owns the root, signals and
 /// standard input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct Carrier(pub(super) u32);
+pub(crate) struct Carrier(pub(super) u32);

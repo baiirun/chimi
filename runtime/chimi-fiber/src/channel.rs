@@ -1,7 +1,7 @@
 use crate::scheduler::TaskId;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(u64);
 
 impl ChannelId {
@@ -341,6 +341,18 @@ impl Channel {
         }
     }
 
+    /// An open queue that is not a hub, a tap, a subscription or
+    /// conflating, with no select watching it: the channels the local path
+    /// serves.
+    fn is_plain_open_queue(&self) -> bool {
+        self.lifecycle == Lifecycle::Open
+            && self.hub.is_none()
+            && self.tap_of.is_none()
+            && self.feed.is_none()
+            && !self.conflate
+            && self.select_watchers.is_empty()
+    }
+
     fn has_room(&self) -> bool {
         !self.waiting_receivers.is_empty() || self.queue.len() < self.capacity
     }
@@ -360,9 +372,13 @@ enum Operation {
 pub(crate) type ValueCopier = Box<dyn FnMut(usize) -> usize>;
 
 pub(crate) struct ChannelRegistry {
-    channels: BTreeMap<ChannelId, Channel>,
+    /// Each homed on the carrier that made it, for good.
+    channels: crate::scheduler::Homed<ChannelId, Channel>,
+    /// The carrier holding the kernel, which new channels are homed on
+    /// (`Scheduler::enter_carrier` sets it).
+    carrier: crate::scheduler::Carrier,
     owned_channels: BTreeMap<TaskId, BTreeSet<ChannelId>>,
-    operations: BTreeMap<TaskId, Operation>,
+    operations: Operations,
     /// Keyed by the sent value, which is unique while the registry holds it.
     parcels: BTreeMap<usize, Parcel>,
     next_channel: u64,
@@ -378,9 +394,10 @@ pub(crate) struct ChannelRegistry {
 impl ChannelRegistry {
     pub fn new(observe_boundaries: bool, observe_full: bool) -> Self {
         Self {
-            channels: BTreeMap::new(),
+            channels: crate::scheduler::Homed::default(),
+            carrier: crate::scheduler::Carrier::default(),
             owned_channels: BTreeMap::new(),
-            operations: BTreeMap::new(),
+            operations: Operations::default(),
             parcels: BTreeMap::new(),
             next_channel: 1,
             arrivals: 0,
@@ -388,6 +405,16 @@ impl ChannelRegistry {
             observe_full,
             copier: None,
         }
+    }
+
+    /// Homes the channels made from now on on `carrier`.
+    pub(crate) fn enter_carrier(&mut self, carrier: crate::scheduler::Carrier) {
+        self.carrier = carrier;
+    }
+
+    /// True when no capability is in flight in any value.
+    pub(crate) fn parcels_empty(&self) -> bool {
+        self.parcels.is_empty()
     }
 
     pub fn set_copier(&mut self, copier: ValueCopier) {
@@ -437,7 +464,7 @@ impl ChannelRegistry {
         let since = self.tick();
         channel.receiver_since = since;
         channel.completion_since = since;
-        self.channels.insert(id, channel);
+        self.channels.insert(id, self.carrier, channel);
         self.owned_channels.entry(owner).or_default().insert(id);
         let capabilities = ChannelCapabilities {
             sender: Sender { channel: id },
@@ -475,7 +502,7 @@ impl ChannelRegistry {
             subscriptions: Vec::new(),
             current: initial,
         });
-        self.channels.insert(id, channel);
+        self.channels.insert(id, self.carrier, channel);
         self.owned_channels.entry(owner).or_default().insert(id);
         let completion = Completion {
             channel: id,
@@ -530,7 +557,7 @@ impl ChannelRegistry {
                 .subscriptions
                 .push(id);
         }
-        self.channels.insert(id, channel);
+        self.channels.insert(id, self.carrier, channel);
         self.owned_channels.entry(task).or_default().insert(id);
         let receiver = Receiver {
             channel: id,
@@ -564,7 +591,7 @@ impl ChannelRegistry {
         tap.receiver_since = self.tick();
         tap.receiver_ended = ended;
         tap.tap_of = Some(queue_id);
-        self.channels.insert(id, tap);
+        self.channels.insert(id, self.carrier, tap);
         self.channels
             .get_mut(&queue_id)
             .expect("tap's queue")
@@ -963,6 +990,138 @@ impl ChannelRegistry {
                 },
             );
         }
+    }
+
+    /// `take_send_result`, or else `send_carrying` of a value that carries
+    /// nothing, on the local path of step 4e, or None, having changed nothing, when it is not local:
+    /// tracing is on, a parcel is in flight anywhere, `task` has an
+    /// operation that is not a ready result, the channel is not a plain open queue homed on `carrier`
+    /// or has select watchers, a parked receiver it would hand to is not
+    /// local, or it would park without an operation slot to record it in.
+    /// Some gives the result and the receiver it handed the value to,
+    /// which the caller wakes before `task`, as the transition would.
+    ///
+    /// # Safety
+    ///
+    /// As for `Homed::homed_mut`, for `carrier`; `is_local` is true only
+    /// for tasks homed on `carrier`.
+    pub(crate) unsafe fn send_local(
+        &self,
+        carrier: crate::scheduler::Carrier,
+        task: TaskId,
+        sender: Sender,
+        value: usize,
+        is_local: impl Fn(TaskId) -> bool,
+    ) -> Option<(SendResult, Option<TaskId>)> {
+        if self.observe_boundaries || self.observe_full || !self.parcels.is_empty() {
+            return None;
+        }
+        // SAFETY (each block below): the caller's contract; `task` and any
+        // task `is_local` accepts are homed on `carrier`, and no two of the
+        // references made here are to the same record at once.
+        match unsafe { self.operations.slot_mut(task) } {
+            // A reissued send collects the result it was woken for.
+            Some(slot) if matches!(slot, Some(Operation::SendReady(_))) => {
+                let Some(Operation::SendReady(result)) = slot.take() else {
+                    unreachable!("matched a ready result")
+                };
+                return Some((result, None));
+            }
+            Some(Some(_)) => return None,
+            _ => {}
+        }
+        let channel = unsafe { self.channels.homed_mut(&sender.channel, carrier) }?;
+        if !channel.is_plain_open_queue() {
+            return None;
+        }
+        let result = if let Some(&receiver) = channel.waiting_receivers.front() {
+            if !is_local(receiver) {
+                return None;
+            }
+            let slot = unsafe { self.operations.slot_mut(receiver) }?;
+            channel.waiting_receivers.pop_front();
+            *slot = Some(Operation::ReceiveReady(ReceiveResult::Received(value)));
+            (SendResult::Accepted, Some(receiver))
+        } else if channel.queue.len() < channel.capacity {
+            channel.queue.push_back(value);
+            (SendResult::Accepted, None)
+        } else {
+            let slot = unsafe { self.operations.slot_mut(task) }?;
+            channel.waiting_senders.push_back(WaitingSend { task, value });
+            *slot = Some(Operation::Sending {
+                channel: sender.channel,
+            });
+            (SendResult::Pending, None)
+        };
+        channel.assert_invariants();
+        Some(result)
+    }
+
+    /// `take_receive_result`, or else `receive`, on the local path, or None, having changed nothing: as for
+    /// `send_local`, and also when the receiver is not `task`'s own, is a
+    /// tap or a subscription, or the queue is closed and empty. Some gives
+    /// the result and the parked sender it admitted, which the caller wakes
+    /// before `task`.
+    ///
+    /// # Safety
+    ///
+    /// As for `send_local`.
+    pub(crate) unsafe fn receive_local(
+        &self,
+        carrier: crate::scheduler::Carrier,
+        task: TaskId,
+        receiver: Receiver,
+        is_local: impl Fn(TaskId) -> bool,
+    ) -> Option<(ReceiveResult, Option<TaskId>)> {
+        if self.observe_boundaries || self.observe_full || !self.parcels.is_empty() {
+            return None;
+        }
+        // SAFETY (each block below): as in `send_local`.
+        match unsafe { self.operations.slot_mut(task) } {
+            // A reissued receive collects the result it was woken for.
+            Some(slot) if matches!(slot, Some(Operation::ReceiveReady(_))) => {
+                let Some(Operation::ReceiveReady(result)) = slot.take() else {
+                    unreachable!("matched a ready result")
+                };
+                return Some((result, None));
+            }
+            Some(Some(_)) => return None,
+            _ => {}
+        }
+        let channel = unsafe { self.channels.homed_mut(&receiver.channel, carrier) }?;
+        if validate_receiver(channel, receiver, task).is_err()
+            || channel.receiver_ended
+            || !channel.is_plain_open_queue()
+        {
+            return None;
+        }
+        let admitted = match channel.waiting_senders.front() {
+            Some(waiter) if !is_local(waiter.task) => return None,
+            Some(waiter) => Some((waiter.task, unsafe { self.operations.slot_mut(waiter.task) }?)),
+            None => None,
+        };
+        let result = if let Some(value) = channel.queue.pop_front() {
+            let woken = admitted.map(|(task, slot)| {
+                let waiter = channel.waiting_senders.pop_front().expect("a parked sender");
+                channel.queue.push_back(waiter.value);
+                *slot = Some(Operation::SendReady(SendResult::Accepted));
+                task
+            });
+            (ReceiveResult::Received(value), woken)
+        } else if let Some((_, slot)) = admitted {
+            let waiter = channel.waiting_senders.pop_front().expect("a parked sender");
+            *slot = Some(Operation::SendReady(SendResult::Accepted));
+            (ReceiveResult::Received(waiter.value), Some(waiter.task))
+        } else {
+            let slot = unsafe { self.operations.slot_mut(task) }?;
+            channel.waiting_receivers.push_back(task);
+            *slot = Some(Operation::Receiving {
+                channel: receiver.channel,
+            });
+            (ReceiveResult::Pending, None)
+        };
+        channel.assert_invariants();
+        Some(result)
     }
 
     pub fn receive(
@@ -1573,14 +1732,15 @@ impl ChannelRegistry {
     /// that is being dropped.
     pub fn drain_held_values(&mut self) -> Vec<usize> {
         let mut values = Vec::new();
-        for channel in self.channels.values_mut() {
+        for id in self.channels.ids_in_order() {
+            let channel = self.channels.get_mut(&id).expect("a listed channel");
             values.extend(channel.queue.drain(..));
             values.extend(channel.waiting_senders.drain(..).map(|waiter| waiter.value));
             if let Some(hub) = channel.hub.as_mut() {
                 values.extend(hub.current.take());
             }
         }
-        for (_, operation) in std::mem::take(&mut self.operations) {
+        for (_, operation) in self.operations.take_all() {
             if let Some(value) = operation.held_value() {
                 values.push(value);
             }
@@ -1590,6 +1750,7 @@ impl ChannelRegistry {
 
     pub fn cleanup_task(&mut self, task: TaskId) -> Transition {
         let mut transition = self.cancel_operation(task);
+        self.operations.forget(task);
         let channels = self.owned_channels.remove(&task).unwrap_or_default();
         for id in channels {
             let Some(channel) = self.channels.get(&id) else {
@@ -2057,7 +2218,7 @@ impl ChannelRegistry {
 fn place(
     channel: &mut Channel,
     id: ChannelId,
-    operations: &mut BTreeMap<TaskId, Operation>,
+    operations: &mut Operations,
     value: usize,
     cause: Option<TaskId>,
     observe_full: bool,
@@ -2234,6 +2395,74 @@ fn observe_channel(
 fn record(transition: &mut Transition, enabled: bool, observation: Observation) {
     if enabled {
         transition.observations.push(observation);
+    }
+}
+
+/// Each task's send or receive, in a slot of its own that stays once made.
+///
+/// A slot is made by a task's first operation and removed only by
+/// `forget`, when the task is cleaned up. Setting or clearing an operation
+/// changes only the slot's contents, never the map: the shape the local
+/// path of step 4e needs, where a carrier writes the slots of its own
+/// tasks while other carriers write theirs (docs/architecture/
+/// parallel-scheduler.md, "Step 4 plan", the access model). The shared readers run on the write side only.
+#[derive(Default)]
+struct Operations {
+    slots: crate::scheduler::IdMap<TaskId, std::cell::UnsafeCell<Option<Operation>>>,
+}
+
+impl Operations {
+    fn insert(&mut self, task: TaskId, operation: Operation) {
+        *self.slots.entry(task).or_default().get_mut() = Some(operation);
+    }
+
+    fn remove(&mut self, task: &TaskId) -> Option<Operation> {
+        self.slots.get_mut(task).and_then(|slot| slot.get_mut().take())
+    }
+
+    fn get(&self, task: &TaskId) -> Option<&Operation> {
+        // SAFETY: a slot is written through `&mut self`, which cannot coexist
+        // with this borrow, or by its task's carrier on the local path
+        // (`slot_mut`); these readers run on the write side only.
+        self.slots.get(task).and_then(|slot| unsafe { &*slot.get() }.as_ref())
+    }
+
+    fn contains_key(&self, task: &TaskId) -> bool {
+        self.get(task).is_some()
+    }
+
+    /// Every operation, in no particular order.
+    fn values(&self) -> impl Iterator<Item = &Operation> {
+        // SAFETY: as for `get`.
+        self.slots.values().filter_map(|slot| unsafe { &*slot.get() }.as_ref())
+    }
+
+    /// Takes every operation, in task order, leaving the slots empty.
+    fn take_all(&mut self) -> Vec<(TaskId, Operation)> {
+        let mut taken: Vec<_> = self
+            .slots
+            .iter_mut()
+            .filter_map(|(task, slot)| Some((*task, slot.get_mut().take()?)))
+            .collect();
+        taken.sort_unstable_by_key(|(task, _)| *task);
+        taken
+    }
+
+    /// `task`'s slot, if it has one.
+    ///
+    /// # Safety
+    ///
+    /// As for `Homed::homed_mut`: `task` is homed on the carrier the caller
+    /// acts as, and no other reference to this slot is live.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn slot_mut(&self, task: TaskId) -> Option<&mut Option<Operation>> {
+        // SAFETY: the caller's contract.
+        self.slots.get(&task).map(|slot| unsafe { &mut *slot.get() })
+    }
+
+    /// Removes `task`'s slot, once it can make no more operations.
+    fn forget(&mut self, task: TaskId) {
+        self.slots.remove(&task);
     }
 }
 

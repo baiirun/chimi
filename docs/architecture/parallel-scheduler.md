@@ -1336,6 +1336,30 @@ the gates measure, so it goes first.
        own `UnsafeCell`, its home beside the cell (`Task.carrier` moved
        there). Until the local path exists every write goes through
        `&mut Homed`, so it behaves as the map it wraps.
+     - 4e-2 as built. What the local path writes sits in cells: the
+       shards (`Shards::own`), incarnations (`Homed`, homed with their body
+       task: `move_home` and a first resume keep the two in step), channels
+       (`Homed`, homed for good on the carrier that made them) and each
+       task's channel operation (`Operations`, a slot per task made on the
+       write side and removed when the task is cleaned up). The tables that
+       iterate in order where order reaches output (teardown, shutdown
+       deadlines, released values) sort by id. `scheduler/local.rs` runs
+       a `drive` step on the read side: finishing a park whose request is
+       a process send or receive or a channel send or receive, the
+       housekeeping after a resume, and entering the next ready task. Each
+       phase checks first and changes nothing when it cannot run locally,
+       and the write side goes on from that phase (`Scheduler::step_from`).
+       It accepts tracing off; no scope, select, descriptor, child or signal
+       wait; no stop under way; no capability in flight anywhere; plain
+       open queues with no select watching; and only tasks, mailboxes and
+       channels homed on its carrier. `KernelAccess for Scheduler` runs the
+       same path over its `&mut`, so every untraced unit test exercises it.
+       Pairs (20,000 rounds, medians of five, two rounds, against 4e-1):
+       one carrier 676 and 706 against 854 and 826 ms, two 449 and 451
+       against 758 and 769, four 271 and 235 against 718 and 716, eight 226
+       and 221 against 637 and 662. The host has four cores. Tests of the
+       gates and the wake order in `local.rs` and `process_tests.rs`;
+       mutants in `local_path_mutations.py`, all fourteen killed.
      - Risks: the C handle table's lock is taken by every Sender copy and
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
