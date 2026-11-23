@@ -320,6 +320,39 @@ rows, and read the instruction counts below as the measured gain.
   runtime's allocator and its `memset` of new allocations (about 160
   million instructions between them).
 
+## After the local path (step 4 PR 4e-2)
+
+The full `scripts/measure_carriers.py` run at main 92691cf, with the same
+host, command and defaults as "Run" above (medians of 7 after one
+unmeasured run). This run's host was slower than the first one's: the
+one-carrier counting job took 3,639 ms against 2,381, and so did the host
+ceiling. Compare columns with each other, not with the first table.
+
+| Measurement | 1 carrier | 2 | 4 | 8 |
+| --- | ---: | ---: | ---: | ---: |
+| Parallel counting, 8 processes (ms) | 3,639 | 1,955 | 965 | 1,025 |
+| Parallel list building, 8 processes (ms) | 4,658 | 2,372 | 1,267 | 1,248 |
+| Host ceiling: n one-carrier copies (ms) | 3,675 | 2,053 | 1,022 | 1,076 |
+| Serial round trip, main to two echo processes (µs) | 4.6 | 4.6 | 4.7 | 4.7 |
+| Parallel messaging, 8 pairs (ms) | 714 | 435 | 280 | 259 |
+| PG04 µs per start (limit 50) | 28.8 | 26.3 | 36.9 | 39.1 |
+| PG04 µs per stop (limit 30) | 14.0 | 15.7 | 17.4 | 18.1 |
+| PG05 cost per process at 1,000 over 100 (limit 1.75) | 1.09 | 1.17 | 1.00 | 1.01 |
+| PG08 resident bytes of 1,000 parked processes | 12,992,512 | 9,232,384 | 7,303,168 | 6,434,816 |
+
+- Every gate passes at every carrier count. In the first run, two to eight
+  carriers missed PG04's stop limit, and four missed its start limit.
+- Parallel work reaches the host ceiling: four carriers count 3.8 times
+  faster than one.
+- A round trip that crosses carriers costs what one carrier's does. In the
+  first run it cost 22 to 39 µs, against 3.7 µs on one carrier.
+- Parallel messaging, which no carrier count sped up before step 4, is
+  2.5 times faster on four carriers than on one.
+- A service is not yet faster on more carriers. A loopback HTTP benchmark
+  (CHI-303) serves 4,000 requests in 8.3 to 8.8 s on one carrier and 6.2
+  to 6.5 s on four. It is bound by the runtime's allocation, not by the
+  scheduler, which is under 1% of its instructions.
+
 ## Method
 
 - `chimi-process-lab performance --carriers <n>` runs PG04, PG05 and PG08
