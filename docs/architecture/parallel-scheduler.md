@@ -5,9 +5,12 @@
 Design note. Ticket: CHI-267. It records what running Chimi on more than one
 thread takes. Steps 1 to 3 are done: `--carriers=<n>` runs processes on n
 threads around one kernel lock, and the default stays one carrier
-(decisions.md, 2026-11-21). Step 4 is planned below ("Step 4 plan"):
-4a to 4c are done (fibers move between threads, and an idle carrier steals
-from a sleeping one); 4d to 4f split the kernel lock.
+(decisions.md, 2026-11-21). Step 4 ("Step 4 plan") is done: fibers move between threads, an idle
+carrier steals from a sleeping one, and a carrier serves its own messaging
+on the kernel lock's read side (4e-2). 4e-3 and 4f were dropped by
+measurement. What is left is the owner's choice of the default carrier
+count (step 3, item 6), with the measurements in
+`docs/performance/multi-carrier-baseline.md`, "After the local path".
 
 ## Why
 
@@ -1364,10 +1367,24 @@ the gates measure, so it goes first.
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
        escalates until the C side is audited.
+     - 4e-3 dropped by measurement. A probe build counted, for each step,
+       the phase and the check that sent it to the write side. On pairs,
+       ping-pong and fan-out at one and four carriers every message step
+       ran locally; only process start, supervision and channel creation
+       escalated, a few dozen steps in a run. An HTTP server on loopback
+       (CHI-303) is the opposite: every step of a connection runs inside a
+       `Resource.scoped` scope and many are IO waits, so none is local. But
+       under callgrind the scheduler is under 1% of its instructions; the
+       runtime's allocation and zeroing are most of the 16 million a
+       request costs. Widening the local path to scopes, timers and IO
+       would not move that, so it waits until those costs fall.
 
 6. **4f: cross-shard requests without the global order,** for example a
    send to another carrier's mailbox queued to that carrier's inbox. Only
    if 4e's measurements show that the all-locks path matters.
+   - Dropped: after 4e-2, PG04 start and stop pass on every carrier count
+     and a cross-carrier round trip costs what one carrier's does (about
+     4.7 µs), so the all-locks path is not what limits any measurement.
 
 The ordering rules ("Ordering rules under several carriers") hold through
 both tracks. Each mailbox and each channel queue stays in one shard and
