@@ -2035,6 +2035,7 @@ impl<'core> Evaluator<'core> {
             | StandardFunction::BytesValidUtf8Length
             | StandardFunction::BytesReadIntCode
             | StandardFunction::BytesIntBytes
+            | StandardFunction::HttpCountEnds
             | StandardFunction::EmbedText
             | StandardFunction::EmbedBytes => {
                 self.invoke_bytes_operation(function, arguments, call_node)

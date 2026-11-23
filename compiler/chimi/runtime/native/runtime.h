@@ -5,7 +5,7 @@
 
 #include "chimi_binding.h"
 
-#define CHIMI_RUNTIME_ABI_VERSION 59
+#define CHIMI_RUNTIME_ABI_VERSION 60
 
 typedef struct ChimiRuntime ChimiRuntime;
 typedef struct ChimiEnvironment ChimiEnvironment;
@@ -312,6 +312,8 @@ enum {
   CHIMI_INTRINSIC_METRICS_HOST_ENABLED,
   CHIMI_INTRINSIC_METRICS_HOST_RECORD,
   CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT,
+  /* std/http's private byte scan. */
+  CHIMI_INTRINSIC_HTTP_COUNT_ENDS,
 };
 
 enum {

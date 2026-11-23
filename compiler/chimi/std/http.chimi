@@ -785,8 +785,7 @@ fn parse_length(value: Text) -> Int {
 }
 
 fn all_digits(text: Text) -> Bool {
-  let bytes = Bytes.to_list(Bytes.from_text(text))
-  (not List.is_empty(bytes)) and List.all(bytes, is_digit)
+  only_from(text, digit_bytes)
 }
 
 fn is_digit(byte: Int) -> Bool {
@@ -796,9 +795,9 @@ fn is_digit(byte: Int) -> Bool {
 // 7. Parsing a head.
 
 fn parse_head(bytes: Bytes, bounds: Limits) -> Parsed {
-  case List.any(Bytes.to_list(bytes), is_control) {
-    True -> Failure(Refusal.Malformed("a control character in the head"))
-    False -> Void
+  case is_only(bytes, head_bytes) {
+    False -> Failure(Refusal.Malformed("a control character in the head"))
+    True -> Void
   }
   let text = case Result.capture(fn() { Bytes.to_text(bytes) }) {
     Ok(text) -> text
@@ -847,16 +846,10 @@ fn parse_head(bytes: Bytes, bounds: Limits) -> Parsed {
 // A chunk line or trailer, refused when it holds a control character other
 // than HTAB: a bare CR or LF in one could end the line early for a proxy.
 fn refuse_controls(line: Bytes) -> Bytes {
-  case List.any(Bytes.to_list(line), fn(byte) {
-    is_control(byte) or byte == 10 or byte == 13
-  }) {
-    True -> Failure(Refusal.Malformed("a control character in a chunked body"))
-    False -> line
+  case is_only(line, line_bytes) {
+    False -> Failure(Refusal.Malformed("a control character in a chunked body"))
+    True -> line
   }
-}
-
-fn is_control(byte: Int) -> Bool {
-  (byte < 32 and byte != 9 and byte != 10 and byte != 13) or byte == 127
 }
 
 fn parse_request_line(line: Text) -> (Method, Text, Int) {
@@ -887,7 +880,7 @@ fn parse_version(version: Text) -> Int {
 }
 
 fn is_visible(text: Text) -> Bool {
-  List.all(Bytes.to_list(Bytes.from_text(text)), fn(byte) { byte > 32 and byte != 127 })
+  is_only(Bytes.from_text(text), visible_bytes)
 }
 
 fn method_named(name: Text) -> Method {
@@ -982,13 +975,7 @@ fn parse_header(line: Text) -> (Text, Text) {
 
 // A token (RFC 9110): one or more visible characters other than separators.
 fn is_token(text: Text) -> Bool {
-  let bytes = Bytes.to_list(Bytes.from_text(text))
-  (not List.is_empty(bytes)) and List.all(bytes, is_token_byte)
-}
-
-fn is_token_byte(byte: Int) -> Bool {
-  let alphanumeric = is_digit(byte) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
-  alphanumeric or List.contains([33, 35, 36, 37, 38, 39, 42, 43, 45, 46, 94, 95, 96, 124, 126], byte)
+  only_from(text, token_bytes)
 }
 
 // 8. Reading bytes off the connection.
@@ -1354,7 +1341,17 @@ fn hex(value: Int) -> Text {
 // Headers that frame the message or manage the connection, which the server
 // writes itself.
 fn is_framing_header(name: Text) -> Bool {
-  List.contains(["content-length", "connection", "transfer-encoding", "te", "trailer", "upgrade", "keep-alive", "proxy-connection"], name)
+  case name {
+    "content-length" -> True
+    "connection" -> True
+    "transfer-encoding" -> True
+    "te" -> True
+    "trailer" -> True
+    "upgrade" -> True
+    "keep-alive" -> True
+    "proxy-connection" -> True
+    _ -> False
+  }
 }
 
 fn write_response(writer: Writer<NetError>, response: Response, date: Text, keep_alive: Bool, minor: Int, head_only: Bool) -> Void {
@@ -1618,7 +1615,7 @@ fn parse_url(url: Text) -> Url {
     True -> Failure(HttpError.BadUrl("a user name or password in the URL"))
     False -> Void
   }
-  case List.all(Bytes.to_list(Bytes.from_text(target)), is_target_byte) {
+  case is_only(Bytes.from_text(target), target_bytes) {
     True -> Void
     False -> Failure(HttpError.BadUrl("a character the path or query must percent-encode"))
   }
@@ -1642,12 +1639,12 @@ fn parse_url(url: Text) -> Url {
 
 // `host:port/path?query` as `("host:port", "/path?query")`.
 fn split_authority(rest: Text) -> (Text, Text) {
-  let bytes = Bytes.to_list(Bytes.from_text(rest))
-  let end = List.find_index(bytes, fn(byte) { byte == 47 or byte == 63 })
-  case end {
-    None -> (rest, "/")
-    Some(at) -> {
-      let authority = Bytes.to_text_lossy(Bytes.slice(Bytes.from_text(rest), 0..at))
+  let bytes = Bytes.from_text(rest)
+  let at = count_leading(bytes, authority_bytes)
+  case at == Bytes.length(bytes) {
+    True -> (rest, "/")
+    False -> {
+      let authority = Bytes.to_text_lossy(Bytes.slice(bytes, 0..at))
       let target = drop_bytes(rest, at)
       case Text.starts_with(target, "?") {
         True -> (authority, "/${target}")
@@ -1676,13 +1673,11 @@ fn split_host(authority: Text, default_port: Int) -> (Text, Int) {
       None -> (authority, "")
     }
   }
-  let bytes = Bytes.to_list(Bytes.from_text(host))
+  let bytes = Bytes.from_text(host)
   let literal = Text.starts_with(authority, "[")
   let usable = case literal {
-    True -> Text.contains(host, ":") and List.all(bytes, fn(byte) {
-      is_hex_digit(byte) or byte == 58 or byte == 46
-    })
-    False -> List.all(bytes, is_name_byte)
+    True -> Text.contains(host, ":") and is_only(bytes, ipv6_bytes)
+    False -> is_only(bytes, name_bytes)
   }
   case Text.is_empty(host) {
     True -> Failure(HttpError.BadUrl("no host"))
@@ -1706,24 +1701,6 @@ fn split_host(authority: Text, default_port: Int) -> (Text, Int) {
     }
   }
   (host, port)
-}
-
-fn is_hex_digit(byte: Int) -> Bool {
-  is_digit(byte) or (byte >= 65 and byte <= 70) or (byte >= 97 and byte <= 102)
-}
-
-fn is_letter(byte: Int) -> Bool {
-  (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
-}
-
-fn is_name_byte(byte: Int) -> Bool {
-  is_letter(byte) or is_digit(byte) or List.contains([45, 46, 95, 126], byte)
-}
-
-// What RFC 3986 allows unencoded in a path and query: unreserved
-// characters, sub-delimiters, `:`, `@`, `/`, `?` and `%`.
-fn is_target_byte(byte: Int) -> Bool {
-  is_name_byte(byte) or List.contains([33, 36, 38, 39, 40, 41, 42, 43, 44, 59, 61, 58, 64, 47, 63, 37], byte)
 }
 
 // A host as it appears in a `host` header: an IPv6 literal in brackets.
@@ -1856,9 +1833,9 @@ fn read_reply(reader: Reader<NetError>, head_only: Bool, bounds: Limits) -> Resp
 // Protocols` would hand the connection to another protocol, which this
 // client does not speak.
 fn parse_reply_head(bytes: Bytes, bounds: Limits) -> (Int, Int, List<(Text, Text)>) {
-  case List.any(Bytes.to_list(bytes), is_control) {
-    True -> Failure(Refusal.Malformed("a control character in the head"))
-    False -> Void
+  case is_only(bytes, head_bytes) {
+    False -> Failure(Refusal.Malformed("a control character in the head"))
+    True -> Void
   }
   let text = case Result.capture(fn() { Bytes.to_text(bytes) }) {
     Ok(text) -> text
@@ -2033,7 +2010,19 @@ fn lowercase_names(headers: List<(Text, Text)>) -> List<(Text, Text)> {
 // lowercasing would turn the Kelvin sign into `k`, so `chunKed` with one
 // would read as `chunked` here and as something else to a proxy.
 fn ascii_lowercase(text: Text) -> Text {
-  let lowered = List.map(Bytes.to_list(Bytes.from_text(text)), fn(byte) {
+  let bytes = Bytes.from_text(text)
+  case count_leading(bytes, not_upper_bytes) == Bytes.length(bytes) {
+    True -> text
+    False -> case is_only(bytes, ascii_bytes) {
+      // Unicode lowercasing maps ASCII as this does.
+      True -> Text.lowercase(text)
+      False -> lowercase_bytes(bytes)
+    }
+  }
+}
+
+fn lowercase_bytes(bytes: Bytes) -> Text {
+  let lowered = List.map(Bytes.to_list(bytes), fn(byte) {
     case byte >= 65 and byte <= 90 {
       True -> byte + 32
       False -> byte
@@ -2045,19 +2034,68 @@ fn ascii_lowercase(text: Text) -> Text {
 // Trims spaces and tabs only, the whitespace HTTP allows around a value.
 fn trim_spaces(text: Text) -> Text {
   let bytes = Bytes.from_text(text)
-  let values = Bytes.to_list(bytes)
-  let is_space = fn(byte) { byte == 32 or byte == 9 }
-  case List.find_index(values, fn(byte) { not is_space(byte) }) {
-    None -> ""
-    Some(start) -> {
-      let from_end = case List.find_index(List.reverse(values), fn(byte) { not is_space(byte) }) {
-        Some(count) -> count
-        None -> 0
-      }
-      Bytes.to_text_lossy(Bytes.slice(bytes, start..(List.length(values) - from_end)))
+  let length = Bytes.length(bytes)
+  let (start, end) = count_ends(bytes, space_bytes)
+  case start == length {
+    True -> ""
+    False -> Bytes.to_text_lossy(Bytes.slice(bytes, start..(length - end)))
+  }
+}
+
+// The byte classes HTTP checks, for count_ends.
+const digit_bytes: Bytes = Bytes.from_text("0123456789")
+const space_bytes: Bytes = Bytes.from_text(" \t")
+const letter_bytes: Text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+// A token's characters (RFC 9110 section 5.6.2).
+const token_bytes: Bytes = Bytes.from_text("!#$%&'*+-.^_`|~0123456789${letter_bytes}")
+// A host name: ASCII letters, digits, `-`, `.`, `_` and `~`.
+const name_bytes: Bytes = Bytes.from_text("-._~0123456789${letter_bytes}")
+// An IPv6 literal: hex digits, `:` and `.`.
+const ipv6_bytes: Bytes = Bytes.from_text("0123456789ABCDEFabcdef:.")
+// What RFC 3986 allows unencoded in a path and query: unreserved
+// characters, sub-delimiters, `:`, `@`, `/`, `?` and `%`.
+const target_bytes: Bytes = Bytes.from_text("-._~0123456789${letter_bytes}!$&'()*+,;=:@/?%")
+const ascii_bytes: Bytes = Bytes.from(byte_span(0, 128))
+const not_upper_bytes: Bytes = Bytes.from(List.concat([byte_span(0, 65), byte_span(91, 256)]))
+// Every byte but `/` and `?`, which end a URL's authority.
+const authority_bytes: Bytes = Bytes.from(List.concat([byte_span(0, 47), byte_span(48, 63), byte_span(64, 256)]))
+// Visible characters: neither a control, a space nor DEL.
+const visible_bytes: Bytes = Bytes.from(List.concat([byte_span(33, 127), byte_span(128, 256)]))
+// What a head holds: HTAB, its CR LF line ends, and no other control or DEL.
+const head_bytes: Bytes = Bytes.from(List.concat([[9, 10, 13], byte_span(32, 127), byte_span(128, 256)]))
+// What a header value, chunk line or trailer holds: HTAB and no other
+// control or DEL.
+const line_bytes: Bytes = Bytes.from(List.concat([[9], byte_span(32, 127), byte_span(128, 256)]))
+
+// The bytes from `from` up to, not including, `to`.
+fn byte_span(from: Int, to: Int) -> List<Int> {
+  loop (byte, bytes) = (from, []) {
+    case byte < to {
+      True -> (byte + 1, List.push(bytes, byte))
+      False -> break bytes
     }
   }
 }
+
+fn is_only(bytes: Bytes, allowed: Bytes) -> Bool {
+  count_leading(bytes, allowed) == Bytes.length(bytes)
+}
+
+// One byte or more, every one of them in `allowed`.
+fn only_from(text: Text, allowed: Bytes) -> Bool {
+  let bytes = Bytes.from_text(text)
+  (not Bytes.is_empty(bytes)) and is_only(bytes, allowed)
+}
+
+fn count_leading(bytes: Bytes, allowed: Bytes) -> Int {
+  let (leading, _) = count_ends(bytes, allowed)
+  leading
+}
+
+// How many bytes at the start, and how many at the end, of `bytes` are in
+// `allowed`. One scan of a byte class replaces a walk over `Bytes.to_list`,
+// which allocates for every byte (CHI-303).
+native fn count_ends(bytes: Bytes, allowed: Bytes) -> (Int, Int)
 
 fn drop_bytes(text: Text, count: Int) -> Text {
   let bytes = Bytes.from_text(text)
@@ -2080,7 +2118,7 @@ fn larger(left: Int, right: Int) -> Int {
 
 fn checked_header(header: (Text, Text)) -> (Text, Text) {
   let (name, value) = header
-  let controls = List.any(Bytes.to_list(Bytes.from_text(value)), fn(byte) { (byte < 32 and byte != 9) or byte == 127 })
+  let controls = not is_only(Bytes.from_text(value), line_bytes)
   case (is_token(name), controls) {
     (False, _) -> Debug.crash("Http: the header name \"${name}\" is not a token")
     (_, True) -> Debug.crash("Http: the value of the header ${name} holds a control character")

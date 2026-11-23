@@ -6123,8 +6123,8 @@ static ChimiControl *optional_value(ChimiValue *value) {
   return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
 }
 
-/* The native core of std/bytes. Defect messages match the interpreter's
-   (execution/bytes_operations.rs). */
+/* The native core of std/bytes, and std/http's byte scan. Defect messages match
+   the interpreter's (execution/bytes_operations.rs). */
 static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arguments,
                                             uint32_t argument_count, uint32_t call_node) {
   switch (intrinsic) {
@@ -6199,6 +6199,24 @@ static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arg
         at += width;
       }
       return success(text_from_bytes(buffer.data ? buffer.data : "", buffer.length));
+    }
+    case CHIMI_INTRINSIC_HTTP_COUNT_ENDS: {
+      if (argument_count != 2 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_BYTES) break;
+      bool allowed[256] = {false};
+      for (size_t at = 0; at < arguments[1]->as.text.length; ++at)
+        allowed[(unsigned char)arguments[1]->as.text.bytes[at]] = true;
+      const unsigned char *bytes = (const unsigned char *)arguments[0]->as.text.bytes;
+      size_t length = arguments[0]->as.text.length, leading = 0, trailing = 0;
+      while (leading < length && allowed[bytes[leading]]) ++leading;
+      if (leading == length) trailing = length;
+      while (trailing < length && allowed[bytes[length - 1 - trailing]]) ++trailing;
+      ChimiValue *pair = new_value(VALUE_TUPLE);
+      pair->as.record.length = 2;
+      pair->as.record.fields = allocate(2, sizeof(*pair->as.record.fields));
+      allocation_kind(pair->as.record.fields, ALLOCATION_FIELDS);
+      pair->as.record.fields[0] = (RuntimeField){NULL, integer_value((int64_t)leading)};
+      pair->as.record.fields[1] = (RuntimeField){NULL, integer_value((int64_t)trailing)};
+      return success(pair);
     }
     case CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH: {
       if (argument_count != 1 || arguments[0]->kind != VALUE_BYTES) break;
@@ -11539,7 +11557,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
     return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES)
+  if ((intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES) ||
+      intrinsic == CHIMI_INTRINSIC_HTTP_COUNT_ENDS)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);

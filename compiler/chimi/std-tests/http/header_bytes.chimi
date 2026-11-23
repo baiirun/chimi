@@ -1,0 +1,50 @@
+// std/http's header checks on both backends: a response header's name must be
+// a token and is lowercased as ASCII only, its value may hold HTAB and
+// non-ASCII but no other control or DEL, and a lookup by name ignores ASCII
+// case only.
+import std/bytes as Bytes
+import std/debug as Debug
+import std/http as Http
+import std/test as Test
+
+fn names(headers: List<(Text, Text)>) -> Text {
+  Debug.render(Http.response_headers(Http.response(200, headers, Bytes.empty())))
+}
+
+fn refusal(name: Text, value: Text) -> Text {
+  Test.capture_defect(fn() {
+    Http.response(200, [(name, value)], Bytes.empty())
+  })
+}
+
+test "header names, values and lookups" {
+  names([("X-MiXed", "a"), ("!#$%&'*+-.^_`|~09AZaz", "b")])
+  |> Test.assert_equal("[(\"x-mixed\", \"a\"), (\"!#$%&'*+-.^_`|~09azaz\", \"b\")]")
+  refusal("x(y", "v")
+  |> Test.assert_equal("Http: the header name \"x(y\" is not a token")
+  refusal("", "v")
+  |> Test.assert_equal("Http: the header name \"\" is not a token")
+  // The Kelvin sign lowercases to k in Unicode, but it is not a token character.
+  refusal("\u{212a}ey", "v")
+  |> Test.assert_equal("Http: the header name \"\u{212a}ey\" is not a token")
+  names([("a", "x\ty"), ("b", "caf\u{e9} \u{85}")])
+  |> Test.assert_equal("[(\"a\", \"x\\ty\"), (\"b\", \"caf\u{e9} \u{85}\")]")
+  refusal("a", "x\u{1}")
+  |> Test.assert_equal("Http: the value of the header a holds a control character")
+  refusal("a", "\u{1f}")
+  |> Test.assert_equal("Http: the value of the header a holds a control character")
+  refusal("a", "x\u{7f}y")
+  |> Test.assert_equal("Http: the value of the header a holds a control character")
+  refusal("a", "\r\n")
+  |> Test.assert_equal("Http: the value of the header a holds a control character")
+  let response = Http.response(200, [("x-k", "kelvin"), ("content-type", "text/html")], Bytes.empty())
+  Http.response_header(response, "CONTENT-Type")
+  |> Test.assert_equal(Some("text/html"))
+  Http.response_header(response, "content-type")
+  |> Test.assert_equal(Some("text/html"))
+  // Unicode lowercasing would turn the Kelvin sign into k.
+  Http.response_header(response, "X-\u{212a}")
+  |> Test.assert_equal(None)
+  Http.response_header(response, "x-\u{212a}")
+  |> Test.assert_equal(None)
+}
