@@ -18,8 +18,8 @@ fn refusal(name: Text, value: Text) -> Text {
 }
 
 test "header names, values and lookups" {
-  names([("X-MiXed", "a"), ("!#$%&'*+-.^_`|~09AZaz", "b")])
-  |> Test.assert_equal("[(\"x-mixed\", \"a\"), (\"!#$%&'*+-.^_`|~09azaz\", \"b\")]")
+  names([("X-MiXed", "a"), ("!#$%&'*+-.^_`|~09AZaz", "b"), ("x-Z", "c")])
+  |> Test.assert_equal("[(\"x-mixed\", \"a\"), (\"!#$%&'*+-.^_`|~09azaz\", \"b\"), (\"x-z\", \"c\")]")
   refusal("x(y", "v")
   |> Test.assert_equal("Http: the header name \"x(y\" is not a token")
   refusal("", "v")
