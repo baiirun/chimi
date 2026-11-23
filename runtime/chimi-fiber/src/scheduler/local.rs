@@ -317,3 +317,163 @@ impl Local<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::carrier::{RunKind, Runnable};
+    use super::super::jobs::Job;
+    use super::super::scope::{Scope, ScopeId, ScopeKind};
+    use super::super::*;
+    use super::{Carrier, Local};
+    use crate::FIXTURE_LOCK;
+    use std::ptr::NonNull;
+
+    unsafe extern "C" {
+        fn chimi_fixture_generated_many_parks(context: *mut c_void) -> crate::ChimiFiberResult;
+    }
+
+    /// A kernel on the real clock with tracing off, and a task that has run
+    /// once and parked with no request.
+    fn parked() -> (Scheduler, TaskId) {
+        let mut scheduler = Scheduler::new(64 * 1024, TraceMode::Off);
+        let task = scheduler
+            .start_root(chimi_fixture_generated_many_parks)
+            .expect("task");
+        scheduler.drive();
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked);
+        (scheduler, task)
+    }
+
+    fn local(scheduler: &mut Scheduler) -> Local<'_> {
+        // SAFETY: the test has the scheduler to itself.
+        unsafe { Local::new(NonNull::from(scheduler), Carrier(0)) }
+    }
+
+    /// `task`'s step returning parked on `request`.
+    fn park(local: &mut Local<'_>, task: TaskId, request: *mut c_void) -> Result<(), super::Escalate> {
+        let runnable = Runnable {
+            task,
+            fiber: NonNull::dangling(),
+            command: ChimiFiberCommand::Resume,
+            kind: RunKind::Step,
+        };
+        let event = ChimiFiberEvent {
+            state: ChimiFiberState::Parked as u32,
+            value: 0,
+            defect_code: 0,
+            roots: std::ptr::null(),
+            request,
+        };
+        local.complete(runnable, event)
+    }
+
+    fn scope() -> Scope {
+        Scope {
+            id: ScopeId::from_raw(1),
+            kind: ScopeKind::Timeout,
+            entered_at: 0,
+            timer: None,
+            deadline: super::super::clock::Instant::from_nanos(0),
+            fired: false,
+            draining: false,
+            delivered: false,
+        }
+    }
+
+    fn request(kind: u32) -> SchedulerRequest {
+        SchedulerRequest {
+            kind,
+            status: 0,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value: 0,
+            entry: None,
+            context: std::ptr::null_mut(),
+        }
+    }
+
+    /// The park number counts parks the write side recorded, so a request
+    /// the local path cannot serve leaves it, the phase and the request as
+    /// they were.
+    #[test]
+    fn an_escalated_park_changes_nothing() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (mut scheduler, task) = parked();
+        let before = {
+            let record = &scheduler.tasks[&task];
+            (record.phase, record.request, record.park)
+        };
+        let mut request = request(REQUEST_TIMER_NOW);
+        let escalated = park(&mut local(&mut scheduler), task, (&raw mut request).cast());
+        assert!(escalated.is_err());
+        let record = &scheduler.tasks[&task];
+        assert_eq!((record.phase, record.request, record.park), before);
+    }
+
+    /// Scopes need the write side, which polls their deadlines and
+    /// delivers their cancellations.
+    #[test]
+    fn a_task_inside_a_scope_escalates() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (mut scheduler, task) = parked();
+        scheduler.tasks.get_mut(&task).expect("task").scopes.push(scope());
+        let park_before = scheduler.tasks[&task].park;
+        assert!(park(&mut local(&mut scheduler), task, std::ptr::null_mut()).is_err());
+        assert_eq!(scheduler.tasks[&task].park, park_before);
+
+        scheduler.wake(task).expect("woken");
+        assert!(local(&mut scheduler).next_runnable().is_err());
+        scheduler.tasks.get_mut(&task).expect("task").scopes.clear();
+    }
+
+    /// Released tasks and queued jobs are the write side's housekeeping, so
+    /// a step finding either goes there.
+    #[test]
+    fn housekeeping_escalates() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (mut scheduler, task) = parked();
+        scheduler.released_terminal.push(task);
+        let mut resumes = 0;
+        assert!(local(&mut scheduler).after_resume(&mut resumes).is_err());
+        assert_eq!(resumes, 0);
+        scheduler.released_terminal.clear();
+
+        scheduler.wake(task).expect("woken");
+        scheduler.shards.push_job(Carrier(0), Job::Unwind { task, forced: false });
+        assert!(local(&mut scheduler).next_runnable().is_err());
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Runnable);
+        scheduler.shards.pop_job(Carrier(0));
+    }
+
+    /// A send into a full queue waits: the reply says pending and the
+    /// sender stays parked.
+    #[test]
+    fn a_send_into_a_full_queue_is_pending() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let (mut scheduler, task) = parked();
+        let channel = scheduler.create_channel(task, 0).expect("channel");
+        let receiver = scheduler
+            .start_root(chimi_fixture_generated_many_parks)
+            .expect("receiver");
+        scheduler.drive();
+        let receiving = scheduler
+            .transfer_receiver(task, channel.receiver, receiver)
+            .expect("handed over");
+        // A send the write side served gives the task its operation slot.
+        assert_eq!(scheduler.channel_send(task, channel.sender, 1), Ok(SendResult::Pending));
+        assert_eq!(
+            scheduler.channel_receive(receiver, receiving),
+            Ok(ReceiveResult::Received(1))
+        );
+        assert_eq!(scheduler.take_send_result(task), Some(SendResult::Accepted));
+        scheduler.drive();
+        let mut request = request(REQUEST_CHANNEL_SEND);
+        request.channel = channel.sender.channel().get();
+        request.value = 2;
+        assert!(park(&mut local(&mut scheduler), task, (&raw mut request).cast()).is_ok());
+        assert_eq!(request.status, RESPONSE_PENDING);
+        assert_eq!(scheduler.tasks[&task].phase, TaskPhase::Parked);
+    }
+}

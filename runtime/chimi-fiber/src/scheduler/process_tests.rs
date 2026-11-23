@@ -4865,3 +4865,37 @@ fn members_spread_over_the_carriers_and_a_restart_stays_put() {
     one.settle();
     assert!(one.scheduler.incarnation_homes().iter().all(|&(_, home)| home == 0));
 }
+
+/// A body's direct send wakes the receiver behind every ready task and
+/// lets the sender go on first, the same with tracing off (the carrier's
+/// local path) as with it on (the write side).
+#[test]
+fn a_direct_send_resumes_the_sender_before_its_receiver() {
+    for trace_mode in [TraceMode::Off, TraceMode::Full] {
+        let mut lab = Lab::traced(trace_mode);
+        let root = lab.scheduler.start_supervisor(policy(vec![], 0)).unwrap();
+        let sending = lab
+            .scheduler
+            .start_process(root, spec(Some(COUNTER), 8), Restart::Never)
+            .unwrap();
+        let receiving = lab
+            .scheduler
+            .start_process(root, spec(Some(PEER), 8), Restart::Never)
+            .unwrap();
+        lab.settle();
+        let sender = lab.scheduler.process_address(sending).unwrap();
+        let receiver = lab.scheduler.process_address(receiving).unwrap();
+        let (Address::Direct(from), Address::Direct(to)) = (sender, receiver) else {
+            unreachable!("process_address gives a direct address")
+        };
+        lab.deliver(sender, Msg::SendTo(receiver, 5));
+        lab.deliver(sender, Msg::Add(1));
+        lab.settle();
+        assert_eq!(
+            log(|log| log.adds.clone()),
+            [(from.get(), 1), (to.get(), 5)],
+            "{trace_mode:?}"
+        );
+        assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_OK], "{trace_mode:?}");
+    }
+}
