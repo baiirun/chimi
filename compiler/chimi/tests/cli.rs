@@ -4576,13 +4576,15 @@ const PAYLOAD_FUNCTION: &str = concat!(
 );
 
 /// Builds `source` and returns the memory report of one run with `runner` options
-/// and `rounds` application arguments.
+/// and `rounds` application arguments. The run names one carrier: on several,
+/// the report's peaks are folded across carriers and no longer exact.
 fn memory_report_over_rounds(name: &str, source: &str, runner: &[&str], rounds: usize) -> String {
     let scratch = scratch_directory(&format!("{name}-{rounds}"));
     let executable = build_native(&scratch, name, source);
     let memory_report = scratch.join("memory.json");
     let execution = Command::new(&executable)
         .arg("--chimi-runner")
+        .arg("--carriers=1")
         .args(runner)
         .arg(format!("--memory-report-file={}", memory_report.display()))
         .arg("--")

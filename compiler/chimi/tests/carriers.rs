@@ -292,6 +292,23 @@ fn the_runner_refuses_a_bad_carrier_count() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The cores in this process's affinity mask, which the runtime counts (and
+/// the child inherits). Not `available_parallelism`, which also applies a
+/// cgroup CPU quota.
+#[cfg(target_os = "linux")]
+fn allowed_cores() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let mask = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed:"))
+        .expect("Cpus_allowed line");
+    mask.trim()
+        .chars()
+        .filter_map(|digit| digit.to_digit(16))
+        .map(|digit| digit.count_ones() as usize)
+        .sum()
+}
+
 /// With `--carriers=4` the program runs on four threads while it runs:
 /// the main thread, which is carrier 0, and one for each other carrier.
 /// Without `--carriers` it takes one per core it may run on, and one under
@@ -337,10 +354,7 @@ fn four_carriers_run_on_four_threads() {
     assert_eq!(count_threads(&["--clock=virtual"]), 1);
     if !simulation() {
         assert_eq!(count_threads(&["--clock=real", "--carriers=4"]), 4);
-        // The affinity mask, which is what the runtime counts; the test
-        // host sets no CPU quota that would make the two differ.
-        let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
-        assert_eq!(count_threads(&["--clock=real"]), cores.min(256));
+        assert_eq!(count_threads(&["--clock=real"]), allowed_cores().min(256));
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }
