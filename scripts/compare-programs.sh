@@ -55,6 +55,8 @@ build --root programs/chimi-trace-summary app/main -o "$bin/trace-summary"
 build prototypes/golden/valid/dependencies_and_execution.chimi -o "$bin/checkout"
 build --root programs/concurrency-pipeline app/main -o "$bin/concurrency-pipeline"
 
+# Traced runs name one carrier: a program takes a carrier per core by
+# default, and events from several carriers interleave from run to run.
 # run NAME COMMAND...: stdout to NAME.stdout.txt followed by "exit STATUS".
 run() {
   name=$1; shift
@@ -63,14 +65,14 @@ run() {
 }
 
 cd "$out" || exit 2
-run checkout "$bin/checkout" --chimi-runner --trace=boundaries --execution-id=fixed \
+run checkout "$bin/checkout" --chimi-runner --carriers=1 --trace=boundaries --execution-id=fixed \
   --telemetry-file=checkout.trace.jsonl --outcome-file=checkout.outcome.jsonl --
 cat checkout.trace.jsonl checkout.outcome.jsonl > checkout.execution.jsonl
 run summary "$bin/trace-summary" checkout.execution.jsonl
 run summary-stdin sh -c '"$1" - < checkout.execution.jsonl' sh "$bin/trace-summary"
-run summary-full "$bin/trace-summary" --chimi-runner --trace=full --execution-id=fixed \
+run summary-full "$bin/trace-summary" --chimi-runner --carriers=1 --trace=full --execution-id=fixed \
   --telemetry-file=summary.trace.jsonl --outcome-file=summary.outcome.jsonl -- checkout.execution.jsonl
-run cp "$bin/concurrency-pipeline" --chimi-runner --trace=full --execution-id=concurrency-pipeline \
+run cp "$bin/concurrency-pipeline" --chimi-runner --carriers=1 --trace=full --execution-id=concurrency-pipeline \
   --telemetry-file=cp-trace.jsonl --outcome-file=cp-outcome.jsonl --
 
 for file in *.jsonl *.txt; do

@@ -75,7 +75,8 @@ pub fn main() -> Int {
 EOF
   (cd "$WORK" && "$ROOT/target/debug/chimi" build pipeline.chimi -o pipeline >/dev/null)
   rm -f "$WORK/outcome.json" "$WORK/memory.json"
-  "$WORK/pipeline" --chimi-runner --trace=off --outcome-file="$WORK/outcome.json" \
+  # One carrier: on several, the report's peaks are folded across carriers.
+  "$WORK/pipeline" --chimi-runner --carriers=1 --trace=off --outcome-file="$WORK/outcome.json" \
     --memory-report-file="$WORK/memory.json" -- >/dev/null
   python3 - "$JOBS" "$WORK/outcome.json" "$WORK/memory.json" <<'EOF'
 import json, sys

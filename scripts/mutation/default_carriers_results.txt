@@ -1,0 +1,5 @@
+KILLED       a given count is replaced by the default [carriers] (69s)
+KILLED       the virtual clock takes a carrier per core [carriers] (97s)
+KILLED       the default stays one carrier [carriers] (100s)
+KILLED       the default counts one core too few [carriers] (97s)
+# result: every mutant killed

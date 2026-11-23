@@ -129,7 +129,8 @@ chimi-process-lab <kind>... [--through <stage>] [--scenario <ID>]
   checks do not depend on the backend.
 - `--carriers` runs the performance workloads on that many carriers, the
   runner's `--carriers=<n>` (1 through 256, digits only; the default is
-  1). Several carriers need the real clock, so only PG04, PG05, and PG08,
+  1, which the lab passes to the runner, since a program on its own takes
+  one carrier per core). Several carriers need the real clock, so only PG04, PG05, and PG08,
   whose `members` workload never sleeps, are measured; every other gate
   reports `unsupported` and does not run. The limits were set on one
   carrier. `--carriers` without the `performance` kind is a usage error.

@@ -292,9 +292,28 @@ fn the_runner_refuses_a_bad_carrier_count() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The cores in this process's affinity mask, which the runtime counts (and
+/// the child inherits). Not `available_parallelism`, which also applies a
+/// cgroup CPU quota.
+#[cfg(target_os = "linux")]
+fn allowed_cores() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let mask = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed:"))
+        .expect("Cpus_allowed line");
+    mask.trim()
+        .chars()
+        .filter_map(|digit| digit.to_digit(16))
+        .map(|digit| digit.count_ones() as usize)
+        .sum()
+}
+
 /// With `--carriers=4` the program runs on four threads while it runs:
 /// the main thread, which is carrier 0, and one for each other carrier.
-/// The program sleeps half a second so the threads can be counted.
+/// Without `--carriers` it takes one per core it may run on, and one under
+/// the virtual clock. The program sleeps half a second so the threads can
+/// be counted.
 #[cfg(target_os = "linux")]
 #[test]
 fn four_carriers_run_on_four_threads() {
@@ -312,11 +331,10 @@ fn four_carriers_run_on_four_threads() {
             "}\n",
         ),
     );
-    let count_threads = |carriers: &str| {
+    let count_threads = |flags: &[&str]| {
         let mut child = Command::new(&executable)
             .arg("--chimi-runner")
-            .arg("--clock=real")
-            .arg(format!("--carriers={carriers}"))
+            .args(flags)
             .arg("--")
             .spawn()
             .expect("run native program");
@@ -332,9 +350,11 @@ fn four_carriers_run_on_four_threads() {
         assert!(child.wait().expect("wait").success());
         most
     };
-    assert_eq!(count_threads("1"), 1);
+    assert_eq!(count_threads(&["--clock=real", "--carriers=1"]), 1);
+    assert_eq!(count_threads(&["--clock=virtual"]), 1);
     if !simulation() {
-        assert_eq!(count_threads("4"), 4);
+        assert_eq!(count_threads(&["--clock=real", "--carriers=4"]), 4);
+        assert_eq!(count_threads(&["--clock=real"]), allowed_cores().min(256));
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }
