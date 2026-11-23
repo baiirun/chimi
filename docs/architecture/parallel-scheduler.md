@@ -1357,7 +1357,9 @@ the gates measure, so it goes first.
        Pairs (20,000 rounds, medians of five, two rounds, against 4e-1):
        one carrier 676 and 706 against 854 and 826 ms, two 449 and 451
        against 758 and 769, four 271 and 235 against 718 and 716, eight 226
-       and 221 against 637 and 662. The host has four cores.
+       and 221 against 637 and 662. The host has four cores. Tests of the
+       gates and the wake order in `local.rs` and `process_tests.rs`;
+       mutants in `local_path_mutations.py`, all fourteen killed.
      - Risks: the C handle table's lock is taken by every Sender copy and
        drop, and may become the shared lock on the hot path; host hooks
        have only ever run under one lock, so a request that calls one
