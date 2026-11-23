@@ -673,6 +673,9 @@ pub(crate) enum StandardFunction {
     MetricsHostEnabled,
     MetricsHostRecord,
     MetricsHostDocument,
+    // `std/http`'s private byte scan (CHI-303): the lengths of the longest
+    // prefix and suffix of a `Bytes` whose bytes all appear in a second one.
+    HttpCountEnds,
 }
 
 impl StandardFunction {
@@ -993,6 +996,7 @@ impl StandardFunction {
             Self::SignalHostInstall | Self::SignalHostWait => None,
             Self::LogHostMinimumLevel | Self::LogHostWrite => None,
             Self::MetricsHostEnabled | Self::MetricsHostRecord | Self::MetricsHostDocument => None,
+            Self::HttpCountEnds => None,
         }
     }
 
@@ -1206,6 +1210,7 @@ impl StandardFunction {
             Self::MetricsHostEnabled => "host_enabled",
             Self::MetricsHostRecord => "host_record",
             Self::MetricsHostDocument => "host_document",
+            Self::HttpCountEnds => "count_ends",
         }
     }
 

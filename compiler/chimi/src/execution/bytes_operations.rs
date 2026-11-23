@@ -185,6 +185,13 @@ impl Evaluator<'_> {
             (StandardFunction::BytesToTextLossy, [RuntimeValue::Bytes(value)]) => {
                 RuntimeValue::Text(String::from_utf8_lossy(value).into_owned())
             }
+            (
+                StandardFunction::HttpCountEnds,
+                [RuntimeValue::Bytes(value), RuntimeValue::Bytes(allowed)],
+            ) => {
+                let (leading, trailing) = count_ends(value, allowed);
+                RuntimeValue::Tuple(Arc::new(vec![integer(leading), integer(trailing)]))
+            }
             (StandardFunction::BytesValidUtf8Length, [RuntimeValue::Bytes(value)]) => {
                 integer(match std::str::from_utf8(value) {
                     Ok(_) => value.len(),
@@ -235,5 +242,29 @@ impl Evaluator<'_> {
             Some(value) => self.standard_value(StandardConstructor::OptionSome, vec![value]),
             None => self.standard_value(StandardConstructor::OptionNone, Vec::new()),
         }
+    }
+}
+
+/// `std/http`'s `count_ends`: how many bytes at the start, and how many at the
+/// end, of `value` are in `allowed`.
+fn count_ends(value: &[u8], allowed: &[u8]) -> (usize, usize) {
+    let held = |byte: &&u8| allowed.contains(byte);
+    (
+        value.iter().take_while(held).count(),
+        value.iter().rev().take_while(held).count(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_ends;
+
+    #[test]
+    fn count_ends_counts_each_end_up_to_the_first_byte_outside() {
+        assert_eq!(count_ends(b" \t a b \t", b" \t"), (3, 2));
+        assert_eq!(count_ends(b"ab ", b" "), (0, 1));
+        assert_eq!(count_ends(b"  ", b" "), (2, 2));
+        assert_eq!(count_ends(b"", b" "), (0, 0));
+        assert_eq!(count_ends(b"abc", b""), (0, 0));
     }
 }

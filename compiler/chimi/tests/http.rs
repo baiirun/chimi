@@ -1280,3 +1280,71 @@ test "a task the producer started cannot write after it returns" {
     );
     assert_passed(&run, 1);
 }
+
+// Rejects a byte check that differs from the per-byte one it replaced
+// (CHI-303): trimming more than spaces and tabs, lowercasing beyond ASCII,
+// missing a token character, or letting a control or DEL into a head.
+#[test]
+fn header_bytes_are_checked_by_class() {
+    let run = run_tests(
+        "byte-classes",
+        r#"
+fn echo(request: Request) -> Response {
+  let shown = List.map(Http.headers(request), fn(header) {
+    let (name, value) = header
+    "${name}=[${value}]"
+  })
+  Http.text(200, Text.join(shown, ";"))
+}
+
+// The status line and body of the answer to `head`.
+fn answered(head: Text) -> Text {
+  let (client, server) = Net.pair(64)
+  let serving = Task.start(fn() { Http.serve_connection(server, Http.defaults, echo) })
+  Stream.write(Net.writer(client), Bytes.from_text(head))
+  Stream.close(Net.writer(client))
+  let reply = Bytes.to_text(Stream.read_all(Net.reader(client), 1048576))
+  Task.result(serving)
+  let lines = Text.split(reply, "\r\n")
+  let status = case List.first(lines) {
+    Some(line) -> line
+    None -> ""
+  }
+  let body = case List.last(lines) {
+    Some(line) -> line
+    None -> ""
+  }
+  "${status} ${body}"
+}
+
+test "header names lowercase as ASCII and values trim spaces and tabs only" {
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nX-MiXed:  \t one two \t \r\n\r\n"), "HTTP/1.1 200 OK host=[a];x-mixed=[one two]")
+  // A value of spaces only is empty; a no-break space is not trimmed.
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx-blank: \t \r\nx-nbsp: \u{a0}v\u{a0}\r\n\r\n"), "HTTP/1.1 200 OK host=[a];x-blank=[];x-nbsp=[\u{a0}v\u{a0}]")
+  // Every token character is kept; uppercase letters become lowercase.
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\n!#$%&'*+-.^_`|~09AZaz: v\r\n\r\n"), "HTTP/1.1 200 OK host=[a];!#$%&'*+-.^_`|~09azaz=[v]")
+}
+
+test "a header name outside the token characters is refused" {
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx(y: v\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: bad header name")
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\n\u{212a}ey: v\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: bad header name")
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\n: v\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: bad header name")
+}
+
+test "a control character or DEL in a head is refused, and HTAB is not" {
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx: a\u{1}b\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: a control character in the head")
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx: a\u{7f}b\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: a control character in the head")
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx: a\u{1f}\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: a control character in the head")
+  Test.assert_equal(answered("GET / HTTP/1.1\r\nHost: a\r\nx: a\tb\r\n\r\n"), "HTTP/1.1 200 OK host=[a];x=[a\tb]")
+}
+
+test "a request target holds visible characters only" {
+  Test.assert_equal(answered("GET /caf\u{e9} HTTP/1.1\r\nHost: a\r\n\r\n"), "HTTP/1.1 200 OK host=[a]")
+  Test.assert_equal(answered("GET /a\u{0}b HTTP/1.1\r\nHost: a\r\n\r\n"), "HTTP/1.1 400 Bad Request bad request: a control character in the head")
+  Test.assert_equal(answered("GET /a\u{85}b HTTP/1.1\r\nHost: a\r\n\r\n"), "HTTP/1.1 200 OK host=[a]")
+}
+"#,
+        "virtual",
+    );
+    assert_passed(&run, 4);
+}
