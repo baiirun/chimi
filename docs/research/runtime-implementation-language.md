@@ -6,7 +6,68 @@ record lays out what the repository shows, the options, and a recommendation.
 It changes no code. The decision itself goes in `decisions.md` once it is
 made.
 
-## Short answer
+## Decision (2026-11-24)
+
+The runtime moves to Rust. Code stays C only with a good reason written here,
+such as a measured hot-path cost that Rust cannot match. Byron first took the
+split recommended below, then revised it the same day: "Rust everything unless
+we have a _good_ reason for it to be C." The heap, collector and intrinsic
+dispatch are no longer kept in C by default; they move too, unless a gate
+below fails and the measurement is recorded as the reason.
+
+### What stays C, and why
+
+| Code | Reason |
+| --- | --- |
+| Vendored SQLite and mbedTLS | Upstream is C. Rewriting them is not on the table, and their maintainers ship C. |
+| The G20 binding shims (`net`, `tls`, `exec`, `sqlite`, `postgres`, `terminal`) | For now. Each shim is thin glue against a C library's headers, compiled in the same `cc` pass and per-package archive as that library. A shim with no C library under it (`net`, `exec`, `terminal`) has no such reason and moves when the binding path itself moves (step 4). |
+
+Nothing else has a recorded reason. Anything added to this table needs one.
+
+### Migration plan
+
+Each step is one or more PRs. The size and speed gates hold for every step.
+
+0. **Hardening (CHI-304).** ASan and UBSan over the program outputs,
+   ThreadSanitizer required on Linux, fuzz targets for JSON, text, decimal and
+   each shim. These are the oracle every later step is checked against, so
+   they land first. Touches CI and tests only.
+1. **One Rust runtime archive.** A runtime crate that `chimi-fiber` joins (or
+   that joins it), so every program links one Rust archive with one copy of
+   the standard library. The part every program links is `no_std` plus
+   `alloc` with `panic = "abort"`, so a program with no concurrency stays
+   within the size gate. The build embeds the prebuilt archive as it does the
+   fiber one; the per-project `cc` fallback for `runtime.c` goes away when
+   the last C leaves. Ship it first with nothing moved, to measure the
+   baseline cost.
+2. **Leaves.** JSON, then decimal and duration, then text and graphemes, then
+   random, metrics and telemetry export, files and console. Each allocates
+   through the C allocator by callback until step 5. One subsystem per PR,
+   with differential fuzzing against the C version, which is deleted after.
+   These can start before the multi-core work ends where they do not overlap
+   the code it is changing.
+3. **Scheduler protocols** (after the multi-core work settles): channels,
+   select and the process-kernel glue move next to the Rust scheduler, so
+   each protocol has one owner in one language.
+4. **Handles and the binding call path:** the handle table, `BindingCall`,
+   and the shims with no C library under them.
+5. **Heap, collector and dispatch, together.** The allocator, young chunks,
+   bump regions, marking, copy and transfer, and the `invoke_*` dispatch move
+   as one unit, so allocation still inlines into the intrinsics that call it.
+   Moving them apart would put a cross-language call on every allocation. This
+   step is gated hardest: `loop-bind`, the map-building loop and the HTTP
+   benchmark within 2% of C. If it misses and the gap cannot be closed, the
+   measurement goes in the table above as the reason the code stays C.
+6. **Delete `runtime.c`.** `runtime.h` becomes the generated or hand-kept C
+   view of the Rust ABI that the code generator targets.
+
+Gates for every step: the stripped size of a program without concurrency
+(345 KB today) grows by at most 50 KB over the step-1 baseline; `loop-bind`,
+the map loop and the HTTP benchmark regress by no more than 2%; cold
+`chimi build` time is unchanged; differential fuzzing and the sanitizer jobs
+are green.
+
+## Original recommendation (superseded)
 
 C was never chosen against Rust. No document compares them: `runtime.c` came
 in with the native AOT spike (ADR 0002, commits `f0c97be` and `ec51403`), and
