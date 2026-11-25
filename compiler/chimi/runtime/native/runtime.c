@@ -5213,6 +5213,7 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
 typedef struct {
   uint64_t state[4];
 } ChimiRandom;
+_Static_assert(sizeof(ChimiRandom) == 4 * sizeof(uint64_t), "ChimiRandom matches chimi_runtime::random::Generator");
 extern ChimiRandom chimi_random_seeded_v1(uint64_t seed);
 extern uint64_t chimi_random_next_v1(ChimiRandom *generator);
 
