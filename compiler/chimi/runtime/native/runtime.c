@@ -5532,46 +5532,17 @@ static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrin
 }
 
 /* std/metrics' host core: one aggregate per name and label set, written as
-   one JSON document to the --metrics-file file when the program ends. The
-   name and labels arrive encoded as JSON (std/metrics.host), so they are
-   keys as they are and are written as they are. It matches the reference
-   interpreter's MetricsAggregate (host_operations.rs) byte for byte. Every
-   carrier records into the one aggregate under metrics_lock. */
-#define CHIMI_METRIC_SERIES_PER_NAME 1000
-#define CHIMI_METRIC_BOUND_COUNT 15
-
-static const double metric_bounds[CHIMI_METRIC_BOUND_COUNT] = {
-  0.0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
-};
-
-typedef struct {
-  char *name;
-  size_t name_length;
-  char *labels;
-  size_t labels_length;
-  int64_t kind;
-  /* A count's total, a gauge's last value, an observation's count and sum. */
-  int64_t total;
-  double last;
-  uint64_t count;
-  double sum;
-  uint64_t buckets[CHIMI_METRIC_BOUND_COUNT + 1];
-} MetricSeries;
-
-typedef struct {
-  char *name;
-  size_t name_length;
-  /* The kind the name was first recorded with, and its label sets so far. */
-  int64_t kind;
-  size_t series;
-} MetricName;
-
-/* Open-addressed tables of index + 1 into the arrays, 0 for an empty slot,
-   kept at most half full. */
-typedef struct {
-  size_t *slots;
-  size_t capacity;
-} MetricTable;
+   one JSON document to the --metrics-file file when the program ends. It is
+   chimi_runtime::metrics, which the interpreter keeps its measurements in
+   too, so both backends write the same document. Every carrier records into
+   the one aggregate under metrics_lock. */
+typedef struct ChimiMetrics ChimiMetrics;
+extern ChimiMetrics *chimi_metrics_new_v1(void);
+extern void chimi_metrics_record_v1(ChimiMetrics *aggregate, int64_t kind, const char *name, size_t name_length,
+                                    double value, const char *labels, size_t labels_length);
+extern ChimiOwnedText chimi_metrics_document_v1(const ChimiMetrics *aggregate, int64_t start_unix_ns,
+                                                int64_t time_unix_ns);
+extern void chimi_metrics_free_v1(ChimiMetrics *aggregate);
 
 static pthread_mutex_t metrics_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Set by the first Metrics.runner_document: from then on the provider
@@ -5579,167 +5550,20 @@ static pthread_mutex_t metrics_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_bool metrics_reading;
 /* When the aggregate began: the run's start, or the first repeat's. */
 static int64_t metrics_started_unix_ns;
-static MetricSeries *metric_series;
-static size_t metric_series_count, metric_series_capacity;
-static MetricName *metric_names;
-static size_t metric_name_count, metric_name_capacity;
-static MetricTable metric_series_table, metric_name_table;
-static uint64_t metric_dropped_label_sets, metric_dropped_kind_conflicts;
+/* Made by the first measurement or document; guarded by metrics_lock. */
+static ChimiMetrics *metrics_aggregate;
 
-static uint64_t metric_hash(const char *name, size_t name_length, const char *labels, size_t labels_length) {
-  uint64_t hash = UINT64_C(14695981039346656037);
-  for (size_t i = 0; i < name_length; ++i) hash = (hash ^ (unsigned char)name[i]) * UINT64_C(1099511628211);
-  hash = (hash ^ 0xff) * UINT64_C(1099511628211);
-  for (size_t i = 0; i < labels_length; ++i) hash = (hash ^ (unsigned char)labels[i]) * UINT64_C(1099511628211);
-  return hash;
-}
-
-static char *metric_copy(const char *bytes, size_t length) {
-  char *copy = malloc(length ? length : 1);
-  if (!copy) exhausted_memory();
-  memcpy(copy, bytes, length);
-  return copy;
-}
-
-static bool metric_series_is(const MetricSeries *series, const char *name, size_t name_length, const char *labels,
-                             size_t labels_length) {
-  return series->name_length == name_length && series->labels_length == labels_length &&
-         memcmp(series->name, name, name_length) == 0 && memcmp(series->labels, labels, labels_length) == 0;
-}
-
-/* The slot holding the entry `matches` accepts, or the empty slot it goes in. */
-static size_t *metric_slot(MetricTable *table, uint64_t hash, bool (*matches)(size_t, const void *),
-                           const void *key) {
-  size_t mask = table->capacity - 1;
-  for (size_t at = (size_t)hash & mask;; at = (at + 1) & mask)
-    if (table->slots[at] == 0 || matches(table->slots[at] - 1, key)) return &table->slots[at];
-}
-
-typedef struct {
-  const char *name;
-  size_t name_length;
-  const char *labels;
-  size_t labels_length;
-} MetricKey;
-
-static bool metric_series_matches(size_t index, const void *key) {
-  const MetricKey *metric = key;
-  return metric_series_is(&metric_series[index], metric->name, metric->name_length, metric->labels,
-                          metric->labels_length);
-}
-
-static bool metric_name_matches(size_t index, const void *key) {
-  const MetricKey *metric = key;
-  return metric_names[index].name_length == metric->name_length &&
-         memcmp(metric_names[index].name, metric->name, metric->name_length) == 0;
-}
-
-/* Makes room for one more entry, rehashing every entry `hash_of` keys. */
-static void metric_table_reserve(MetricTable *table, size_t count, uint64_t (*hash_of)(size_t)) {
-  if ((count + 1) * 2 <= table->capacity) return;
-  size_t capacity = table->capacity ? table->capacity * 2 : 64;
-  size_t *slots = calloc(capacity, sizeof(*slots));
-  if (!slots) exhausted_memory();
-  for (size_t index = 0; index < count; ++index) {
-    size_t at = (size_t)hash_of(index) & (capacity - 1);
-    while (slots[at] != 0) at = (at + 1) & (capacity - 1);
-    slots[at] = index + 1;
-  }
-  free(table->slots);
-  table->slots = slots;
-  table->capacity = capacity;
-}
-
-static uint64_t metric_series_hash(size_t index) {
-  const MetricSeries *series = &metric_series[index];
-  return metric_hash(series->name, series->name_length, series->labels, series->labels_length);
-}
-
-static uint64_t metric_name_hash(size_t index) {
-  return metric_hash(metric_names[index].name, metric_names[index].name_length, "", 0);
-}
-
-/* Adds one measurement; the caller holds metrics_lock. */
-static void metrics_record(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
-                           size_t labels_length) {
-  MetricKey key = {name, name_length, labels, labels_length};
-  metric_table_reserve(&metric_name_table, metric_name_count, metric_name_hash);
-  size_t *name_slot = metric_slot(&metric_name_table, metric_hash(name, name_length, "", 0), metric_name_matches, &key);
-  if (*name_slot == 0) {
-    if (metric_name_count == metric_name_capacity) {
-      metric_name_capacity = metric_name_capacity ? metric_name_capacity * 2 : 16;
-      metric_names = realloc(metric_names, metric_name_capacity * sizeof(*metric_names));
-      if (!metric_names) exhausted_memory();
-    }
-    metric_names[metric_name_count] = (MetricName){metric_copy(name, name_length), name_length, kind, 0};
-    *name_slot = ++metric_name_count;
-  }
-  MetricName *metric = &metric_names[*name_slot - 1];
-  if (metric->kind != kind) {
-    ++metric_dropped_kind_conflicts;
-    return;
-  }
-  metric_table_reserve(&metric_series_table, metric_series_count, metric_series_hash);
-  uint64_t hash = metric_hash(name, name_length, labels, labels_length);
-  size_t *series_slot = metric_slot(&metric_series_table, hash, metric_series_matches, &key);
-  if (*series_slot == 0) {
-    if (metric->series == CHIMI_METRIC_SERIES_PER_NAME) {
-      ++metric_dropped_label_sets;
-      return;
-    }
-    ++metric->series;
-    if (metric_series_count == metric_series_capacity) {
-      metric_series_capacity = metric_series_capacity ? metric_series_capacity * 2 : 16;
-      metric_series = realloc(metric_series, metric_series_capacity * sizeof(*metric_series));
-      if (!metric_series) exhausted_memory();
-    }
-    metric_series[metric_series_count] = (MetricSeries){
-      .name = metric_copy(name, name_length), .name_length = name_length,
-      .labels = metric_copy(labels, labels_length), .labels_length = labels_length, .kind = kind,
-    };
-    *series_slot = ++metric_series_count;
-  }
-  MetricSeries *series = &metric_series[*series_slot - 1];
-  switch (kind) {
-    case 0: {
-      /* A count's value is a whole, non-negative number (std/metrics.count). */
-      int64_t by = value >= 9223372036854775807.0 ? INT64_MAX : (int64_t)value;
-      series->total = series->total > INT64_MAX - by ? INT64_MAX : series->total + by;
-      break;
-    }
-    case 1: series->last = value; break;
-    default: {
-      ++series->count;
-      /* A sum past the largest Float saturates there, so it stays finite. */
-      double sum = series->sum + value;
-      series->sum = isfinite(sum) ? sum : sum > 0 ? DBL_MAX : -DBL_MAX;
-      size_t bucket = 0;
-      while (bucket < CHIMI_METRIC_BOUND_COUNT && !(value <= metric_bounds[bucket])) ++bucket;
-      ++series->buckets[bucket];
-      break;
-    }
-  }
+static ChimiMetrics *metrics_held(void) {
+  if (!metrics_aggregate) metrics_aggregate = chimi_metrics_new_v1();
+  return metrics_aggregate;
 }
 
 /* Adds one measurement from any carrier. */
 static void metrics_add(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
                         size_t labels_length) {
   pthread_mutex_lock(&metrics_lock);
-  metrics_record(kind, name, name_length, value, labels, labels_length);
+  chimi_metrics_record_v1(metrics_held(), kind, name, name_length, value, labels, labels_length);
   pthread_mutex_unlock(&metrics_lock);
-}
-
-/* Name order, then label order, comparing bytes as Rust's String does. */
-static int metric_bytes_order(const char *left, size_t left_length, const char *right, size_t right_length) {
-  int order = memcmp(left, right, left_length < right_length ? left_length : right_length);
-  if (order != 0) return order;
-  return left_length < right_length ? -1 : left_length > right_length ? 1 : 0;
-}
-
-static int metric_series_order(const void *left, const void *right) {
-  const MetricSeries *a = &metric_series[*(const size_t *)left], *b = &metric_series[*(const size_t *)right];
-  int order = metric_bytes_order(a->name, a->name_length, b->name, b->name_length);
-  return order != 0 ? order : metric_bytes_order(a->labels, a->labels_length, b->labels, b->labels_length);
 }
 
 static bool close_output(FILE *output);
@@ -5753,49 +5577,15 @@ static bool metrics_recording(const ChimiRuntime *runtime) {
 /* Writes the metrics document, whose counts began at `started`, to `output`
    as it stands now. */
 static void write_metrics_document(const ChimiRuntime *runtime, int64_t started, FILE *output) {
-  pthread_mutex_lock(&metrics_lock);
-  size_t *order = malloc((metric_series_count ? metric_series_count : 1) * sizeof(*order));
-  if (!order) exhausted_memory();
-  for (size_t index = 0; index < metric_series_count; ++index) order[index] = index;
-  qsort(order, metric_series_count, sizeof(*order), metric_series_order);
-  fputs("{\"schema\":\"chimi.metrics.v1\",\"metrics\":[", output);
-  char number[40];
-  for (size_t index = 0; index < metric_series_count; ++index) {
-    const MetricSeries *series = &metric_series[order[index]];
-    if (index > 0) fputc(',', output);
-    fputs("{\"name\":", output);
-    fwrite(series->name, 1, series->name_length, output);
-    fputs(",\"labels\":", output);
-    fwrite(series->labels, 1, series->labels_length, output);
-    switch (series->kind) {
-      case 0: fprintf(output, ",\"kind\":\"count\",\"value\":%" PRId64 "}", series->total); break;
-      case 1:
-        float_text(series->last, number);
-        fprintf(output, ",\"kind\":\"gauge\",\"value\":%s}", number);
-        break;
-      default:
-        float_text(series->sum, number);
-        fprintf(output, ",\"kind\":\"observe\",\"count\":%" PRIu64 ",\"sum\":%s,\"bounds\":[", series->count, number);
-        for (size_t bound = 0; bound < CHIMI_METRIC_BOUND_COUNT; ++bound) {
-          float_text(metric_bounds[bound], number);
-          fprintf(output, "%s%s", bound ? "," : "", number);
-        }
-        fputs("],\"bucket_counts\":[", output);
-        for (size_t bucket = 0; bucket <= CHIMI_METRIC_BOUND_COUNT; ++bucket)
-          fprintf(output, "%s%" PRIu64, bucket ? "," : "", series->buckets[bucket]);
-        fputs("]}", output);
-        break;
-    }
-  }
   /* At exit, `main` has ended and the clock is where its last fiber left it;
      mid-run, it is the reading fiber's time. */
   int64_t ended;
   if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;
-  fprintf(output, "],\"dropped\":{\"label_sets\":%" PRIu64 ",\"kind_conflicts\":%" PRIu64
-          "},\"start_unix_ns\":%" PRId64 ",\"time_unix_ns\":%" PRId64 "}\n",
-          metric_dropped_label_sets, metric_dropped_kind_conflicts, started, ended);
+  pthread_mutex_lock(&metrics_lock);
+  ChimiOwnedText document = chimi_metrics_document_v1(metrics_held(), started, ended);
   pthread_mutex_unlock(&metrics_lock);
-  free(order);
+  fwrite(document.bytes, 1, document.length, output);
+  chimi_text_release_v1(document);
 }
 
 /* Writes the metrics document at exit; true when the write failed. */

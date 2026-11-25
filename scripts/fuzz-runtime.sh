@@ -6,7 +6,7 @@
 #
 # Usage, from anywhere inside the repository:
 #   scripts/fuzz-runtime.sh TARGET SECONDS [WORK_DIR]
-#     TARGET    json, text, decimal, duration, float (the runtime), or
+#     TARGET    json, text, decimal, duration, float, metrics (the runtime), or
 #               tls-client, tls-server, tls-records, tls-roots, scram, sqlite
 #     SECONDS   how long to fuzz
 #     WORK_DIR  where the run keeps its corpus and any crash input
@@ -31,7 +31,7 @@ usage() { sed -n '7,13p' "$0" | sed 's/^# *//' >&2; exit 2; }
 target=$1
 seconds=$2
 case "$target" in
-  json | text | decimal | duration | float) harness=runtime-fuzz ;;
+  json | text | decimal | duration | float | metrics) harness=runtime-fuzz ;;
   tls-client | tls-server | tls-records | tls-roots | scram | sqlite) harness=binding-fuzz ;;
   *) usage ;;
 esac

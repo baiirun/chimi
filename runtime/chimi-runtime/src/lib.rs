@@ -21,6 +21,8 @@ mod float_abi;
 pub mod graphemes;
 pub mod json;
 mod json_abi;
+pub mod metrics;
+mod metrics_abi;
 pub mod random;
 mod random_abi;
 pub mod text;

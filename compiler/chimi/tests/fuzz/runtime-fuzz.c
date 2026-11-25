@@ -1,5 +1,5 @@
 /* Fuzz targets for the native runtime's parsers and text code: JSON, decimal,
-   duration, float text and text. Each target turns one input into a canonical output line
+   duration, float text, metrics and text. Each target turns one input into a canonical output line
    and checks the target's invariants, aborting on a broken one.
 
    The output is the contract a replacement must keep: when a subsystem moves
@@ -18,14 +18,16 @@
    (json-c-reference.c), and the decimal and duration targets compute with
    the C code their Rust replaced (decimal-duration-c-reference.c), as the
    text target does with its case mapping, trimming and graphemes
-   (text-c-reference.c) and the float target with its Float text
-   (float-c-reference.c); each checks that the two agree. The runtime is
+   (text-c-reference.c), the float target with its Float text
+   (float-c-reference.c) and the metrics target with its aggregate
+   (metrics-c-reference.c); each checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
 #include "json-c-reference.c"
 #include "decimal-duration-c-reference.c"
 #include "float-c-reference.c"
+#include "metrics-c-reference.c"
 #include "text-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
@@ -460,9 +462,40 @@ static void fuzz_float(const uint8_t *data, size_t size, FuzzOutput *out) {
   }
 }
 
+/* --- metrics: record and write ---------------------------------------------- */
+/* Each 12 bytes of the input are one measurement: a kind, one of four names,
+   a label set from two bytes, and a finite value from eight (a count's made
+   whole and non-negative, as std/metrics checks). Both aggregates record them
+   all, and their documents must be the same. */
+static void fuzz_metrics(const uint8_t *data, size_t size, FuzzOutput *out) {
+  static const char *const names[] = {"\"requests\"", "\"latency\"", "\"queue\"", "\"a\\\"b\""};
+  ChimiMetrics *aggregate = chimi_metrics_new_v1();
+  for (size_t offset = 0; offset + 12 <= size; offset += 12) {
+    const uint8_t *record = data + offset;
+    int64_t kind = record[0] % 4;
+    const char *name = names[record[1] % 4];
+    char labels[48];
+    int labels_length = snprintf(labels, sizeof labels, "{\"k\":\"%u\"}", (unsigned)(record[2] | (record[3] & 7) << 8));
+    double value; memcpy(&value, record + 4, sizeof(value));
+    if (!isfinite(value)) value = record[4];
+    if (kind == 0) value = trunc(fabs(value));
+    chimi_metrics_record_v1(aggregate, kind, name, strlen(name), value, labels, (size_t)labels_length);
+    reference_metrics_record(kind, name, strlen(name), value, labels, (size_t)labels_length);
+  }
+  ChimiOwnedText document = chimi_metrics_document_v1(aggregate, -1, 1);
+  char *want = reference_metrics_document(-1, 1);
+  FUZZ_CHECK(document.length == strlen(want) && memcmp(document.bytes, want, document.length) == 0,
+             "document %.*s, the C reference %s", (int)document.length, document.bytes, want);
+  out_bytes(out, document.bytes, document.length - 1);
+  chimi_text_release_v1(document);
+  free(want);
+  chimi_metrics_free_v1(aggregate);
+  reference_metrics_reset();
+}
+
 static const FuzzTargetEntry FUZZ_TARGETS[] = {
   {"text", fuzz_text}, {"json", fuzz_json}, {"decimal", fuzz_decimal}, {"duration", fuzz_duration},
-  {"float", fuzz_float},
+  {"float", fuzz_float}, {"metrics", fuzz_metrics},
 };
 
 /* Runs `target` on one input inside its own allocation scope, which frees

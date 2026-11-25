@@ -1,8 +1,8 @@
 /* Four-thread stress of std/metrics' aggregate (observability.md, "The
    runner's aggregate"). Each thread adds to one shared counter and to label
-   sets of its own, so the name and series tables grow several times while
-   the other threads probe them. At the end every total must be exact. Built
-   with ThreadSanitizer when the compiler supports it, so an access outside
+   sets of its own, so the aggregate grows while the other threads read it.
+   At the end every total in the document must be exact. Built with
+   ThreadSanitizer when the compiler supports it, so an access outside
    metrics_lock fails the run.
 
    usage: metrics-stress     prints "ok" */
@@ -67,16 +67,31 @@ int main(void) {
   for (int thread = 0; thread < THREADS; ++thread)
     CHECK(pthread_create(&threads[thread], NULL, recorder, (void *)(intptr_t)thread) == 0, "start %d", thread);
   for (int thread = 0; thread < THREADS; ++thread) CHECK(pthread_join(threads[thread], NULL) == 0, "join");
-  CHECK(metric_series_count == 2 + THREADS * SLOTS, "%zu series", metric_series_count);
-  for (size_t index = 0; index < metric_series_count; ++index) {
-    const MetricSeries *series = &metric_series[index];
-    if (series->name_length == 8)
-      CHECK(series->total == THREADS * ROUNDS, "shared total %" PRId64, series->total);
-    else if (series->name_length == 5)
-      CHECK(series->total == ROUNDS / SLOTS, "own total %" PRId64, series->total);
-    else
-      CHECK(series->count == (uint64_t)THREADS * ROUNDS && series->sum == 0.5 * THREADS * ROUNDS, "observed");
+  ChimiOwnedText document = chimi_metrics_document_v1(metrics_aggregate, 0, 0);
+  char *text = strndup(document.bytes, document.length);
+  chimi_text_release_v1(document);
+  CHECK(text != NULL, "copy the document");
+  char shared[64], observed[128];
+  snprintf(shared, sizeof shared, "{\"name\":\"shared\",\"labels\":{},\"kind\":\"count\",\"value\":%d}",
+           THREADS * ROUNDS);
+  snprintf(observed, sizeof observed,
+           "{\"name\":\"seconds\",\"labels\":{},\"kind\":\"observe\",\"count\":%d,\"sum\":%d.0,",
+           THREADS * ROUNDS, THREADS * ROUNDS / 2);
+  CHECK(strstr(text, shared) != NULL, "shared total: %s", text);
+  CHECK(strstr(text, observed) != NULL, "observed: %s", text);
+  /* Each thread's label sets, ROUNDS / SLOTS each, and nothing dropped. */
+  char own[32];
+  snprintf(own, sizeof own, "\"kind\":\"count\",\"value\":%d}", ROUNDS / SLOTS);
+  int owned = 0;
+  for (const char *at = strstr(text, "{\"name\":\"own\""); at; at = strstr(at + 1, "{\"name\":\"own\"")) {
+    const char *end = strchr(at, '}');
+    end = end ? strchr(end + 1, '}') : NULL;
+    CHECK(end != NULL && strncmp(end - strlen(own) + 1, own, strlen(own)) == 0, "own total near %.80s", at);
+    ++owned;
   }
+  CHECK(owned == THREADS * SLOTS, "%d own series", owned);
+  CHECK(strstr(text, "\"dropped\":{\"label_sets\":0,\"kind_conflicts\":0}") != NULL, "dropped: %s", text);
+  free(text);
   puts("ok");
   return 0;
 }
