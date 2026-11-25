@@ -414,10 +414,16 @@ receivers of one queue; each value still goes to one of them.
   nothing, but using the event after the receiver moved is `T4241` at the
   event (CHI-224), including when the receiver is read from a field such as
   `jobs.receiver`. Moving the receiver into another binding of the same task
-  leaves the event valid. A select's answer borrows nothing. An event built
-  in a helper function, carried out of a loop by `break`, or taken out of a
-  tuple by a pattern loses the link; those cases keep the run-time
-  owner-token check (CHI-241).
+  leaves the event valid. A select's answer borrows nothing. The link holds
+  through a call whose result may hold an event (a helper that wraps
+  `Select.receive`, or a closure that returns a captured event), a field
+  read, a loop's `break` value, and a pattern binding whose type may hold an
+  event (CHI-241). Calls are not followed, so the rule is conservative: such
+  a result borrows every receiver passed to the call, and a pattern binding
+  borrows every receiver its whole subject borrows. A helper given a second
+  receiver it does not read, or one event split out of a tuple of events from
+  different receivers, is `T4241` once any of those receivers moves; bind
+  the events separately to avoid it.
 - **ABI.** Fiber ABI 15 adds requests 36 to 39 (add receiver, broadcast,
   watch, subscribe), capability violations 7 (a published value holds a
   capability) and 8 (an operation on the wrong kind of channel), and the
