@@ -1,0 +1,22 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const color = Cli.switch("color", "c", "Color the output", True)
+const pager = Cli.switch("pager", "", "Page long output", False)
+const quiet = Cli.flag("quiet", "q", "Say less")
+const tool = Cli.command("tool", "A tool", [Cli.arg(color), Cli.arg(pager), Cli.arg(quiet)])
+
+fn usage_error(arguments: List<Text>) -> CliError {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, _)) -> error
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "only a switch has a --no- form, and neither form takes a value" {
+  Test.assert_equal(usage_error(["--no-quiet"]), CliError.UnknownOption("--no-quiet"))
+  Test.assert_equal(usage_error(["--no-color=yes"]), CliError.UnexpectedValue("--no-color", "yes"))
+  Test.assert_equal(usage_error(["--color=no"]), CliError.UnexpectedValue("--color", "no"))
+}

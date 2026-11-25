@@ -1,0 +1,25 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const list = Cli.subcommand(Cli.command("list", "List the items", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(add), Cli.arg(list)])
+
+fn usage_failure(arguments: List<Text>) -> (CliError, Text) {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, message)) -> (error, message)
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "an error in a subcommand's words names the subcommand" {
+  Test.assert_equal(usage_failure(["add"]), (CliError.MissingArgument("item"), "tool add: missing argument <item>\nusage: tool add [options] <item>\nTry 'tool add --help' for more information."))
+  let (option, _) = usage_failure(["add", "-v", "milk"])
+  Test.assert_equal(option, CliError.UnknownOption("-v"))
+  let (extra, _) = usage_failure(["list", "milk"])
+  Test.assert_equal(extra, CliError.UnexpectedArgument("milk"))
+}

@@ -1,0 +1,15 @@
+import std/cli as Cli.{Exit}
+import std/result as Result.{Err}
+import std/test as Test
+
+const color = Cli.switch("color", "c", "Color the output", True)
+const pager = Cli.switch("pager", "", "Page long output", False)
+const quiet = Cli.flag("quiet", "q", "Say less")
+const tool = Cli.command("tool", "A tool", [Cli.arg(color), Cli.arg(pager), Cli.arg(quiet)])
+
+test "help inside a cluster of switches is help" {
+  case Result.capture(fn() { Cli.parse(tool, ["--nope", "-ch"]) }) {
+    Err(Exit.Help(_)) -> Void
+    _ -> Test.fail("expected help")
+  }
+}

@@ -390,3 +390,78 @@ fn inlay_hints_answer_over_the_protocol() {
     handle.join().unwrap().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Guards lint quick fixes over the wire: the capability, a `quickfix` action
+/// only for the finding under the requested range, and its edit.
+#[test]
+fn lint_findings_offer_quick_fixes_over_the_protocol() {
+    let root = scratch("quick-fix");
+    let text = "import std/list as List\n\npub fn main() -> Int {\n  let unused = 1\n  0\n}\n";
+    fs::write(root.join("app.chimi"), text).unwrap();
+    let uri = format!("file://{}", root.join("app.chimi").display());
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || chimi_lsp::server::run(&server).map_err(|e| e.to_string()));
+
+    let initialized = request(
+        &client,
+        1,
+        "initialize",
+        json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}},
+            "workspaceFolders": [{"uri": format!("file://{}", root.display()), "name": "fixture"}],
+            "initializationOptions": {"projects": [{"root": ".", "entry": "app"}]},
+        }),
+    );
+    assert_eq!(initialized["capabilities"]["codeActionProvider"], true);
+    notify(&client, "initialized", json!({}));
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": uri, "languageId": "chimi", "version": 1, "text": text}}),
+    );
+    next_diagnostics(&client);
+
+    let at_binding =
+        json!({"start": {"line": 3, "character": 6}, "end": {"line": 3, "character": 6}});
+    let actions = request(
+        &client,
+        2,
+        "textDocument/codeAction",
+        json!({"textDocument": {"uri": uri}, "range": at_binding, "context": {"diagnostics": []}}),
+    );
+    assert_eq!(actions.as_array().map(Vec::len), Some(1), "{actions}");
+    assert_eq!(actions[0]["kind"], "quickfix");
+    assert_eq!(actions[0]["diagnostics"][0]["code"], "unused-binding");
+    assert_eq!(
+        actions[0]["edit"]["changes"][&uri],
+        json!([{"range": {"start": {"line": 3, "character": 6}, "end": {"line": 3, "character": 6}}, "newText": "_"}])
+    );
+
+    let at_import =
+        json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}});
+    let actions = request(
+        &client,
+        3,
+        "textDocument/codeAction",
+        json!({"textDocument": {"uri": uri}, "range": at_import, "context": {"diagnostics": []}}),
+    );
+    assert_eq!(actions.as_array().map(Vec::len), Some(0), "{actions}");
+
+    let on_alias =
+        json!({"start": {"line": 0, "character": 20}, "end": {"line": 0, "character": 20}});
+    let actions = request(
+        &client,
+        4,
+        "textDocument/codeAction",
+        json!({"textDocument": {"uri": uri}, "range": on_alias, "context": {"diagnostics": []}}),
+    );
+    assert_eq!(
+        actions[0]["edit"]["changes"][&uri],
+        json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 0}}, "newText": ""}])
+    );
+
+    request(&client, 5, "shutdown", Value::Null);
+    notify(&client, "exit", Value::Null);
+    handle.join().unwrap().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

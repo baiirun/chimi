@@ -1,0 +1,23 @@
+import std/cli as Cli
+import std/test as Test
+import std/text as Text
+
+const color = Cli.switch("color", "c", "Color the output", True)
+const pager = Cli.switch("pager", "", "Page long output", False)
+const quiet = Cli.flag("quiet", "q", "Say less")
+const tool = Cli.command("tool", "A tool", [Cli.arg(color), Cli.arg(pager), Cli.arg(quiet)])
+
+test "usage shows both forms of a switch" {
+  let expected = Text.join([
+    "A tool",
+    "",
+    "usage: tool [options]",
+    "",
+    "Options:",
+    "  -c, --[no-]color  Color the output",
+    "      --[no-]pager  Page long output",
+    "  -q, --quiet       Say less",
+    "  -h, --help        Print this help",
+  ], "\n")
+  Test.assert_equal(Cli.usage(tool), expected)
+}

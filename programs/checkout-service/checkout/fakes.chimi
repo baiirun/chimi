@@ -1,4 +1,4 @@
-import checkout/order as Checkout.{FraudError, NotifyError, Order, PaymentError, Reservation, ShippingError, StockError}
+import checkout/order as Checkout.{Carriers, Fraud, FraudError, Inventory, Notifier, NotifyError, Order, PaymentError, Payments, Reservation, ShippingError, StockError}
 import std/clock as Clock.{Clock, Instant}
 import std/duration as Duration
 import std/text as Text
@@ -12,7 +12,7 @@ fn pause(clock: Clock, milliseconds: Int) -> Void {
 }
 
 /// Holds stock for every SKU except `sold-out`.
-pub fn inventory() needs {
+pub fn inventory() -> Inventory needs {
   clock: Clock
 } {
   let source = clock
@@ -28,7 +28,7 @@ pub fn inventory() needs {
 }
 
 /// Scores large orders as risky, and cannot be reached for the `mug` SKU.
-pub fn fraud() needs {
+pub fn fraud() -> Fraud needs {
   clock: Clock
 } {
   let source = clock
@@ -46,7 +46,7 @@ pub fn fraud() needs {
 
 /// Answers 503 until `healthy_at`. Declines a total of 666 cents, and takes
 /// 300 ms for the `slow` SKU, longer than a checkout's per-attempt timeout.
-pub fn payments(healthy_at: Instant) needs {
+pub fn payments(healthy_at: Instant) -> Payments needs {
   clock: Clock
 } {
   let source = clock
@@ -68,7 +68,7 @@ pub fn payments(healthy_at: Instant) needs {
 
 /// Ground answers in 50 ms. Express answers in 20 ms, but has no route to
 /// the `island` SKU.
-pub fn carriers() needs {
+pub fn carriers() -> Carriers needs {
   clock: Clock
 } {
   let source = clock
@@ -88,7 +88,7 @@ pub fn carriers() needs {
 }
 
 /// Email always arrives; SMS bounces for odd order ids.
-pub fn notifier() needs {
+pub fn notifier() -> Notifier needs {
   clock: Clock
 } {
   let source = clock

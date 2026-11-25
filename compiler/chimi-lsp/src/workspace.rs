@@ -111,6 +111,15 @@ pub struct TextReplacement {
     pub text: String,
 }
 
+/// A quick fix for one lint finding: the finding as published, and the edits
+/// that resolve it in the same document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuickFix {
+    pub title: String,
+    pub diagnostic: EditorDiagnostic,
+    pub edits: Vec<TextReplacement>,
+}
+
 /// A range in a specific document, such as a declaration's name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentRange {
@@ -437,6 +446,54 @@ impl Workspace {
             },
             text: report.text().to_owned(),
         })
+    }
+
+    /// The quick fixes for the lint findings in `path` whose range touches
+    /// `range`, from the latest analysis.
+    ///
+    /// Ensures: empty when the project has errors, `path` was not analyzed, or
+    /// no finding there has a fix.
+    pub fn quick_fixes(&self, path: &DocumentPath, range: LineRange) -> Vec<QuickFix> {
+        let Some(project) = self.latest_for(path) else {
+            return Vec::new();
+        };
+        let Some(module) = project.modules.get(path) else {
+            return Vec::new();
+        };
+        let lint = project.report.lint_by_source();
+        let Some(findings) = lint.get(path.as_path()) else {
+            return Vec::new();
+        };
+        findings
+            .iter()
+            .filter(|finding| !finding.fixes().is_empty())
+            .map(|finding| {
+                (
+                    finding,
+                    editor_diagnostic(finding, &module.lines, self.encoding),
+                )
+            })
+            .filter(|(_, diagnostic)| {
+                diagnostic.range.start <= range.end && range.start <= diagnostic.range.end
+            })
+            .map(|(finding, diagnostic)| QuickFix {
+                title: quick_fix_title(finding),
+                diagnostic,
+                edits: finding
+                    .fixes()
+                    .iter()
+                    .map(|fix| TextReplacement {
+                        range: line_range(
+                            fix.range().start(),
+                            fix.range().end(),
+                            &module.lines,
+                            self.encoding,
+                        ),
+                        text: fix.replacement().to_owned(),
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Describes the item at `position` in `path`.
@@ -943,6 +1000,14 @@ fn load_failure(
             origin: DiagnosticOrigin::ProjectLoad,
             message,
         }],
+    }
+}
+
+fn quick_fix_title(finding: &Diagnostic) -> String {
+    match finding.code() {
+        "unused-import" => "Remove the unused import".to_owned(),
+        "unused-binding" => "Prefix the name with `_` to keep it".to_owned(),
+        code => format!("Fix {code}"),
     }
 }
 

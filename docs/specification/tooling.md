@@ -111,30 +111,47 @@ Rules:
 | Rule | Reports |
 | --- | --- |
 | `unused-import` | a module alias no code in the module uses, as `Alias.member` or `Alias.Type`, and a member import (`import m.{Name}`) the module never names, alone or as `Name.Variant` |
-| `unused-private` | a private function or constant nothing references; a runner provider (`host`) the runner binds by name is exempt |
+| `unused-private` | a private function, constant, struct, enum, interface, type alias, `process name` or needs group that no root reaches (below); the message says when only unused code uses it |
+| `unused-need` | a written needs entry (`name: Interface`) of a private function or of `main` that the body never reaches, directly or through a call; a need a `using` in the body supplies is not reached. A public function's written entries are its published contract, which may list a need the body does not reach (executable-kernel.md), so they are not checked, nor are the entries a needs group or a row parameter brings |
 | `unused-binding` | a `let` binding or a pattern binding (in `case`, a destructuring `let`, a clause head) that its scope never reads |
 | `missing-doc` | a public item with no `///` doc comment, which `chimi doc`, hover and completion would show with no explanation; `main` is exempt, since the entry point is the program, not an API |
+
+A private item is used when a root reaches it. The roots are the references
+from a public item, a test, the module's top level, and an item kept on
+purpose: a `_` name, a runner provider the runner binds by name, or a `native
+type`. A private item a root reaches passes the reach on to what it
+references. So a private function that only calls itself, two that only call
+each other, and a chain only dead code uses are all reported.
 
 Parameters are never reported, because a callback or a fake often ignores
 one its type requires, as in Go and Gleam.
 
-Known gaps: a use is any reference, not reachability from public items and
-tests, so a private function that only calls itself, two that only call each
-other, or a chain only dead code uses, all count as used. Private structs,
-enums, interfaces and `process name` items, and unused `needs` entries, are
-not checked yet. When a module alias and a member import share a name, as
+Known gaps: an unused entry a needs group brings is not reported. When a
+module alias and a member import share a name, as
 `import std/clock as Clock.{Clock}`, a qualified path
 such as `Clock.Instant` uses the alias, as the compiler resolves it.
-Suggested fixes (code actions) are not offered yet.
+
+Fixes: an `unused-import` finding carries an edit that rewrites its import
+line without the unused part, or deletes the line when nothing is left, and an
+`unused-binding` finding carries one that adds a leading `_`. `chimi lint
+--json` lists them under `fixes`. An import line not in the formatter's
+one-line form (wrapped, or holding a comment) gets no edit, since rewriting it
+would drop what it holds. `unused-private` and `unused-need` carry none:
+removing an item or an entry is a change to read first.
 
 In the editor, the language server MUST publish the same findings for the
 project's own modules as warnings beside the compiler's diagnostics, and
 none while the project has errors.
+It MUST offer each finding's fix as a `quickfix` code action for a requested
+range that touches the finding.
 
 Implementation: `compiler/chimi/src/lint.rs` (`TypeReport::lint`), over the
-name resolution, which records each local binding's name range. Tests:
-`compiler/chimi/tests/lint.rs`, which also keeps the standard tree and the
-example programs lint-clean.
+name resolution, which records each local binding's name range, and the type
+checker's `reached_needs` (the needs each function body reaches) for
+`unused-need`. The editor side is `Workspace::quick_fixes` in
+`compiler/chimi-lsp`. Tests: `compiler/chimi/tests/lint.rs`, which also keeps
+the standard tree and the example programs lint-clean, and the quick-fix test
+in `compiler/chimi-lsp/tests/protocol.rs`.
 
 ## Editor: find references and rename
 
@@ -250,12 +267,26 @@ Rules:
   the record has them), the number of events, and the computation tree.
   An outcome record belongs to the execution whose event came just before
   it.
+- A second `computation_started` under an id already seen starts a second
+  run written with the same `--execution-id`: it and the events after it
+  under that id are that run's. Each such run is reported on its own, headed
+  `execution <id> (run N)`, so the runs' trees never merge; an outcome
+  record still belongs to the run whose event came just before it. This
+  reads a file of runs written one after another. Runs written at the same
+  time under one id cannot be told apart, and `chimi trace export` refuses a
+  rerun, since its spans need ids unique within one trace.
 - In the tree, each operation shows its kind, its source location and its
   outcome when that is not success. An operation that did not succeed and
   none of whose children failed is marked `<- started here`, since that is
   where the failure began; one that started but never completed says
   `(did not finish)`. A dependency call shows as
   `dependency <requirement>.<method>`.
+- An operation that completed shows how long it took, from its events'
+  `time_ns` (runtime-output-channels.md, "Event times"), after its
+  location: whole `ns` below a microsecond, then `µs`, `ms` or `s` with one
+  decimal (two for seconds). A run whose events are all at 0 read no clock
+  (an interpreter run, or one that never needed the scheduler), so it shows
+  no lengths. Under the virtual clock the lengths are virtual time.
 - By default only operations that did not succeed are listed, with each
   parent's succeeded children folded into a count, so the failure path
   stays readable in a long run. `--all` lists every operation.
@@ -285,15 +316,16 @@ Rules:
   warning on standard error says the source is likely not the one the run
   was built from.
 - After the tree come the process incarnations that ended other than by
-  returning, with their cause and defect message, and the tasks that never
+  returning, with their name (from `process_terminated`, or else the
+  incarnation's `process_started`), cause and defect message, and the tasks that never
   ended, with the channel a parked task waits on (from the
   `channel_receive_parked` or `channel_send_parked` event after its
   `task_parked`): the usual reasons a concurrent run stops or hangs.
 
-Not yet: timing (`chimi trace export --otlp` gives span times to a tracing tool), channel and clock event
-detail, linking a process's spans to its entry in the process list, telling
-apart two runs concatenated under the same `--execution-id` (their events
-merge), and a browsable or interactive view. Chimi has no REPL
+Not yet: channel and clock event detail, linking a process's spans to its
+entry in the process list (no operation event names the incarnation it ran
+in, so a process body's tree is listed after the computation's on its own),
+and a browsable or interactive view. Chimi has no REPL
 (decisions.md, 2026-11-17): exploration happens in tests and runnable doc
 examples.
 

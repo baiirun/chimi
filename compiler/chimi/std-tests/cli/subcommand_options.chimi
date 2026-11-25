@@ -1,0 +1,26 @@
+import std/cli as Cli.{Parsed}
+import std/option as Option.{None, Option, Some}
+import std/test as Test
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const all = Cli.flag("all", "a", "Include hidden items")
+const list = Cli.subcommand(Cli.command("list", "List the items", [Cli.arg(all)]))
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(verbose), Cli.arg(item)]))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(list), Cli.arg(add)])
+
+fn chosen(sub: Option<Parsed>) -> Parsed {
+  case sub {
+    Some(parsed) -> parsed
+    None -> Test.fail("expected the subcommand to be chosen")
+  }
+}
+
+test "options before the name are the parent's and after it the subcommand's" {
+  let before = Cli.parse(tool, ["-v", "add", "milk"])
+  Test.assert_equal(Cli.get(before, verbose), True)
+  Test.assert_equal(Cli.get(chosen(Cli.get(before, add)), verbose), False)
+  let after = Cli.parse(tool, ["add", "milk", "--verbose"])
+  Test.assert_equal(Cli.get(after, verbose), False)
+  Test.assert_equal(Cli.get(chosen(Cli.get(after, add)), verbose), True)
+}

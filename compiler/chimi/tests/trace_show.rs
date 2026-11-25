@@ -716,3 +716,100 @@ fn a_file_id_without_a_recorded_module_names_no_place() {
         "{output:?}"
     );
 }
+
+fn timed(event: &str, sequence: u32, id: &str, span: u32, parent: &str, extra: &str, time: u64) -> String {
+    format!(
+        "{{\"schema\":\"chimi.runtime.v1\",\"event\":\"{event}\",\"sequence\":{sequence},\"computation\":\"main\",\"execution_id\":\"{id}\",\"span_id\":{span},\"parent_span_id\":{parent},\"file_id\":0,\"source_start\":0,\"source_end\":5,\"operation\":\"call\",\"attributes\":{{{extra}\"time_ns\":{time}}}}}\n"
+    )
+}
+
+// A run that read a clock shows each finished span's length; an untimed
+// run, all at 0, shows none, since every length would read 0.
+#[test]
+fn a_timed_run_shows_how_long_each_span_took() {
+    let directory = scratch("timed");
+    let run = |end: u64| {
+        [
+            timed("computation_started", 0, "x", 1, "null", "", 0),
+            timed("operation_started", 1, "x", 2, "1", "", end / 6),
+            timed("operation_completed", 2, "x", 2, "1", "\"outcome\":\"defect\",", end / 2),
+            timed("operation_started", 3, "x", 3, "1", "", end / 2),
+            timed("computation_completed", 4, "x", 1, "null", "\"outcome\":\"defect\",", end),
+        ]
+        .concat()
+    };
+    let trace = directory.join("trace.jsonl");
+
+    std::fs::write(&trace, run(3_000_000_000)).unwrap();
+    assert_eq!(
+        stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()])),
+        "execution x\noutcome: none recorded\nevents: 5\n\n\
+         computation main  file 0 at 0  3.00 s  defect\n  \
+           call  file 0 at 0  1.00 s  defect  <- started here\n  \
+           call  file 0 at 0  (did not finish)\n"
+    );
+
+    std::fs::write(&trace, run(1_800)).unwrap();
+    let report = stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()]));
+    assert!(report.contains("computation main  file 0 at 0  1.8 µs  defect\n"), "{report}");
+    assert!(report.contains("  call  file 0 at 0  600 ns  defect"), "{report}");
+
+    for (end, shown) in [(2_999_997, "1.0 ms  defect  <- started here"), (2_999_999_997, "1.00 s  defect  <-")] {
+        std::fs::write(&trace, run(end)).unwrap();
+        let report = stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()]));
+        assert!(report.contains(&format!("  call  file 0 at 0  {shown}")), "{report}");
+    }
+
+    std::fs::write(&trace, run(0)).unwrap();
+    let untimed = stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()]));
+    assert!(untimed.contains("computation main  file 0 at 0  defect\n"), "{untimed}");
+}
+
+// Two runs written under one `--execution-id` are listed apart, each with
+// its own outcome, instead of merging into one tree.
+#[test]
+fn two_runs_under_one_execution_id_stay_apart() {
+    let directory = scratch("reruns");
+    let outcome = "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":1}\n";
+    let run = || {
+        [
+            timed("computation_started", 0, "x", 1, "null", "", 0),
+            timed("computation_completed", 1, "x", 1, "null", "\"outcome\":\"success\",", 0),
+        ]
+        .concat()
+    };
+    let trace = directory.join("trace.jsonl");
+    std::fs::write(&trace, format!("{}{}{outcome}", run(), run())).unwrap();
+
+    assert_eq!(
+        stdout(&chimi(&["trace", "show", trace.to_str().unwrap()])),
+        "execution x (run 1)\noutcome: none recorded\nevents: 2\n\n\
+         computation main  file 0 at 0\n\
+         \n\
+         execution x (run 2)\noutcome: success\nevents: 2\n\n\
+         computation main  file 0 at 0\n"
+    );
+}
+
+// A native run names a process on its `process_started` event, not on its
+// `process_terminated` one.
+#[test]
+fn a_process_is_named_from_its_start() {
+    let directory = scratch("process-name");
+    let trace = directory.join("trace.jsonl");
+    std::fs::write(
+        &trace,
+        concat!(
+            r#"{"schema":"chimi.runtime.v1","event":"process_started","sequence":0,"computation":"main","execution_id":"x","incarnation_id":2,"attributes":{"name":"main.worker","cause":null}}"#,
+            "\n",
+            r#"{"schema":"chimi.runtime.v1","event":"process_terminated","sequence":1,"computation":"main","execution_id":"x","incarnation_id":2,"attributes":{"cause":"defected","name":null,"defect":"boom"}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        stdout(&chimi(&["trace", "show", trace.to_str().unwrap()]))
+            .ends_with("processes that did not return:\n  main.worker incarnation 2: defected: boom\n")
+    );
+}

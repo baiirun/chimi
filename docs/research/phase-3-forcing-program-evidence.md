@@ -298,7 +298,7 @@ syntax.
 | Finding | What happened | Where it went |
 | --- | --- | --- |
 | A `Result` received from a channel in a loop was rejected (`T4250`) | `Ok` and `Err` are typed in the runtime's own generics, which `Result`'s arguments did not bind, so the checker thought every received result could hold the receiver. The same gap hid a `Result` holding a Receiver from `T4244`. | Fixed in this change, with a test for each |
-| A record does not fit an interface type as a parameter or return type | Fake constructors had to leave off `-> Payments` | CHI-244 |
+| A record does not fit an interface type as a parameter or return type | Fake constructors had to leave off `-> Payments` | CHI-244, fixed: the fakes now declare their interface types |
 | `Task.race` returns the first failure as readily as the first success | A hedged carrier quote fails when the fast carrier fails fast | CHI-245 |
 | A timed-out checkout's cause has no frames | Order 5's cause is only `Timeout.TimedOut(800ms)`; order 4's shows `charging order 4` | Added to CHI-226 |
 | `Err(FraudError.Flagged(95))` does not fit the narrowed set | A constructor has its whole enum's type | Known, CHI-218; the test matches instead |
