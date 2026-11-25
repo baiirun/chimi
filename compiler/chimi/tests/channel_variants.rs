@@ -743,6 +743,17 @@ fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
         let used_first = escapes(make, moved, false);
         assert!(used_first.is_empty(), "{form}, used before the move: {used_first:?}");
     }
+    // Only a binding that may hold the event borrows its receiver.
+    let plain_part = type_codes(concat!(
+        "pub fn main() -> Int {\n",
+        "  let jobs = Channel.bounded(1)\n",
+        "  let receiver = jobs.receiver\n",
+        "  let (event, n) = (Select.receive(receiver, value), 1)\n",
+        "  let worker = Task.start(fn() { drain(receiver) })\n",
+        "  n\n",
+        "}\n",
+    ));
+    assert!(plain_part.is_empty(), "the plain part of a pattern: {plain_part:?}");
 }
 
 // ----- Interpreter --------------------------------------------------------------
