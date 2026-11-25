@@ -1,0 +1,13 @@
+# mutation run at d1d9ef471ef8d45cbe1dff1775abdf6deb498b60
+# rust_float_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [runtime_fuzz] (62s)
+KILLED       positional up to exponent 16 [runtime_fuzz] (51s)
+KILLED       positional from exponent -4 [runtime_fuzz] (54s)
+KILLED       negative zero loses its sign [runtime_fuzz] (52s)
+KILLED       one zero short after the point [runtime_fuzz] (51s)
+KILLED       whole numbers lose their .0 [runtime_fuzz] (53s)
+KILLED       single digits keep a point [runtime_fuzz] (52s)
+KILLED       negative exponents lose their sign [runtime_fuzz] (51s)
+KILLED       exponent sign ignored when read [runtime_fuzz] (52s)
+KILLED       C glue drops the text [runtime_fuzz] (53s)
+# result: every mutant killed
