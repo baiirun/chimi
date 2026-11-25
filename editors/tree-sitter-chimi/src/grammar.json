@@ -3824,10 +3824,6 @@
       "case_arm"
     ],
     [
-      "constructor_pattern",
-      "struct_pattern"
-    ],
-    [
       "_expression",
       "struct_expression"
     ],
@@ -3841,7 +3837,9 @@
       {
         "type": "STRING",
         "value": "case_arm"
-      },
+      }
+    ],
+    [
       {
         "type": "STRING",
         "value": "break_value"

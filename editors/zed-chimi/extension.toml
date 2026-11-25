@@ -1,6 +1,6 @@
 id = "chimi"
 name = "Chimi"
-version = "0.0.1"
+version = "0.0.2"
 schema_version = 1
 authors = ["Byron Guina"]
 description = "Chimi language support: syntax highlighting and the chimi-lsp language server"

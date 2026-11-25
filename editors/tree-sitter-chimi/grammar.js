@@ -3,9 +3,13 @@
  *
  * The compiler's lossless parser in `compiler/chimi/src/syntax.rs` is the
  * authority. This grammar is deliberately more permissive: line breaks are
- * whitespace here, so a call or `break` value on the following line parses
- * differently than in the compiler. That only affects highlighting of code the
- * compiler already reports.
+ * whitespace here, so a few constructs that span lines parse differently than
+ * in the compiler. That only affects highlighting of code the compiler already
+ * reports. A call's `(` must follow its callee with no space, which is how
+ * `(` on the next line still starts a new case arm or block item.
+ *
+ * scripts/check-grammar.sh, run in CI, checks that every .chimi file the
+ * compiler parses also parses here.
  */
 
 // Loosest to tightest, matching the operator table in
@@ -36,12 +40,20 @@ module.exports = grammar({
 
   supertypes: ($) => [$._expression, $._type, $._pattern],
 
-  precedences: (_) => [['case_arm', 'break_value']],
+  // The compiler ends an expression at a line break; this grammar cannot see
+  // line breaks, so a case arm's body and a bare `break` can be read as
+  // continuing onto the next arm, as in `(0, code) -> code` followed by
+  // `-2 -> other`. These names are left unordered against the operators, so
+  // the generator keeps both readings (the conflicts below) and the reading
+  // that fails on the next `->` is dropped.
+  precedences: (_) => [['case_arm'], ['break_value']],
 
+  // The two struct conflicts keep a name both as a value and as the start of
+  // a struct literal until the next token decides, which is how
+  // `case subject {` keeps its arms.
   conflicts: ($) => [
     [$.break_expression],
     [$.binary_expression, $.case_arm],
-    [$.constructor_pattern, $.struct_pattern],
     [$._expression, $.struct_expression],
     [$._expression, $.qualified_type_name],
   ],
