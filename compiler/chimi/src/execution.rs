@@ -1692,7 +1692,7 @@ impl<'core> Evaluator<'core> {
                 let seed = self.config.random_seed;
                 let generator = self.random.get_or_insert_with(|| {
                     seed.map_or_else(
-                        crate::random_source::Generator::from_os,
+                        crate::random_source::from_os,
                         crate::random_source::Generator::seeded,
                     )
                 });

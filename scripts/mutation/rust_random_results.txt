@@ -1,0 +1,12 @@
+# mutation run at 1cc9e93d7ac8a71dd1983c12477a28f623d7de08
+# rust_random_mutations.py: 8 mutants against compiler/chimi
+BASELINE ok  [testing -- a_test_draws_the_same_numbers] (82s)
+KILLED       output multiplier 3 [testing -- a_test_draws_the_same_numbers] (47s)
+KILLED       state rotation 44 [testing -- a_test_draws_the_same_numbers] (44s)
+KILLED       shift 16 [testing -- a_test_draws_the_same_numbers] (45s)
+KILLED       state words not mixed [testing -- a_test_draws_the_same_numbers] (44s)
+KILLED       SplitMix64 increment off by one [testing -- a_test_draws_the_same_numbers] (46s)
+KILLED       test seed ignores the separator [testing -- a_test_draws_the_same_numbers] (46s)
+KILLED       test seed ignores the run seed [testing -- a_test_draws_the_same_numbers] (46s)
+KILLED       C reseeds on every draw [testing -- a_test_draws_the_same_numbers] (46s)
+# result: every mutant killed

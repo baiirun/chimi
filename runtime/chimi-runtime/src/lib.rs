@@ -1,6 +1,6 @@
 //! The parts of the native runtime written in Rust that every program links,
-//! behind the C ABI that `runtime.c` calls (CHI-305), and the number models
-//! the compiler shares with it. It is `no_std` plus `alloc`: a program without
+//! behind the C ABI that `runtime.c` calls (CHI-305), and the models the
+//! compiler shares with it. It is `no_std` plus `alloc`: a program without
 //! the scheduler links it through `chimi-runtime-standalone`, which supplies
 //! the allocator and panic handler, one with the scheduler links it inside
 //! `chimi-fiber`, and the compiler links it as an ordinary crate.
@@ -19,6 +19,8 @@ mod duration_abi;
 pub mod graphemes;
 pub mod json;
 mod json_abi;
+pub mod random;
+mod random_abi;
 pub mod text;
 mod text_abi;
 mod text_buffer;
