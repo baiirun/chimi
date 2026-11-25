@@ -827,8 +827,11 @@ uint64_t chimi_fiber_current_incarnation(void);
 /* Called by a process body just before its entry returns
    CHIMI_FIBER_DEFECTED: why it defected. The scheduler keeps a copy with the
    incarnation and passes it to the ChimiProcessDefectReport as `message`.
-   Ignored outside a process body and after a task-level cancellation, whose
-   end the scheduler has decided. NULL reads as "defect". Never parks. */
+   Ignored outside a process body and in a fiber resumed with a task-level
+   cancellation (chimi_fiber_cancel_is_terminal), whose end the scheduler has
+   decided. An end decided on another carrier while the body runs takes
+   effect only at its next park, so a body that defects first ends defected.
+   NULL reads as "defect". Never parks. */
 void chimi_fiber_report_defect(const char *message);
 
 /* Handle counts. Every live Sender, Receiver or Completion value the host

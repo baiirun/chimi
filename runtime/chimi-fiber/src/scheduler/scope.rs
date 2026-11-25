@@ -209,8 +209,9 @@ pub(super) fn take_defect_message() -> Option<CString> {
 #[unsafe(no_mangle)]
 /// Reports why the running process body defected, just before its entry
 /// returns a defect: the scheduler keeps the message with the incarnation
-/// and hands it to the defect report. Ignored outside a process body and
-/// after a task-level cancellation, whose end the scheduler has decided.
+/// and hands it to the defect report. Ignored outside a process body and in
+/// a fiber resumed with a task-level cancellation, whose end the scheduler
+/// has decided.
 /// `message` is copied; NULL reads as "defect". Never parks.
 ///
 /// # Safety
