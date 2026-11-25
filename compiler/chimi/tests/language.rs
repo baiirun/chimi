@@ -11642,6 +11642,199 @@ fn a_failure_set_generic_takes_only_a_failure_set() {
     assert_eq!(check_codes(&program), ["T4203"]);
 }
 
+// CHI-222: the message says which generic must be a failure set.
+#[test]
+fn a_value_passed_for_a_failure_set_generic_names_the_generic() {
+    let program = format!(
+        "{CAPTURE}{}",
+        concat!(
+            "fn get<T, E>(result: Result<T, E>) -> T {\n",
+            "  case result {\n",
+            "    Ok(value) -> value\n",
+            "    Err(error) -> Failure(error)\n",
+            "  }\n",
+            "}\n",
+            "fn text(result: Result<Int, Text>) -> Int { get(result) }\n",
+        )
+    );
+    let diagnostics = diagnostics_of(&program);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].0, "T4203");
+    assert!(
+        diagnostics[0]
+            .1
+            .ends_with("`get` uses `E` as a failure set, and `Text` is not one (a failure set is an enum, one enum variant, a set written `A | B`, or a failure-set generic)"),
+        "{}",
+        diagnostics[0].1
+    );
+}
+
+// CHI-222: handing a generic on to a failure-set parameter makes it a failure
+// set, as raising it does. `wrap` is declared after its caller, so the
+// promotion must reach callers checked before the body.
+#[test]
+fn forwarding_a_generic_to_a_failure_set_parameter_makes_it_a_failure_set() {
+    let program = concat!(
+        "import std/result as Result\n",
+        "import std/result.{Result, Ok, Err}\n",
+        "\n",
+        "enum Lookup {\n",
+        "  Missing\n",
+        "}\n",
+        "\n",
+        "fn missing() -> Int {\n",
+        "  Failure(Lookup.Missing)\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Text {\n",
+        "  case Result.capture(fn() { wrap(Result.capture(missing)) }) {\n",
+        "    Ok(_) -> \"ok\"\n",
+        "    Err(Lookup.Missing) -> \"missing\"\n",
+        "  }\n",
+        "}\n",
+        "\n",
+        "fn wrap<X>(result: Result<Int, X>) -> Int {\n",
+        "  Result.get(result)\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("forwarded-failure-set", program),
+        "\"outcome\":\"success\",\"value\":\"missing\""
+    );
+    let text = program.replace(
+        "pub fn main() -> Text {",
+        "fn text(result: Result<Int, Text>) -> Int {\n  wrap(result)\n}\n\npub fn main() -> Text {",
+    );
+    assert_eq!(check_codes(&text), ["T4203"]);
+}
+
+// CHI-218: a constructor written where a closed failure set is expected has its
+// variant's type, as a narrowed binding does.
+#[test]
+fn a_written_variant_fits_a_single_variant_failure_set() {
+    let program = concat!(
+        "enum StartError {\n",
+        "  CapacityReached\n",
+        "  NameTaken(name: Text)\n",
+        "}\n",
+        "\n",
+        "fn retry(error: StartError.NameTaken) -> Text {\n",
+        "  case error {\n",
+        "    StartError.NameTaken(name) -> name\n",
+        "  }\n",
+        "}\n",
+        "\n",
+        "fn taken() -> StartError.NameTaken {\n",
+        "  let error: StartError.NameTaken = StartError.NameTaken(\"b\")\n",
+        "  error\n",
+        "}\n",
+        "\n",
+        "fn again() -> StartError.NameTaken {\n",
+        "  StartError.NameTaken(\"c\")\n",
+        "}\n",
+        "\n",
+        "pub fn main() -> Text {\n",
+        "  let first = retry(StartError.NameTaken(\"a\"))\n",
+        "  \"${first}${retry(taken())}${retry((again()))}\"\n",
+        "}\n",
+    );
+    assert_eq!(
+        run_both("written-variant", program),
+        "\"outcome\":\"success\",\"value\":\"abc\""
+    );
+    let other = program.replace(
+        "retry(StartError.NameTaken(\"a\"))",
+        "retry(StartError.CapacityReached)",
+    );
+    assert_ne!(other, program);
+    assert_eq!(check_codes(&other), ["T4346"]);
+    let result = program.replace("  StartError.NameTaken(\"c\")\n", "  StartError.CapacityReached\n");
+    assert_ne!(result, program);
+    assert_eq!(check_codes(&result), ["T4346"]);
+    let binding = program.replace(
+        "= StartError.NameTaken(\"b\")",
+        "= StartError.CapacityReached",
+    );
+    assert_ne!(binding, program);
+    assert_eq!(check_codes(&binding), ["T4346"]);
+}
+
+// CHI-218, spec "Joins": two arguments for one generic parameter join by union
+// while only covariant uses have bound it. A callback checked against the
+// narrower set fixes it, so a wider argument after it is rejected.
+#[test]
+fn two_call_arguments_for_one_generic_join_by_union() {
+    let program = format!(
+        "import std/debug as Debug\n{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn label<E>(first: E, second: E) -> List<E> {\n",
+            "  [first, second]\n",
+            "}\n",
+            "fn raise<E>(first: E, second: E) -> Int {\n",
+            "  Failure(second)\n",
+            "}\n",
+            "fn describe(error: HttpError | Timeout) -> Text {\n",
+            "  case error {\n",
+            "    HttpError.Refused(code) -> \"refused ${Debug.render(code)}\"\n",
+            "    HttpError.Timeout -> \"socket\"\n",
+            "    Timeout.TimedOut -> \"deadline\"\n",
+            "  }\n",
+            "}\n",
+            "fn first(list: List<HttpError | Timeout>) -> Text {\n",
+            "  case list {\n",
+            "    [error, .._] -> describe(error)\n",
+            "    [] -> \"none\"\n",
+            "  }\n",
+            "}\n",
+            "fn joined(error: HttpError.Refused) -> List<HttpError | Timeout> {\n",
+            "  label(error, Timeout.TimedOut)\n",
+            "}\n",
+            "fn widened(error: HttpError | Timeout) -> Text {\n",
+            "  case raise(HttpError.Timeout, error) {\n",
+            "    Success(_) -> \"none\"\n",
+            "    Failure(error) -> describe(error)\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  \"${first(joined(HttpError.Refused(5)))} ${widened(Timeout.TimedOut)}\"\n",
+            "}\n",
+        )
+    );
+    assert_eq!(
+        run_both("joined-call-arguments", &program),
+        "\"outcome\":\"success\",\"value\":\"refused 5 deadline\""
+    );
+    let fixed = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn sink<E>(first: E, check: fn(E) -> Bool, second: E) -> Bool {\n",
+            "  check(second)\n",
+            "}\n",
+            "fn only_refused(error: HttpError.Refused) -> Bool {\n",
+            "  case error {\n",
+            "    HttpError.Refused(_) -> True\n",
+            "  }\n",
+            "}\n",
+            "fn mixed(error: HttpError.Refused) -> Bool {\n",
+            "  sink(error, only_refused, Timeout.TimedOut)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&fixed), ["T4346"]);
+    let plain = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "fn label<E>(first: E, second: E) -> List<E> {\n",
+            "  [first, second]\n",
+            "}\n",
+            "fn mixed() -> List<HttpError | Timeout> {\n",
+            "  label(HttpError.Timeout, Timeout.TimedOut)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&plain), ["T4203"]);
+}
+
 #[test]
 fn a_failure_set_value_passed_where_a_member_is_missing_names_the_missing_variants() {
     let program = format!(
