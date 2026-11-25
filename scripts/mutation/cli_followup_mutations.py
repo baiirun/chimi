@@ -47,7 +47,7 @@ MUTATIONS = [
     parsing("-- hides the subcommand name", [
         ("      ([\"--\", word, ..rest], True) -> break enter(command, state, word, rest)\n", "")]),
     parsing("the parent looks for help past the subcommand", [
-        ("    [word, ..rest] -> case Option.is_some(chosen(command, word)) {", "    [word, ..rest] -> case False {")]),
+        ("      (True, _) -> None\n", "")]),
     parsing("positionals and subcommands may mix", [
         ("  let mixed = List.any(args,", "  let mixed = False and List.any(args,")]),
     parsing("usage lists no subcommands", [
