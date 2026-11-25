@@ -56,10 +56,16 @@ jobs:
   # packages built with AddressSanitizer and UndefinedBehaviorSanitizer
   # (CHIMI_TEST_RUNTIME_SANITIZE in backend/native.rs), so a memory error or
   # undefined behaviour in the C fails the test that reached it.
+  # Under the sanitizers the suite takes about an hour and a half, so it runs
+  # in four shards (scripts/sanitizer-shard.sh).
   sanitizers:
-    name: sanitizers (ubuntu-latest)
+    name: sanitizers (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [cli, process-lab, rest-1, rest-2]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     env:
       CHIMI_TEST_RUNTIME_SANITIZE: address,undefined
       # Reports go to files, not stderr, so the tests that compare a
@@ -78,7 +84,7 @@ jobs:
         run: |
           mkdir -p ../sanitizer-logs
           ulimit -s 32768
-          cargo test --workspace --quiet
+          scripts/sanitizer-shard.sh ${{ matrix.shard }}
       - name: Fail on any sanitizer report
         if: always()
         run: |

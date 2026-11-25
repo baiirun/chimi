@@ -11,7 +11,7 @@ keep. It came in with CHI-304.
 
 | Check | Where | What it catches |
 | --- | --- | --- |
-| `sanitizers (ubuntu-latest)` CI job | `.github/workflows/ci.yml` | The whole test suite, with every native program the tests build compiled with AddressSanitizer and UndefinedBehaviorSanitizer. A report stops the program, so the test fails; the job also fails on any report in its log files. |
+| `sanitizers (<shard>)` CI jobs | `.github/workflows/ci.yml`, `scripts/sanitizer-shard.sh` | The whole test suite, in four shards since it takes about an hour and a half under the sanitizers, with every native program the tests build compiled with AddressSanitizer and UndefinedBehaviorSanitizer. A report stops the program, so the test fails; the job also fails on any report in its log files. |
 | ThreadSanitizer fixtures | `compiler/chimi/tests/runtime_state.rs` | Shared runtime state touched outside its lock, from two to four real threads. |
 | Sanitized C fixtures | `tests/native_list_fuzz.rs`, the native heap test in `tests/cli.rs`, `tests/runtime_fuzz.rs` | ASan and UBSan over the heap, the persistent list and the fuzz corpus. |
 | `fuzz (<target>)` CI jobs | `scripts/fuzz-runtime.sh` | libFuzzer for two minutes on each of `json`, `text`, `decimal` and `duration`, from the committed corpus. |
@@ -22,7 +22,7 @@ keep. It came in with CHI-304.
 - On Linux the sanitizers are required. A fixture whose sanitized build fails
   is a test failure there, never a quiet plain build. macOS keeps the plain
   fallback, because the sanitizers there depend on the installed toolchain.
-- New C in the runtime or a binding package must pass the `sanitizers` job.
+- New C in the runtime or a binding package must pass the `sanitizers` jobs.
   Fix a report; do not suppress it. A report in vendored code (SQLite,
   mbedTLS) gets a ticket and a note here.
 - A fuzz target's output line is a contract. When a subsystem moves to Rust,

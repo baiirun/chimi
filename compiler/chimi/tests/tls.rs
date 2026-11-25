@@ -996,9 +996,10 @@ test "serve" {{
         )
     });
     let started = std::time::Instant::now();
+    // The wait covers the build: a sanitized one compiles the tls package.
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(6),
+            started.elapsed() < std::time::Duration::from_secs(60),
             "the Chimi server did not start"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
