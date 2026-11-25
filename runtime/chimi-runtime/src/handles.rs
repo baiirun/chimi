@@ -93,8 +93,9 @@ impl<K: Copy + Eq, S: Copy, R: Copy + Eq> Handles<K, S, R> {
     }
 
     /// Opens a handle of `kind` holding `state`: its slot and generation, or
-    /// `None` when the table is full or cannot grow (the state is then still
-    /// the caller's).
+    /// `None` when the table is full (the state is then still the caller's).
+    /// Running out of memory to grow it ends the program, as every runtime
+    /// allocation does (the C table returned `None` then too).
     pub fn open(&mut self, kind: K, state: S) -> Option<(u32, u32)> {
         let slot = match self.free {
             0 => self.grow()?,

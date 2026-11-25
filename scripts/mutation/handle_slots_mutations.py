@@ -27,7 +27,7 @@ MUTATIONS = [
       "        if false {"),
     m("the limit is ignored",
       ".filter(|slot| *slot < LIMIT)?;",
-      ";"),
+      "?;"),
     m("a reused slot starts its generation over",
       "        *entry = Slot::Open(Live { kind, state, generation, users: 0, runner: None });",
       "        *entry = Slot::Open(Live { kind, state, generation: 0, users: 0, runner: None });\n        let _ = generation;"),

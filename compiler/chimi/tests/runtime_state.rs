@@ -42,10 +42,6 @@ const SHARED: &[&str] = &[
     "handle_table",
     "handles_counted",
     // Tables whose ids travel inside values, each behind its lock.
-    "binding_handles",
-    "binding_handle_count",
-    "binding_handle_capacity",
-    "binding_free_slot",
     "binding_handle_lock",
     "binding_handle_free",
     // Guards the Rust runtime's open-file table (chimi-runtime files_abi.rs).

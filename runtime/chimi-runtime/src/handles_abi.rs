@@ -42,8 +42,8 @@ fn give(release: Option<Release<Opaque, Opaque>>, out: *mut ChimiHandleRelease) 
 }
 
 /// Opens a handle of `kind` holding `state`, writing its slot and generation;
-/// false when the table is full or cannot grow (the state is still the
-/// caller's to release).
+/// false when the table is full (the state is still the caller's to
+/// release). Running out of memory to grow it ends the program.
 /// # Safety
 /// The caller holds `binding_handle_lock`; `slot` and `generation` are
 /// writable.
