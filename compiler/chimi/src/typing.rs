@@ -8846,11 +8846,12 @@ impl ProjectTypeChecker {
             .collect()
     }
 
-    /// Interface conformance is implicit: a record or struct that has every
-    /// member of an interface fits it wherever the interface is written as a
-    /// type, by the same rule `using` applies to a provider. `None` unless
-    /// `actual` is a record or struct and `expected` an interface; otherwise
-    /// whether it conforms, with the reason when it does not.
+    /// Interface conformance is implicit: a record that has every member of an
+    /// interface fits it wherever the interface is written as a type, by the
+    /// same rule `using` applies to a provider. `None` unless `actual` is a
+    /// record and `expected` an interface; otherwise whether it conforms, with
+    /// the reason when it does not. A struct does not fit this way: its fields
+    /// may be private to its module, and an interface must not read them.
     fn record_interface_conformance(
         &mut self,
         actual: TypeId,
@@ -8858,7 +8859,9 @@ impl ProjectTypeChecker {
     ) -> Option<Result<(), String>> {
         let actual = self.resolve_inference_type(actual);
         let expected = self.resolve_inference_type(expected);
-        if !self.is_structural_value_type(actual) || !self.is_interface_type(expected) {
+        if !matches!(self.types[actual.raw() as usize], CanonicalType::Record(_))
+            || !self.is_interface_type(expected)
+        {
             return None;
         }
         // A failed check leaves no bindings behind, since a join or call may
@@ -8875,18 +8878,6 @@ impl ProjectTypeChecker {
                 Err(reason)
             }
         })
-    }
-
-    /// A record or a struct: a value whose fields an interface can name, as
-    /// `using` accepts for a provider.
-    fn is_structural_value_type(&self, type_id: TypeId) -> bool {
-        match &self.types[type_id.raw() as usize] {
-            CanonicalType::Record(_) => true,
-            CanonicalType::Named { symbol, .. } => {
-                self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Struct
-            }
-            _ => false,
-        }
     }
 
     /// An interface with no type arguments, so a call can check a record
@@ -8968,8 +8959,8 @@ impl ProjectTypeChecker {
                 }
                 None
             }
-            (_, CanonicalType::Named { .. })
-                if self.is_structural_value_type(actual) && self.is_interface_type(expected) =>
+            (CanonicalType::Record(_), CanonicalType::Named { .. })
+                if self.is_interface_type(expected) =>
             {
                 self.record_interface_conformance(actual, expected)
                     .and_then(Result::err)
@@ -11369,7 +11360,7 @@ impl ProjectTypeChecker {
                     module_id,
                     "T4203",
                     range,
-                    format!("{message}; the value {reason}"),
+                    format!("{message}; the record {reason}"),
                 );
                 return false;
             }
