@@ -2,8 +2,9 @@
 //! `runtime.c` exports it, and a safe view of one call over it.
 //!
 //! A [`Call`] lives for one binding function's run. The runtime owns every
-//! value it hands out; they stay valid until the function returns, which the
-//! `'call` lifetime enforces.
+//! value it hands out; they stay valid until the function returns. The
+//! `'call` lifetime ties values to their call, but `Call::new`'s caller
+//! picks it, so keeping values within the function is that caller's duty.
 
 use core::ffi::{c_char, c_int};
 use core::marker::PhantomData;
@@ -105,7 +106,10 @@ impl<'call> Call<'call> {
     }
 
     pub fn make_tuple(&mut self, items: &[Value<'call>]) -> Value<'call> {
-        let length = u32::try_from(items.len()).unwrap_or(u32::MAX);
+        let Ok(length) = u32::try_from(items.len()) else {
+            // The runtime refuses a null value with a defect.
+            return self.value(core::ptr::null_mut());
+        };
         // SAFETY: `raw` is the live call, `Value` is transparent over the
         // pointer, the items were built for this call, and the runtime only
         // reads the array, copying each item into the tuple.

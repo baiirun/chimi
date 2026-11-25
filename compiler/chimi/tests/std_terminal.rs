@@ -249,6 +249,24 @@ fn only_a_program_that_reaches_the_terminal_links_its_binding() {
     }
 }
 
+// Rejects a build that links a Rust archive built without the binding
+// packages: it must say so, not fail at link with undefined symbols.
+#[test]
+fn an_archive_without_the_bindings_is_refused_by_name() {
+    let scratch = Scratch::new("no-bindings", &format!("{IMPORTS}import std/list as List\n{PROBE}"));
+    let archive = scratch.0.join("empty.a");
+    std::fs::write(&archive, b"!<arch>\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch.0)
+        .args(["build", "cases.chimi", "-o", "probe"])
+        .env("CHIMI_FIBER_RUNTIME_ARCHIVE", &archive)
+        .output()
+        .expect("run chimi");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr.contains("built without the binding packages"), "{stderr}");
+}
+
 // Rejects a provider that reports a pipe as a terminal or gives a pipe a size.
 #[test]
 fn piped_streams_are_not_terminals() {

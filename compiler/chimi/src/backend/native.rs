@@ -550,22 +550,25 @@ fn check_rust_bindings(
     let bytes = std::fs::read(archive)
         .map_err(|error| format!("read Rust runtime archive {}: {error}", archive.display()))?;
     // Each object's string table holds its symbol names NUL-separated, after
-    // a `_` on Mach-O.
-    let defines = |symbol: &str| {
-        bytes.split(|byte| *byte == 0).any(|name| {
-            name == symbol.as_bytes()
-                || name.strip_prefix(b"_") == Some(symbol.as_bytes())
-        })
-    };
-    for binding in reached.iter().filter(|binding| binding.package == package.name) {
-        if !defines(binding.symbol) {
-            return Err(format!(
-                "the Rust runtime archive {} has no {} (binding package {}); it was built without the binding packages, so rebuild the compiler",
-                archive.display(),
-                binding.symbol,
-                package.name
-            ));
+    // a `_` on Mach-O. One pass finds every reached function.
+    let mut missing = reached
+        .iter()
+        .filter(|binding| binding.package == package.name)
+        .map(|binding| binding.symbol)
+        .collect::<Vec<_>>();
+    for name in bytes.split(|byte| *byte == 0) {
+        if missing.is_empty() {
+            break;
         }
+        let name = name.strip_prefix(b"_").filter(|_| cfg!(target_os = "macos")).unwrap_or(name);
+        missing.retain(|symbol| symbol.as_bytes() != name);
+    }
+    if let Some(symbol) = missing.first() {
+        return Err(format!(
+            "the Rust runtime archive {} has no {symbol} (binding package {}); it was built without the binding packages, so rebuild the compiler",
+            archive.display(),
+            package.name
+        ));
     }
     Ok(())
 }
