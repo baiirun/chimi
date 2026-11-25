@@ -186,23 +186,17 @@ ChimiBindingResult *chimi_sqlite_set_depth(ChimiBindingCall *call) {
   return ok_void(call);
 }
 
-/* Whether `rest` holds only whitespace and SQL comments. */
-static int only_blank(const char *rest, const char *end) {
-  while (rest < end) {
-    if (*rest == ' ' || *rest == '\t' || *rest == '\n' || *rest == '\r' || *rest == '\f'
-        || *rest == ';') {
-      rest++;
-    } else if (rest + 1 < end && rest[0] == '-' && rest[1] == '-') {
-      while (rest < end && *rest != '\n') rest++;
-    } else if (rest + 1 < end && rest[0] == '/' && rest[1] == '*') {
-      rest += 2;
-      while (rest + 1 < end && !(rest[0] == '*' && rest[1] == '/')) rest++;
-      rest = rest + 1 < end ? rest + 2 : end;
-    } else {
-      return 0;
-    }
-  }
-  return 1;
+/* Whether SQLite finds nothing in `rest` but blanks and comments: no
+   statement and no error. Asking SQLite keeps its tokenizer's rules (which
+   characters are blank, where a comment may end) in one place. SQLite stops
+   reading a text at a NUL, so a text with one is refused rather than partly
+   ignored. Called with the connection's mutex held. */
+static int only_blank(sqlite3 *db, const char *rest, const char *end) {
+  if (memchr(rest, 0, (size_t)(end - rest))) return 0;
+  sqlite3_stmt *statement = NULL;
+  int code = sqlite3_prepare_v2(db, rest, (int)(end - rest), &statement, NULL);
+  sqlite3_finalize(statement);
+  return code == SQLITE_OK && statement == NULL;
 }
 
 /* native_prepare(db: SqliteDb, sql: Text) -> Result<Option<SqliteStatement>, (Int, Text)>:
@@ -226,8 +220,9 @@ ChimiBindingResult *chimi_sqlite_prepare(ChimiBindingCall *call) {
     sqlite3_mutex_leave(sqlite3_db_mutex(db));
     return result;
   }
+  int blank = !tail || only_blank(db, tail, sql + length);
   sqlite3_mutex_leave(sqlite3_db_mutex(db));
-  if (tail && !only_blank(tail, sql + length)) {
+  if (!blank) {
     sqlite3_finalize(statement);
     return chimi_binding_failure(call, SQLITE_BINDING_MANY_STATEMENTS,
                                  "the text holds more than one statement");
