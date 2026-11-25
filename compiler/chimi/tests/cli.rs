@@ -2776,6 +2776,7 @@ fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
 
 /// `chimi build` of `project` with `CHIMI_TEST_RUNTIME_SANITIZE` set to
 /// `sanitize`, or removed for `None`: its build report, or the failure.
+#[cfg(target_os = "linux")]
 fn build_with_sanitize(
     scratch: &Path,
     project: &Path,
