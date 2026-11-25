@@ -124,7 +124,7 @@ module qualifier.
 A standard module implements runtime-backed behavior with two declaration
 forms. Each is an ordinary declaration with the `native` modifier and no body:
 
-<!-- chimi: pending ep-a6f138 ts-facbbe -->
+<!-- chimi: pending ep-a6f138 -->
 ```chimi
 // std/map.chimi
 pub native type Map<K, V>
