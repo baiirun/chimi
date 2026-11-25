@@ -4,6 +4,7 @@
 //! compares them.
 
 use super::{Control, Evaluator, RuntimeValue};
+use chimi_runtime::files::Closed;
 use crate::ids::CoreNodeId;
 use crate::standard::{StandardConstructor, StandardFunction};
 use std::io::{Read as _, Write as _};
@@ -12,43 +13,9 @@ use std::sync::Arc;
 /// Bytes per `host_read` chunk, as in `runtime.c`.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
-/// The files `std/fs` has open. A handle is `slot | generation << 32`, so a
-/// handle used after its file was closed names a slot whose generation moved
-/// on and fails with the `Closed` code instead of reaching another file.
-#[derive(Default)]
-pub(super) struct OpenFiles {
-    slots: Vec<(u32, Option<std::fs::File>)>,
-}
-
-impl OpenFiles {
-    fn insert(&mut self, file: std::fs::File) -> i64 {
-        let slot = match self.slots.iter().position(|(_, file)| file.is_none()) {
-            Some(slot) => slot,
-            None => {
-                self.slots.push((0, None));
-                self.slots.len() - 1
-            }
-        };
-        self.slots[slot].1 = Some(file);
-        (slot as i64) | (i64::from(self.slots[slot].0) << 32)
-    }
-
-    fn get(&mut self, handle: i64) -> Option<&mut std::fs::File> {
-        let (slot, generation) = (handle & 0xffff_ffff, handle >> 32);
-        let (current, file) = self.slots.get_mut(usize::try_from(slot).ok()?)?;
-        (i64::from(*current) == generation).then_some(file.as_mut()?)
-    }
-
-    fn close(&mut self, handle: i64) -> bool {
-        if self.get(handle).is_none() {
-            return false;
-        }
-        let entry = &mut self.slots[(handle & 0xffff_ffff) as usize];
-        entry.1 = None;
-        entry.0 = entry.0.wrapping_add(1);
-        true
-    }
-}
+/// The files `std/fs` has open: the table `runtime.c` keeps too, so a
+/// handle used after its file was closed fails the same way on both.
+pub(super) type OpenFiles = chimi_runtime::files::FileTable<std::fs::File>;
 
 /// The portable failure code of `error`, which `std/fs` maps to `FsError`,
 /// and its message: the operating system's text, without the
@@ -145,7 +112,7 @@ impl Evaluator<'_> {
                 ))
             }
             (StandardFunction::FsHostRead, [RuntimeValue::Integer(handle)]) => {
-                let Some(file) = self.open_files.get(*handle) else {
+                let Some(file) = self.open_files.get_mut(*handle) else {
                     return Control::Success(tuple(vec![
                         RuntimeValue::Integer(CLOSED.0),
                         RuntimeValue::Bytes(Arc::from(Vec::new())),
@@ -176,17 +143,16 @@ impl Evaluator<'_> {
             (
                 StandardFunction::FsHostWrite,
                 [RuntimeValue::Integer(handle), RuntimeValue::Bytes(bytes)],
-            ) => Control::Success(match self.open_files.get(*handle) {
+            ) => Control::Success(match self.open_files.get_mut(*handle) {
                 Some(file) => io_status(file.write_all(bytes).map(|()| 0)),
                 None => status(CLOSED.0, CLOSED.1),
             }),
             (StandardFunction::FsHostClose, [RuntimeValue::Integer(handle)]) => {
                 // Dropping the file closes it; a close error is not reported
                 // by `File`, so the interpreter flushes nothing it could lose.
-                Control::Success(if self.open_files.close(*handle) {
-                    status(0, "")
-                } else {
-                    status(CLOSED.0, CLOSED.1)
+                Control::Success(match self.open_files.close(*handle) {
+                    Closed::NotOpen => status(CLOSED.0, CLOSED.1),
+                    Closed::Lent | Closed::Released(_) => status(0, ""),
                 })
             }
             (StandardFunction::FsHostMetadata, [RuntimeValue::Text(path)]) => {
