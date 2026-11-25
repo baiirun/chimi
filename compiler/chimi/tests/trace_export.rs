@@ -243,14 +243,26 @@ fn exports_an_interpreter_trace_from_standard_input() {
         "fn add(a: Int, b: Int) -> Int { a + b }\npub fn main() -> Int { add(1, 2) }\n",
     )
     .unwrap();
-    let run = chimi(&["run", program.to_str().unwrap()]);
+    let trace = directory.join("trace.jsonl");
+    let run = chimi(&[
+        "run",
+        program.to_str().unwrap(),
+        "--trace=full",
+        &format!("--telemetry-file={}", trace.display()),
+    ]);
+    assert!(run.status.success(), "{run:?}");
     let mut export = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .args(["trace", "export", "--otlp", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    export.stdin.take().unwrap().write_all(&run.stdout).unwrap();
+    export
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&std::fs::read(&trace).unwrap())
+        .unwrap();
     let output = export.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let spans = spans(&stdout(&output));

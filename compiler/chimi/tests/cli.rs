@@ -194,16 +194,13 @@ fn check_prints_line_and_column_for_humans_and_byte_offsets_for_json() {
 }
 
 #[test]
-fn run_executes_source_and_prints_structured_events_and_outcome() {
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .args(["run", &fixture("success")])
-        .output()
-        .expect("run valid Chimi source");
+fn run_executes_source_and_writes_structured_events_and_outcome_to_their_sinks() {
+    let run = interpret(Path::new("."), &[&fixture("success")], &[]);
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines = stdout.lines().collect::<Vec<_>>();
+    assert!(run.output.status.success());
+    assert!(run.output.stderr.is_empty());
+    assert!(run.output.stdout.is_empty());
+    let lines = run.telemetry.lines().collect::<Vec<_>>();
     assert!(lines.len() > 3);
     assert!(lines[0].contains("\"event\":\"computation_started\""));
     assert!(lines[0].contains("\"computation\":\"main\""));
@@ -212,14 +209,153 @@ fn run_executes_source_and_prints_structured_events_and_outcome() {
             .iter()
             .any(|line| line.contains("\"operation\":\"construct\""))
     );
-    assert!(lines[lines.len() - 2].contains("\"event\":\"computation_completed\""));
+    assert!(lines[lines.len() - 1].contains("\"event\":\"computation_completed\""));
     assert_eq!(
-        lines[lines.len() - 1],
+        run.outcome,
         concat!(
             "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",",
-            "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}"
+            "\"value\":{\"type\":\"Answer\",\"fields\":{\"value\":42}}}\n"
         )
     );
+}
+
+/// CHI-315: `chimi run` is a runner like a native executable's. The program's
+/// console output is all that reaches stdout and stderr, nothing is traced
+/// without a sink, and a sink is never overwritten.
+#[test]
+fn run_writes_console_output_and_only_the_sinks_it_is_given() {
+    let scratch = scratch_directory("run-console");
+    std::fs::write(
+        scratch.join("hello.chimi"),
+        concat!(
+            "import std/io.{Console}\n",
+            "pub fn main() -> Int needs { console: Console } {\n",
+            "  console.write_line(\"Hello, world!\")\n",
+            "  console.write_error(\"to stderr\")\n",
+            "  7\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let run = |rest: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("run")
+            .arg("hello.chimi")
+            .args(rest)
+            .output()
+            .expect("run chimi run")
+    };
+
+    let plain = run(&[]);
+    assert!(plain.status.success());
+    assert_eq!(String::from_utf8_lossy(&plain.stdout), "Hello, world!\n");
+    assert_eq!(String::from_utf8_lossy(&plain.stderr), "to stderr\n");
+
+    let outcome_only = run(&["--outcome-file=outcome.jsonl"]);
+    assert!(outcome_only.status.success());
+    assert_eq!(String::from_utf8_lossy(&outcome_only.stdout), "Hello, world!\n");
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("outcome.jsonl")).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":7}\n"
+    );
+
+    // An existing sink stops the run before the program writes anything.
+    let existing = run(&["--outcome-file=outcome.jsonl"]);
+    assert_eq!(existing.status.code(), Some(74));
+    assert!(existing.stdout.is_empty(), "{existing:?}");
+
+    let untraced = run(&["--telemetry-file=off.jsonl"]);
+    assert!(untraced.status.success());
+    assert_eq!(std::fs::read_to_string(scratch.join("off.jsonl")).unwrap(), "");
+
+    std::fs::write(
+        scratch.join("crash.chimi"),
+        "pub fn main() -> Int {\n  1 / 0\n}\n",
+    )
+    .unwrap();
+    let crash = |rest: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .current_dir(&scratch)
+            .arg("run")
+            .arg("crash.chimi")
+            .args(rest)
+            .output()
+            .expect("run chimi run")
+    };
+    let crashed = crash(&[]);
+    assert_eq!(crashed.status.code(), Some(70));
+    assert!(crashed.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&crashed.stderr)
+            .starts_with("chimi: the program ended with a defect: "),
+        "{crashed:?}"
+    );
+    let recorded = crash(&["--outcome-file=crash.jsonl"]);
+    assert_eq!(recorded.status.code(), Some(70));
+    assert!(recorded.stderr.is_empty(), "{recorded:?}");
+
+    for invalid in [
+        &["--trace=boundaries"][..],
+        &["--telemetry-file=same.jsonl", "--outcome-file=same.jsonl"][..],
+    ] {
+        let rejected = run(invalid);
+        assert_eq!(rejected.status.code(), Some(64), "{invalid:?}");
+        assert!(rejected.stdout.is_empty(), "{invalid:?}");
+        assert!(!scratch.join("same.jsonl").exists());
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// CHI-314: a copy of the compiler away from its Cargo target directory, as
+/// `cargo install` leaves it, still links a program that needs the fiber
+/// runtime, because the compiler carries that archive itself.
+#[test]
+fn a_relocated_compiler_builds_a_program_that_starts_tasks() {
+    let scratch = scratch_directory("relocated-compiler");
+    let compiler = scratch.join("bin").join("chimi");
+    std::fs::create_dir_all(compiler.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_chimi"), &compiler).unwrap();
+    std::fs::write(
+        scratch.join("tasks.chimi"),
+        concat!(
+            "import std/task as Task\n",
+            "pub fn main() -> Int {\n",
+            "  let task = Task.start(fn() { 20 + 22 })\n",
+            "  Task.result(task)\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(&compiler)
+        .current_dir(&scratch)
+        .env_remove("CHIMI_FIBER_RUNTIME_ARCHIVE")
+        .args(["build", "tasks.chimi", "-o", "tasks"])
+        .output()
+        .expect("build with the relocated compiler");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let report = String::from_utf8_lossy(&build.stdout);
+    assert!(
+        !report.contains("\"fiber_runtime_archive\":null"),
+        "the program should need the fiber runtime: {report}"
+    );
+    let outcome = scratch.join("outcome.jsonl");
+    let run = Command::new(scratch.join("tasks"))
+        .arg("--chimi-runner")
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--")
+        .output()
+        .expect("run the program");
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(
+        std::fs::read_to_string(outcome).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
 }
 
 #[test]
@@ -2957,27 +3093,22 @@ fn direct_integer_overflow_returns_the_existing_runtime_defect() {
 
 #[test]
 fn run_executes_the_checkout_forcing_program_with_dependency_traces() {
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .args([
-            "run",
-            repository_path("prototypes/golden/valid/dependencies_and_execution.chimi")
-                .to_str()
-                .unwrap(),
-        ])
-        .output()
-        .expect("run the checkout forcing program");
+    let program = repository_path("prototypes/golden/valid/dependencies_and_execution.chimi");
+    let run = interpret(Path::new("."), &[program.to_str().unwrap()], &[]);
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.matches("\"event\":\"dependency_called\"").count(), 2);
+    assert!(run.output.status.success());
+    assert!(run.output.stderr.is_empty());
     assert_eq!(
-        stdout.lines().last().unwrap(),
+        run.telemetry.matches("\"event\":\"dependency_called\"").count(),
+        2
+    );
+    assert_eq!(
+        run.outcome,
         concat!(
             "{\"schema\":\"chimi.runtime.v1\",",
             "\"outcome\":\"success\",\"value\":{\"type\":\"Order\",",
             "\"fields\":{\"id\":{\"type\":\"OrderId\",",
-            "\"fields\":{\"value\":\"order-1\"}}}}}"
+            "\"fields\":{\"value\":\"order-1\"}}}}}\n"
         )
     );
 }
@@ -3166,10 +3297,10 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
             "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | ",
             "chimi inspect <path> <byte-offset> | ",
             "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
-            "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
+            "chimi check [--json] <path> | chimi run <path> [--trace=off|boundaries|full] [--telemetry-file=<path>] [--outcome-file=<path>] [-- <argument>...] | ",
             "chimi build <path> [-o <executable>] [--target <triple>] | ",
             "chimi check [--json] --root <project-dir> <entry-module> | ",
-            "chimi run --root <project-dir> <entry-module> [-- <argument>...] | ",
+            "chimi run --root <project-dir> <entry-module> [<runner option>...] [-- <argument>...] | ",
             "chimi build --root <project-dir> <entry-module> ",
             "[-o <executable>] [--target <triple>] | chimi test [<path> | <directory> | --root <project-dir> <module>] [--filter=<text>] ",
             "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
@@ -3183,21 +3314,50 @@ fn invalid_cli_input_is_rejected_at_the_boundary() {
     );
 }
 
-/// Runs `chimi run <args>` from `scratch` and returns the process output and
-/// its last stdout line (the outcome record when the program ran).
-fn chimi_run(scratch: &Path, args: &[&str]) -> (Output, String) {
+/// What one `chimi run` wrote: the process output, and the full trace and the
+/// outcome record from the sink files it was given.
+struct Interpreted {
+    output: Output,
+    telemetry: String,
+    outcome: String,
+}
+
+/// Runs `chimi run <input> --trace=full --telemetry-file=... --outcome-file=...
+/// <rest>` from `directory`, with the sinks in a fresh scratch directory. A
+/// sink the run never wrote reads as empty.
+fn interpret(directory: &Path, input: &[&str], rest: &[&str]) -> Interpreted {
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let sinks = scratch_directory(&format!(
+        "run-sinks-{}",
+        RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let telemetry = sinks.join("trace.jsonl");
+    let outcome = sinks.join("outcome.jsonl");
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .current_dir(scratch)
+        .current_dir(directory)
         .arg("run")
-        .args(args)
+        .args(input)
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .args(rest)
         .output()
         .expect("run chimi run");
-    let outcome = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .map(|line| format!("{line}\n"))
-        .unwrap_or_default();
-    (output, outcome)
+    let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+    let interpreted = Interpreted {
+        output,
+        telemetry: read(&telemetry),
+        outcome: read(&outcome),
+    };
+    std::fs::remove_dir_all(sinks).unwrap();
+    interpreted
+}
+
+/// Runs `chimi run <input> <rest>` from `scratch` and returns the process
+/// output and its outcome record.
+fn chimi_run(scratch: &Path, input: &str, rest: &[&str]) -> (Output, String) {
+    let run = interpret(scratch, &[input], rest);
+    (run.output, run.outcome)
 }
 
 #[test]
@@ -3210,9 +3370,9 @@ fn run_passes_arguments_after_the_separator_to_main_like_a_native_build() {
     .unwrap();
     // A second `--` and option-shaped words are application data, not flags.
     let application = ["first", "two words", "--", "-o", ""];
-    let mut run_args = vec!["echo.chimi", "--"];
-    run_args.extend(application);
-    let (interpreted, outcome) = chimi_run(&scratch, &run_args);
+    let mut rest = vec!["--"];
+    rest.extend(application);
+    let (interpreted, outcome) = chimi_run(&scratch, "echo.chimi", &rest);
     assert!(
         interpreted.status.success(),
         "{}",
@@ -3245,7 +3405,7 @@ fn run_passes_arguments_after_the_separator_to_main_like_a_native_build() {
     assert!(native.status.success());
     assert_eq!(std::fs::read_to_string(native_outcome).unwrap(), outcome);
 
-    let (empty, empty_outcome) = chimi_run(&scratch, &["echo.chimi"]);
+    let (empty, empty_outcome) = chimi_run(&scratch, "echo.chimi", &[]);
     assert!(empty.status.success());
     assert!(
         empty_outcome.ends_with("\"value\":[]}\n"),
@@ -3264,17 +3424,17 @@ fn run_rejects_arguments_a_zero_input_main_cannot_take_and_unseparated_arguments
     )
     .unwrap();
 
-    let (plain, outcome) = chimi_run(&scratch, &["answer.chimi"]);
+    let (plain, outcome) = chimi_run(&scratch, "answer.chimi", &[]);
     assert!(plain.status.success());
     assert_eq!(
         outcome,
         "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
     );
-    let (separated, _) = chimi_run(&scratch, &["answer.chimi", "--"]);
+    let (separated, _) = chimi_run(&scratch, "answer.chimi", &["--"]);
     assert!(separated.status.success());
 
     // Same status and message as the native runner, and no outcome record.
-    let (rejected, _) = chimi_run(&scratch, &["answer.chimi", "--", "extra"]);
+    let (rejected, _) = chimi_run(&scratch, "answer.chimi", &["--", "extra"]);
     assert_eq!(rejected.status.code(), Some(64));
     assert!(rejected.stdout.is_empty());
     assert_eq!(
@@ -3282,7 +3442,7 @@ fn run_rejects_arguments_a_zero_input_main_cannot_take_and_unseparated_arguments
         "chimi: program entry does not accept application arguments\n"
     );
 
-    let (unseparated, _) = chimi_run(&scratch, &["answer.chimi", "extra"]);
+    let (unseparated, _) = chimi_run(&scratch, "answer.chimi", &["extra"]);
     assert_eq!(unseparated.status.code(), Some(2));
     assert!(unseparated.stdout.is_empty());
     assert!(String::from_utf8_lossy(&unseparated.stderr).starts_with(
@@ -3295,19 +3455,17 @@ fn run_rejects_arguments_a_zero_input_main_cannot_take_and_unseparated_arguments
 #[test]
 fn explicit_project_root_loads_and_executes_imported_modules() {
     let root = repository_path("compiler/chimi/tests/fixtures/project");
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .args(["run", "--root", root.to_str().unwrap(), "app/main"])
-        .output()
-        .expect("run a multi-module Chimi project");
+    let run = interpret(
+        Path::new("."),
+        &["--root", root.to_str().unwrap(), "app/main"],
+        &[],
+    );
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
+    assert!(run.output.status.success());
+    assert!(run.output.stderr.is_empty());
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .last()
-            .unwrap(),
-        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}"
+        run.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
     );
 }
 
@@ -6445,13 +6603,10 @@ fn native_host_io_keeps_text_bytes_after_nul() {
         "\"message\":\"file name contained an unexpected NUL byte\"}}}"
     );
     assert_eq!(native.outcome.trim_end(), expected);
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(scratch.join("text-nul.chimi"))
-        .output()
-        .expect("run the reference interpreter");
-    let stdout = String::from_utf8_lossy(&interpreted.stdout);
-    assert_eq!(stdout.lines().last(), Some(expected));
+    let source = scratch.join("text-nul.chimi");
+    let interpreted = interpret(&scratch, &[source.to_str().unwrap()], &[]);
+    assert_eq!(interpreted.output.stdout, b"a\0b\n");
+    assert_eq!(interpreted.outcome.trim_end(), expected);
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

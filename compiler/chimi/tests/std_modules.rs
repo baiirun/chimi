@@ -12,6 +12,9 @@
 //! native operation must be reached by some test or program, so each
 //! primitive has differential coverage.
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use chimi::project::{LoadedProject, StandardTree};
 use std::ffi::OsStr;
 use chimi::{Compiler, ProjectSource};
@@ -127,11 +130,12 @@ fn scratch_directory(program: &Path) -> PathBuf {
 }
 
 fn interpreter_record(program: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(program)
-        .output()
-        .expect("run the reference interpreter");
+    let output = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(program),
+    )
+    .expect("run the reference interpreter");
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .last()

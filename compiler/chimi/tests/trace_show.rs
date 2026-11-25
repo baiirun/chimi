@@ -464,7 +464,13 @@ fn native_and_interpreter_traces_record_the_same_modules() {
                   Failure(_) -> 0\n  }\n}\n";
     let program = directory.join("main.chimi");
     std::fs::write(&program, source).unwrap();
-    let interpreted = chimi(&["run", program.to_str().unwrap()]);
+    let interpreted_trace = directory.join("interpreted.jsonl");
+    let interpreted = chimi(&[
+        "run",
+        program.to_str().unwrap(),
+        "--trace=full",
+        &format!("--telemetry-file={}", interpreted_trace.display()),
+    ]);
     assert!(interpreted.status.success(), "{interpreted:?}");
     let executable = directory.join("program");
     let build = chimi(&[
@@ -485,7 +491,10 @@ fn native_and_interpreter_traces_record_the_same_modules() {
     assert!(run.status.success(), "{run:?}");
 
     let native = modules_of(&std::fs::read_to_string(&trace).unwrap());
-    assert_eq!(native, modules_of(&stdout(&interpreted)));
+    assert_eq!(
+        native,
+        modules_of(&std::fs::read_to_string(&interpreted_trace).unwrap())
+    );
     assert!(
         native.contains("{\"path\":\"main\",\"fingerprint\":\""),
         "{native}"

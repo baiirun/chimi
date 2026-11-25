@@ -4,6 +4,9 @@
 //! so its provider must be as generic. Running programs go through both
 //! execution paths; rejected programs assert their diagnostic codes.
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use chimi::source::SourceSnapshot;
 use chimi::{Compiler, CompilerSession, ProjectSource};
 use std::path::PathBuf;
@@ -37,11 +40,12 @@ fn run_both(name: &str, source: &str) -> String {
     let scratch = scratch_directory(name);
     let path = scratch.join("main.chimi");
     std::fs::write(&path, source).unwrap();
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run the reference interpreter");
+    let interpreted = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&path),
+    )
+    .expect("run the reference interpreter");
     let interpreted_outcome = last_line(&interpreted.stdout);
     let executable = scratch.join("program");
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
