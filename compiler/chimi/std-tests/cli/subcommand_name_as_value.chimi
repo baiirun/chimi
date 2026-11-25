@@ -1,0 +1,25 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const count = Cli.option("count", "n", "How many", Cli.int)
+const verbose = Cli.flag("verbose", "v", "Say more")
+const add = Cli.subcommand(Cli.command("add", "Add an item", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(count), Cli.arg(verbose), Cli.arg(add)])
+
+fn outcome(arguments: List<Text>) -> Exit {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(exit) -> exit
+    _ -> Test.fail("expected help or a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "a word taken as an option's value is not a subcommand's name or help" {
+  Test.assert_equal(outcome(["--count", "add", "--bogus", "--help"]), Exit.Help(Cli.usage(tool)))
+  Test.assert_equal(outcome(["-vn", "add", "--bogus", "-h"]), Exit.Help(Cli.usage(tool)))
+  case outcome(["--count", "--help"]) {
+    Exit.Usage(error, _) -> Test.assert_equal(error, CliError.InvalidValue("--count", "--help", "int"))
+    _ -> Test.fail("expected --help to be the value of --count")
+  }
+}

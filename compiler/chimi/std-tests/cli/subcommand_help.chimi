@@ -1,0 +1,34 @@
+import std/cli as Cli.{Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const list = Cli.subcommand(Cli.command("list", "List the items", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(add), Cli.arg(list)])
+
+fn help(arguments: List<Text>) -> Text {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Help(text)) -> text
+    _ -> Test.fail("expected help for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "help after a subcommand's name is the subcommand's" {
+  let expected = Text.join([
+    "Add an item",
+    "",
+    "usage: tool add [options] <item>",
+    "",
+    "Arguments:",
+    "  <item>  What to add",
+    "",
+    "Options:",
+    "  -h, --help  Print this help",
+  ], "\n")
+  Test.assert_equal(help(["add", "--help"]), expected)
+  Test.assert_equal(help(["add", "--nope", "-h"]), expected)
+  Test.assert_equal(help(["-v", "add", "-h"]), expected)
+}

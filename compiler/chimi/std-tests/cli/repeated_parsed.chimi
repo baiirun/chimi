@@ -1,0 +1,17 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+
+const include = Cli.repeated("include", "I", "Add a search directory", Cli.path)
+const level = Cli.repeated("level", "l", "A level", Cli.int)
+const tool = Cli.command("tool", "A tool", [Cli.arg(include), Cli.arg(level)])
+
+test "each value goes through the parser" {
+  Test.assert_equal(Cli.get(Cli.parse(tool, ["-l", "1", "-l2"]), level), [1, 2])
+  case Result.capture(fn() {
+    Cli.parse(tool, ["-l", "1", "-l", "two"])
+  }) {
+    Err(Exit.Usage(error, _)) -> Test.assert_equal(error, CliError.InvalidValue("--level", "two", "int"))
+    _ -> Test.fail("expected a usage failure")
+  }
+}

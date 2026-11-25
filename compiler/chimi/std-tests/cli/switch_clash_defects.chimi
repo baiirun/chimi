@@ -1,0 +1,12 @@
+import std/cli as Cli
+import std/test as Test
+
+const color = Cli.switch("color", "c", "Color the output", True)
+
+test "a flag named like a switch's --no- form defects" {
+  let clash = Cli.flag("no-color", "", "Clashes with --no-color")
+  let defect = Test.capture_defect(fn() {
+    Cli.command("t", "", [Cli.arg(color), Cli.arg(clash)])
+  })
+  Test.assert_equal(defect, "Cli.command: t declares a name twice, or declares help")
+}

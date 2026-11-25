@@ -19,8 +19,27 @@
 /// }
 /// ```
 ///
-/// Subcommands, environment-variable defaults, repeated-option lists and
-/// shell completion are not part of this module.
+/// A command can instead hold subcommands, as `tool add …` and `tool list …`.
+/// Each is a handle too: `Cli.get(parsed, add)` is `Some(sub)` for the one
+/// that was chosen, and `sub` is read with that subcommand's own handles.
+///
+/// ```text
+/// const all = Cli.flag("all", "a", "Include hidden items")
+/// const list = Cli.subcommand(Cli.command("list", "List the items", [Cli.arg(all)]))
+/// const item = Cli.argument("item", "What to add", Cli.text)
+/// const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+/// const tool = Cli.command("tool", "Keep a list", [Cli.arg(list), Cli.arg(add)])
+///
+/// let parsed = Cli.parse(tool, arguments)
+/// case (Cli.get(parsed, list), Cli.get(parsed, add)) {
+///   (Some(sub), _) -> show(Cli.get(sub, all))
+///   (_, Some(sub)) -> insert(Cli.get(sub, item))
+///   _ -> Debug.crash("parse chose a subcommand")
+/// }
+/// ```
+///
+/// Environment-variable defaults and shell completion are not part of this
+/// module.
 
 import std/bytes as Bytes
 import std/debug as Debug
@@ -85,13 +104,20 @@ pub enum CliError {
   MissingArgument(name: Text)
   /// More arguments than the command declares.
   UnexpectedArgument(value: Text)
+  /// A command with subcommands was given none.
+  MissingCommand
+  /// A word where a subcommand belongs that names none of them.
+  UnknownCommand(name: Text)
 }
 
 enum Kind {
   Flag
+  Switch
   Named
+  Repeated
   Positional
   Rest
+  Subcommand(command: Command)
 }
 
 struct Spec {
@@ -156,6 +182,33 @@ pub fn option<T>(long: Text, short: Text, help: Text, parser: { name: Text, read
   }
 }
 
+/// A flag that can be turned off as well as on: `--long` or `-short` makes
+/// it `True`, `--no-long` makes it `False`, and the last one given wins.
+/// `default` when neither is given.
+pub fn switch(long: Text, short: Text, help: Text, default: Bool) -> Handle<Bool> {
+  Handle {
+    spec: named(Kind.Switch, long, short, help, ""),
+    read: fn(values) {
+      case List.last(values) {
+        Some(value) -> value == "true"
+        None -> default
+      }
+    },
+  }
+}
+
+/// An option that may be given many times, as `-I a -I b`: every value, in
+/// the order given, and an empty list when not given.
+pub fn repeated<T>(long: Text, short: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<List<T>> {
+  let spec = named(Kind.Repeated, long, short, help, parser.name)
+  Handle {
+    spec: spec,
+    read: fn(values) {
+      List.map(values, fn(value) { convert(spec, parser, value) })
+    },
+  }
+}
+
 /// A required positional argument.
 pub fn argument<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<T> {
   let spec = Spec {
@@ -193,6 +246,28 @@ pub fn rest<T>(name: Text, help: Text, parser: { name: Text, read: fn(Text) -> O
   }
 }
 
+/// `command` as a subcommand of the command whose list holds it: its name as
+/// a word chooses it, and every word after that is `command`'s. `Some` with
+/// the subcommand's own arguments when it was chosen, `None` when another one
+/// was. Usage and errors name it after its parent, as `tool add`.
+pub fn subcommand(command: Command) -> Handle<Option<Parsed>> {
+  Handle {
+    spec: Spec {
+      kind: Kind.Subcommand(command),
+      name: command.name,
+      short: "",
+      help: command.summary,
+      value: "",
+    },
+    read: fn(values) {
+      case values {
+        [] -> None
+        [_, ..words] -> Some(reparse(command, words))
+      }
+    },
+  }
+}
+
 /// The handle as a member of a command's argument list.
 pub fn arg<T>(handle: Handle<T>) -> Arg {
   Arg {
@@ -207,15 +282,18 @@ pub fn arg<T>(handle: Handle<T>) -> Arg {
 /// A command named `name`, as usage shows it. `--help` and `-h` are added.
 ///
 /// Defects when: two args share a name or short letter, one is named `help`
-/// or `h`, or a `rest` is not last.
+/// or `h`, a `rest` is not last, or the command has both positional
+/// arguments and subcommands.
 pub fn command(name: Text, summary: Text, args: List<Arg>) -> Command {
   let names = List.flat_map(args, fn(each) { option_names(each.spec) })
   let unique = List.length(List.unique(names)) == List.length(names)
   let declares_help = List.contains(names, "--help") or List.contains(names, "-h")
-  case (unique and not declares_help, rest_is_last(args)) {
-    (False, _) -> Debug.crash("Cli.command: ${name} declares a name twice, or declares help")
-    (True, False) -> Debug.crash("Cli.command: ${name} declares an argument after its rest")
-    (True, True) -> Command {
+  let mixed = List.any(args, fn(each) { is_positional(each.spec) }) and List.any(args, fn(each) { is_subcommand(each.spec) })
+  case (unique and not declares_help, rest_is_last(args), mixed) {
+    (False, _, _) -> Debug.crash("Cli.command: ${name} declares a name twice, or declares help")
+    (True, False, _) -> Debug.crash("Cli.command: ${name} declares an argument after its rest")
+    (True, True, True) -> Debug.crash("Cli.command: ${name} declares both positional arguments and subcommands")
+    (True, True, False) -> Command {
       name: name, summary: summary, args: args, version: None
     }
   }
@@ -243,11 +321,13 @@ pub fn version(command: Command, version: Text) -> Command {
 /// Reads `arguments` against `command`.
 ///
 /// Fails with: `Exit.Help` for `--help`, `-h` and `--version`, and
-/// `Exit.Usage` when the arguments are wrong.
+/// `Exit.Usage` when the arguments are wrong. A subcommand's words are
+/// parsed by the subcommand, so `tool add --help` shows `add`'s help.
 pub fn parse(command: Command, arguments: List<Text>) -> Parsed {
   case Result.capture(fn() { scan(command, arguments) }) {
     Ok(parsed) -> parsed
     Err(Stop.Shown(shown)) -> Failure(Exit.Help(shown))
+    Err(Stop.Ended(exit)) -> Failure(exit)
     Err(Stop.Wrong(error)) -> case asked_to_show(command, arguments) {
       Some(shown) -> Failure(Exit.Help(shown))
       None -> Failure(Exit.Usage(error, "${command.name}: ${message(error)}\n${synopsis(command)}\nTry '${command.name} --help' for more information."))
@@ -272,7 +352,8 @@ pub fn get<T>(parsed: Parsed, handle: Handle<T>) -> T {
 /// The help text `--help` prints.
 pub fn usage(command: Command) -> Text {
   let positionals = List.filter(command.args, fn(each) { is_positional(each.spec) })
-  let options = List.filter(command.args, fn(each) { not is_positional(each.spec) })
+  let commands = List.filter(command.args, fn(each) { is_subcommand(each.spec) })
+  let options = List.filter(command.args, fn(each) { is_option(each.spec) })
   let builtin = List.append([("-h, --help", "Print this help")], case command.version {
     Some(_) -> [("    --version", "Print the version")]
     None -> []
@@ -283,12 +364,10 @@ pub fn usage(command: Command) -> Text {
   let argument_rows = List.map(positionals, fn(each) {
     (positional_label(each.spec), each.spec.help)
   })
+  let command_rows = List.map(commands, fn(each) { (each.spec.name, each.spec.help) })
   let sections = List.append(
-    case List.is_empty(argument_rows) {
-      True -> []
-      False -> ["Arguments:\n${table(argument_rows)}"]
-    },
-    ["Options:\n${table(option_rows)}"],
+    List.append(section("Arguments", argument_rows), section("Commands", command_rows)),
+    section("Options", option_rows),
   )
   Text.join(List.append([command.summary, synopsis(command)], sections), "\n\n")
 }
@@ -296,11 +375,14 @@ pub fn usage(command: Command) -> Text {
 enum Stop {
   Shown(text: Text)
   Wrong(error: CliError)
+  // A subcommand's own parse ended with this, help or a usage error.
+  Ended(exit: Exit)
 }
 
 // The help or version text a word before `--` asks for, so that it wins over
 // an error in an earlier word: `--help`, `-h`, `h` among a cluster's leading
-// flags, or `--version` when the command has a version.
+// flags, or `--version` when the command has a version. The words after a
+// subcommand's name are the subcommand's, so the search stops there.
 fn asked_to_show(command: Command, arguments: List<Text>) -> Option<Text> {
   case arguments {
     [] -> None
@@ -311,9 +393,40 @@ fn asked_to_show(command: Command, arguments: List<Text>) -> Option<Text> {
       Some(version) -> Some("${command.name} ${version}")
       None -> asked_to_show(command, rest)
     }
-    [word, ..rest] -> case is_cluster(word) and cluster_asks_help(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word)))) {
-      True -> Some(usage(command))
-      False -> asked_to_show(command, rest)
+    [word, ..rest] -> case (Option.is_some(chosen(command, word)), takes_next(command, word)) {
+      (True, _) -> None
+      (False, True) -> asked_to_show(command, List.drop(rest, 1))
+      (False, False) -> case is_cluster(word) and cluster_asks_help(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word)))) {
+        True -> Some(usage(command))
+        False -> asked_to_show(command, rest)
+      }
+    }
+  }
+}
+
+// Whether `word` is an option whose value is the next word, as scanning
+// reads it, so that word is a value and not help or a subcommand's name.
+fn takes_next(command: Command, word: Text) -> Bool {
+  case Text.strip_prefix(word, "--") {
+    Some(long) -> List.any(command.args, fn(each) {
+      is_option(each.spec) and not is_flag(each.spec) and each.spec.name == long
+    })
+    None -> is_cluster(word) and cluster_takes_next(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))))
+  }
+}
+
+// Whether the cluster's leading flags end in an option with nothing after it.
+fn cluster_takes_next(command: Command, letters: List<Text>) -> Bool {
+  case letters {
+    [] -> False
+    [letter, ..more] -> case List.find(command.args, fn(each) {
+      is_option(each.spec) and each.spec.short == letter
+    }) {
+      None -> False
+      Some(found) -> case is_flag(found.spec) {
+        True -> cluster_takes_next(command, more)
+        False -> List.is_empty(more)
+      }
     }
   }
 }
@@ -325,7 +438,7 @@ fn cluster_asks_help(command: Command, letters: List<Text>) -> Bool {
     [] -> False
     ["h", .._] -> True
     [letter, ..more] -> case List.find(command.args, fn(each) {
-      each.spec.kind == Kind.Flag and each.spec.short == letter
+      is_flag(each.spec) and each.spec.short == letter
     }) {
       Some(_) -> cluster_asks_help(command, more)
       None -> False
@@ -337,19 +450,23 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
   let empty = List.reduce(command.args, Map.empty(), fn(values, each) {
     Map.put(values, display(each.spec), [])
   })
+  let branches = List.any(command.args, fn(each) { is_subcommand(each.spec) })
   let done = loop state = Scan { rest: arguments, values: empty, positionals: [] } {
-    case state.rest {
-      [] -> break state
-      ["--", ..rest] -> break Scan {
+    case (state.rest, branches) {
+      ([], _) -> break state
+      (["--"], True) -> break state
+      (["--", word, ..rest], True) -> break enter(command, state, word, rest)
+      (["--", ..rest], False) -> break Scan {
         rest: [],
         values: state.values,
         positionals: List.append(state.positionals, rest),
       }
-      [word, ..rest] -> case Text.strip_prefix(word, "--") {
+      ([word, ..rest], _) -> case Text.strip_prefix(word, "--") {
         Some(long) -> scan_long(command, state, long, rest)
-        None -> case is_cluster(word) {
-          True -> scan_cluster(command, state, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))), rest)
-          False -> Scan {
+        None -> case (is_cluster(word), branches) {
+          (True, _) -> scan_cluster(command, state, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))), rest)
+          (False, True) -> break enter(command, state, word, rest)
+          (False, False) -> Scan {
             rest: rest,
             values: state.values,
             positionals: List.push(state.positionals, word),
@@ -359,6 +476,18 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
     }
   }
   let values = place(command, done.values, done.positionals)
+  check(command, values)
+  case branches and not List.any(command.args, fn(each) {
+    is_subcommand(each.spec) and not List.is_empty(Option.unwrap_or(Map.get(values, display(each.spec)), []))
+  }) {
+    True -> Failure(Stop.Wrong(CliError.MissingCommand))
+    False -> Parsed { values: values }
+  }
+}
+
+// Reads every arg's values, so a value its parser refuses or a missing
+// argument fails here.
+fn check(command: Command, values: Map<Text, List<Text>>) -> Void {
   List.each(command.args, fn(each) {
     case Result.capture(fn() {
       each.check(Option.unwrap_or(Map.get(values, display(each.spec)), []))
@@ -367,7 +496,54 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
       Err(error) -> Failure(Stop.Wrong(error))
     }
   })
-  Parsed { values: values }
+}
+
+// Hands `rest` to the subcommand `word` names, which parses it as its own
+// command line, named after `command`. The parent's own values are checked
+// first, since its words come first. The values keep `word` first, so a
+// chosen subcommand given no words still differs from one not chosen.
+fn enter(command: Command, state: Scan, word: Text, rest: List<Text>) -> Scan {
+  case chosen(command, word) {
+    None -> Failure(Stop.Wrong(CliError.UnknownCommand(word)))
+    Some(sub) -> {
+      check(command, state.values)
+      let named = Command {
+        name: "${command.name} ${sub.name}",
+        summary: sub.summary,
+        args: sub.args,
+        version: sub.version,
+      }
+      case Result.capture(fn() { parse(named, rest) }) {
+        Ok(_) -> Scan {
+          rest: [],
+          values: Map.put(state.values, word, List.append([word], rest)),
+          positionals: state.positionals,
+        }
+        Err(exit) -> Failure(Stop.Ended(exit))
+      }
+    }
+  }
+}
+
+// The subcommand of `command` that `word` names.
+fn chosen(command: Command, word: Text) -> Option<Command> {
+  List.find_map(command.args, fn(each) {
+    case each.spec.kind {
+      Kind.Subcommand(sub) -> case sub.name == word {
+        True -> Some(sub)
+        False -> None
+      }
+      _ -> None
+    }
+  })
+}
+
+// The subcommand's values again from the words `parse` already accepted.
+fn reparse(command: Command, words: List<Text>) -> Parsed {
+  case Result.capture(fn() { scan(command, words) }) {
+    Ok(parsed) -> parsed
+    Err(_) -> Debug.crash("Cli.get: ${command.name} is not the handle the command was parsed with")
+  }
 }
 
 fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Scan {
@@ -375,22 +551,25 @@ fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Sca
     Some((name, value)) -> (name, Some(value))
     None -> (long, None)
   }
-  let spec = case List.find(command.args, fn(each) {
-    not is_positional(each.spec) and each.spec.name == name
+  let (spec, given) = case List.find(command.args, fn(each) {
+    is_option(each.spec) and each.spec.name == name
   }) {
-    Some(found) -> found.spec
-    None -> case (name, inline, command.version) {
-      ("version", None, Some(version)) -> Failure(Stop.Shown("${command.name} ${version}"))
-      _ -> Failure(Stop.Wrong(CliError.UnknownOption("--${name}")))
+    Some(found) -> (found.spec, "true")
+    None -> case negated(command, name) {
+      Some(found) -> (found.spec, "false")
+      None -> case (name, inline, command.version) {
+        ("version", None, Some(version)) -> Failure(Stop.Shown("${command.name} ${version}"))
+        _ -> Failure(Stop.Wrong(CliError.UnknownOption("--${name}")))
+      }
     }
   }
-  case (spec.kind, inline, rest) {
-    (Kind.Flag, None, _) -> Scan {
+  case (is_flag(spec), inline, rest) {
+    (True, None, _) -> Scan {
       rest: rest,
-      values: add(state.values, spec, "true"),
+      values: add(state.values, spec, given),
       positionals: state.positionals,
     }
-    (Kind.Flag, Some(value), _) -> Failure(Stop.Wrong(CliError.UnexpectedValue("--${name}", value)))
+    (True, Some(value), _) -> Failure(Stop.Wrong(CliError.UnexpectedValue("--${name}", value)))
     (_, Some(value), _) -> Scan {
       rest: rest,
       values: add(state.values, spec, value),
@@ -405,6 +584,19 @@ fn scan_long(command: Command, state: Scan, long: Text, rest: List<Text>) -> Sca
   }
 }
 
+// The switch `--name` turns off, when `name` is `no-` and a switch's name.
+fn negated(command: Command, name: Text) -> Option<Arg> {
+  case Text.strip_prefix(name, "no-") {
+    Some(switch) -> List.find(command.args, fn(each) {
+      case each.spec.kind {
+        Kind.Switch -> each.spec.name == switch
+        _ -> False
+      }
+    })
+    None -> None
+  }
+}
+
 fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<Text>) -> Scan {
   case letters {
     [] -> Scan {
@@ -414,7 +606,7 @@ fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<T
     }
     [letter, ..more] -> {
       let spec = case List.find(command.args, fn(each) {
-        not is_positional(each.spec) and each.spec.short == letter
+        is_option(each.spec) and each.spec.short == letter
       }) {
         Some(found) -> found.spec
         None -> case letter {
@@ -422,8 +614,8 @@ fn scan_cluster(command: Command, state: Scan, letters: List<Text>, rest: List<T
           _ -> Failure(Stop.Wrong(CliError.UnknownOption("-${letter}")))
         }
       }
-      case (spec.kind, more, rest) {
-        (Kind.Flag, _, _) -> scan_cluster(command, Scan {
+      case (is_flag(spec), more, rest) {
+        (True, _, _) -> scan_cluster(command, Scan {
           rest: rest,
           values: add(state.values, spec, "true"),
           positionals: state.positionals,
@@ -498,7 +690,7 @@ fn rest_is_last(args: List<Arg>) -> Bool {
   let positionals = List.filter(args, fn(each) { is_positional(each.spec) })
   case List.reverse(positionals) {
     [] -> True
-    [_, ..earlier] -> not List.any(earlier, fn(each) { each.spec.kind == Kind.Rest })
+    [_, ..earlier] -> not List.any(earlier, fn(each) { is_rest(each.spec) })
   }
 }
 
@@ -510,31 +702,76 @@ fn is_letter(text: Text) -> Bool {
 }
 
 fn is_positional(spec: Spec) -> Bool {
-  spec.kind == Kind.Positional or spec.kind == Kind.Rest
-}
-
-fn option_names(spec: Spec) -> List<Text> {
-  case (is_positional(spec), Text.is_empty(spec.short)) {
-    (True, _) -> [spec.name]
-    (False, True) -> ["--${spec.name}"]
-    (False, False) -> ["--${spec.name}", "-${spec.short}"]
+  case spec.kind {
+    Kind.Positional -> True
+    Kind.Rest -> True
+    _ -> False
   }
 }
 
+fn is_rest(spec: Spec) -> Bool {
+  case spec.kind {
+    Kind.Rest -> True
+    _ -> False
+  }
+}
+
+fn is_subcommand(spec: Spec) -> Bool {
+  case spec.kind {
+    Kind.Subcommand(_) -> True
+    _ -> False
+  }
+}
+
+// Whether the spec is written with dashes, as `--name` or `-n`.
+fn is_option(spec: Spec) -> Bool {
+  not is_positional(spec) and not is_subcommand(spec)
+}
+
+// Whether the spec is an option that takes no value.
+fn is_flag(spec: Spec) -> Bool {
+  case spec.kind {
+    Kind.Flag -> True
+    Kind.Switch -> True
+    _ -> False
+  }
+}
+
+fn option_names(spec: Spec) -> List<Text> {
+  let long = case spec.kind {
+    Kind.Switch -> ["--${spec.name}", "--no-${spec.name}"]
+    _ -> ["--${spec.name}"]
+  }
+  case (is_option(spec), Text.is_empty(spec.short)) {
+    (False, _) -> [spec.name]
+    (True, True) -> long
+    (True, False) -> List.push(long, "-${spec.short}")
+  }
+}
+
+// The key of the spec's values in `Parsed`: `--name`, `<name>`, or a
+// subcommand's bare name, so no two kinds of spec can share one.
 fn display(spec: Spec) -> Text {
-  case is_positional(spec) {
-    True -> "<${spec.name}>"
-    False -> "--${spec.name}"
+  case (is_positional(spec), is_subcommand(spec)) {
+    (True, _) -> "<${spec.name}>"
+    (_, True) -> spec.name
+    _ -> "--${spec.name}"
   }
 }
 
 fn option_label(spec: Spec) -> Text {
+  let long = case spec.kind {
+    Kind.Switch -> "--[no-]${spec.name}"
+    _ -> "--${spec.name}"
+  }
   let names = case Text.is_empty(spec.short) {
-    True -> "    --${spec.name}"
-    False -> "-${spec.short}, --${spec.name}"
+    True -> "    ${long}"
+    False -> "-${spec.short}, ${long}"
   }
   case spec.kind {
     Kind.Flag -> names
+    Kind.Switch -> names
+    Kind.Repeated -> "${names} <${spec.value}>..."
     _ -> "${names} <${spec.value}>"
   }
 }
@@ -548,8 +785,19 @@ fn positional_label(spec: Spec) -> Text {
 
 fn synopsis(command: Command) -> Text {
   let positionals = List.filter(command.args, fn(each) { is_positional(each.spec) })
-  let words = List.append([command.name, "[options]"], List.map(positionals, fn(each) { positional_label(each.spec) }))
+  let operands = case List.any(command.args, fn(each) { is_subcommand(each.spec) }) {
+    True -> ["<command>", "[<args>...]"]
+    False -> List.map(positionals, fn(each) { positional_label(each.spec) })
+  }
+  let words = List.append([command.name, "[options]"], operands)
   "usage: ${Text.join(words, " ")}"
+}
+
+fn section(title: Text, rows: List<(Text, Text)>) -> List<Text> {
+  case List.is_empty(rows) {
+    True -> []
+    False -> ["${title}:\n${table(rows)}"]
+  }
 }
 
 fn table(rows: List<(Text, Text)>) -> Text {
@@ -571,5 +819,7 @@ fn message(error: CliError) -> Text {
     CliError.InvalidValue(name, value, expected) -> "invalid value \"${value}\" for ${name}: expected ${expected}"
     CliError.MissingArgument(name) -> "missing argument <${name}>"
     CliError.UnexpectedArgument(value) -> "unexpected argument \"${value}\""
+    CliError.MissingCommand -> "missing command"
+    CliError.UnknownCommand(name) -> "unknown command \"${name}\""
   }
 }
