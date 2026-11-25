@@ -1,7 +1,7 @@
-# mutation run at 6c17bf937ae8ef6c81cedef8fd1be0b61953ecc7
+# mutation run at b131d538adb0024ab680f2b7237275cb769c51a3
 # child_descriptor_mutations.py: 3 mutants against compiler/chimi
-BASELINE ok  [std_exec -- a_child_holds_only] (87s)
-KILLED       other descriptors stay open [std_exec -- a_child_holds_only] (50s)
-KILLED       standard error is closed too [std_exec -- a_child_holds_only] (47s)
-KILLED       descriptors close before the streams are connected [std_exec -- a_child_holds_only] (50s)
+BASELINE ok  [std_exec -- a_child_holds_only] (96s)
+KILLED       other descriptors stay open [std_exec -- a_child_holds_only] (61s)
+KILLED       standard error is closed too [std_exec -- a_child_holds_only] (64s)
+KILLED       descriptors close before the streams are connected [std_exec -- a_child_holds_only] (60s)
 # result: every mutant killed

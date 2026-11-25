@@ -58,7 +58,8 @@ impl Stdio {
 const PIPE_CHUNK: usize = 65536;
 
 unsafe extern "C" {
-    static environ: *const *const c_char;
+    // `mut`, as the C library may change it; nothing in the runtime does.
+    static mut environ: *const *const c_char;
 }
 
 #[cfg(target_vendor = "apple")]
@@ -434,11 +435,14 @@ fn child_environment(builder: &Builder) -> Vec<*const c_char> {
     if !builder.clear_environment {
         // SAFETY: `environ` is the null-ended array of NUL-terminated
         // entries the C library keeps; nothing changes it during the call.
-        let mut cursor = unsafe { environ };
+        let mut cursor = unsafe { (&raw const environ).read() };
         while let Some(entry) = unsafe { cursor.as_ref() }.copied().filter(|entry| !entry.is_null()) {
-            // SAFETY: each entry is NUL-terminated.
-            let name = entry_name(unsafe { CStr::from_ptr(entry) }.to_bytes());
-            let replaced = builder.variables.iter().any(|set| entry_name(set) == name);
+            // Only a command that sets variables pays for reading names.
+            let replaced = !builder.variables.is_empty() && {
+                // SAFETY: each entry is NUL-terminated.
+                let name = entry_name(unsafe { CStr::from_ptr(entry) }.to_bytes());
+                builder.variables.iter().any(|set| entry_name(set) == name)
+            };
             if !replaced {
                 entries.push(entry);
             }
@@ -642,21 +646,24 @@ struct Spawn {
 }
 
 impl Spawn {
+    /// Both records initialised, or `None`; only a `Spawn` whose records
+    /// both initialised is ever dropped.
     fn new() -> Option<Box<Self>> {
-        // SAFETY: both records are initialised by their init calls before
-        // any other use; zeroed is only their storage.
-        let mut spawn = Box::new(unsafe { core::mem::zeroed::<Spawn>() });
+        // SAFETY: zeroed is only storage; each init call below sets it up.
+        let mut actions: libc::posix_spawn_file_actions_t = unsafe { core::mem::zeroed() };
+        // SAFETY: zeroed is only storage, set up by init below.
+        let mut attributes: libc::posix_spawnattr_t = unsafe { core::mem::zeroed() };
         // SAFETY: init on owned storage.
-        if unsafe { libc::posix_spawn_file_actions_init(&mut spawn.actions) } != 0 {
+        if unsafe { libc::posix_spawn_file_actions_init(&mut actions) } != 0 {
             return None;
         }
         // SAFETY: init on owned storage.
-        if unsafe { libc::posix_spawnattr_init(&mut spawn.attributes) } != 0 {
+        if unsafe { libc::posix_spawnattr_init(&mut attributes) } != 0 {
             // SAFETY: the actions were initialised above.
-            unsafe { libc::posix_spawn_file_actions_destroy(&mut spawn.actions) };
+            unsafe { libc::posix_spawn_file_actions_destroy(&mut actions) };
             return None;
         }
-        Some(spawn)
+        Some(Box::new(Spawn { actions, attributes }))
     }
 }
 

@@ -97,7 +97,7 @@ The recommendation is a split by kind of code, not a rewrite:
 | Part | Language | Size |
 | --- | --- | ---: |
 | `compiler/chimi/runtime/native/runtime.c`, `runtime.h`, `chimi_binding.h` | C | about 14,800 lines |
-| G20 binding shims (`exec`, `net`, `tls`, `postgres`, `sqlite`, `terminal`) | C | about 3,000 lines |
+| G20 binding shims (`tls`, `postgres`, `sqlite`; `exec`, `net` and `terminal` moved to Rust in CHI-309) | C | about 3,000 lines before the move |
 | Vendored SQLite and mbedTLS | C | about 480,000 lines |
 | Scheduler, fibers, channels (`runtime/chimi-fiber`) | Rust | about 9,900 lines of source |
 | Compiler, LSP | Rust | most of the 164,000 Rust lines |

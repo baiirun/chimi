@@ -46,7 +46,7 @@ MUTATIONS = [
         ("      close_pipe(input_pipe)\n      close_pipe(output_pipe)\n      close_pipe(errors_pipe)\n      native_stop(process, Duration.to_milliseconds(command.stop_within))\n      native_release(process)\n",
          "      native_stop(process, Duration.to_milliseconds(command.stop_within))\n      native_release(process)\n      close_pipe(input_pipe)\n      close_pipe(output_pipe)\n      close_pipe(errors_pipe)\n")]),
     exec_test("stop_within is not kept", MODULE, [
-        ("    command.stderr,\n    duration,\n  )", "    command.stderr,\n    command.stop_within,\n  )")]),
+        ("    stop_within: duration,\n", "    stop_within: command.stop_within,\n")]),
     exec_test("a negative stop_within is kept", MODULE, [
         ("  case duration < Duration.zero {", "  case duration < Duration.milliseconds(-1000000) {")]),
     exec_test('the backstop leaves the child', EXEC, [

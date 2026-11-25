@@ -75,8 +75,8 @@ MUTATIONS = [
         ('            Waited::Cancelled => return call.cancelled(),\n            Waited::Closed => return child_closed(call),',
          '            Waited::Cancelled => {}\n            Waited::Closed => return child_closed(call),')]),
     exec_test("a child wait does not wait", RUNTIME, [
-        ("    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid};\n    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;\n",
-         "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid, .status = CHIMI_RESPONSE_OK};\n")]),
+        ("    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid, .channel = resource};\n    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;\n",
+         "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_CHILD_WAIT, .value = pid, .channel = resource, .status = CHIMI_RESPONSE_OK};\n")]),
     exec_test("the child's signal mask is inherited", EXEC, [
         ('            0 => libc::posix_spawnattr_setflags(&mut spawn.attributes, SPAWN_FLAGS as _),',
          '            0 => 0,')]),
@@ -84,7 +84,7 @@ MUTATIONS = [
         ('let flags = if fd == libc::STDIN_FILENO { libc::O_RDONLY } else { libc::O_WRONLY };',
          'let flags = libc::O_WRONLY;')]),
     exec_test("stdin is never connected", MODULE, [
-        ("    stdio,\n    command.stdout,\n    command.stderr,\n  )\n}", "    command.stdin,\n    command.stdout,\n    command.stderr,\n  )\n}")]),
+        ("stdio_code(command.stdin), stdio_code(command.stdout)", "stdio_code(Stdio.Inherit), stdio_code(command.stdout)")]),
     exec_test('a second wait after a cancelled one asks the dead pid', EXEC, [
         ('        self.reaped.set(true);\n',
          '')]),

@@ -54,5 +54,5 @@ MUTATIONS = [
     exec_test("a fake input's Closed reads as Closed", MODULE, [
         ("Failure(fake_failure(error, program, ExecError.BrokenPipe(program)))", "Failure(fake_failure(error, program, ExecError.Closed(program)))")]),
     exec_test("a fake's error output is its output", MODULE, [
-        ("    Some(fake_output(error_output)),", "    Some(fake_output(output)),")]),
+        ("    error_output: Some(fake_output(error_output)),", "    error_output: Some(fake_output(output)),")]),
 ]
