@@ -175,3 +175,30 @@ pub unsafe extern "C" fn chimi_handles_end_v1(slot: u32, out: *mut ChimiHandleRe
     // SAFETY: the caller holds the lock.
     give(unsafe { HANDLES.with(|handles| handles.end(slot)) }, out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The one test of the shared table, so no other test races it.
+    #[test]
+    fn a_handle_gives_its_state_only_for_its_own_kind() {
+        let (kind, other) = (1u8, 2u8);
+        let state = 3u8;
+        let (kind, other) = (&raw const kind as *const c_void, &raw const other as *const c_void);
+        let state = (&raw const state).cast_mut().cast::<c_void>();
+        let (mut slot, mut generation) = (0, 0);
+        // SAFETY: the test is the only caller, so it stands in for the lock.
+        unsafe {
+            assert!(chimi_handles_open_v1(kind, state, &mut slot, &mut generation));
+            assert_eq!(chimi_handles_state_v1(slot, generation, kind), state);
+            assert_eq!(chimi_handles_state_v1(slot, generation, core::ptr::null()), state);
+            assert!(chimi_handles_state_v1(slot, generation, other).is_null());
+            let mut release = ChimiHandleRelease { kind: core::ptr::null(), state: core::ptr::null_mut() };
+            assert_eq!(chimi_handles_close_v1(slot, generation, other, &mut release), CLOSE_NOT_OPEN);
+            assert_eq!(chimi_handles_close_v1(slot, generation, kind, &mut release), CLOSE_RELEASED);
+            assert_eq!((release.kind, release.state), (kind, state));
+            assert!(chimi_handles_state_v1(slot, generation, kind).is_null());
+        }
+    }
+}

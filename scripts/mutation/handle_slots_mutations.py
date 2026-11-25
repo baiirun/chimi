@@ -9,10 +9,11 @@ Results: scripts/mutation/handle_slots_results.txt.
 
 CRATE = "runtime/chimi-runtime"
 HANDLES = "src/handles.rs"
+HANDLES_ABI = "src/handles_abi.rs"
 
 
-def m(name, old, new):
-    return dict(name=name, file=HANDLES, edits=[(old, new)], targets=["lib"], filter="handles::")
+def m(name, old, new, file=HANDLES):
+    return dict(name=name, file=file, edits=[(old, new)], targets=["lib"], filter="handles")
 
 
 MUTATIONS = [
@@ -46,6 +47,10 @@ MUTATIONS = [
     m("the end skips a handle closed while held",
       "            Slot::Closing(live) => (*live, live.generation),\n            Slot::Free { .. } | Slot::Retired => return None,",
       "            Slot::Closing(_) | Slot::Free { .. } | Slot::Retired => return None,"),
+    m("a handle of another type is accepted",
+      "        Some((open, state)) if kind.is_null() || open == Opaque(kind) => state.0.cast_mut(),",
+      "        Some((_, state)) => state.0.cast_mut(),",
+      file=HANDLES_ABI),
     m("a runner is not kept",
       "            live.runner = runner;",
       "            let _ = runner;"),

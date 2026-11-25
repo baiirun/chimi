@@ -4,7 +4,9 @@ binding, pay-for-play linking, and the interpreter's refusal. The handle
 table is in Rust since CHI-309 part 2 (runtime/chimi-runtime/src/handles.rs),
 whose own unit-test mutants are in handle_slots_mutations.py. "Closing twice
 releases twice" was dropped there: with the generation moved on, a second close
-cannot find the slot, so "close does not bump the generation" covers it.
+cannot find the slot, so "close does not bump the generation" covers it, and
+"a handle of another type is accepted" moved there, where a unit test of the
+C view catches it.
 
 Run: scripts/mutation/mutate.py scripts/mutation/binding_mutations.py
 Each mutant runs tests/bindings.rs, the end-to-end conformance.
@@ -20,7 +22,6 @@ NATIVE = "src/backend/native.rs"
 EXEC = "src/execution.rs"
 OPS = "src/operations.rs"
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
-HANDLES_ABI = "../../runtime/chimi-runtime/src/handles_abi.rs"
 
 
 def mutant(name, file, edits, targets=("bindings",), filter=""):
@@ -35,10 +36,6 @@ MUTATIONS = [
     mutant("a handle ignores its generation", HANDLES, [(
         "            Some(Slot::Open(live)) if live.generation == generation => Some(live),",
         "            Some(Slot::Open(live)) => Some(live),",
-    )]),
-    mutant("a handle of another type is accepted", HANDLES_ABI, [(
-        "        Some((open, state)) if kind.is_null() || open == Opaque(kind) => state.0.cast_mut(),",
-        "        Some((_, state)) => state.0.cast_mut(),",
     )]),
     mutant("Err loses its message", C, [(
         "    chimi_binding_make_text(call, message, message ? strlen(message) : 0),\n  };",
