@@ -1197,23 +1197,28 @@ typedef struct {
   pthread_mutex_t lock;
   ChannelEndpoints *slots;
   size_t capacity;
-  /* Written under `lock`; read without it only as the "any handle at all"
-     shortcut of the freers, whose own handle's retain happened before. */
+  /* Written under `lock`. */
   _Atomic size_t count;
 } HandleTable;
 static HandleTable handle_table = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
-/* Set at an execution's first channel or task retain, and kept until the
-   next execution starts: the freers' shortcut below only needs to know that
-   a counted value may exist. */
-static _Atomic bool scheduler_handles_counted;
+/* Set at an execution's first retain of any counted handle, and kept until
+   the next execution starts (channel_endpoints_reset). It is one flag for
+   both tables, so the freers' shortcut below costs one load: every freed
+   allocation pays it. */
+static _Atomic bool handles_counted;
 
 /* False only while no value this execution made can be a counted handle, so
    a freer may skip looking. A freer's own value was retained before it, so
    that retain's store is visible here. */
 static bool handles_live(void) {
-  return atomic_load_explicit(&handle_table.count, memory_order_relaxed) != 0 ||
-         atomic_load_explicit(&scheduler_handles_counted, memory_order_relaxed);
+  return atomic_load_explicit(&handles_counted, memory_order_relaxed);
+}
+
+static void note_handle_counted(void) {
+  /* A load first, so retains after the first do not write the shared line. */
+  if (!atomic_load_explicit(&handles_counted, memory_order_relaxed))
+    atomic_store_explicit(&handles_counted, true, memory_order_relaxed);
 }
 
 static bool is_channel_endpoint(const ChimiValue *value) {
@@ -1315,12 +1320,9 @@ static bool is_native_handle_key(uint64_t key) {
 
 /* Counts one more live value naming `key`. */
 static void counted_handle_retain(uint64_t key) {
-  if (is_native_handle_key(key)) {
-    native_handle_retain(key);
-    return;
-  }
-  atomic_store_explicit(&scheduler_handles_counted, true, memory_order_relaxed);
-  chimi_fiber_handle_retain(key);
+  note_handle_counted();
+  if (is_native_handle_key(key)) native_handle_retain(key);
+  else chimi_fiber_handle_retain(key);
 }
 
 /* Counts one live value naming `key` fewer. A native handle no value names
@@ -1342,7 +1344,7 @@ static void channel_endpoints_reset(void) {
     memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
   handle_table_set_count(0);
   pthread_mutex_unlock(&handle_table.lock);
-  atomic_store_explicit(&scheduler_handles_counted, false, memory_order_relaxed);
+  atomic_store_explicit(&handles_counted, false, memory_order_relaxed);
 }
 
 /* Frees one allocation that its area has already unlinked. */

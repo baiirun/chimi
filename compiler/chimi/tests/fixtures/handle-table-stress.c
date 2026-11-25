@@ -132,7 +132,7 @@ int main(void) {
   for (int index = 0; index < 2; ++index) pthread_join(threads[index], NULL);
   for (uint64_t key = 1; key <= KEYS; ++key)
     CHECK(locked_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
-  CHECK(!handles_live(), "%zu keys left in the table", (size_t)handle_table.count);
+  CHECK(handle_table.count == 0, "%zu keys left in the table", (size_t)handle_table.count);
   CHECK(handle_table.capacity >= 8192, "the table grew to only %zu slots", handle_table.capacity);
   puts("ok");
   return 0;
