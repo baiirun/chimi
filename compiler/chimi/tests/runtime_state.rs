@@ -211,6 +211,7 @@ fn run_thread_fixture(fixture: &str) {
             .arg("-I")
             .arg(manifest.join("../../runtime/chimi-fiber/include"))
             .arg(manifest.join(format!("tests/fixtures/{fixture}.c")))
+            .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
             .arg("-o")
             .arg(&executable)
             .args(["-lm", "-lpthread"])

@@ -18,6 +18,12 @@
 //! stable, hence the nested build; it uses its own target directory so it
 //! never waits on the outer build's lock. When it cannot build, the file is
 //! empty and the compiler falls back to looking beside its executable.
+//!
+//! The Rust runtime archive of a program without the scheduler
+//! (`runtime/chimi-runtime-standalone`) is built the same way, as
+//! `$OUT_DIR/libchimi_runtime_standalone.a`. Every native program links one
+//! of the two Rust archives, so `chimi build` needs this one whenever it
+//! does not link the fiber archive.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -42,6 +48,11 @@ fn main() {
         "../../runtime/chimi-fiber/src",
         "../../runtime/chimi-fiber/include",
         "../../runtime/chimi-fiber/tests/generated_fixture.c",
+        "../../runtime/chimi-runtime/Cargo.toml",
+        "../../runtime/chimi-runtime/src",
+        "../../runtime/chimi-runtime-standalone/Cargo.toml",
+        "../../runtime/chimi-runtime-standalone/src",
+        "../../Cargo.toml",
         "../../Cargo.lock",
     ] {
         println!("cargo:rerun-if-changed={path}");
@@ -63,6 +74,23 @@ fn main() {
         Vec::new()
     };
     std::fs::write(out.join("libchimi_fiber.a"), fiber).expect("write embedded fiber runtime");
+    let standalone = if prebuilds(&target) {
+        prebuild_standalone_runtime(&out, &target).unwrap_or_else(|error| {
+            println!(
+                "cargo:warning=Rust runtime archive not embedded ({error}); chimi build will look for it beside the compiler"
+            );
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    let standalone_path = out.join("libchimi_runtime_standalone.a");
+    std::fs::write(&standalone_path, standalone).expect("write embedded Rust runtime archive");
+    // For the tests that link C fixtures against the runtime by hand.
+    println!(
+        "cargo:rustc-env=CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE={}",
+        standalone_path.display()
+    );
     for (name, process_kernel) in [("libchimi_rt", false), ("libchimi_rt_process", true)] {
         let (bytes, key) = match prebuild(&out, &target, name, process_kernel) {
             Ok(Some(built)) => built,
@@ -245,29 +273,114 @@ fn prebuild_binding(
 }
 
 /// Builds `chimi-fiber`'s static library for `target` in the outer build's
-/// profile and returns its bytes. The nested target directory sits beside the
-/// outer profile's (`<target-dir>/<profile>/chimi-fiber-runtime`), so it stays
-/// warm across builds of the compiler.
+/// profile and returns its bytes.
 fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
+    let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
+    let mut arguments = vec!["build", "-p", "chimi-fiber", "--lib"];
+    if release {
+        arguments.push("--release");
+    }
+    nested_runtime_build(
+        out,
+        target,
+        &arguments,
+        if release { "release" } else { "debug" },
+        "libchimi_fiber.a",
+    )
+}
+
+/// Builds `chimi-runtime-standalone` as a static library for `target`, always
+/// optimized and aborting on panic (the `runtime-standalone` profile), and
+/// returns the bytes of an archive holding only its own object.
+///
+/// Rust's archive also carries `compiler_builtins`: Rust's copies of the C
+/// toolchain's helper routines (`__modti3` and the like) and of libm. Linked
+/// before the toolchain's own, they would replace them for `runtime.c` too,
+/// and they refer to Rust's unwinding personality, which a `no_std` archive
+/// lacks. With LTO everything the Rust code calls is in its one object,
+/// which needs nothing from them, so they are left out and the toolchain's
+/// libraries serve both languages.
+fn prebuild_standalone_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
+    let full = nested_runtime_build(
+        out,
+        target,
+        &[
+            "rustc",
+            "-p",
+            "chimi-runtime-standalone",
+            "--lib",
+            "--profile",
+            "runtime-standalone",
+            "--crate-type",
+            "staticlib",
+        ],
+        "runtime-standalone",
+        "libchimi_runtime_standalone.a",
+    )?;
+    let directory = out.join("runtime-standalone-objects");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let full_path = directory.join("full.a");
+    std::fs::write(&full_path, full).map_err(|error| format!("write full.a: {error}"))?;
+    let listing = Command::new("ar")
+        .arg("t")
+        .arg(&full_path)
+        .output()
+        .map_err(|error| format!("run ar t: {error}"))?;
+    if !listing.status.success() {
+        return Err(format!(
+            "ar t: {}",
+            String::from_utf8_lossy(&listing.stderr)
+        ));
+    }
+    let members = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter(|name| name.starts_with("chimi_runtime_standalone-"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if members.len() != 1 {
+        return Err(format!(
+            "expected one chimi_runtime_standalone object in the archive, found {members:?}"
+        ));
+    }
+    run(Command::new("ar")
+        .current_dir(&directory)
+        .arg("x")
+        .arg("full.a")
+        .args(&members))?;
+    let archive = directory.join("libchimi_runtime_standalone.a");
+    run(Command::new("ar")
+        .current_dir(&directory)
+        .arg("rcs")
+        .arg(&archive)
+        .args(&members))?;
+    std::fs::read(&archive).map_err(|error| format!("read {}: {error}", archive.display()))
+}
+
+/// Runs a nested `cargo` with `arguments` for `target` and returns the bytes
+/// of `archive` from its `profile_directory`. The nested target directory
+/// sits beside the outer profile's (`<target-dir>/<profile>/chimi-fiber-runtime`),
+/// so it stays warm across builds of the compiler.
+fn nested_runtime_build(
+    out: &Path,
+    target: &str,
+    arguments: &[&str],
+    profile_directory_name: &str,
+    archive: &str,
+) -> Result<Vec<u8>, String> {
     let profile_directory = out
         .ancestors()
         .nth(3)
         .ok_or_else(|| format!("OUT_DIR {} has no profile directory", out.display()))?;
     let target_directory = profile_directory.join("chimi-fiber-runtime");
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
         .current_dir(&workspace)
-        .args([
-            "build",
-            "--quiet",
-            "--offline",
-            "-p",
-            "chimi-fiber",
-            "--lib",
-        ])
+        .args(arguments)
+        .args(["--quiet", "--offline"])
         .arg("--target")
         .arg(target)
         .arg("--target-dir")
@@ -278,14 +391,11 @@ fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
     if workspace.join("Cargo.lock").is_file() {
         command.arg("--locked");
     }
-    if release {
-        command.arg("--release");
-    }
     run(&mut command)?;
     let archive = target_directory
         .join(target)
-        .join(if release { "release" } else { "debug" })
-        .join("libchimi_fiber.a");
+        .join(profile_directory_name)
+        .join(archive);
     std::fs::read(&archive).map_err(|error| format!("read {}: {error}", archive.display()))
 }
 

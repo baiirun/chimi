@@ -366,6 +366,63 @@ fn a_relocated_compiler_builds_a_program_that_starts_tasks() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// CHI-306: a program without tasks links the Rust runtime archive the
+/// compiler carries, here through `Json.decode`, whose decoder is Rust, from
+/// a compiler away from its Cargo target directory.
+#[test]
+fn a_relocated_compiler_builds_a_program_that_decodes_json_without_tasks() {
+    let scratch = scratch_directory("relocated-compiler-json");
+    let compiler = scratch.join("bin").join("chimi");
+    std::fs::create_dir_all(compiler.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_chimi"), &compiler).unwrap();
+    std::fs::write(
+        scratch.join("decode.chimi"),
+        concat!(
+            "import std/json as Json.{DecodeError}\n",
+            "import std/text as Text\n",
+            "fn decoded(text: Text) -> Text {\n",
+            "  case Json.decode(text) {\n",
+            "    Success(value) -> Json.encode(value)\n",
+            "    Failure(DecodeError.InvalidJson(message, _)) -> message\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  Text.append(decoded(\"{\\\"b\\\": [1, \\\"\\\\u00e9\\\"], \\\"a\\\": null}\"), decoded(\"[1,]\"))\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(&compiler)
+        .current_dir(&scratch)
+        .env_remove("CHIMI_STANDALONE_RUNTIME_ARCHIVE")
+        .args(["build", "decode.chimi", "-o", "decode"])
+        .output()
+        .expect("build with the relocated compiler");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let report = String::from_utf8_lossy(&build.stdout);
+    assert!(
+        report.contains("\"fiber_runtime_archive\":null"),
+        "the program should not need the fiber runtime: {report}"
+    );
+    let outcome = scratch.join("outcome.jsonl");
+    let run = Command::new(scratch.join("decode"))
+        .arg("--chimi-runner")
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--")
+        .output()
+        .expect("run the program");
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(
+        std::fs::read_to_string(outcome).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":\"{\\\"a\\\":null,\\\"b\\\":[1,\\\"\u{e9}\\\"]}expected a JSON value\"}\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     let scratch = scratch_directory("build");
@@ -4275,6 +4332,7 @@ fn native_list_is_a_persistent_vector() {
             "{}/tests/fixtures/native-list-runtime.c",
             env!("CARGO_MANIFEST_DIR")
         ))
+        .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
         .arg("-o")
         .arg(&executable)
         // glibc keeps floor, fmod, and the rest of libm out of libc.
@@ -4316,6 +4374,7 @@ fn native_map_removal_keeps_the_tree_balanced() {
             "{}/tests/fixtures/native-map-runtime.c",
             env!("CARGO_MANIFEST_DIR")
         ))
+        .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
         .arg("-o")
         .arg(&executable)
         // glibc keeps floor, fmod, and the rest of libm out of libc.
@@ -4364,6 +4423,7 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
                 "{}/tests/fixtures/native-heap.c",
                 env!("CARGO_MANIFEST_DIR")
             ))
+            .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
             .arg("-o")
             .arg(&executable)
             // glibc keeps floor, fmod, and the rest of libm out of libc.
@@ -4425,6 +4485,7 @@ fn native_structural_comparison_handles_deep_nesting_and_exact_json_numbers() {
             "{}/tests/fixtures/native-structural-compare.c",
             env!("CARGO_MANIFEST_DIR")
         ))
+        .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
         .arg("-o")
         .arg(&executable)
         // glibc keeps floor, fmod, and the rest of libm out of libc.

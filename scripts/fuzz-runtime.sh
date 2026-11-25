@@ -11,7 +11,9 @@
 #               (default: a new temporary directory, kept when the run fails)
 #
 # Needs clang with libFuzzer (on Ubuntu, the libclang-rt-<version>-dev
-# package). Exit status: 0 when the run found nothing, 1 when it found a crash
+# package) and cargo: the parsers that moved to Rust (CHI-305) are built from
+# runtime/chimi-runtime with libFuzzer's coverage instrumentation, so the
+# fuzzer also steers by the Rust code's branches. Exit status: 0 when the run found nothing, 1 when it found a crash
 # or a broken invariant (the input is saved as WORK_DIR/crash-*), 2 on bad
 # usage or a failed build.
 #
@@ -33,14 +35,31 @@ crate="$repo/compiler/chimi"
 work=${3:-$(mktemp -d "${TMPDIR:-/tmp}/chimi-fuzz-$target.XXXXXX")} || exit 2
 mkdir -p "$work/corpus" || exit 2
 
+# The Rust runtime archive, as build.rs makes it (only its own object, so the
+# C toolchain's helpers serve runtime.c), instrumented as cargo-fuzz does.
+coverage="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4"
+coverage="$coverage -Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
+coverage="$coverage -Cllvm-args=-sanitizer-coverage-pc-table"
+coverage="$coverage -Cllvm-args=-sanitizer-coverage-trace-compares"
+RUSTFLAGS=$coverage cargo rustc --quiet --manifest-path "$repo/Cargo.toml" \
+  -p chimi-runtime-standalone --lib --profile runtime-standalone --crate-type staticlib \
+  --target-dir "$work/rust" || { echo "fuzz-runtime: Rust runtime build failed" >&2; exit 2; }
+mkdir -p "$work/rust/objects" || exit 2
+member=$(cd "$work/rust/objects" && ar t ../runtime-standalone/libchimi_runtime_standalone.a |
+  grep '^chimi_runtime_standalone-') || exit 2
+(cd "$work/rust/objects" && rm -f libchimi_runtime_standalone.a &&
+  ar x ../runtime-standalone/libchimi_runtime_standalone.a "$member" &&
+  ar rcs libchimi_runtime_standalone.a "$member") || exit 2
+rust_runtime="$work/rust/objects/libchimi_runtime_standalone.a"
+
 includes="-I $crate/runtime/native -I $repo/runtime/chimi-fiber/include"
 sanitizers="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
 # shellcheck disable=SC2086 # the flag lists split on purpose
 clang -std=c11 -O1 -g -w $sanitizers $includes "$crate/tests/fuzz/runtime-fuzz.c" \
-  -o "$work/runtime-fuzz" -lm || { echo "fuzz-runtime: replay driver build failed" >&2; exit 2; }
+  "$rust_runtime" -o "$work/runtime-fuzz" -lm || { echo "fuzz-runtime: replay driver build failed" >&2; exit 2; }
 # shellcheck disable=SC2086
 clang -std=c11 -O1 -g -w -fsanitize=fuzzer $sanitizers -DCHIMI_FUZZ_LIBFUZZER $includes \
-  "$crate/tests/fuzz/runtime-fuzz.c" -o "$work/runtime-fuzz-libfuzzer" -lm ||
+  "$crate/tests/fuzz/runtime-fuzz.c" "$rust_runtime" -o "$work/runtime-fuzz-libfuzzer" -lm ||
   { echo "fuzz-runtime: libFuzzer build failed (is libFuzzer installed?)" >&2; exit 2; }
 
 export ASAN_OPTIONS=detect_leaks=0

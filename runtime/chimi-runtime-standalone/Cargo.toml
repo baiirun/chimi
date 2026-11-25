@@ -1,0 +1,23 @@
+# The Rust runtime archive for a native program that does not link the
+# scheduler: `chimi-runtime`'s leaves, with a panic handler and a global
+# allocator, and nothing from `std`. A program that links the scheduler gets
+# the same leaves from `chimi-fiber`'s archive instead, so every program links
+# exactly one Rust archive.
+#
+# It is a library, not a `staticlib`, so `cargo test --workspace` can build it
+# in the default profiles, which unwind. `compiler/chimi/build.rs` turns it
+# into the archive with `cargo rustc --crate-type staticlib --profile
+# runtime-standalone`, which aborts on panic as a `no_std` archive must.
+[package]
+name = "chimi-runtime-standalone"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+chimi-runtime = { path = "../chimi-runtime" }

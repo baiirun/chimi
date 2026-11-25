@@ -345,6 +345,16 @@ fn build_to_path(
         std::fs::copy(bundled_fiber_archive()?, path)
             .map_err(|error| format!("materialize bundled fiber runtime: {error}"))?;
     }
+    // Every program links one Rust archive: the fiber one carries the
+    // runtime's Rust leaves, so only a program without it needs this one.
+    let standalone_runtime_archive_path = if fiber_runtime_archive_path.is_none() {
+        let path = output_directory.join("libchimi_runtime_standalone.a");
+        std::fs::copy(bundled_standalone_runtime_archive()?, &path)
+            .map_err(|error| format!("materialize bundled Rust runtime: {error}"))?;
+        Some(path)
+    } else {
+        None
+    };
     let started = Instant::now();
     let runtime_abi = RUNTIME_ABI_VERSION.to_string();
     let test_build = test_runtime_build()?;
@@ -442,6 +452,9 @@ fn build_to_path(
         for library in &package.system_libraries {
             link.arg(format!("-l{library}"));
         }
+    }
+    if let Some(path) = &standalone_runtime_archive_path {
+        link.arg(path);
     }
     if let Some(path) = &fiber_runtime_archive_path {
         if cfg!(target_os = "macos") {
@@ -663,20 +676,25 @@ fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static 
 // or the compiler was built without the native backend.
 const EMBEDDED_FIBER_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_fiber.a"));
 
+// Written by `build.rs` from `runtime/chimi-runtime-standalone`; empty when
+// that nested build failed or the compiler has no native backend.
+const EMBEDDED_STANDALONE_RUNTIME_ARCHIVE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_runtime_standalone.a"));
+
 /// The fiber runtime archive to link: `CHIMI_FIBER_RUNTIME_ARCHIVE` when set,
 /// else the archive embedded in the compiler (written once to the temporary
 /// directory under a name keyed by its contents), else the newest one beside
 /// the compiler in its Cargo target directory.
 pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("CHIMI_FIBER_RUNTIME_ARCHIVE") {
-        let path = PathBuf::from(path);
-        return path
-            .is_file()
-            .then_some(path)
-            .ok_or_else(|| "CHIMI_FIBER_RUNTIME_ARCHIVE does not name a file".to_owned());
+    if let Some(path) = archive_override("CHIMI_FIBER_RUNTIME_ARCHIVE")? {
+        return Ok(path);
     }
     if !EMBEDDED_FIBER_ARCHIVE.is_empty() {
-        return materialize_embedded_fiber_archive(&std::env::temp_dir());
+        return materialize_embedded_archive(
+            &std::env::temp_dir(),
+            &format!("chimi-fiber-{FIBER_RUNTIME_ABI_VERSION}"),
+            EMBEDDED_FIBER_ARCHIVE,
+        );
     }
     let executable = std::env::current_exe()
         .map_err(|error| format!("locate compiler executable for fiber runtime: {error}"))?;
@@ -727,36 +745,66 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
     })
 }
 
-/// Writes the embedded fiber archive to `directory` as
-/// `chimi-fiber-<abi>-<hash>.a` unless a file of that name is already there,
-/// and returns its path. The name is keyed by the archive's bytes, so a
-/// present file holds them; a new one is written to a name no other write
-/// uses and renamed into place, so a concurrent build, in this process or
-/// another, never links a half-written archive.
-fn materialize_embedded_fiber_archive(directory: &Path) -> Result<PathBuf, String> {
-    let hash = blake3::hash(EMBEDDED_FIBER_ARCHIVE).to_hex();
-    let path = directory.join(format!(
-        "chimi-fiber-{FIBER_RUNTIME_ABI_VERSION}-{}.a",
-        &hash[..16]
-    ));
+/// The Rust runtime archive that a program without the fiber runtime links:
+/// `CHIMI_STANDALONE_RUNTIME_ARCHIVE` when set, else the one embedded in the
+/// compiler. Unlike the fiber archive, no ordinary Cargo build of the
+/// workspace produces it, so there is nothing to look for beside the compiler.
+pub(crate) fn bundled_standalone_runtime_archive() -> Result<PathBuf, String> {
+    if let Some(path) = archive_override("CHIMI_STANDALONE_RUNTIME_ARCHIVE")? {
+        return Ok(path);
+    }
+    if EMBEDDED_STANDALONE_RUNTIME_ARCHIVE.is_empty() {
+        return Err(
+            "the Chimi Rust runtime archive was not built into this compiler; set CHIMI_STANDALONE_RUNTIME_ARCHIVE"
+                .to_owned(),
+        );
+    }
+    materialize_embedded_archive(
+        &std::env::temp_dir(),
+        "chimi-runtime-standalone",
+        EMBEDDED_STANDALONE_RUNTIME_ARCHIVE,
+    )
+}
+
+fn archive_override(variable: &str) -> Result<Option<PathBuf>, String> {
+    let Some(path) = std::env::var_os(variable) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    if path.is_file() {
+        Ok(Some(path))
+    } else {
+        Err(format!("{variable} does not name a file"))
+    }
+}
+
+/// Writes `bytes` to `directory` as `<stem>-<hash>.a` unless a file of that
+/// name is already there, and returns its path. The name is keyed by the
+/// archive's bytes, so a present file holds them; a new one is written to a
+/// name no other write uses and renamed into place, so a concurrent build, in
+/// this process or another, never links a half-written archive.
+fn materialize_embedded_archive(
+    directory: &Path,
+    stem: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let hash = blake3::hash(bytes).to_hex();
+    let path = directory.join(format!("{stem}-{}.a", &hash[..16]));
     if path.is_file() {
         return Ok(path);
     }
     static WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let partial = directory.join(format!(
-        "chimi-fiber-{}-{}-{}.partial",
+        "{stem}-{}-{}-{}.partial",
         &hash[..16],
         std::process::id(),
         WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::write(&partial, EMBEDDED_FIBER_ARCHIVE)
+    std::fs::write(&partial, bytes)
         .and_then(|()| std::fs::rename(&partial, &path))
         .map_err(|error| {
             let _ = std::fs::remove_file(&partial);
-            format!(
-                "write embedded fiber runtime to {}: {error}",
-                path.display()
-            )
+            format!("write embedded runtime archive to {}: {error}", path.display())
         })?;
     Ok(path)
 }
