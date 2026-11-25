@@ -1,0 +1,15 @@
+# mutation run at 1e279bddc6fa4c50360c4d0f81cc5a69a9190eb3
+# binding_fuzz_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [runtime_fuzz -- binding] (111s)
+BASELINE ok  [tls -- the_engine_reads_past_records_without_data] (2s)
+KILLED       the transport hands mbedTLS more bytes than it holds [runtime_fuzz -- binding] (62s)
+KILLED       compacting the incoming buffer drops a byte [runtime_fuzz -- binding] (61s)
+KILLED       close_notify reads as missing input [runtime_fuzz -- binding] (60s)
+KILLED       the roots check counts only the first root [runtime_fuzz -- binding] (61s)
+KILLED       SCRAM derives the server key with the client's label [runtime_fuzz -- binding] (62s)
+KILLED       SCRAM accepts an iteration count of zero [runtime_fuzz -- binding] (62s)
+KILLED       prepare ignores text after a NUL [runtime_fuzz -- binding] (63s)
+KILLED       prepare takes an error after the first statement as blank [runtime_fuzz -- binding] (61s)
+KILLED       working through buffered messages counts as idle [tls -- the_engine_reads_past_records_without_data] (56s)
+# result: every mutant killed (9 of 9)
+# "a read stops at the first record without data" (idle > 4 to idle > 0) survived at this revision; it changes nothing observable, so the list replaced it with the mutant above, run with --only at the next revision.
