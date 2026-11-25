@@ -22,6 +22,11 @@
   "errors"
   "needs"
   "using"
+  "type"
+  "native"
+  "process"
+  "name"
+  "test"
 ] @keyword
 
 [
@@ -42,8 +47,12 @@
 (struct_declaration name: (identifier) @type)
 (interface_declaration name: (identifier) @type)
 (enum_declaration name: (identifier) @type)
+(type_alias_declaration name: (identifier) @type)
+(native_type_declaration name: (identifier) @type)
 (variant name: (identifier) @constructor)
 (named_type module: (identifier) @namespace)
+(qualified_type_name module: (identifier) @namespace)
+(requirement_group_name module: (identifier) @namespace)
 
 ; Modules
 
@@ -54,6 +63,7 @@
 ; Functions
 
 (function_declaration name: (identifier) @function)
+(native_function_declaration name: (identifier) @function)
 (call_expression function: (identifier) @function)
 (call_expression
   function: (member_expression member: (identifier) @function))
@@ -66,12 +76,14 @@
   (#match? @constructor "^[A-Z]"))
 (let_binding name: (identifier) @variable)
 (const_declaration name: (identifier) @constant)
+(process_name_declaration name: (identifier) @constant)
 (loop_expression state: (identifier) @variable)
 (typed_pattern name: (identifier) @variable)
 (rest_pattern name: (identifier) @variable)
 (alias_pattern alias: (identifier) @variable)
 (field name: (identifier) @property)
 (record_field name: (identifier) @property)
+(field_pattern name: (identifier) @property)
 (argument name: (identifier) @property)
 (member_expression member: (identifier) @property)
 
@@ -105,6 +117,7 @@
   "..="
   "|>"
   "->"
+  "|"
 ] @operator
 
 ["(" ")" "[" "]" "{" "}"] @punctuation.bracket

@@ -13,6 +13,12 @@ tree-sitter generate   # regenerates src/, which Zed builds and must be committe
 tree-sitter test       # test/corpus
 ```
 
+Use tree-sitter CLI 0.25.6 (`npm install --global tree-sitter-cli@0.25.6`), the
+version CI uses; another version generates a different `src/parser.c`.
+`scripts/check-grammar.sh` runs what CI runs: it checks that `src/` matches
+`grammar.js`, runs the corpus, and parses every `.chimi` file in the
+repository that the compiler accepts. It needs `target/debug/chimi` built.
+
 Highlight, bracket, indent, and outline queries live in
 `zed-chimi/languages/chimi/` because they use Zed's capture names.
 
@@ -24,8 +30,9 @@ Highlight, bracket, indent, and outline queries live in
    visible to it. For local development set `repository` to
    `file:///<path to this checkout>`.
 3. In Zed, run `zed: install dev extension` and choose `editors/zed-chimi`.
-4. Configure projects, because Chimi has no manifest yet. In a project's
-   `.zed/settings.json`:
+4. A package with a `chimi.toml` is found from the files you open, with no
+   setup. For a project without a manifest, name its root and entry module in
+   the project's `.zed/settings.json`:
 
    ```json
    {

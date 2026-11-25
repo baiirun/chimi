@@ -3,9 +3,14 @@
  *
  * The compiler's lossless parser in `compiler/chimi/src/syntax.rs` is the
  * authority. This grammar is deliberately more permissive: line breaks are
- * whitespace here, so a call or `break` value on the following line parses
- * differently than in the compiler. That only affects highlighting of code the
- * compiler already reports.
+ * whitespace here, so a few constructs that span lines parse differently than
+ * in the compiler. That only affects highlighting of code the compiler already
+ * reports. A call's `(` and a struct literal's `{` must be on the same line
+ * as the name before them (see `sameLine`), so a bracket on the next line
+ * still starts a new case arm or block item, as in the compiler.
+ *
+ * scripts/check-grammar.sh, run in CI, checks that every .chimi file the
+ * compiler parses also parses here.
  */
 
 // Loosest to tightest, matching the operator table in
@@ -36,6 +41,24 @@ module.exports = grammar({
 
   supertypes: ($) => [$._expression, $._type, $._pattern],
 
+  // The compiler ends an expression at a line break; this grammar cannot see
+  // line breaks, so a case arm's body and a bare `break` can be read as
+  // continuing onto the next arm, as in `(0, code) -> code` followed by
+  // `-2 -> other`. These names are left unordered against the operators, so
+  // the generator keeps both readings (the conflicts below) and the reading
+  // that fails on the next `->` is dropped.
+  precedences: (_) => [['case_arm'], ['break_value']],
+
+  // The two struct conflicts keep a name both as a value and as the start of
+  // a struct literal until the next token decides, which is how
+  // `case subject {` keeps its arms.
+  conflicts: ($) => [
+    [$.break_expression],
+    [$.binary_expression, $.case_arm],
+    [$._expression, $.struct_expression],
+    [$._expression, $.qualified_type_name],
+  ],
+
   rules: {
     source_file: ($) => repeat($._item),
 
@@ -45,8 +68,14 @@ module.exports = grammar({
         $.struct_declaration,
         $.enum_declaration,
         $.interface_declaration,
+        $.type_alias_declaration,
+        $.native_type_declaration,
+        $.needs_group_declaration,
+        $.process_name_declaration,
         $.function_declaration,
+        $.native_function_declaration,
         $.const_declaration,
+        $.test_declaration,
         $.let_binding,
         $._expression,
       ),
@@ -58,10 +87,14 @@ module.exports = grammar({
         'import',
         field('path', $.module_path),
         choice(
-          seq('as', field('alias', $.identifier)),
-          seq('.', '{', commaSep1(field('member', $.identifier)), '}'),
+          seq('as', field('alias', $.identifier), optional($._import_members)),
+          $._import_members,
         ),
       ),
+
+    // `import std/clock as Clock.{Clock, Instant}` binds the alias and the
+    // members at once.
+    _import_members: ($) => seq('.', '{', commaSep1(field('member', $.identifier)), '}'),
 
     module_path: ($) => seq($.identifier, repeat(seq('/', $.identifier))),
 
@@ -106,6 +139,50 @@ module.exports = grammar({
         optional(seq('(', commaSep($.field), ')')),
       ),
 
+    // `type`, `native`, `process`, `name` and `test` are contextual words in the
+    // compiler. Tree-sitter's keyword extraction reads each as a keyword only
+    // where the grammar allows it, so `type` stays an ordinary name elsewhere.
+    type_alias_declaration: ($) =>
+      seq(
+        optional($.visibility),
+        'type',
+        field('name', $.identifier),
+        optional($.generic_parameters),
+        '=',
+        field('type', $._type),
+      ),
+
+    native_type_declaration: ($) =>
+      seq(
+        optional($.visibility),
+        'native',
+        'type',
+        field('name', $.identifier),
+        optional($.generic_parameters),
+      ),
+
+    // `pub needs Store { db: Database, clock: Clock }` names a group of needs.
+    needs_group_declaration: ($) =>
+      seq(
+        optional($.visibility),
+        'needs',
+        field('name', alias($.identifier, $.type_identifier)),
+        $.requirement_record,
+      ),
+
+    process_name_declaration: ($) =>
+      seq(
+        optional($.visibility),
+        'process',
+        'name',
+        field('name', $.identifier),
+        ':',
+        field('message', $._type),
+      ),
+
+    test_declaration: ($) =>
+      seq(optional($.visibility), 'test', field('name', $.text), field('body', $.block)),
+
     generic_parameters: ($) =>
       seq('<', commaSep1(field('name', $.identifier)), '>'),
 
@@ -122,6 +199,29 @@ module.exports = grammar({
         optional($.requirement_clause),
         optional(seq('if', field('guard', $._expression))),
         field('body', $.block),
+      ),
+
+    // A native function has no body; only a native function declares an
+    // `errors` row, since ordinary functions' failures are inferred.
+    native_function_declaration: ($) =>
+      prec.right(
+        seq(
+          optional($.visibility),
+          'native',
+          'fn',
+          field('name', $.identifier),
+          optional($.generic_parameters),
+          field('parameters', $.parameters),
+          optional(field('return_type', $.return_type)),
+          optional($.errors_clause),
+          optional($.requirement_clause),
+        ),
+      ),
+
+    // `+` is the old spelling of `|` in a failure row; the formatter rewrites it.
+    errors_clause: ($) =>
+      prec.right(
+        seq('errors', field('errors', $._type), repeat(seq('+', field('errors', $._type)))),
       ),
 
     const_declaration: ($) =>
@@ -151,13 +251,36 @@ module.exports = grammar({
         ),
       ),
 
-    _requirement: ($) => choice(alias($.identifier, $.type_identifier), $.requirement_record),
+    _requirement: ($) =>
+      choice(
+        alias($.identifier, $.type_identifier),
+        $.requirement_group_name,
+        $.requirement_record,
+      ),
+
+    // `Store.Needs` names another module's needs group.
+    requirement_group_name: ($) =>
+      seq(field('module', $.identifier), '.', field('name', alias($.identifier, $.type_identifier))),
 
     requirement_record: ($) => seq('{', commaSep1($.field), '}'),
 
     // Types
 
-    _type: ($) => choice($.named_type, $.function_type, $.tuple_type, $.void_type),
+    _type: ($) =>
+      choice(
+        $.named_type,
+        $.function_type,
+        $.tuple_type,
+        $.record_type,
+        $.union_type,
+        $.void_type,
+      ),
+
+    // `{ name: Text, age: Int }`, as in a type alias.
+    record_type: ($) => seq('{', repeat1(seq($.field, optional(','))), '}'),
+
+    // `HttpError | JobError`: a failure set.
+    union_type: ($) => prec.left(1, seq($._type, '|', $._type)),
 
     void_type: (_) => 'Void',
 
@@ -179,12 +302,13 @@ module.exports = grammar({
       prec.right(
         seq(
           'fn',
+          optional($.generic_parameters),
           '(',
           commaSep($._type),
           ')',
           '->',
           field('return_type', $._type),
-          optional(seq('errors', field('errors', $._type))),
+          optional($.errors_clause),
           optional($.requirement_clause),
         ),
       ),
@@ -219,6 +343,7 @@ module.exports = grammar({
         $.tuple_expression,
         $.list_expression,
         $.record_expression,
+        $.struct_expression,
         $.block,
         $.case_expression,
         $.loop_expression,
@@ -229,7 +354,7 @@ module.exports = grammar({
     using_expression: ($) =>
       prec.left(
         PREC.using,
-        seq(field('operation', $._expression), 'using', field('providers', $.record_expression)),
+        seq(field('operation', $._expression), 'using', field('providers', $._expression)),
       ),
 
     pipeline_expression: ($) =>
@@ -285,7 +410,9 @@ module.exports = grammar({
     call_expression: ($) =>
       prec(PREC.postfix, seq(field('function', $._expression), field('arguments', $.arguments))),
 
-    arguments: ($) => seq('(', commaSep($.argument), ')'),
+    // A `(` on the next line starts a new item, such as a case arm's tuple
+    // pattern, not a call.
+    arguments: ($) => seq(sameLine('('), commaSep($.argument), ')'),
 
     argument: ($) =>
       seq(optional(seq(field('name', $.identifier), ':')), field('value', $._expression)),
@@ -307,10 +434,36 @@ module.exports = grammar({
     // A record update puts `..base` first: `{ ..config, jobs: jobs }`.
     record_expression: ($) =>
       seq(
-        '{',
+        openBrace(),
         choice(
           seq($.record_spread, repeat(seq(',', $.record_field)), optional(',')),
           commaSep1($.record_field),
+        ),
+        '}',
+      ),
+
+    // `Point { x: 1, y: 2 }`, `Config { ..defaults, jobs: 4 }` or `Marker {}`:
+    // a struct built by field name. Calls and enum variants stay positional.
+    // The name is read as a type only while braces with fields can follow, so
+    // `case subject {` keeps its arms: the struct reading fails at the first
+    // arm and the parser drops it.
+    struct_expression: ($) =>
+      seq(
+        field('name', choice(alias($.identifier, $.type_identifier), $.qualified_type_name)),
+        field('fields', $.struct_fields),
+      ),
+
+    qualified_type_name: ($) =>
+      seq(field('module', $.identifier), '.', field('name', alias($.identifier, $.type_identifier))),
+
+    struct_fields: ($) =>
+      seq(
+        sameLine('{'),
+        optional(
+          choice(
+            seq($.record_spread, repeat(seq(',', $.record_field)), optional(',')),
+            commaSep1($.record_field),
+          ),
         ),
         '}',
       ),
@@ -320,20 +473,23 @@ module.exports = grammar({
     record_field: ($) =>
       seq(field('name', $.identifier), ':', field('value', $._expression)),
 
-    block: ($) => seq('{', repeat1(choice($.let_binding, $._expression)), '}'),
+    // A block may follow a name on the same line, as in `loop state = next {`,
+    // so it takes the same-line `{` too.
+    block: ($) => seq(openBrace(), repeat1(choice($.let_binding, $._expression)), '}'),
 
     case_expression: ($) =>
       seq(
         'case',
         field('subject', $._expression),
         repeat(seq(',', field('subject', $._expression))),
-        '{',
+        openBrace(),
         repeat($.case_arm),
         '}',
       ),
 
     case_arm: ($) =>
-      prec.right(
+      prec(
+        'case_arm',
         seq(
           commaSep1(field('pattern', $._pattern)),
           optional(seq('if', field('guard', $._expression))),
@@ -353,6 +509,7 @@ module.exports = grammar({
         $.boolean,
         $.void_value,
         $.constructor_pattern,
+        $.struct_pattern,
         $.typed_pattern,
         $.tuple_pattern,
         $.list_pattern,
@@ -368,6 +525,17 @@ module.exports = grammar({
           optional(seq('(', commaSep($._pattern), ')')),
         ),
       ),
+
+    // `Point { x: 0, .. }` matches a struct's fields by name; `..` ignores the rest.
+    struct_pattern: ($) =>
+      seq(
+        sep1($.identifier, '.'),
+        '{',
+        commaSep(choice($.field_pattern, $.rest_pattern)),
+        '}',
+      ),
+
+    field_pattern: ($) => seq(field('name', $.identifier), ':', field('pattern', $._pattern)),
 
     negative_literal: ($) => seq('-', choice($.integer, $.float)),
 
@@ -396,7 +564,13 @@ module.exports = grammar({
         field('body', $.block),
       ),
 
-    break_expression: ($) => prec.right(seq('break', optional(field('value', $._expression)))),
+    // A bare `break` may end a case arm, so a name on the next line can start
+    // the following arm; both readings are kept until one fails.
+    break_expression: ($) =>
+      choice(
+        prec('break_value', 'break'),
+        prec.right(seq('break', field('value', $._expression))),
+      ),
 
     function_expression: ($) =>
       seq(
@@ -464,4 +638,20 @@ function plainState($) {
 
 function sep1(rule, separator) {
   return seq(rule, repeat(seq(separator, rule)));
+}
+
+// `bracket` on the same line as the token before it, with only spaces or tabs
+// between. The compiler ends an expression at a line break, so a `(` or `{` on
+// the next line starts a new item instead of a call or a struct literal. The
+// node is still named after the bracket, so bracket queries match it.
+function sameLine(bracket) {
+  const escaped = bracket.replace(/[(){}[\]]/g, (c) => '\\' + c);
+  return alias(token.immediate(prec(1, new RegExp('[ \\t]*' + escaped))), bracket);
+}
+
+// A `{` that opens a block or case body, written either way. The lexer reads a
+// same-line `{` whenever a struct literal could start, so these bodies accept
+// it as well; the parser keeps both readings until one fails.
+function openBrace() {
+  return choice('{', sameLine('{'));
 }

@@ -5,6 +5,9 @@
 //! Every native run uses the virtual clock, so a select that would wait on
 //! the wall clock times the suite out instead of passing slowly.
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use chimi::source::SourceSnapshot;
 use chimi::{Compiler, ProjectSource};
 use std::path::{Path, PathBuf};
@@ -839,11 +842,12 @@ fn the_interpreter_reports_select_as_native_only() {
         ),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run the reference interpreter");
+    let output = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&path),
+    )
+    .expect("run the reference interpreter");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let outcome = stdout.lines().last().unwrap_or_default();
     assert!(

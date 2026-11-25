@@ -9,6 +9,15 @@
 //! built here (feature off, cross-compiling, no `cc`, a compile error), both
 //! files are empty and `chimi build` compiles the runtime into its per-project
 //! cache as before. This script never fails the cargo build.
+//!
+//! It also builds the Rust fiber runtime's static library
+//! (`runtime/chimi-fiber`) with a nested `cargo build` and writes it as
+//! `$OUT_DIR/libchimi_fiber.a`, which the compiler embeds, so an installed
+//! `chimi` links process programs without a Cargo target directory beside it
+//! (CHI-314). Cargo cannot hand a dependency's staticlib to a build script on
+//! stable, hence the nested build; it uses its own target directory so it
+//! never waits on the outer build's lock. When it cannot build, the file is
+//! empty and the compiler falls back to looking beside its executable.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,6 +37,12 @@ fn main() {
         RUNTIME_HEADER,
         BINDING_HEADER,
         FIBER_HEADER,
+        "../../runtime/chimi-fiber/Cargo.toml",
+        "../../runtime/chimi-fiber/build.rs",
+        "../../runtime/chimi-fiber/src",
+        "../../runtime/chimi-fiber/include",
+        "../../runtime/chimi-fiber/tests/generated_fixture.c",
+        "../../Cargo.lock",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -37,6 +52,17 @@ fn main() {
     println!("cargo:rustc-env=CHIMI_RUNTIME_TARGET={target}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     prebuild_bindings(&out, &target, &binding_sources);
+    let fiber = if prebuilds(&target) {
+        prebuild_fiber_runtime(&out, &target).unwrap_or_else(|error| {
+            println!(
+                "cargo:warning=fiber runtime not embedded ({error}); chimi build will look for it beside the compiler"
+            );
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+    std::fs::write(out.join("libchimi_fiber.a"), fiber).expect("write embedded fiber runtime");
     for (name, process_kernel) in [("libchimi_rt", false), ("libchimi_rt_process", true)] {
         let (bytes, key) = match prebuild(&out, &target, name, process_kernel) {
             Ok(Some(built)) => built,
@@ -215,6 +241,51 @@ fn prebuild_binding(
         sources: &files,
     });
     Ok((archive, key))
+}
+
+/// Builds `chimi-fiber`'s static library for `target` in the outer build's
+/// profile and returns its bytes. The nested target directory sits beside the
+/// outer profile's (`<target-dir>/<profile>/chimi-fiber-runtime`), so it stays
+/// warm across builds of the compiler.
+fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
+    let profile_directory = out
+        .ancestors()
+        .nth(3)
+        .ok_or_else(|| format!("OUT_DIR {} has no profile directory", out.display()))?;
+    let target_directory = profile_directory.join("chimi-fiber-runtime");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(&workspace)
+        .args([
+            "build",
+            "--quiet",
+            "--offline",
+            "-p",
+            "chimi-fiber",
+            "--lib",
+        ])
+        .arg("--target")
+        .arg(target)
+        .arg("--target-dir")
+        .arg(&target_directory)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET");
+    if workspace.join("Cargo.lock").is_file() {
+        command.arg("--locked");
+    }
+    if release {
+        command.arg("--release");
+    }
+    run(&mut command)?;
+    let archive = target_directory
+        .join(target)
+        .join(if release { "release" } else { "debug" })
+        .join("libchimi_fiber.a");
+    std::fs::read(&archive).map_err(|error| format!("read {}: {error}", archive.display()))
 }
 
 /// Whether this build prebuilds native archives at all (by design, not failure).

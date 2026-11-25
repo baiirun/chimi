@@ -616,12 +616,13 @@ fn the_aggregate_can_be_read_while_main_runs() {
     // sleep.
     let untimed_source = READER.replace("  Clock.sleep(Duration.seconds(1))\n", "");
     std::fs::write(scratch.0.join("untimed.chimi"), untimed_source).unwrap();
-    let interpreted = scratch.chimi(&["run", "untimed.chimi"]);
+    let interpreted = scratch.chimi(&["run", "untimed.chimi", "--outcome-file=interpreted.jsonl"]);
     assert_eq!(interpreted.status, Some(0), "{}", interpreted.stderr);
     let untimed = expected
         .replace("1794303000000000000", "0")
         .replace("1794303001000000000", "0");
-    assert_eq!(text_outcome(&interpreted.stdout), untimed);
+    let interpreted = std::fs::read_to_string(scratch.0.join("interpreted.jsonl")).unwrap();
+    assert_eq!(text_outcome(&interpreted), untimed);
 
     // With the file, recording was on from the start, and the file at exit
     // is the last read.
