@@ -2883,7 +2883,9 @@ static char *copy_text(const char *raw) {
 }
 static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
   char *raw = allocate(length + 1, 1);
-  memcpy(raw, bytes, length); raw[length] = '\0';
+  /* A binding may pass NULL for no bytes, and memcpy from NULL is undefined. */
+  if (length) memcpy(raw, bytes, length);
+  raw[length] = '\0';
   ChimiValue *v = new_value(VALUE_TEXT); v->as.text.bytes = raw; v->as.text.length = length; return v;
 }
 static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; }
