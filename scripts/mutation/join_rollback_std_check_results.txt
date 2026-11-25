@@ -1,0 +1,13 @@
+# mutation run at 4de6a0f1ac485a10d81c833a8cc9c8b04bdbaa0f
+# join_rollback_std_check_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [language -- a_failed_function_join] (103s)
+BASELINE ok  [cli -- std_check_verifies] (23s)
+KILLED       join: a failed join keeps its bindings [language -- a_failed_function_join] (27s)
+KILLED       tentatively: never restores [language -- a_failed_function_join] (27s)
+KILLED       restore: a new binding not removed [language -- a_failed_function_join] (46s)
+KILLED       journal: bindings not recorded [language -- a_failed_function_join] (44s)
+KILLED       call: generic argument unify not tentative [language -- a_failed_function_join] (37s)
+KILLED       std check: a missing module listed per operation [cli -- std_check_verifies] (60s)
+KILLED       std check: a missing module not reported [cli -- std_check_verifies] (49s)
+# result: every mutant killed
+# Earlier run on d3741da killed 5 of 5; the Opus review then found the call-argument leak, and the journal and call mutants were added with the fix.

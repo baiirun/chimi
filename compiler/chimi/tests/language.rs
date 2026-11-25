@@ -14771,3 +14771,55 @@ fn a_record_fits_an_interface_but_a_struct_does_not() {
         .collect::<Vec<_>>();
     assert_eq!(codes, ["T4203"]);
 }
+
+// CHI-234: a list element, case arm or call argument whose function type does not join with
+// the earlier ones is one error, and the failed join binds nothing. Before, the
+// join unified `pick`'s input with `Text` and then failed on the results, so
+// `items` was left a `List<Text>` and the next line failed too.
+#[test]
+fn a_failed_function_join_binds_nothing() {
+    let program = |alternatives: &str| {
+        format!(
+            concat!(
+                "fn same<A>(items: List<A>) -> fn(A) -> A {{\n",
+                "  fn(value: A) {{ value }}\n",
+                "}}\n",
+                "fn count(text: Text) -> Int {{\n",
+                "  0\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let items = []\n",
+                "  let pick = same(items)\n",
+                "{}",
+                "  let numbers: List<Int> = items\n",
+                "  0\n",
+                "}}\n",
+            ),
+            alternatives
+        )
+    };
+    let listed = diagnostics_of(&program("  let chosen = [pick, count]\n"));
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].0, "T4203");
+    assert!(listed[0].1.contains("list element"), "{listed:?}");
+    let armed = diagnostics_of(&program(concat!(
+        "  let chosen = case True {\n",
+        "    True -> pick\n",
+        "    False -> count\n",
+        "  }\n",
+    )));
+    assert_eq!(armed.len(), 1, "{armed:?}");
+    assert_eq!(armed[0].0, "T4203");
+    // Two call arguments for one generic: the failed unify of the second with
+    // the first binds nothing either, so the error names the written types.
+    let called = diagnostics_of(&format!(
+        "fn both<B>(first: B, second: B) -> Int {{\n  0\n}}\n{}",
+        program("  let chosen = both(pick, count)\n")
+    ));
+    assert_eq!(called.len(), 1, "{called:?}");
+    assert_eq!(called[0].0, "T4203");
+    assert!(!called[0].1.contains("fn(Text) -> Text"), "{called:?}");
+    // The same program without the clashing alternative checks cleanly, so
+    // the one error above is the clash itself.
+    assert!(check_codes(&program("  let chosen = [pick]\n")).is_empty());
+}

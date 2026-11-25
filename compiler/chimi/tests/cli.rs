@@ -614,6 +614,24 @@ fn std_check_verifies_a_standard_tree_against_the_registry() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cannot read module std/order"), "{stderr}");
 
+    // CHI-198: a module no other module imports is named once, not once per
+    // registered operation it should declare.
+    let unimported = scratch.join("unimported");
+    copy_standard_tree(&unimported);
+    std::fs::remove_file(unimported.join("exec.chimi")).unwrap();
+    std::fs::remove_file(unimported.join("sqlite.chimi")).unwrap();
+    let output = std_check(Some(&unimported));
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut lines = stderr.lines().collect::<Vec<_>>();
+    lines.sort_unstable();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    for (line, module) in lines.iter().zip(["std/exec", "std/sqlite"]) {
+        let expected =
+            format!("chimi: module {module} is missing from the tree; the runtime registers ");
+        assert!(line.starts_with(&expected), "{stderr}");
+    }
+
     std::fs::remove_dir_all(scratch).unwrap();
 }
 

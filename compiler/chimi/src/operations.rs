@@ -900,7 +900,33 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
             .or_default() += 1;
     }
     let mut mismatches = Vec::new();
+    // A module the tree lacks is one line, not one per operation it should
+    // declare, so a partial tree names what is missing.
+    let mut missing_modules = Vec::<(&str, usize)>::new();
     for operation in OPERATIONS {
+        let module = module_of(operation.id);
+        if modules.contains(module) {
+            continue;
+        }
+        match missing_modules.iter_mut().find(|(name, _)| *name == module) {
+            Some((_, count)) => *count += 1,
+            None => missing_modules.push((module, 1)),
+        }
+    }
+    for (module, count) in &missing_modules {
+        let operations = if *count == 1 {
+            "operation"
+        } else {
+            "operations"
+        };
+        mismatches.push(format!(
+            "module {module} is missing from the tree; the runtime registers {count} {operations} in it"
+        ));
+    }
+    for operation in OPERATIONS {
+        if !modules.contains(module_of(operation.id)) {
+            continue;
+        }
         match declarations.get(operation.id).copied().unwrap_or(0) {
             0 => mismatches.push(format!(
                 "registered operation {} has no `native fn` declaration",
@@ -916,10 +942,7 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
     // A stated requirement names a function of a module the tree holds; its
     // generic is checked when the function's contract is lowered.
     for stated in STATED_REQUIREMENTS {
-        let module = stated
-            .function
-            .split_once('.')
-            .map_or(stated.function, |(module, _)| module);
+        let module = module_of(stated.function);
         if !modules.contains(module) {
             continue;
         }
@@ -937,10 +960,7 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
         }
     }
     for entry in RUNTIME_KNOWN {
-        let module = entry
-            .id
-            .split_once('.')
-            .map_or(entry.id, |(module, _)| module);
+        let module = module_of(entry.id);
         if !modules.contains(module) {
             continue;
         }
@@ -966,6 +986,11 @@ pub(crate) fn verify_tree(sources: Vec<ProjectSource>) -> StandardTreeVerificati
         diagnostics: typed.diagnostics,
         mismatches,
     }
+}
+
+/// The module part of a registry id: `std/int` for `std/int.parse`.
+fn module_of(id: &str) -> &str {
+    id.split_once('.').map_or(id, |(module, _)| module)
 }
 
 #[cfg(test)]
