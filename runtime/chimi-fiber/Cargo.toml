@@ -9,6 +9,7 @@ publish = false
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+chimi-runtime = { path = "../chimi-runtime" }
 backtrace = "=0.3.76"
 corosensei = "=0.3.4"
 

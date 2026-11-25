@@ -73,6 +73,7 @@ fn build_runtime_driver(executable: &Path) {
             .arg("-I")
             .arg(manifest_path("../../runtime/chimi-fiber/include"))
             .arg(manifest_path("tests/fuzz/runtime-fuzz.c"))
+            .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
             .arg("-o")
             .arg(executable)
             .arg("-lm")

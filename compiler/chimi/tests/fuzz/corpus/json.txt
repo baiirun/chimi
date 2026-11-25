@@ -397,3 +397,5 @@
 "{\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x00"	error offset=33 message="expected a string key in JSON object"
 "{}"	ok "{}"
 "{}\\"	error offset=2 message="unexpected characters after JSON value"
+"\"a\x1fb\""	error offset=2 message="unescaped control character in JSON string"
+"\"\\n\x1f\""	error offset=3 message="unescaped control character in JSON string"

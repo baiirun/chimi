@@ -3,11 +3,17 @@ guard the decision it breaks, and restores the file. A mutant is killed when its
 test command fails or times out (300 s for a C harness).
 
 usage, from the repository root:
-  python3 compiler/chimi/tests/fixtures/native-heap-mutants.py . [mutant-name ...]
+  CHIMI_STANDALONE_RUNTIME_ARCHIVE=<path> \
+    python3 compiler/chimi/tests/fixtures/native-heap-mutants.py . [mutant-name ...]
+
+The C harnesses include runtime.c, which calls the Rust runtime archive, so
+CHIMI_STANDALONE_RUNTIME_ARCHIVE names the libchimi_runtime_standalone.a that
+a build of the compiler writes to its build-script output directory
+(target/debug/build/chimi-*/out/).
 
 Results are recorded in docs/architecture/supervised-process-runtime.md
 ("The heap as built in runtime.c")."""
-import subprocess, sys, pathlib, tempfile
+import os, subprocess, sys, pathlib, tempfile
 
 ROOT = pathlib.Path(sys.argv[1]).resolve()
 RUNTIME = ROOT / "compiler/chimi/runtime/native/runtime.c"
@@ -17,10 +23,14 @@ CC = ["cc", "-std=c11", "-I", str(ROOT / "compiler/chimi/runtime/native"),
 ASAN = ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
 ENV = {"ASAN_OPTIONS": "detect_leaks=0", "UBSAN_OPTIONS": "halt_on_error=1", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
 
+RUST_RUNTIME = os.environ.get("CHIMI_STANDALONE_RUNTIME_ARCHIVE")
+if not RUST_RUNTIME or not pathlib.Path(RUST_RUNTIME).is_file():
+    sys.exit("set CHIMI_STANDALONE_RUNTIME_ARCHIVE to libchimi_runtime_standalone.a (see the docstring)")
+
 def harness(flags, fixture, args):
     exe = SCRATCH / "mut-bin"
     def run():
-        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), "-o", str(exe)],
+        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), RUST_RUNTIME, "-o", str(exe)],
                                capture_output=True)
         if build.returncode: return False, "build failed"
         out = subprocess.run([str(exe)] + args, capture_output=True, timeout=300, env=ENV)

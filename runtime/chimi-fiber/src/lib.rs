@@ -1,5 +1,9 @@
 //! Runtime-private guarded fibers behind the native generated-code ABI.
 
+// The archive of a program with the scheduler carries the runtime's other
+// Rust code too, so the program links one copy of the standard library.
+extern crate chimi_runtime;
+
 use backtrace::Backtrace;
 use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};

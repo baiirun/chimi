@@ -133,6 +133,7 @@ version = "0.0.0"
 dependencies = [
  "backtrace",
  "cc",
+ "chimi-runtime",
  "corosensei",
  "libc",
 ]
@@ -145,6 +146,17 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "serde_json",
+]
+
+[[package]]
+name = "chimi-runtime"
+version = "0.0.0"
+
+[[package]]
+name = "chimi-runtime-standalone"
+version = "0.0.0"
+dependencies = [
+ "chimi-runtime",
 ]
 
 [[package]]
