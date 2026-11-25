@@ -279,7 +279,14 @@ fn prebuild_binding(
 /// profile and returns its bytes.
 fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
     let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
-    let mut arguments = vec!["build", "-p", "chimi-fiber", "--lib"];
+    let mut arguments = vec![
+        "build",
+        "-p",
+        "chimi-fiber",
+        "--lib",
+        "--features",
+        RUST_BINDINGS_FEATURE,
+    ];
     if release {
         arguments.push("--release");
     }
@@ -291,6 +298,12 @@ fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
         "libchimi_fiber.a",
     )
 }
+
+/// The feature that builds the Rust binding packages (`chimi-runtime`'s
+/// `src/binding`) into a runtime archive. Only these nested builds turn it on:
+/// the code imports the binding API from `runtime.c`, which links only into
+/// programs.
+const RUST_BINDINGS_FEATURE: &str = "bindings";
 
 /// Builds `chimi-runtime-standalone` as a static library for `target`, always
 /// optimized and aborting on panic (the `runtime-standalone` profile), and
@@ -316,6 +329,8 @@ fn prebuild_standalone_runtime(out: &Path, target: &str) -> Result<Vec<u8>, Stri
             "runtime-standalone",
             "--crate-type",
             "staticlib",
+            "--features",
+            RUST_BINDINGS_FEATURE,
         ],
         "runtime-standalone",
         "libchimi_runtime_standalone.a",

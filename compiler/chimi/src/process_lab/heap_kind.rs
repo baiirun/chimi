@@ -150,6 +150,18 @@ fn manifest_path(relative: &str) -> PathBuf {
 pub(super) fn kernel_harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
     let archive = crate::backend::native::bundled_fiber_archive()?;
     let mut libraries = vec![archive.into_os_string()];
+    // The archive also holds the Rust binding packages, which call the
+    // binding API in `runtime.c`, and a release build can put one in the same
+    // object as code the harness needs. Drop unreferenced sections, as a
+    // program's link does, so their imports go too.
+    libraries.push(
+        if cfg!(target_os = "macos") {
+            "-Wl,-dead_strip"
+        } else {
+            "-Wl,--gc-sections"
+        }
+        .into(),
+    );
     if cfg!(target_os = "linux") {
         libraries.extend(["-ldl".into(), "-lpthread".into()]);
     }

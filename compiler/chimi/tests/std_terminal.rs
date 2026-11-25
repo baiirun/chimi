@@ -207,6 +207,66 @@ fn build_probe(name: &str) -> Scratch {
     scratch
 }
 
+/// The global functions `executable` defines, from `nm`.
+fn defined_functions(executable: &std::path::Path) -> Vec<String> {
+    let output = Command::new("nm").arg("-g").arg("-U").arg(executable).output().expect("run nm");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .map(|name| name.strip_prefix('_').unwrap_or(name).to_owned())
+        .collect()
+}
+
+// Rejects a link that keeps the Rust binding package whole: the provider is
+// compiled into the Rust runtime archive every program links, so a program
+// that does not reach it, with the scheduler or without, must not carry it,
+// and one that does must.
+#[test]
+fn only_a_program_that_reaches_the_terminal_links_its_binding() {
+    let probe = build_probe("linked");
+    let functions = defined_functions(&probe.0.join("probe"));
+    for symbol in ["chimi_terminal_is_terminal", "chimi_terminal_size"] {
+        assert!(functions.iter().any(|name| name == symbol), "the probe lacks {symbol}");
+    }
+    let programs = [
+        ("plain", "pub fn main() -> Int { 1 }\n"),
+        (
+            "tasks",
+            "import std/task as Task\npub fn main() -> Int {\n  Task.result(Task.start(fn() -> Int { 1 }))\n}\n",
+        ),
+    ];
+    for (name, source) in programs {
+        let scratch = Scratch::new(name, source);
+        let built = scratch.chimi(&["build", "cases.chimi", "-o", "program"]);
+        assert_eq!(built.status, Some(0), "{}{}", built.stdout, built.stderr);
+        assert!(built.stdout.contains("\"binding_packages\":[]"), "{}", built.stdout);
+        let functions = defined_functions(&scratch.0.join("program"));
+        assert!(
+            !functions.iter().any(|name| name.starts_with("chimi_terminal_")),
+            "the {name} program links the terminal binding"
+        );
+    }
+}
+
+// Rejects a build that links a Rust archive built without the binding
+// packages: it must say so, not fail at link with undefined symbols.
+#[test]
+fn an_archive_without_the_bindings_is_refused_by_name() {
+    let scratch = Scratch::new("no-bindings", &format!("{IMPORTS}import std/list as List\n{PROBE}"));
+    let archive = scratch.0.join("empty.a");
+    std::fs::write(&archive, b"!<arch>\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch.0)
+        .args(["build", "cases.chimi", "-o", "probe"])
+        .env("CHIMI_FIBER_RUNTIME_ARCHIVE", &archive)
+        .output()
+        .expect("run chimi");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr.contains("built without the binding packages"), "{stderr}");
+}
+
 // Rejects a provider that reports a pipe as a terminal or gives a pipe a size.
 #[test]
 fn piped_streams_are_not_terminals() {

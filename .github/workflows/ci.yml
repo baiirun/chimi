@@ -51,6 +51,10 @@ jobs:
         run: cargo check --workspace --all-targets --all-features --quiet
       - name: Clippy
         run: cargo clippy --workspace --all-targets --quiet -- -D warnings -A function-casts-as-integer
+      # The Rust binding packages build only into the runtime archives, so
+      # the workspace clippy above never sees them.
+      - name: Clippy (Rust binding packages)
+        run: cargo clippy -p chimi-runtime --features bindings --quiet -- -D warnings
 
   # The test suite again, with every native program's C runtime and binding
   # packages built with AddressSanitizer and UndefinedBehaviorSanitizer

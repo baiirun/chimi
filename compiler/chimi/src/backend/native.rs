@@ -1,7 +1,7 @@
 //! Native AOT object emission and host linking behind the backend-neutral program boundary.
 
 use super::BackendProgram;
-use super::bindings::{BINDING_HEADER, BindingPackage, packages_for};
+use super::bindings::{BINDING_HEADER, BindingPackage, PackageCode, packages_for};
 use super::direct_loop::{Pass, direct_loops, emit_pass};
 use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
@@ -403,15 +403,35 @@ fn build_to_path(
             },
         )?;
     }
+    let reached_bindings = program.core.reached_bindings();
+    let rust_archive_path = fiber_runtime_archive_path
+        .as_ref()
+        .or(standalone_runtime_archive_path.as_ref())
+        .expect("every program links one Rust archive");
     let mut binding_packages = Vec::new();
-    for package in packages_for(&program.core.reached_bindings()) {
-        binding_packages.push(build_binding_archive(
-            &package,
-            output_directory,
-            &mut cache,
-            &cc,
-            &test_build,
-        )?);
+    for package in packages_for(&reached_bindings) {
+        binding_packages.push(match &package.code {
+            PackageCode::C(files) => build_binding_archive(
+                &package,
+                files,
+                output_directory,
+                &mut cache,
+                &cc,
+                &test_build,
+            )?,
+            PackageCode::Rust => {
+                check_rust_bindings(rust_archive_path, &package, &reached_bindings)?;
+                LinkedBindingPackage {
+                    name: package.name.to_owned(),
+                    archive_path: rust_archive_path.clone(),
+                    system_libraries: package
+                        .system_libraries
+                        .iter()
+                        .map(|library| (*library).to_owned())
+                        .collect(),
+                }
+            }
+        });
     }
     let runtime_compilation = started.elapsed();
 
@@ -444,7 +464,9 @@ fn build_to_path(
     // Binding archives call into the runtime, so they come before it.
     link.args(&object_paths).arg(&data_object_path);
     for package in &binding_packages {
-        link.arg(&package.archive_path);
+        if !rust_binding_package(package) {
+            link.arg(&package.archive_path);
+        }
     }
     link.arg(&runtime_archive_path);
     for package in &binding_packages {
@@ -463,7 +485,23 @@ fn build_to_path(
                 .arg(path)
                 .arg("-Wl,--no-whole-archive");
         }
+        // Nothing calls the scheduler's ABI marker, so the dropping of
+        // unreferenced sections below would take it too; keep it, so a
+        // binary says which scheduler ABI it carries.
+        link.arg(if cfg!(target_os = "macos") {
+            "-Wl,-u,_chimi_fiber_abi_version"
+        } else {
+            "-Wl,-u,chimi_fiber_abi_version"
+        });
     }
+    // The Rust archive holds every Rust binding package; the program
+    // references only the functions it reaches, and the rest are dropped, so
+    // linking stays pay-for-play.
+    link.arg(if cfg!(target_os = "macos") {
+        "-Wl,-dead_strip"
+    } else {
+        "-Wl,--gc-sections"
+    });
     link.args(&test_build.link_flags);
     // The runtime calls `fmod`, which glibc keeps in libm.
     link.arg("-lm").arg("-o").arg(executable_path);
@@ -491,8 +529,53 @@ fn build_to_path(
 /// Materializes `package`'s archive in `output_directory`: the one `build.rs`
 /// prebuilt when its key matches, otherwise one compiled into the project
 /// cache, keyed by its sources and flags.
+/// Whether `package` is linked from the Rust runtime archive rather than
+/// an archive of its own.
+fn rust_binding_package(package: &LinkedBindingPackage) -> bool {
+    super::bindings::RUST_PACKAGES
+        .iter()
+        .any(|(name, _)| *name == package.name)
+}
+
+/// Fails unless the Rust archive at `archive` defines every function of the
+/// Rust `package` the program reaches. An archive built without the binding
+/// packages (a compiler whose embedded archive failed to build, falling back
+/// to a plain workspace build, or an override) would otherwise fail at link
+/// with undefined symbols.
+fn check_rust_bindings(
+    archive: &Path,
+    package: &BindingPackage,
+    reached: &[crate::operations::Binding],
+) -> Result<(), String> {
+    let bytes = std::fs::read(archive)
+        .map_err(|error| format!("read Rust runtime archive {}: {error}", archive.display()))?;
+    // Each object's string table holds its symbol names NUL-separated, after
+    // a `_` on Mach-O. One pass finds every reached function.
+    let mut missing = reached
+        .iter()
+        .filter(|binding| binding.package == package.name)
+        .map(|binding| binding.symbol)
+        .collect::<Vec<_>>();
+    for name in bytes.split(|byte| *byte == 0) {
+        if missing.is_empty() {
+            break;
+        }
+        let name = name.strip_prefix(b"_").filter(|_| cfg!(target_os = "macos")).unwrap_or(name);
+        missing.retain(|symbol| symbol.as_bytes() != name);
+    }
+    if let Some(symbol) = missing.first() {
+        return Err(format!(
+            "the Rust runtime archive {} has no {symbol} (binding package {}); it was built without the binding packages, so rebuild the compiler",
+            archive.display(),
+            package.name
+        ));
+    }
+    Ok(())
+}
+
 fn build_binding_archive(
     package: &BindingPackage,
+    files: &[(&'static str, &'static str)],
     output_directory: &Path,
     cache: &mut ArtifactCache,
     cc: &str,
@@ -506,7 +589,7 @@ fn build_binding_archive(
         target_triple: env!("CHIMI_RUNTIME_TARGET"),
         compiler_identity: cc,
         binding_header: BINDING_HEADER.as_bytes(),
-        sources: &package.files,
+        sources: files,
     }));
     if let Some(archive) = prebuilt_binding_archive(package.name, &key) {
         std::fs::write(&archive_path, archive)
@@ -516,7 +599,7 @@ fn build_binding_archive(
         cache.materialize(&key, "a", &archive_path, &archive_name, |temporary| {
             compile_binding_archive(
                 package.name,
-                &package.files,
+                files,
                 output_directory,
                 &output_directory.join(format!("binding-{}", package.name)),
                 temporary,

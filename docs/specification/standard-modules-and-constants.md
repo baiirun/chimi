@@ -377,19 +377,28 @@ a runtime one.
   embeds every `.c` and `.h` file in it, as it embeds `runtime.c`, so the
   compiler needs no installed sources. `backend/bindings.rs` lists any
   operating-system libraries a package requires; none does yet.
-- Program data declares, and lists in `CHIMI_BINDINGS`, only the C functions
-  that a reachable Core node references. The native backend compiles each
-  package those functions belong to into its own static archive with the same
-  `cc` and flags as the runtime, caches it in the project cache by the hash
-  of its sources, `chimi_binding.h`, the compiler identity, and the target,
-  and links it before the runtime archive.
+- A standard package with no C library under it is written in Rust instead
+  (CHI-309: `terminal` so far), in `runtime/chimi-runtime/src/binding/`, and
+  talks to the runtime through the same `chimi_binding.h` functions. It is
+  compiled into the Rust runtime archive every program links, so it has no
+  directory or archive of its own.
+- Program data declares, and lists in `CHIMI_BINDINGS`, only the binding
+  functions that a reachable Core node references. The native backend
+  compiles each C package those functions belong to into its own static
+  archive with the same `cc` and flags as the runtime, caches it in the
+  project cache by the hash of its sources, `chimi_binding.h`, the compiler
+  identity, and the target, and links it before the runtime archive. The
+  link drops unreferenced sections (`--gc-sections`, or `-dead_strip` on
+  macOS), so of a Rust package only the functions the program reaches stay in
+  the executable.
 - Importing a module is not reaching it: an executable that reaches no
   binding links no binding code and builds no binding archive.
 - Vendored C source is preferred over system libraries. When a required
   operating-system library is linked dynamically, the build report MUST list
   it, as Principle 15 requires.
 - The build report (`chimi.build.v1`) lists every linked package under
-  `artifacts.binding_packages`, with its archive and system libraries.
+  `artifacts.binding_packages`, with its archive and system libraries. A
+  Rust package's archive is the Rust runtime archive it is linked from.
 
 ### Safety boundary
 
