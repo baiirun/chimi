@@ -3682,6 +3682,7 @@ fn a_struct_from_another_module_cannot_provide_through_private_fields() {
         "pub fn make() -> Store { Store { greet: secret } }\n",
         "pub fn hello() -> Text needs { greeter: Greeter } { greeter.greet() }\n",
         "pub fn own() -> Text { hello() using { greeter: make() } }\n",
+        "pub fn whole() -> Text needs { store: Store } { \"whole\" }\n",
     );
     let main = |provider: &str| {
         format!(
@@ -3695,6 +3696,10 @@ fn a_struct_from_another_module_cannot_provide_through_private_fields() {
         project_codes(&[("main", &main("{ greet: secret }")), ("store", store)]),
         Vec::<String>::new()
     );
+    // A need written as the struct itself takes the value whole and reads no
+    // field, so a foreign module may supply it.
+    let whole = "import store as Store\npub fn main() -> Text { Store.whole() using { store: Store.make() } }\n";
+    assert_eq!(project_codes(&[("main", whole), ("store", store)]), Vec::<String>::new());
     let module = |path: &str, source: &str| {
         ProjectSource::new(path, SourceSnapshot::from_text(format!("{path}.chimi"), source))
             .expect("valid module path")
