@@ -1981,6 +1981,13 @@ impl ListColumn {
     }
 }
 
+/// Inference state saved before a tentative check, restored when it fails.
+struct InferenceSnapshot {
+    bindings: HashMap<u32, TypeId>,
+    bounded: HashSet<u32>,
+    property_checks: usize,
+}
+
 impl ProjectTypeChecker {
     fn new(resolved: ResolvedProject) -> Self {
         let resolved = Arc::new(resolved);
@@ -9034,18 +9041,42 @@ impl ProjectTypeChecker {
         }
         // A failed check leaves no bindings behind, since a join or call may
         // go on to try another rule.
-        let bindings = self.inference_bindings.clone();
-        let bounded = self.bounded_inference_variables.clone();
-        let property_checks = self.property_checks.len();
+        let snapshot = self.inference_snapshot();
         Some(match self.provider_conformance_error(actual, expected) {
             None => Ok(()),
             Some(reason) => {
-                self.inference_bindings = bindings;
-                self.bounded_inference_variables = bounded;
-                self.property_checks.truncate(property_checks);
+                self.restore_inference(snapshot);
                 Err(reason)
             }
         })
+    }
+
+    /// The inference state a tentative check may change: what each variable
+    /// is bound to, which variables are bounded, and the property checks
+    /// queued so far.
+    fn inference_snapshot(&self) -> InferenceSnapshot {
+        InferenceSnapshot {
+            bindings: self.inference_bindings.clone(),
+            bounded: self.bounded_inference_variables.clone(),
+            property_checks: self.property_checks.len(),
+        }
+    }
+
+    fn restore_inference(&mut self, snapshot: InferenceSnapshot) {
+        self.inference_bindings = snapshot.bindings;
+        self.bounded_inference_variables = snapshot.bounded;
+        self.property_checks.truncate(snapshot.property_checks);
+    }
+
+    /// Runs `attempt` and keeps what it bound only when it succeeds, so a
+    /// rule that fails partway leaves inference as it found it.
+    fn tentatively<T>(&mut self, attempt: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        let snapshot = self.inference_snapshot();
+        let result = attempt(self);
+        if result.is_none() {
+            self.restore_inference(snapshot);
+        }
+        result
     }
 
     /// An interface with no type arguments, so a call can check a record
@@ -9153,9 +9184,7 @@ impl ProjectTypeChecker {
         parameters: &[SymbolId],
         contract: CallableContract,
     ) -> Option<&'static str> {
-        let bindings = self.inference_bindings.clone();
-        let bounded = self.bounded_inference_variables.clone();
-        let property_checks = self.property_checks.len();
+        let snapshot = self.inference_snapshot();
         let existing_variables = self.next_inference_variable;
         self.member_conformance_depth += 1;
         let reason = self.generic_member_mismatch(actual, parameters, contract);
@@ -9163,7 +9192,7 @@ impl ProjectTypeChecker {
         let reason = reason.or_else(|| {
             let escapes = (0..existing_variables).any(|variable| {
                 let bound = self.inference_bindings.get(&variable).copied();
-                bound != bindings.get(&variable).copied()
+                bound != snapshot.bindings.get(&variable).copied()
                     && bound.is_some_and(|bound| self.type_mentions_generics(bound, parameters))
             });
             escapes.then_some(
@@ -9171,9 +9200,7 @@ impl ProjectTypeChecker {
             )
         });
         if reason.is_some() {
-            self.inference_bindings = bindings;
-            self.bounded_inference_variables = bounded;
-            self.property_checks.truncate(property_checks);
+            self.restore_inference(snapshot);
         }
         reason
     }

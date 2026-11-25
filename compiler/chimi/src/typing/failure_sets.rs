@@ -349,8 +349,26 @@ impl ProjectTypeChecker {
         }
     }
 
+    /// A failed join binds nothing: its rules unify parts of the two types
+    /// before a later part can fail, and an error must not then name a type
+    /// that only the abandoned join chose.
     pub(crate) fn join_alternative_types(&mut self, left: TypeId, right: TypeId) -> Option<TypeId> {
-        self.join_types_within(left, right, false, 0)
+        self.tentatively(|checker| checker.join_types_within(left, right, false, 0))
+    }
+
+    /// `unify`, binding nothing when it fails.
+    fn unify_tentatively(&mut self, left: TypeId, right: TypeId) -> bool {
+        self.tentatively(|checker| checker.unify(left, right).then_some(()))
+            .is_some()
+    }
+
+    /// Whether `left` and `right` are the same type, unifying them both ways
+    /// only when they are.
+    fn unify_both_ways(&mut self, left: TypeId, right: TypeId) -> bool {
+        self.tentatively(|checker| {
+            (checker.unify(left, right) && checker.unify(right, left)).then_some(())
+        })
+        .is_some()
     }
 
     /// `inside_argument`: the types are arguments of a covariant parameter, where
@@ -369,10 +387,10 @@ impl ProjectTypeChecker {
         // A generic function joined with a fixed one unifies by instantiating
         // the generic side, so the join is the fixed type: an alternative that
         // may hold the fixed function must not keep the generic type.
-        if self.unify(left, right) {
+        if self.unify_tentatively(left, right) {
             return Some(self.fixed_function_side(right, left));
         }
-        if self.unify(right, left) {
+        if self.unify_tentatively(right, left) {
             return Some(self.fixed_function_side(left, right));
         }
         // A record joined with an interface it conforms to is that interface.
@@ -422,7 +440,7 @@ impl ProjectTypeChecker {
         }
         let mut arguments = Vec::with_capacity(left_arguments.len());
         for (index, (left, right)) in left_arguments.into_iter().zip(right_arguments).enumerate() {
-            if self.unify(left, right) && self.unify(right, left) {
+            if self.unify_both_ways(left, right) {
                 arguments.push(right);
                 continue;
             }
@@ -448,16 +466,15 @@ impl ProjectTypeChecker {
             return None;
         }
         for (left_input, right_input) in left.inputs.iter().zip(&right.inputs) {
-            if !(self.unify(*left_input, *right_input) && self.unify(*right_input, *left_input)) {
+            if !self.unify_both_ways(*left_input, *right_input) {
                 return None;
             }
         }
-        let success =
-            if self.unify(left.success, right.success) && self.unify(right.success, left.success) {
-                right.success
-            } else {
-                self.join_types_within(left.success, right.success, false, depth + 1)?
-            };
+        let success = if self.unify_both_ways(left.success, right.success) {
+            right.success
+        } else {
+            self.join_types_within(left.success, right.success, false, depth + 1)?
+        };
         let failures = self.join_failure_sets([left.failures, right.failures]);
         let needs = self.union_needs_rows([left.needs, right.needs]);
         Some(self.intern_type(CanonicalType::Function(CallableContract {

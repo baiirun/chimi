@@ -14724,3 +14724,46 @@ fn a_record_fits_an_interface_but_a_struct_does_not() {
         .collect::<Vec<_>>();
     assert_eq!(codes, ["T4203"]);
 }
+
+// CHI-234: a list element or case arm whose function type does not join with
+// the earlier ones is one error, and the failed join binds nothing. Before, the
+// join unified `pick`'s input with `Text` and then failed on the results, so
+// `items` was left a `List<Text>` and the next line failed too.
+#[test]
+fn a_failed_function_join_binds_nothing() {
+    let program = |alternatives: &str| {
+        format!(
+            concat!(
+                "fn same<A>(items: List<A>) -> fn(A) -> A {{\n",
+                "  fn(value: A) {{ value }}\n",
+                "}}\n",
+                "fn count(text: Text) -> Int {{\n",
+                "  0\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let items = []\n",
+                "  let pick = same(items)\n",
+                "{}",
+                "  let numbers: List<Int> = items\n",
+                "  0\n",
+                "}}\n",
+            ),
+            alternatives
+        )
+    };
+    let listed = diagnostics_of(&program("  let chosen = [pick, count]\n"));
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].0, "T4203");
+    assert!(listed[0].1.contains("list element"), "{listed:?}");
+    let armed = diagnostics_of(&program(concat!(
+        "  let chosen = case True {\n",
+        "    True -> pick\n",
+        "    False -> count\n",
+        "  }\n",
+    )));
+    assert_eq!(armed.len(), 1, "{armed:?}");
+    assert_eq!(armed[0].0, "T4203");
+    // The same program without the clashing alternative checks cleanly, so
+    // the one error above is the clash itself.
+    assert!(check_codes(&program("  let chosen = [pick]\n")).is_empty());
+}
