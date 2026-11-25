@@ -16,13 +16,15 @@
    so the checks hold for whatever implements those intrinsics. The json
    target also decodes each input with the C decoder the Rust one replaced
    (json-c-reference.c), and the decimal and duration targets compute with
-   the C code their Rust replaced (decimal-duration-c-reference.c); each
-   checks that the two agree. The runtime is
+   the C code their Rust replaced (decimal-duration-c-reference.c), as the
+   text target does with its case mapping, trimming and graphemes
+   (text-c-reference.c); each checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
 #include "json-c-reference.c"
 #include "decimal-duration-c-reference.c"
+#include "text-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
 enum {
@@ -175,6 +177,9 @@ static void fuzz_text(const uint8_t *data, size_t size, FuzzOutput *out) {
     ChimiValue *arguments[] = {text};
     ChimiValue *mapped = call_core(maps[index].intrinsic, arguments, 1)->value;
     fz_check_valid_text(mapped, maps[index].name);
+    ChimiValue *expected = reference_text_map(index, text);
+    FUZZ_CHECK(fz_texts_equal(mapped, expected), "%s gave %s, the C reference %s", maps[index].name,
+               mapped->as.text.bytes, expected->as.text.bytes);
     out_word(out, " "); out_word(out, maps[index].name); out_word(out, "="); out_text(out, mapped);
   }
 
@@ -191,7 +196,10 @@ static void fuzz_text(const uint8_t *data, size_t size, FuzzOutput *out) {
     FUZZ_CHECK(covered + grapheme->as.text.length <= text->as.text.length &&
                    memcmp(text->as.text.bytes + covered, grapheme->as.text.bytes, grapheme->as.text.length) == 0,
                "grapheme %u does not continue the text at byte %zu", index, covered);
+    size_t expected_end = reference_grapheme_end(text->as.text.bytes, text->as.text.length, covered);
     covered += grapheme->as.text.length;
+    FUZZ_CHECK(covered == expected_end, "grapheme %u ends at byte %zu, the C reference's at %zu", index, covered,
+               expected_end);
     if (index) out_word(out, ",");
     out_integer(out, (int64_t)grapheme->as.text.length);
   }
