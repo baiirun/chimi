@@ -119,42 +119,10 @@ pub(crate) fn float_binary(
     }
 }
 
-/// The canonical text of a finite `Float`: the shortest digits that parse back
-/// to the same value, always with a `.` or an exponent, and `-0.0` for negative zero.
-///
-/// Positional notation is used for decimal exponents from -5 to 15, scientific
-/// notation (`1e16`, `2.5e-7`) otherwise.
+/// The canonical text of a finite `Float` (`chimi_runtime::float`), which
+/// the native runtime prints too.
 pub(crate) fn render_float(value: f64) -> String {
-    debug_assert!(value.is_finite());
-    let sign = if value.is_sign_negative() { "-" } else { "" };
-    if value == 0.0 {
-        return format!("{sign}0.0");
-    }
-    // `{:e}` prints the shortest round-trip digits, as in `1.2345e3`.
-    let scientific = format!("{:e}", value.abs());
-    let (mantissa, exponent) = scientific
-        .split_once('e')
-        .expect("`{:e}` always has an exponent");
-    let exponent: i32 = exponent.parse().expect("`{:e}` exponent is an integer");
-    let digits = mantissa.replace('.', "");
-    if (-5..16).contains(&exponent) {
-        if exponent < 0 {
-            let zeros = "0".repeat((-exponent - 1) as usize);
-            format!("{sign}0.{zeros}{digits}")
-        } else {
-            let whole = exponent as usize + 1;
-            if digits.len() <= whole {
-                let zeros = "0".repeat(whole - digits.len());
-                format!("{sign}{digits}{zeros}.0")
-            } else {
-                format!("{sign}{}.{}", &digits[..whole], &digits[whole..])
-            }
-        }
-    } else if digits.len() == 1 {
-        format!("{sign}{digits}e{exponent}")
-    } else {
-        format!("{sign}{}.{}e{exponent}", &digits[..1], &digits[1..])
-    }
+    String::from(chimi_runtime::float::text(value).as_str())
 }
 
 /// The value of a lexically valid float literal, `None` when it rounds to an infinity.

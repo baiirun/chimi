@@ -2,7 +2,7 @@
 //! (`tests/fuzz/`) under AddressSanitizer and UndefinedBehaviorSanitizer, and
 //! checks that every input still gives the output recorded beside it.
 //!
-//! The recorded outputs pin the runtime's JSON, text, decimal and duration
+//! The recorded outputs pin the runtime's JSON, text, decimal, duration and float
 //! behaviour, and the binding shims' TLS, SCRAM and SQLite behaviour, on
 //! inputs a fuzzer found interesting, so a change to that code, or a Rust
 //! replacement of it, shows up as a diff. After an intended change, rerun
@@ -16,7 +16,7 @@ use std::process::Command;
 #[path = "../src/backend/runtime_archive_key.rs"]
 mod runtime_archive_key;
 
-const RUNTIME_TARGETS: [&str; 4] = ["json", "text", "decimal", "duration"];
+const RUNTIME_TARGETS: [&str; 5] = ["json", "text", "decimal", "duration", "float"];
 const BINDING_TARGETS: [&str; 6] = [
     "tls-client",
     "tls-server",

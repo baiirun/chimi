@@ -1,5 +1,5 @@
 //! A fixed-capacity text for number forms whose longest spelling is known,
-//! so printing one needs neither the heap nor `core::fmt`.
+//! so printing one needs no heap.
 
 /// ASCII text of at most `N` bytes.
 ///
