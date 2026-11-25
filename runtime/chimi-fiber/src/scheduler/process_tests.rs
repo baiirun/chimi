@@ -37,6 +37,8 @@ fn named(label: u64) -> Address {
 enum Msg {
     Add(i64),
     Crash,
+    /// Defects without reporting a message.
+    CrashQuietly,
     Return,
     Fail,
     /// Sends `Add(value)` to the address twice in one resume.
@@ -292,6 +294,7 @@ unsafe extern "C" fn worker(context: *mut c_void) -> ChimiFiberResult {
                 unsafe { super::scope::chimi_fiber_report_defect(c"crashed".as_ptr()) };
                 return defected();
             }
+            Msg::CrashQuietly => return defected(),
             Msg::Return => return ended(PROCESS_END_RETURNED),
             Msg::Fail => return ended(PROCESS_END_FAILED),
             Msg::RelayTwice(to, value) => {
@@ -917,6 +920,29 @@ fn a_defected_bodys_message_reaches_the_defect_report() {
     assert_eq!(
         DEFECT_REPORTS.with(|reports| reports.borrow().clone()),
         [(crashed.get(), Some("crashed".to_owned()), 0)]
+    );
+}
+
+/// A restarted incarnation starts with no message: one that defects without
+/// reporting reaches the report with none, not its predecessor's.
+#[test]
+fn a_restarted_incarnation_does_not_inherit_a_defect_message() {
+    DEFECT_REPORTS.with(|reports| reports.borrow_mut().clear());
+    let mut lab = Lab::new();
+    lab.scheduler
+        .set_process_defect_report(Some(record_defect_report), ptr::null_mut());
+    let root = lab.scheduler.start_supervisor(policy(vec![], 4)).unwrap();
+    lab.scheduler
+        .start_process(root, spec(Some(COUNTER), 8), Restart::OnDefect)
+        .expect("admitted");
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    lab.deliver(named(COUNTER), Msg::CrashQuietly);
+    lab.settle();
+    let started: Vec<u64> = lab.started().iter().map(|(_, incarnation)| incarnation.get()).collect();
+    assert_eq!(
+        DEFECT_REPORTS.with(|reports| reports.borrow().clone()),
+        [(started[0], Some("crashed".to_owned()), 0), (started[1], None, 0)]
     );
 }
 

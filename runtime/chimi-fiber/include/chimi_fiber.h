@@ -669,11 +669,10 @@ enum {
    the outcome carries is released, whether it was observed or not, after
    the root is terminal and before the call returns. A channel value is
    released when it is discarded: its parked send is cancelled, its channel
-   is aborted or released (no value names it) while it is
-   queued, or the task it was handed to (a receiver, or a refused sender) is
-   cancelled before the reply is written. A release request releases each
-   queued value before it replies; values already delivered are never
-   released. Releasing a channel answers a parked send ABORTED, which hands
+   is aborted or released (no value names it) while it is queued, or the task
+   it was handed to (a receiver, or a refused sender) is cancelled before the
+   reply is written. A channel's release releases each queued value at once;
+   values already delivered are never released. Releasing a channel answers a parked send ABORTED, which hands
    its value back, and a parked receive ABORTED. Any value still held when
    the call returns is released then.
 

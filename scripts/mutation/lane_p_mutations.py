@@ -119,8 +119,8 @@ MUTATIONS = [
     dict(
         name="a body's defect is remembered only while tracing",
         file=RUNTIME_C,
-        edits=[("      remember_process_defect(control->message);\n",
-                "      if (!runtime->silent) remember_process_defect(control->message);\n")],
+        edits=[("      chimi_fiber_report_defect(control->message);\n",
+                "      if (!runtime->silent) chimi_fiber_report_defect(control->message);\n")],
         command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
                  "--scenario", "OB08"],
         expect=["OB08"],
