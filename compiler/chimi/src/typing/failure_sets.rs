@@ -366,6 +366,13 @@ impl ProjectTypeChecker {
         if self.unify(right, left) {
             return Some(self.fixed_function_side(left, right));
         }
+        // A record joined with an interface it conforms to is that interface.
+        if let Some(Ok(())) = self.record_interface_conformance(left, right) {
+            return Some(right);
+        }
+        if let Some(Ok(())) = self.record_interface_conformance(right, left) {
+            return Some(left);
+        }
         if let (Some(left_set), Some(right_set)) =
             (self.failure_set_of(left), self.failure_set_of(right))
             && ((inside_argument

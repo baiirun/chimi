@@ -678,6 +678,16 @@ nominal type and does not alter name lookup. A provider method MAY expose fewer
 failures or needs than its interface permits, but MUST NOT expose more or change
 the required data inputs or success type.
 
+The same rule applies wherever an interface is written as a type: a record
+that conforms fits a parameter, a declared result, an annotated `let` or a
+struct field of that interface type, and it may carry extra fields. A record
+joined with an interface value it conforms to, as two `case` arms or two list
+elements, joins to the interface. A record that does not conform is `T4203`,
+naming the missing or incompatible member. Not yet: a container of records,
+such as a `List` of record literals where `List<Payment>` is expected, does not
+fit until one element is already a `Payment`; and a call to a generic function
+checks a record against a generic interface (`Store<K>`) only by unification.
+
 A member MAY be generic. Its generic parameters follow `fn` and are scoped to
 that member; the interface's own parameters stay fixed by the need's type:
 
