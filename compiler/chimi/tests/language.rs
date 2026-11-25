@@ -3666,6 +3666,48 @@ fn struct_fields_are_private_to_their_declaring_module() {
     );
 }
 
+// CHI-311: a `using` provider supplies interface members through its fields,
+// so a struct from another module, whose fields are private there, cannot be
+// one; its own module may still provide it, and a record always may.
+#[test]
+fn a_struct_from_another_module_cannot_provide_through_private_fields() {
+    let store = concat!(
+        "pub interface Greeter {\n",
+        "  greet: fn() -> Text\n",
+        "}\n",
+        "pub struct Store {\n",
+        "  greet: fn() -> Text\n",
+        "}\n",
+        "fn secret() -> Text { \"secret\" }\n",
+        "pub fn make() -> Store { Store { greet: secret } }\n",
+        "pub fn hello() -> Text needs { greeter: Greeter } { greeter.greet() }\n",
+        "pub fn own() -> Text { hello() using { greeter: make() } }\n",
+    );
+    let main = |provider: &str| {
+        format!(
+            "import store as Store\n\
+             fn secret() -> Text {{ \"mine\" }}\n\
+             pub fn main() -> Text {{ Store.hello() using {{ greeter: {provider} }} }}\n"
+        )
+    };
+    assert_eq!(project_codes(&[("main", &main("Store.make()")), ("store", store)]), ["T4213"]);
+    assert_eq!(
+        project_codes(&[("main", &main("{ greet: secret }")), ("store", store)]),
+        Vec::<String>::new()
+    );
+    let module = |path: &str, source: &str| {
+        ProjectSource::new(path, SourceSnapshot::from_text(format!("{path}.chimi"), source))
+            .expect("valid module path")
+    };
+    let report = Compiler::type_project(vec![module("main", &main("Store.make()")), module("store", store)]);
+    assert_eq!(
+        report.diagnostics()[0].message(),
+        "provider `greeter` is a `Store`, whose fields are private to its module, so it cannot \
+         supply member `greet` here; pass a record, as `{ greet: ... }`, or let `Store`'s module \
+         provide it"
+    );
+}
+
 /// Runs a multi-module project rooted at a scratch directory on both execution paths.
 /// `modules` pairs a module path such as `app/main` with its source; the first is the entry.
 fn run_both_project(name: &str, modules: &[(&str, &str)]) -> String {
