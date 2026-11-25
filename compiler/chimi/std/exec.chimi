@@ -48,6 +48,10 @@ import std/task as Task.{Task}
 
 /// The capability to start programs. The runner's provider starts real
 /// processes; a fake is a record of this function.
+///
+/// The runner supplies it to `main` as the need `commands`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Commands {
   /// Starts `command` and returns the running child.
   start: fn(Command) -> Child errors ExecError

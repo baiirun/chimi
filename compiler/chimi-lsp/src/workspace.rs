@@ -14,7 +14,8 @@ use chimi::project::{GitCache, LoadedProject, Network, SourceReader, StandardTre
 use chimi::source::SourceSnapshot;
 use chimi::{
     CallableInspection, Compiler, CompilerSession, IncrementalTypeReport, InspectionReport,
-    ModuleOrigin, Occurrence, ProjectSource, ReferenceInspection, SymbolOccurrences, TypeReport,
+    ModuleOrigin, NeedInspection, Occurrence, ProjectSource, ReferenceInspection,
+    SymbolOccurrences, TypeReport,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -937,11 +938,18 @@ fn alias_before(text: &str, offset: usize) -> Option<&str> {
 ///
 /// Ensures: `None` when the report has neither a contract nor a type.
 fn hover_markdown(report: &InspectionReport) -> Option<String> {
-    let description = report
+    let Some(description) = report
         .instantiated_callable()
         .or_else(|| report.callable())
         .map(CallableInspection::display)
-        .or_else(|| report.inferred_type())?;
+        .or_else(|| report.inferred_type())
+    else {
+        // A type name has no value to show, but a host interface's says where
+        // the runner supplies it.
+        let target = report.reference()?.target()?;
+        let supply = target.runner()?;
+        return Some(format!("{} `{}`\n\n{}", target.kind(), target.name(), supply.note()));
+    };
     let reference = report.reference();
     let signature = match reference {
         Some(reference) => format!("{}: {description}", reference.text()),
@@ -954,6 +962,19 @@ fn hover_markdown(report: &InspectionReport) -> Option<String> {
             None => write!(markdown, "\n\n{}", target.kind()),
         }
         .expect("writing to a string cannot fail");
+        if let Some(supply) = target.runner() {
+            write!(markdown, "\n\n{}", supply.note()).expect("writing to a string cannot fail");
+        }
+    }
+    // Where each host need comes from, which the signature alone does not say.
+    let callable = report.instantiated_callable().or_else(|| report.callable());
+    for note in callable
+        .into_iter()
+        .flat_map(CallableInspection::needs)
+        .chain(report.need())
+        .filter_map(NeedInspection::runner_note)
+    {
+        write!(markdown, "\n\n{note}").expect("writing to a string cannot fail");
     }
     Some(markdown)
 }
@@ -1465,6 +1486,42 @@ mod tests {
         );
         let declared = workspace.hover(&lib, at(1, 8));
         assert!(declared.is_some_and(|hover| hover.markdown.contains("Adds one.")),);
+    }
+
+    /// Guards that hover says where a runner-supplied need comes from: on the
+    /// need's use, on `main`, and on the interface's name, and that a need
+    /// under a name the runner does not close says so.
+    #[test]
+    fn hover_says_where_a_runner_supplied_need_comes_from() {
+        let fixture = Fixture::new("hover-runner");
+        let app = fixture.write(
+            "app.chimi",
+            "import std/io.{Console}\nimport std/clock.{Clock}\n\npub fn main() -> Void needs { console: Console, time: Clock } {\n  console.write_line(\"hi\")\n}\n",
+        );
+        let project = ProjectConfig::new(fixture.root(), "app").unwrap();
+        let mut workspace = Workspace::new(vec![project], PositionEncoding::Utf16);
+        workspace.analyze(&app);
+
+        let supplied = "When `console` reaches `main`, the runner supplies it. A test gets a captured console.";
+        let used = workspace.hover(&app, at(4, 3)).expect("hovers `console`");
+        assert!(used.markdown.contains(supplied), "{}", used.markdown);
+        let main = workspace.hover(&app, at(3, 8)).expect("hovers `main`");
+        assert!(main.markdown.contains(supplied), "{}", main.markdown);
+        assert!(
+            main.markdown.contains(
+                "`time` is not supplied by the runner, which supplies a `Clock` only as `clock`."
+            ),
+            "{}",
+            main.markdown
+        );
+        let interface = workspace.hover(&app, at(3, 42)).expect("hovers `Console`");
+        assert!(
+            interface.markdown.contains(
+                "The runner supplies a `Console` to `main` under any need name. A test gets a captured console."
+            ),
+            "{}",
+            interface.markdown
+        );
     }
 
     /// Guards that a failed load never answers from an older report, whose

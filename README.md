@@ -294,8 +294,11 @@ pub fn main() -> Void needs {
 }
 ```
 
-`console` is a need like any other: the runner supplies the real terminal to
-`main`, and a test can supply a fake. Then:
+Nothing here creates `console`. It is a need like any other, and when it
+reaches `main` the runner supplies the real terminal; a test gets a captured
+one instead. [Needs the runner supplies](docs/runner-supplied-needs.md) lists
+every such need (the clock, the network, files and the rest) and the name
+each must have. Then:
 
 ```sh
 chimi run hello.chimi              # run it on the reference interpreter
@@ -359,6 +362,8 @@ hard real-time systems. It is not designed for beginners first. There is no
 - [Glossary](CONTEXT.md): the terms the project uses.
 - [Decision ledger](docs/decisions.md): every language and toolchain
   decision, newest first, with links to the reasoning.
+- [Needs the runner supplies](docs/runner-supplied-needs.md): where `console`,
+  `clock`, `network` and the other host needs come from.
 - [Specification](docs/specification): the contracts the compiler and runtime
   follow.
 - [Example programs](programs): complete programs, including the checkout

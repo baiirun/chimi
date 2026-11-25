@@ -1,14 +1,18 @@
 use crate::compiler::ValuePropertyStatus;
 use crate::diagnostic::Diagnostic;
-use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange};
+use crate::ids::{ModuleId, SemanticId, SymbolId, TextRange, TypeId};
 use crate::json::write_json_string_escaping_controls;
+use crate::operations::{RunnerSupply, TestSupply, runner_supply};
 use crate::resolution::{ProjectReference, ProjectSymbolKind, ReferenceResolution};
 use crate::semantic::{
     CaseOrigin, ModuleBlockItem, ModuleDeclaration, ModuleDeclarationKind, ModuleExpression,
     Pattern, SemanticModule, is_generated_name,
 };
+use crate::standard::StandardSymbol;
 use crate::syntax::ParseResult;
-use crate::typing::{CallableContract, PropertyDerivation, TypedProject, ValueProperty};
+use crate::typing::{
+    CallableContract, CanonicalType, PropertyDerivation, TypedProject, ValueProperty,
+};
 use std::fmt::{self, Write};
 use std::path::PathBuf;
 
@@ -57,9 +61,15 @@ pub struct SymbolInspection {
     module_path: Option<String>,
     source_path: Option<PathBuf>,
     declaration_range: Option<TextRange>,
+    runner: Option<HostSupply>,
 }
 
 impl SymbolInspection {
+    /// How the runner supplies this symbol, when it is a host interface.
+    pub const fn runner(&self) -> Option<HostSupply> {
+        self.runner
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -120,6 +130,7 @@ impl ReferenceInspection {
 pub struct NeedInspection {
     name: String,
     interface: String,
+    runner: Option<HostSupply>,
 }
 
 impl NeedInspection {
@@ -130,6 +141,92 @@ impl NeedInspection {
     pub fn interface(&self) -> &str {
         &self.interface
     }
+
+    /// How the runner supplies this need's interface, when it is a host
+    /// interface the runner closes on `main` under some name.
+    pub const fn runner(&self) -> Option<HostSupply> {
+        self.runner
+    }
+
+    /// Whether the runner closes this need on `main`: its interface is a
+    /// host interface and the need has the name the runner closes.
+    pub fn supplied_on_main(&self) -> bool {
+        self.runner
+            .is_some_and(|supply| supply.fixed_name().is_none_or(|fixed| fixed == self.name))
+    }
+
+    /// A sentence on where this need comes from, for a need on a host
+    /// interface; `None` for any other need.
+    pub fn runner_note(&self) -> Option<String> {
+        let supply = self.runner?;
+        let name = &self.name;
+        Some(if self.supplied_on_main() {
+            let tests = match supply.supply.in_tests {
+                TestSupply::Using => "A test must supply it with `using`.".to_owned(),
+                in_tests => format!("A test gets {}.", in_tests.describe()),
+            };
+            format!("When `{name}` reaches `main`, the runner supplies it. {tests}")
+        } else {
+            format!(
+                "`{name}` is not supplied by the runner, which supplies a `{}` only as `{}`. \
+                 Some caller must supply `{name}` with `using`, in a program and in tests.",
+                supply.interface,
+                supply.fixed_name().unwrap_or_default()
+            )
+        })
+    }
+}
+
+/// How the runner supplies a host interface to `main`, and what a test gets
+/// for it (docs/runner-supplied-needs.md).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostSupply {
+    interface: &'static str,
+    supply: RunnerSupply,
+}
+
+impl HostSupply {
+    pub const fn interface(&self) -> &'static str {
+        self.interface
+    }
+
+    /// The only need name the runner closes, or `None` when any name is.
+    pub const fn fixed_name(&self) -> Option<&'static str> {
+        self.supply.fixed_name
+    }
+
+    /// What a test gets: `virtual_clock`, `seeded_random`, `captured_console`,
+    /// or `using` when the test must supply it.
+    pub fn in_tests(&self) -> &'static str {
+        self.supply.in_tests.token()
+    }
+
+    /// A sentence on how the runner supplies the interface, for hover on its
+    /// name.
+    pub fn note(&self) -> String {
+        let interface = self.interface;
+        let main = match self.supply.fixed_name {
+            Some(name) => format!(
+                "The runner supplies a `{interface}` to `main` when the need is named `{name}`."
+            ),
+            None => format!("The runner supplies a `{interface}` to `main` under any need name."),
+        };
+        let tests = match self.supply.in_tests {
+            TestSupply::Using => "A test must supply it with `using`.".to_owned(),
+            in_tests => format!("A test gets {}.", in_tests.describe()),
+        };
+        format!("{main} {tests}")
+    }
+}
+
+fn host_supply(typed: &TypedProject, symbol: SymbolId) -> Option<HostSupply> {
+    let Some(StandardSymbol::Type(interface)) = typed.resolved.standard_symbol(symbol) else {
+        return None;
+    };
+    runner_supply(interface).map(|supply| HostSupply {
+        interface: interface.name(),
+        supply,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,6 +284,7 @@ pub struct InspectionReport {
     value_properties: Option<ValuePropertyInspection>,
     callable: Option<CallableInspection>,
     instantiated_callable: Option<CallableInspection>,
+    need: Option<NeedInspection>,
     executable_origin: Option<u32>,
     clause: Option<ClausePosition>,
     diagnostics: Vec<Diagnostic>,
@@ -242,6 +340,12 @@ impl InspectionReport {
 
     pub const fn reference(&self) -> Option<&ReferenceInspection> {
         self.reference.as_ref()
+    }
+
+    /// The need a reference to a need names, such as `console` in
+    /// `console.write_line(...)`.
+    pub const fn need(&self) -> Option<&NeedInspection> {
+        self.need.as_ref()
     }
 
     pub fn inferred_type(&self) -> Option<&str> {
@@ -328,6 +432,11 @@ impl InspectionReport {
         }
         output.push_str(",\"callable\":");
         write_json_callable(&mut output, self.callable.as_ref());
+        output.push_str(",\"need\":");
+        match &self.need {
+            Some(need) => write_json_need(&mut output, need),
+            None => output.push_str("null"),
+        }
         output.push_str(",\"executable_origin\":");
         if let Some(origin) = self.executable_origin {
             write!(output, "{origin}").expect("writing JSON to a string cannot fail");
@@ -423,6 +532,10 @@ pub(crate) fn inspect(
         ordered: property_status(typed.derived_property(type_id, ValueProperty::Ordered)),
     });
     let target_symbol = reference.and_then(reference_target);
+    let need = target_symbol
+        .filter(|symbol| typed.resolved.symbol(*symbol).kind == ProjectSymbolKind::Requirement)
+        .zip(inspected_type)
+        .map(|(symbol, type_id)| inspect_need(typed, &typed.resolved.symbol(symbol).name, type_id));
     let instantiated_callable = semantic_id
         .and_then(|semantic_id| typed.callee_instantiations.get(&(module.id, semantic_id)))
         .and_then(|type_id| typed.callable_contract_for_type(*type_id))
@@ -467,6 +580,7 @@ pub(crate) fn inspect(
         value_properties,
         callable: callable_contract.map(|contract| inspect_callable(typed, contract)),
         instantiated_callable,
+        need,
         executable_origin: None,
         clause: clause.map(|(_, position)| position),
         diagnostics: typed.diagnostics.clone(),
@@ -585,6 +699,20 @@ fn inspect_symbol(typed: &TypedProject, symbol_id: SymbolId) -> SymbolInspection
                 .semantic_id
                 .and_then(|semantic_id| declaration_range(module, semantic_id))
         }),
+        runner: host_supply(typed, symbol_id),
+    }
+}
+
+fn inspect_need(typed: &TypedProject, name: &str, interface: TypeId) -> NeedInspection {
+    NeedInspection {
+        name: name.to_owned(),
+        interface: typed.format_type(interface),
+        runner: match &typed.types[interface.raw() as usize] {
+            CanonicalType::Named { symbol, arguments } if arguments.is_empty() => {
+                host_supply(typed, *symbol)
+            }
+            _ => None,
+        },
     }
 }
 
@@ -612,10 +740,7 @@ fn inspect_callable(typed: &TypedProject, contract: &CallableContract) -> Callab
         needs: needs
             .entries
             .iter()
-            .map(|need| NeedInspection {
-                name: need.lexical_name.clone(),
-                interface: typed.format_type(need.interface),
-            })
+            .map(|need| inspect_need(typed, &need.lexical_name, need.interface))
             .collect(),
         needs_parameters: needs
             .parameters
@@ -852,9 +977,39 @@ fn write_json_reference(output: &mut String, reference: Option<&ReferenceInspect
         } else {
             output.push_str("null");
         }
+        output.push_str(",\"runner\":");
+        write_json_host_supply(output, target.runner, None);
         output.push('}');
     } else {
         output.push_str("null");
+    }
+    output.push('}');
+}
+
+fn write_json_need(output: &mut String, need: &NeedInspection) {
+    output.push_str("{\"name\":");
+    write_json_string_escaping_controls(output, &need.name);
+    output.push_str(",\"interface\":");
+    write_json_string_escaping_controls(output, &need.interface);
+    output.push_str(",\"runner\":");
+    write_json_host_supply(output, need.runner, Some(need.supplied_on_main()));
+    output.push('}');
+}
+
+/// `null`, or the runner's supply of a host interface; a need's adds whether
+/// the runner closes that need on `main`.
+fn write_json_host_supply(output: &mut String, supply: Option<HostSupply>, on_main: Option<bool>) {
+    let Some(supply) = supply else {
+        output.push_str("null");
+        return;
+    };
+    output.push_str("{\"fixed_name\":");
+    write_json_optional_string(output, supply.fixed_name());
+    output.push_str(",\"in_tests\":");
+    write_json_string_escaping_controls(output, supply.in_tests());
+    if let Some(on_main) = on_main {
+        write!(output, ",\"supplied_on_main\":{on_main}")
+            .expect("writing JSON to a string cannot fail");
     }
     output.push('}');
 }
@@ -879,11 +1034,7 @@ fn write_json_callable(output: &mut String, callable: Option<&CallableInspection
         if index > 0 {
             output.push(',');
         }
-        output.push_str("{\"name\":");
-        write_json_string_escaping_controls(output, &need.name);
-        output.push_str(",\"interface\":");
-        write_json_string_escaping_controls(output, &need.interface);
-        output.push('}');
+        write_json_need(output, need);
     }
     output.push_str("],\"needs_parameters\":");
     write_json_strings(output, &callable.needs_parameters);

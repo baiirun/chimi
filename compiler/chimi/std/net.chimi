@@ -39,6 +39,10 @@ import std/stream as Stream.{Reader, StreamError, Writer}
 
 /// The capability to open sockets. The runner's provider uses the operating
 /// system's network; a test's fake is a record of these two functions.
+///
+/// The runner supplies it to `main` as the need `network`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Network {
   /// A connection to `host` (a name or a numeric address) on `port`.
   connect: fn(Text, Int) -> Connection errors NetError
