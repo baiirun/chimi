@@ -358,6 +358,9 @@ fn each_fix_removes_its_finding_and_keeps_the_module_valid() {
         let remaining = lint(&after);
         assert_eq!(remaining.len(), findings.len() - 1, "{after}");
         fixed.push(after.lines().take(4).collect::<Vec<_>>().join("|"));
+        if finding.code() == "unused-binding" {
+            assert!(after.contains("  let _unused = 1\n"), "{after}");
+        }
     }
     assert_eq!(
         fixed,
