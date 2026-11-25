@@ -102,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          [json, text, decimal, duration, tls-client, tls-server, tls-records, tls-roots, scram, sqlite]
+          [json, text, decimal, duration, float, tls-client, tls-server, tls-records, tls-roots, scram, sqlite]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
