@@ -194,9 +194,11 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
     }
 }
 
-/// Builds `tests/fixtures/{fixture}.c` with ThreadSanitizer where the compiler
-/// has it (else plainly), runs it, and checks that it prints "ok". Under
-/// ThreadSanitizer any access to shared state outside its lock fails the run.
+/// Builds `tests/fixtures/{fixture}.c` with ThreadSanitizer, runs it, and
+/// checks that it prints "ok". Under ThreadSanitizer any access to shared
+/// state outside its lock fails the run. Linux must have ThreadSanitizer, so
+/// CI always runs these fixtures under it; elsewhere a compiler without it
+/// gets a plain build.
 fn run_thread_fixture(fixture: &str) {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let executable = std::env::temp_dir().join(format!("chimi-{fixture}-{}", std::process::id()));
@@ -215,8 +217,14 @@ fn run_thread_fixture(fixture: &str) {
             .output()
             .expect("run cc")
     };
-    if compile(&["-fsanitize=thread"]).status.success() {
+    let sanitized = compile(&["-fsanitize=thread"]);
+    if sanitized.status.success() {
         eprintln!("{fixture}: built with ThreadSanitizer");
+    } else if cfg!(target_os = "linux") {
+        panic!(
+            "{fixture}: ThreadSanitizer is required on Linux, but the build failed:\n{}",
+            String::from_utf8_lossy(&sanitized.stderr)
+        );
     } else {
         eprintln!("{fixture}: ThreadSanitizer unavailable, plain build");
         let plain = compile(&[]);

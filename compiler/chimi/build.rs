@@ -231,6 +231,7 @@ fn prebuild_binding(
         &directory,
         &directory.join("package"),
         &archive,
+        &[],
     )?;
     let key = binding_archive_key(&BindingArchiveInputs {
         package,

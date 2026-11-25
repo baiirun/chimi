@@ -52,6 +52,82 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --quiet -- -D warnings -A function-casts-as-integer
 
+  # The test suite again, with every native program's C runtime and binding
+  # packages built with AddressSanitizer and UndefinedBehaviorSanitizer
+  # (CHIMI_TEST_RUNTIME_SANITIZE in backend/native.rs), so a memory error or
+  # undefined behaviour in the C fails the test that reached it.
+  # Under the sanitizers the suite takes about an hour and a half, so it runs
+  # in six shards (scripts/sanitizer-shard.sh).
+  sanitizers:
+    name: sanitizers (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [cli, process-lab, rest-1, rest-2, rest-3, rest-4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CHIMI_TEST_RUNTIME_SANITIZE: address,undefined
+      # Reports go to files, not stderr, so the tests that compare a
+      # program's stderr still pass; the last step fails on any report. The
+      # fibers' stack switches make ASan print a warning there too, which is
+      # not a failure. The runtime keeps its memory until exit by design.
+      ASAN_OPTIONS: detect_leaks=0:log_path=${{ github.workspace }}/../sanitizer-logs/asan
+      UBSAN_OPTIONS: print_stacktrace=1:log_path=${{ github.workspace }}/../sanitizer-logs/ubsan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      # Sanitized frames are several times larger, so the host thread gets
+      # four times the stack, as runtime.c gives its fibers.
+      - name: Test the workspace with sanitized native programs
+        run: |
+          mkdir -p ../sanitizer-logs
+          ulimit -s 32768
+          scripts/sanitizer-shard.sh ${{ matrix.shard }}
+      - name: Fail on any sanitizer report
+        if: always()
+        run: |
+          if grep -l -E "ERROR: (AddressSanitizer|LeakSanitizer)|runtime error:" ../sanitizer-logs/* 2>/dev/null; then
+            grep -h -A40 -E "ERROR: (AddressSanitizer|LeakSanitizer)|runtime error:" ../sanitizer-logs/*
+            exit 1
+          fi
+
+  # libFuzzer on the runtime's parsers and text code, two minutes a target,
+  # from the committed corpus (compiler/chimi/tests/fuzz/).
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [json, text, decimal, duration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The runner's clang may come without its libFuzzer runtime.
+      - name: Install libFuzzer
+        run: |
+          printf 'int LLVMFuzzerTestOneInput(const char *d, long n) { return 0; }\n' > "$RUNNER_TEMP/probe.c"
+          if ! clang -fsanitize=fuzzer "$RUNNER_TEMP/probe.c" -o "$RUNNER_TEMP/probe"; then
+            version=$(clang -dumpversion | cut -d. -f1)
+            sudo apt-get update -q
+            sudo apt-get install -y -q "libclang-rt-$version-dev"
+          fi
+      - name: Fuzz
+        run: scripts/fuzz-runtime.sh ${{ matrix.target }} 120 "$RUNNER_TEMP/fuzz"
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/fuzz/crash-*
+            ${{ runner.temp }}/fuzz/oom-*
+            ${{ runner.temp }}/fuzz/timeout-*
+            ${{ runner.temp }}/fuzz/slow-unit-*
+          if-no-files-found: ignore
+
   # The editor grammar is written by hand next to the compiler's parser, so
   # it falls behind silently when the syntax grows. This fails when any .chimi
   # file the compiler parses does not parse in the grammar.

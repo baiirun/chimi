@@ -135,6 +135,7 @@ mod tests {
             &directory,
             &directory.join("package"),
             &directory.join("p.a"),
+            &[],
         );
         let _ = std::fs::remove_dir_all(&directory);
         assert!(
@@ -156,6 +157,7 @@ mod tests {
             &directory,
             &directory.join("package"),
             &directory.join("p.a"),
+            &[],
         );
         let _ = std::fs::remove_dir_all(&directory);
         assert!(

@@ -7,6 +7,14 @@ fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}.chimi", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Whether this run builds native programs with sanitizers
+/// (`CHIMI_TEST_RUNTIME_SANITIZE`): such a build compiles its own runtime
+/// instead of the prebuilt one and links the sanitizer libraries, so checks of
+/// the prebuilt archive and of executable size do not apply.
+fn sanitized_runtime() -> bool {
+    std::env::var("CHIMI_TEST_RUNTIME_SANITIZE").is_ok_and(|value| !value.trim().is_empty())
+}
+
 fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -397,7 +405,7 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     assert!(report.contains("\"dynamic_dependencies\":["));
     assert!(executable.is_file());
     assert!(
-        std::fs::metadata(&executable).unwrap().len() < 1024 * 1024,
+        sanitized_runtime() || std::fs::metadata(&executable).unwrap().len() < 1024 * 1024,
         "an ordinary binary must not retain the unused fiber runtime"
     );
 
@@ -2879,6 +2887,10 @@ fn cached_archives(scratch: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
+    if sanitized_runtime() {
+        eprintln!("skipped: a sanitized build never uses the prebuilt runtime");
+        return;
+    }
     let scratch = scratch_directory("prebuilt-runtime");
     let project = write_two_module_project(&scratch);
     let executable = scratch.join("app");
@@ -2913,6 +2925,84 @@ fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
         "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
     );
 
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// `chimi build` of `project` with `CHIMI_TEST_RUNTIME_SANITIZE` set to
+/// `sanitize`, or removed for `None`: its build report, or the failure.
+#[cfg(target_os = "linux")]
+fn build_with_sanitize(
+    scratch: &Path,
+    project: &Path,
+    executable: &Path,
+    sanitize: Option<&str>,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_chimi"));
+    command.current_dir(scratch);
+    match sanitize {
+        Some(value) => command.env("CHIMI_TEST_RUNTIME_SANITIZE", value),
+        None => command.env_remove("CHIMI_TEST_RUNTIME_SANITIZE"),
+    };
+    command
+        .args(["build", "--root"])
+        .arg(project)
+        .args(["app/main", "-o"])
+        .arg(executable)
+        .output()
+        .expect("build project")
+}
+
+// Guards: a sanitized build compiles its own runtime and links the sanitizer
+// libraries, and its archive never stands in for the ordinary one (or the
+// reverse): each has its own cache key. An unknown sanitizer set is refused.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sanitized_build_compiles_its_own_runtime_and_links_the_sanitizers() {
+    let scratch = scratch_directory("sanitized-runtime");
+    let project = write_two_module_project(&scratch);
+    let executable = scratch.join("app");
+    let report = |output: Output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let sanitized = report(build_with_sanitize(
+        &scratch,
+        &project,
+        &executable,
+        Some("address,undefined"),
+    ));
+    let cache = sanitized.split("\"cache\":").nth(1).unwrap();
+    assert_eq!(cache_list(cache, "prebuilt"), "", "{sanitized}");
+    assert!(cache_list(cache, "misses").contains("libchimi_rt.a"), "{sanitized}");
+    assert!(sanitized.contains("libasan"), "{sanitized}");
+    assert!(sanitized.contains("libubsan"), "{sanitized}");
+    let execution = execute_native(&executable, &scratch, "sanitized", "off");
+    assert!(execution.process.status.success());
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+
+    // The ordinary build after it neither reuses the sanitized archive nor
+    // links the sanitizers.
+    let ordinary = report(build_with_sanitize(&scratch, &project, &executable, None));
+    let cache = ordinary.split("\"cache\":").nth(1).unwrap();
+    assert!(!cache_list(cache, "hits").contains("libchimi_rt"), "{ordinary}");
+    assert!(!ordinary.contains("libasan"), "{ordinary}");
+
+    let refused = build_with_sanitize(&scratch, &project, &executable, Some("thread"));
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("CHIMI_TEST_RUNTIME_SANITIZE: `thread` is not one of"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -4289,6 +4379,12 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
         "-DCHIMI_POISON_YOUNG_CHUNKS",
     ]);
     if !sanitized.status.success() {
+        if cfg!(target_os = "linux") {
+            panic!(
+                "AddressSanitizer and UndefinedBehaviorSanitizer are required on Linux, but the build failed:\n{}",
+                String::from_utf8_lossy(&sanitized.stderr)
+            );
+        }
         let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),

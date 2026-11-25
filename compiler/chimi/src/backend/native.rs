@@ -347,7 +347,7 @@ fn build_to_path(
     }
     let started = Instant::now();
     let runtime_abi = RUNTIME_ABI_VERSION.to_string();
-    let test_defines = test_runtime_defines()?;
+    let test_build = test_runtime_build()?;
     let runtime_key = runtime_archive_key(&RuntimeArchiveInputs {
         abi_version: &runtime_abi,
         target_triple: env!("CHIMI_RUNTIME_TARGET"),
@@ -358,17 +358,7 @@ fn build_to_path(
         fiber_header: FIBER_RUNTIME_HEADER.as_bytes(),
         process_kernel,
     });
-    let runtime_key = if test_defines.is_empty() {
-        runtime_key
-    } else {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(runtime_key.as_bytes());
-        for define in &test_defines {
-            hasher.update(&(define.len() as u64).to_le_bytes());
-            hasher.update(define.as_bytes());
-        }
-        hasher.finalize().to_hex().to_string()
-    };
+    let runtime_key = test_build.runtime_key(runtime_key);
     if let Some(archive) = prebuilt_runtime_archive(&runtime_key, process_kernel) {
         std::fs::write(&runtime_archive_path, archive)
             .map_err(|error| format!("materialize prebuilt native runtime: {error}"))?;
@@ -385,7 +375,7 @@ fn build_to_path(
                 run(
                     Command::new(RUNTIME_C_COMPILER)
                         .args(runtime_c_flags(process_kernel))
-                        .args(&test_defines)
+                        .args(&test_build.runtime_flags)
                         .arg("-I")
                         .arg(&include_directory)
                         .arg("-c")
@@ -411,6 +401,7 @@ fn build_to_path(
             output_directory,
             &mut cache,
             &cc,
+            &test_build,
         )?);
     }
     let runtime_compilation = started.elapsed();
@@ -461,6 +452,7 @@ fn build_to_path(
                 .arg("-Wl,--no-whole-archive");
         }
     }
+    link.args(&test_build.link_flags);
     // The runtime calls `fmod`, which glibc keeps in libm.
     link.arg("-lm").arg("-o").arg(executable_path);
     run(&mut link, "link native backend executable")?;
@@ -492,17 +484,18 @@ fn build_binding_archive(
     output_directory: &Path,
     cache: &mut ArtifactCache,
     cc: &str,
+    test_build: &TestRuntimeBuild,
 ) -> Result<LinkedBindingPackage, String> {
     let archive_name = package.archive_name();
     let archive_path = output_directory.join(&archive_name);
-    let key = binding_archive_key(&BindingArchiveInputs {
+    let key = test_build.binding_key(binding_archive_key(&BindingArchiveInputs {
         package: package.name,
         package_flags: binding_package_flags(package.name),
         target_triple: env!("CHIMI_RUNTIME_TARGET"),
         compiler_identity: cc,
         binding_header: BINDING_HEADER.as_bytes(),
         sources: &package.files,
-    });
+    }));
     if let Some(archive) = prebuilt_binding_archive(package.name, &key) {
         std::fs::write(&archive_path, archive)
             .map_err(|error| format!("materialize prebuilt binding package: {error}"))?;
@@ -515,6 +508,7 @@ fn build_binding_archive(
                 output_directory,
                 &output_directory.join(format!("binding-{}", package.name)),
                 temporary,
+                &test_build.sanitizer_flags,
             )
         })?;
     }
@@ -548,6 +542,10 @@ const FIBER_RUNTIME_HEADER: &str =
     include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 /// The runtime test builds `CHIMI_TEST_RUNTIME_DEFINES` may name.
 const TEST_RUNTIME_DEFINES: [&str; 1] = ["-DCHIMI_CARRIER_SIMULATION"];
+/// The sanitizer sets `CHIMI_TEST_RUNTIME_SANITIZE` may name. ThreadSanitizer
+/// is not one: it cannot follow the fiber stack switches, so it runs only on
+/// the C fixtures in `tests/runtime_state.rs`.
+const TEST_RUNTIME_SANITIZERS: [&str; 1] = ["address,undefined"];
 
 // Written by `build.rs`; each is empty when the compiler was built without it.
 const PREBUILT_RUNTIME_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_rt.a"));
@@ -557,31 +555,93 @@ const PREBUILT_PROCESS_RUNTIME_ARCHIVE: &[u8] =
 const PREBUILT_PROCESS_RUNTIME_KEY: &str =
     include_str!(concat!(env!("OUT_DIR"), "/libchimi_rt_process.key"));
 
-/// Test builds of the runtime: in a debug build of the compiler,
-/// `CHIMI_TEST_RUNTIME_DEFINES` names `-D` flags (space-separated, each one of
-/// `TEST_RUNTIME_DEFINES`) added to the runtime's compile, such as
-/// `-DCHIMI_CARRIER_SIMULATION` (parallel-scheduler.md). They change the
-/// archive's key, so a test build never reuses the prebuilt runtime. A
-/// release build ignores the variable.
-fn test_runtime_defines() -> Result<Vec<String>, String> {
-    if !cfg!(debug_assertions) {
-        return Ok(Vec::new());
+/// A test build of the runtime and binding packages: extra C flags for their
+/// compiles and extra flags for the link. Empty outside test builds.
+#[derive(Default)]
+struct TestRuntimeBuild {
+    /// The runtime's extra flags: the defines, then the sanitizer flags.
+    runtime_flags: Vec<String>,
+    /// The binding packages' extra flags: the sanitizer flags only, since the
+    /// defines change nothing in a package.
+    sanitizer_flags: Vec<String>,
+    link_flags: Vec<String>,
+}
+
+impl TestRuntimeBuild {
+    /// `key` for an archive compiled with `flags` added: unchanged when there
+    /// are none, so ordinary builds keep matching the prebuilt archives.
+    fn key(flags: &[String], key: String) -> String {
+        if flags.is_empty() {
+            return key;
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(key.as_bytes());
+        for flag in flags {
+            hasher.update(&(flag.len() as u64).to_le_bytes());
+            hasher.update(flag.as_bytes());
+        }
+        hasher.finalize().to_hex().to_string()
     }
-    let Ok(value) = std::env::var("CHIMI_TEST_RUNTIME_DEFINES") else {
-        return Ok(Vec::new());
-    };
-    value
-        .split_whitespace()
-        .map(|define| {
-            if TEST_RUNTIME_DEFINES.contains(&define) {
-                Ok(define.to_owned())
-            } else {
-                Err(format!(
+
+    fn runtime_key(&self, key: String) -> String {
+        Self::key(&self.runtime_flags, key)
+    }
+
+    fn binding_key(&self, key: String) -> String {
+        Self::key(&self.sanitizer_flags, key)
+    }
+}
+
+/// Test builds of the runtime, read only by a debug build of the compiler (a
+/// release build ignores both variables):
+/// - `CHIMI_TEST_RUNTIME_DEFINES` names `-D` flags (space-separated, each one
+///   of `TEST_RUNTIME_DEFINES`) added to the runtime's compile, such as
+///   `-DCHIMI_CARRIER_SIMULATION` (parallel-scheduler.md).
+/// - `CHIMI_TEST_RUNTIME_SANITIZE` names one of `TEST_RUNTIME_SANITIZERS`;
+///   the runtime and every binding package compile with those sanitizers and
+///   the executable links their runtime libraries, so a memory error or
+///   undefined behaviour in the C runtime stops the program with a report.
+///
+/// Either changes the archives' keys, so a test build never reuses a
+/// prebuilt archive or one cached by an ordinary build.
+fn test_runtime_build() -> Result<TestRuntimeBuild, String> {
+    if !cfg!(debug_assertions) {
+        return Ok(TestRuntimeBuild::default());
+    }
+    let mut build = TestRuntimeBuild::default();
+    if let Ok(value) = std::env::var("CHIMI_TEST_RUNTIME_DEFINES") {
+        for define in value.split_whitespace() {
+            if !TEST_RUNTIME_DEFINES.contains(&define) {
+                return Err(format!(
                     "CHIMI_TEST_RUNTIME_DEFINES: `{define}` is not one of {TEST_RUNTIME_DEFINES:?}"
-                ))
+                ));
             }
-        })
-        .collect()
+            build.runtime_flags.push(define.to_owned());
+        }
+    }
+    // An empty value is unset, as the tests' `sanitized_runtime` reads it.
+    if let Ok(value) = std::env::var("CHIMI_TEST_RUNTIME_SANITIZE")
+        && !value.trim().is_empty()
+    {
+        let value = value.trim();
+        if !TEST_RUNTIME_SANITIZERS.contains(&value) {
+            return Err(format!(
+                "CHIMI_TEST_RUNTIME_SANITIZE: `{value}` is not one of {TEST_RUNTIME_SANITIZERS:?}"
+            ));
+        }
+        let sanitize = format!("-fsanitize={value}");
+        // A report should stop the program rather than let it carry on, and
+        // name the runtime function and line it came from.
+        build.sanitizer_flags.extend([
+            sanitize.clone(),
+            "-fno-sanitize-recover=all".to_owned(),
+            "-fno-omit-frame-pointer".to_owned(),
+            "-g".to_owned(),
+        ]);
+        build.runtime_flags.extend(build.sanitizer_flags.iter().cloned());
+        build.link_flags.push(sanitize);
+    }
+    Ok(build)
 }
 
 /// The archive of the variant `build.rs` compiled, when it was compiled from

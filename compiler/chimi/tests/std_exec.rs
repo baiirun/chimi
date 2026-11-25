@@ -325,6 +325,11 @@ test "a wait after release is Closed" {
 "#,
         ),
     );
+    // A sanitized build compiles the runtime and the exec package, which can
+    // take most of the budget below, so it is built once before the timed run.
+    if std::env::var("CHIMI_TEST_RUNTIME_SANITIZE").is_ok_and(|value| !value.trim().is_empty()) {
+        assert_passed(&scratch.chimi(&["test", "cases.chimi", "--clock=real"]), 7);
+    }
     let started = Instant::now();
     let run = scratch.chimi(&["test", "cases.chimi", "--clock=real"]);
     assert_passed(&run, 7);

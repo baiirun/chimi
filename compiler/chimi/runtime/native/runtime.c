@@ -33,8 +33,20 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 
-/* The stack of every scheduler fiber: the root task, child tasks, and incarnations. */
+/* The stack of every scheduler fiber: the root task, child tasks, and incarnations.
+   AddressSanitizer's redzones make frames several times larger, so a sanitized
+   test build (CHIMI_TEST_RUNTIME_SANITIZE) gives each fiber four times as much,
+   and a program reaches the same call depths as in an ordinary build. */
+#if defined(__SANITIZE_ADDRESS__)
+#define CHIMI_FIBER_STACK_BYTES (4u * 1024u * 1024u)
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CHIMI_FIBER_STACK_BYTES (4u * 1024u * 1024u)
+#endif
+#endif
+#ifndef CHIMI_FIBER_STACK_BYTES
 #define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)
+#endif
 
 /* Process programs build this runtime with CHIMI_PROCESS_KERNEL=1 (see invoke_process). */
 #ifndef CHIMI_PROCESS_KERNEL
@@ -2871,7 +2883,9 @@ static char *copy_text(const char *raw) {
 }
 static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
   char *raw = allocate(length + 1, 1);
-  memcpy(raw, bytes, length); raw[length] = '\0';
+  /* A binding may pass NULL for no bytes, and memcpy from NULL is undefined. */
+  if (length) memcpy(raw, bytes, length);
+  raw[length] = '\0';
   ChimiValue *v = new_value(VALUE_TEXT); v->as.text.bytes = raw; v->as.text.length = length; return v;
 }
 static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; }
@@ -7037,7 +7051,8 @@ static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stre
 static void console_enqueue(ConsoleQueue *queue, const void *bytes, size_t length) {
   if (queue->end + length > queue->capacity) {
     size_t queued = queue->end - queue->start;
-    memmove(queue->bytes, queue->bytes + queue->start, queued);
+    /* An empty queue may have no buffer yet, and memmove from NULL is undefined. */
+    if (queued) memmove(queue->bytes, queue->bytes + queue->start, queued);
     queue->start = 0;
     queue->end = queued;
     if (queued + length > queue->capacity) {
@@ -11341,7 +11356,8 @@ static ChimiControl *fs_list(const char *path) {
   closedir(directory);
   ChimiValue *list = list_from_values(NULL, 0);
   if (!failure && !error) {
-    qsort(names, count, sizeof(*names), fs_compare_names);
+    /* An empty directory leaves `names` NULL, which qsort must not get. */
+    if (count) qsort(names, count, sizeof(*names), fs_compare_names);
     for (size_t index = 0; index < count; ++index) list = list_push(list, text_value(names[index]));
   }
   for (size_t index = 0; index < count; ++index) free(names[index]);

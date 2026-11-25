@@ -996,9 +996,15 @@ test "serve" {{
         )
     });
     let started = std::time::Instant::now();
+    // The wait covers the build: a sanitized one compiles the tls package,
+    // which takes minutes while the other tests build theirs.
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if serving.is_finished() {
+            let (status, stdout, stderr) = serving.join().unwrap();
+            panic!("the Chimi server ended before it listened ({status:?}):\n{stdout}{stderr}");
+        }
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(6),
+            started.elapsed() < std::time::Duration::from_secs(600),
             "the Chimi server did not start"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
