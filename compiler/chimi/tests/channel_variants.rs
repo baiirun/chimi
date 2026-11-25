@@ -702,9 +702,10 @@ fn an_event_cannot_outlive_its_receiver() {
 }
 
 // An event keeps its link to the receiver when it comes out of a helper
-// function, leaves a loop through `break`, or is taken out of a tuple by a
-// pattern, so each use after the receiver left is `T4241` (CHI-241). Used
-// before the receiver leaves, each form stays valid.
+// function or a closure, is read from a struct field, leaves a loop through
+// `break`, or is taken out of a tuple by a pattern, so each use after the
+// receiver left is `T4241` (CHI-241). Used before the receiver leaves, each
+// form stays valid.
 #[test]
 fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
     let escapes = |make: &str, moved: &str, after_move: bool| {
@@ -715,6 +716,10 @@ fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
         };
         type_codes(&format!(
             "import std/select.{{Event}}\n\
+             struct Held {{\n\
+             \x20 event: Event<Int, ChannelError>,\n\
+             \x20 n: Int,\n\
+             }}\n\
              fn event_of(receiver: Receiver<Int>) -> Event<Int, ChannelError> {{\n\
              \x20 Select.receive(receiver, value)\n\
              }}\n\
@@ -733,7 +738,11 @@ fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
     let broken = "  let event = loop n = 0 {\n    break Select.receive(receiver, value)\n  }\n";
     let taken_apart = "  let (event, _) = (Select.receive(receiver, value), 1)\n";
     let through_a_field = "  let event = event_of(jobs.receiver)\n";
+    let from_a_closure = "  let made = Select.receive(receiver, value)\n  let get = fn() { made }\n  let event = get()\n";
+    let from_a_struct = "  let held = Held { event: Select.receive(receiver, value), n: 1 }\n  let event = held.event\n";
     for (form, make, moved) in [
+        ("closure", from_a_closure, "receiver"),
+        ("struct field", from_a_struct, "receiver"),
         ("helper", helper, "receiver"),
         ("break", broken, "receiver"),
         ("pattern", taken_apart, "receiver"),

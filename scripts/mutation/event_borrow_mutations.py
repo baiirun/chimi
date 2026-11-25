@@ -48,4 +48,12 @@ MUTATIONS = [
         "                        == Some(StandardSymbol::Type(StandardType::SelectEvent))",
         "                        == Some(StandardSymbol::Type(StandardType::Task))",
     )]),
+    mutant("a closure's event borrows nothing", CAPABILITY, [(
+        "                    result.borrows.extend(callee_value.borrows.iter().copied());",
+        "",
+    )]),
+    mutant("a field read drops the event's borrows", CAPABILITY, [(
+        "                if holds_event {\n                    value.borrows = receiver.borrows.clone();",
+        "                if false {\n                    value.borrows = receiver.borrows.clone();",
+    )]),
 ]

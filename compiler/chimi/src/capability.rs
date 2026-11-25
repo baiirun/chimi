@@ -400,6 +400,14 @@ impl CapabilityChecker<'_> {
                 } else {
                     receiver.carries.clone()
                 };
+                // An event read out of a field still reads from the receivers
+                // the value it came from borrows.
+                let holds_event = self
+                    .expression_type(module_id, expression)
+                    .is_some_and(|field| self.typed.type_may_hold_select_event(field));
+                if holds_event {
+                    value.borrows = receiver.borrows.clone();
+                }
                 if value.properties.transferable == PropertyDerivation::ValueDependent {
                     value = receiver;
                 }
@@ -566,10 +574,12 @@ impl CapabilityChecker<'_> {
                     }
                 }
                 // A call that may return an event, such as a helper that wraps
-                // `Select.receive`, may read from any receiver it was given.
+                // `Select.receive` or a closure that returns a captured event,
+                // may read from any receiver it was given or its callee borrows.
                 if standard.is_none()
                     && result_type.is_some_and(|result| self.typed.type_may_hold_select_event(result))
                 {
+                    result.borrows.extend(callee_value.borrows.iter().copied());
                     for (argument, value) in &arguments {
                         result.borrows.extend(value.carries.iter().copied());
                         result.borrows.extend(value.borrows.iter().copied());
