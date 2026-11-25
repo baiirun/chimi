@@ -105,6 +105,8 @@ fn errors_carry_the_interpreters_offset_and_message() {
         ("1e+", 3, "expected digits in JSON exponent"),
         ("\"abc", 4, "unterminated JSON string"),
         ("\"a\tb\"", 2, "unescaped control character in JSON string"),
+        ("\"a\u{1f}b\"", 2, "unescaped control character in JSON string"),
+        ("\"\\n\u{1f}\"", 3, "unescaped control character in JSON string"),
         ("\"a\\", 3, "unterminated JSON escape"),
         ("\"\\x\"", 3, "invalid JSON escape"),
         ("\"\\u12\"", 3, "incomplete JSON Unicode escape"),
