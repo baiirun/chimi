@@ -93,16 +93,7 @@ const SHARED: &[&str] = &[
     "process_fragment_footprint_bytes",
     "process_peak_fragment_footprint_bytes",
     "metrics_lock",
-    "metric_series",
-    "metric_series_count",
-    "metric_series_capacity",
-    "metric_names",
-    "metric_name_count",
-    "metric_name_capacity",
-    "metric_series_table",
-    "metric_name_table",
-    "metric_dropped_label_sets",
-    "metric_dropped_kind_conflicts",
+    "metrics_aggregate",
     // Atomic: set once by the first Metrics.runner_document.
     "metrics_reading",
     // Set before main starts; read under metrics_lock.
