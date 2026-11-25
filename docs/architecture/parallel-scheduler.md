@@ -277,7 +277,7 @@ is running tasks at the same moment.
   process of that supervisor running in between. The note's risk list
   already places a supervisor's record on one carrier.
 - **Does not survive, and must change in step 3.**
-  - Select commit (task-and-channel-capabilities.md, "Select commit"). After
+  - Wait commit (task-and-channel-capabilities.md, "Wait commit"). After
     a select answers with a ready receiver, the host's receive is "served
     before any other task runs" by putting the task at the front of the run
     queue. On another carrier, a second receiver of the same queue could take

@@ -111,7 +111,7 @@ typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
                HOST_RANDOM_NEXT_INT,
                HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
                HOST_CLOCK_SHIFTED_TIMESTAMP,
-               /* A Select timer on a user Clock: its `inner` is the provider's
+               /* A Wait timer on a user Clock: its `inner` is the provider's
                   sleep_until, called with the Instant in `shift`. */
                HOST_SELECT_SLEEP } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
