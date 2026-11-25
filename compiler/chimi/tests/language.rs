@@ -14451,6 +14451,123 @@ pub fn main() -> Text { top() using { greeter: g("a") } }
     }
 }
 
+// CHI-291 follow-ups: a nested positional struct pattern gets one fix that
+// rewrites every level, with no overlapping fixes from the inner patterns; a
+// bare struct pattern gets `Name { .. }` and no field-count error; and a
+// struct literal as a `case` subject without parentheses is one error whose
+// fix adds them. Applying every fix leaves a program with no diagnostics.
+#[test]
+fn struct_pattern_and_case_subject_fixes_apply_cleanly() {
+    let source = concat!(
+        "struct Money {\n",
+        "  cents: Int,\n",
+        "  currency: Text,\n",
+        "}\n",
+        "struct Pair {\n",
+        "  left: Money,\n",
+        "  right: Money,\n",
+        "}\n",
+        "fn nested(p: Pair) -> Int {\n",
+        "  case p {\n",
+        "    Pair(Money(a, _), Money(b, \"EUR\")) -> a + b\n",
+        "    Pair(_, _) -> 0\n",
+        "  }\n",
+        "}\n",
+        "fn bare(m: Money) -> Int {\n",
+        "  case m {\n",
+        "    Money -> 1\n",
+        "  }\n",
+        "}\n",
+        "enum Kind {\n",
+        "  Cash(n: Int)\n",
+        "  Card(m: Money)\n",
+        "}\n",
+        "struct Wrap {\n",
+        "  kind: Kind,\n",
+        "  m: Money,\n",
+        "}\n",
+        "fn deeper(w: Wrap, p: Pair) -> Int {\n",
+        "  let x = case w {\n",
+        "    Wrap(Kind.Card(Money(a, _)), _) -> a\n",
+        "    Wrap(_, _) -> 0\n",
+        "  }\n",
+        "  case p {\n",
+        "    Pair(Money, _) -> x\n",
+        "  }\n",
+        "}\n",
+        "fn typed(n: Int) -> Int {\n",
+        "  case n {\n",
+        "    x: Int -> x\n",
+        "  }\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  case Money { cents: 1, currency: \"EUR\" } {\n",
+        "    Money { cents: c, .. } -> c + bare(Money { cents: 2, currency: \"X\" })\n",
+        "  }\n",
+        "}\n",
+    );
+    let report = |source: &str| {
+        let module = ProjectSource::new("main", SourceSnapshot::from_text("main.chimi", source))
+            .expect("valid module path");
+        Compiler::type_project(vec![module])
+    };
+    let first = report(source);
+    let diagnostics = first.diagnostics();
+    let summary = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code().to_owned(), diagnostic.fixes().len()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            ("S1001".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 0),
+            ("T4216".to_owned(), 0),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 0),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 0),
+        ],
+        "{:?}",
+        diagnostics.iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+    let mut fixed = source.to_owned();
+    let mut edits = diagnostics
+        .iter()
+        .flat_map(|diagnostic| diagnostic.fixes())
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.range().start()));
+    for pair in edits.windows(2) {
+        assert!(
+            pair[1].range().end() <= pair[0].range().start(),
+            "fixes overlap: {:?} and {:?}",
+            pair[1].replacement(),
+            pair[0].replacement()
+        );
+    }
+    for edit in edits {
+        let range = edit.range().start() as usize..edit.range().end() as usize;
+        fixed.replace_range(range, edit.replacement());
+    }
+    let second = report(&fixed);
+    assert!(
+        second.diagnostics().is_empty(),
+        "{fixed}\n{:?}",
+        second.diagnostics().iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+    assert!(fixed.contains(
+        "Pair { left: Money { cents: a, currency: _ }, right: Money { cents: b, currency: \"EUR\" } }"
+    ));
+    assert!(fixed.contains("    Money { .. } -> 1\n"));
+    assert!(fixed.contains("    Wrap { kind: Kind.Card(Money { cents: a, currency: _ }), m: _ } -> a\n"));
+    assert!(fixed.contains("    Pair { left: Money { .. }, right: _ } -> x\n"));
+    assert!(fixed.contains("  case (Money { cents: 1, currency: \"EUR\" }) {\n"));
+}
+
 // CHI-244: a record fits an interface wherever the interface is written as a
 // type, by the provider rule. Field order and extra fields do not matter.
 #[test]

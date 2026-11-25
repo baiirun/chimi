@@ -1469,6 +1469,68 @@ impl<'source> Parser<'source> {
                 && self.kind_at(position + 1) == TokenKind::Colon)
     }
 
+    /// Whether the `{` here, where struct literals are off (a `case`
+    /// subject), opens the fields of a struct literal that lacks its
+    /// parentheses, as in `case Money { cents: 1 } { ... }`: the braces start
+    /// with `field:`, hold no `->` of their own, and another `{` follows them.
+    /// An arm list always has an `->`, so it never matches.
+    fn at_bracketless_case_subject_literal(&self) -> bool {
+        if self.struct_literals || !self.at(TokenKind::LeftBrace) {
+            return false;
+        }
+        let mut position = self.position + 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        if !(self.kind_at(position) == TokenKind::Identifier
+            && self.kind_at(position + 1) == TokenKind::Colon)
+        {
+            return false;
+        }
+        let mut depth = 1usize;
+        loop {
+            match self.kind_at(position) {
+                TokenKind::End => return false,
+                TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::LeftBracket => {
+                    depth += 1;
+                }
+                TokenKind::RightBrace | TokenKind::RightParen | TokenKind::RightBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Arrow if depth == 1 => return false,
+                _ => {}
+            }
+            position += 1;
+        }
+        position += 1;
+        while self.kind_at(position) == TokenKind::Newline {
+            position += 1;
+        }
+        self.kind_at(position) == TokenKind::LeftBrace
+    }
+
+    /// Reports the struct literal just parsed from token `first` as a `case`
+    /// subject without parentheses, with the fix that adds them.
+    fn report_bracketless_case_subject_literal(&mut self, first: usize) {
+        let start = self.tokens[self.significant[first]].range.start() as usize;
+        let end = self.tokens[self.significant[self.position - 1]].range.end() as usize;
+        let range = TextRange::new(start, end);
+        let text = &self.source.text()[start..end];
+        let diagnostic = Diagnostic::error(
+            DiagnosticStage::Syntax,
+            "S1001",
+            self.source.file_id(),
+            range,
+            "a struct literal as a `case` subject needs parentheses, since the `{` after a \
+             subject opens the arms",
+        )
+        .with_fix(range, format!("({text})"));
+        self.diagnostics.push(diagnostic);
+    }
+
     fn parse(mut self) -> ParseResult {
         self.start(NodeKind::File);
         self.skip_newlines();
@@ -2578,6 +2640,7 @@ impl<'source> Parser<'source> {
 
     fn parse_postfix(&mut self) {
         let marker = self.placeholder();
+        let first = self.position;
         // A struct literal's `{` follows a name or a qualified name only.
         let mut names_a_type = self.at(TokenKind::Identifier);
         self.parse_primary();
@@ -2605,6 +2668,14 @@ impl<'source> Parser<'source> {
                 }
                 names_a_type = false;
                 self.parse_struct_fields();
+            } else if names_a_type && self.at_bracketless_case_subject_literal() {
+                if !wrapped {
+                    self.complete(marker, NodeKind::PostfixExpression);
+                    wrapped = true;
+                }
+                names_a_type = false;
+                self.with_struct_literals(true, Self::parse_struct_fields);
+                self.report_bracketless_case_subject_literal(first);
             } else {
                 break;
             }

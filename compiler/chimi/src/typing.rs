@@ -1821,6 +1821,9 @@ struct PatternContext<'a> {
     /// a failure-type pattern cannot select variants: only a whole subject or a
     /// `Failure` payload is expanded into variant tests.
     nested: bool,
+    /// The pattern sits inside a positional struct pattern whose `T4216` fix
+    /// already rewrites it, so its own `T4216` carries no overlapping fix.
+    rewritten_by_outer_fix: bool,
 }
 
 /// What an ordinary `case` was desugared from, when it was not written as one.
@@ -5056,6 +5059,7 @@ impl ProjectTypeChecker {
             generics,
             clause_head: clauses,
             nested: false,
+            rewritten_by_outer_fix: false,
         };
         let mut facts = subjects.to_vec();
         let mut success = None;
@@ -5649,8 +5653,42 @@ impl ProjectTypeChecker {
                         fields: vec![MatchPattern::Wildcard; arity],
                     };
                 }
-                if *form == CallForm::Positional {
-                    self.reject_positional_struct_pattern(module_id, pattern, arguments, *range);
+                let mut context = context;
+                if *form == CallForm::Positional
+                    && let Some(rejected) = self.reject_positional_struct_pattern(
+                        module_id,
+                        pattern,
+                        arguments,
+                        *range,
+                        context.rewritten_by_outer_fix,
+                    )
+                {
+                    context.rewritten_by_outer_fix |= rejected.fixed;
+                    // A bare `Money` is `Money { .. }`: it covers its whole
+                    // struct, so the rejection causes no field-count follow-on.
+                    if arguments.is_empty() && !rejected.arity_matches {
+                        for argument in arguments {
+                            self.normalize_pattern(
+                                module_id,
+                                argument,
+                                TypeId::new(0),
+                                PatternContext {
+                                    nested: true,
+                                    ..context
+                                },
+                                bindings,
+                            );
+                        }
+                        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern)
+                        else {
+                            return MatchPattern::Wildcard;
+                        };
+                        let arity = self.fields.get(&constructor).map_or(0, Vec::len);
+                        return MatchPattern::Constructor {
+                            tag: MatchTag::EnumVariant(constructor),
+                            fields: vec![MatchPattern::Wildcard; arity],
+                        };
+                    }
                 }
                 self.normalize_constructor_pattern(
                     module_id, pattern, arguments, *range, expected, context, bindings,
@@ -7437,6 +7475,7 @@ impl ProjectTypeChecker {
             generics,
             clause_head: false,
             nested: false,
+            rewritten_by_outer_fix: false,
         };
         let single = subjects.len() == 1;
         let failure_types = subjects
