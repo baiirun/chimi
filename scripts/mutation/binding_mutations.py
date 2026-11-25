@@ -1,6 +1,12 @@
 """Mutants of C bindings (G20, CHI-254): the handle table, value builders and
 results of the binding API, the descriptor wait, dispatch through the callee's
-binding, pay-for-play linking, and the interpreter's refusal.
+binding, pay-for-play linking, and the interpreter's refusal. The handle
+table is in Rust since CHI-309 part 2 (runtime/chimi-runtime/src/handles.rs),
+whose own unit-test mutants are in handle_slots_mutations.py. "Closing twice
+releases twice" was dropped there: with the generation moved on, a second close
+cannot find the slot, so "close does not bump the generation" covers it, and
+"a handle of another type is accepted" moved there, where a unit test of the
+C view catches it.
 
 Run: scripts/mutation/mutate.py scripts/mutation/binding_mutations.py
 Each mutant runs tests/bindings.rs, the end-to-end conformance.
@@ -15,6 +21,7 @@ CORE = "src/executable.rs"
 NATIVE = "src/backend/native.rs"
 EXEC = "src/execution.rs"
 OPS = "src/operations.rs"
+HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
 
 
 def mutant(name, file, edits, targets=("bindings",), filter=""):
@@ -22,21 +29,13 @@ def mutant(name, file, edits, targets=("bindings",), filter=""):
 
 
 MUTATIONS = [
-    mutant("close does not bump the generation", C, [(
-        "  if (++entry->generation != UINT32_MAX) {",
-        "  if (entry->generation != UINT32_MAX) {",
+    mutant("close does not bump the generation", HANDLES, [(
+        "        live.generation = generation.saturating_add(1);",
+        "        live.generation = generation;",
     )]),
-    mutant("a handle ignores its generation", C, [(
-        "  return entry->type != NULL && entry->generation == value->as.handle.generation ? entry : NULL;",
-        "  return entry->type != NULL ? entry : NULL;",
-    )]),
-    mutant("closing twice releases twice", C, [(
-        "  BindingHandleSlot *entry = value ? binding_handle_slot(value) : NULL;\n  if (entry != NULL && entry->type == type) release_binding_slot(entry, value->as.handle.slot);",
-        "  if (value != NULL && value->as.handle.slot < binding_handle_count) {\n    BindingHandleSlot *entry = &binding_handles[value->as.handle.slot];\n    if (entry->type == type) release_binding_slot(entry, value->as.handle.slot);\n  }",
-    )]),
-    mutant("a handle of another type is accepted", C, [(
-        "  return entry != NULL && entry->type == type ? entry->state : NULL;",
-        "  return entry != NULL ? entry->state : NULL;",
+    mutant("a handle ignores its generation", HANDLES, [(
+        "            Some(Slot::Open(live)) if live.generation == generation => Some(live),",
+        "            Some(Slot::Open(live)) => Some(live),",
     )]),
     mutant("Err loses its message", C, [(
         "    chimi_binding_make_text(call, message, message ? strlen(message) : 0),\n  };",
@@ -79,8 +78,8 @@ MUTATIONS = [
         "                .and_then(|binding| bindings.iter().position(|reached| *reached == binding))\n                .map_or(u32::MAX, |index| (index as u32).saturating_sub(1)),",
     )]),
     mutant("every package links whether reached or not", NATIVE, [(
-        "    for package in packages_for(&program.core.reached_bindings()) {",
-        "    let every = crate::operations::OPERATIONS.iter().filter_map(|operation| operation.binding).collect::<Vec<_>>();\n    for package in packages_for(&every) {",
+        "    for package in packages_for(&reached_bindings) {",
+        "    let reached_bindings = crate::operations::OPERATIONS.iter().filter_map(|operation| operation.binding).collect::<Vec<_>>();\n    for package in packages_for(&reached_bindings) {",
     )]),
     mutant("the binding archive key ignores the sources", "src/backend/runtime_archive_key.rs", [(
         "    for (name, text) in inputs.sources {\n        part(name.as_bytes());\n        part(text.as_bytes());\n    }",

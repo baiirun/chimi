@@ -240,8 +240,8 @@ step 3 must keep true.
 
 Native handles are counted in the same table (2026-11-20), and a handle
 whose count reaches zero is closed at once, on the carrier that dropped it,
-without a scheduler request. The binding handle table (`binding_handles`)
-is behind `binding_handle_lock`, and one binding call at a time runs on a
+without a scheduler request. The binding handle table (`binding_handles`; in Rust since CHI-309,
+`runtime/chimi-runtime/src/handles.rs`) is behind `binding_handle_lock`, and one binding call at a time runs on a
 handle (step 3 PR 5c-1), so a binding's own state needs no lock.
 
 Two tests check this step:

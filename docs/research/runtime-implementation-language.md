@@ -50,7 +50,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
    select and the process-kernel glue move next to the Rust scheduler, so
    each protocol has one owner in one language.
 4. **Handles and the binding call path:** the handle table, `BindingCall`,
-   and the shims with no C library under them.
+   and the shims with no C library under them. The shims (CHI-309 part 1)
+   and the handle slots (part 2) have moved. `BindingCall`'s argument
+   readers and value and result builders stay C for now: each reads
+   `ChimiValue` or allocates on the C heap, so they move with it in step 5.
 5. **Heap, collector and dispatch, together.** The allocator, young chunks,
    bump regions, marking, copy and transfer, and the `invoke_*` dispatch move
    as one unit, so allocation still inlines into the intrinsics that call it.

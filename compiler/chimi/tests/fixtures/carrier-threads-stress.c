@@ -197,8 +197,10 @@ static ChimiBindingResult *wait_between_runs(ChimiBindingCall *call, bool child)
   int waited = child ? chimi_binding_wait_child(call, 0, wait_child)
                      : chimi_binding_wait(call, 0, wait_pipe[0], CHIMI_BINDING_READABLE);
   CHECK(waited == CHIMI_BINDING_READY, "the wait failed: %d", waited);
-  CHECK(binding_handles[call->arguments[0]->as.handle.slot].runner == call,
-        "the call did not take its handle back after the wait");
+  pthread_mutex_lock(&binding_handle_lock);
+  const void *runner = chimi_handles_runner_v1(call->arguments[0]->as.handle.slot);
+  pthread_mutex_unlock(&binding_handle_lock);
+  CHECK(runner == call, "the call did not take its handle back after the wait");
   resource_run(resource, true);
   resource_run(resource, false);
   return chimi_binding_success(call, chimi_binding_void(call));
@@ -408,7 +410,10 @@ static void *pair_thread(void *raw_index) {
 }
 
 static Resource *pair_resource(size_t index) {
-  return binding_handles[(uint32_t)(pair_handles[index] >> 32)].state;
+  pthread_mutex_lock(&binding_handle_lock);
+  Resource *resource = chimi_handles_state_v1((uint32_t)(pair_handles[index] >> 32), (uint32_t)pair_handles[index], NULL);
+  pthread_mutex_unlock(&binding_handle_lock);
+  return resource;
 }
 
 static void one_call_runs_on_a_handle_at_a_time(void) {

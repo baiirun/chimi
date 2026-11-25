@@ -25,6 +25,8 @@ mod files_abi;
 pub mod float;
 mod float_abi;
 pub mod graphemes;
+pub mod handles;
+mod handles_abi;
 pub mod json;
 mod json_abi;
 pub mod metrics;
