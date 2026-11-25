@@ -261,6 +261,46 @@ fn cache_list(report: &str, field: &str) -> String {
         .to_owned()
 }
 
+// Guards: a sanitized build compiles the binding packages it reaches itself,
+// with the sanitizers, rather than take the prebuilt (unsanitized) archive.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sanitized_build_compiles_its_binding_packages() {
+    let scratch = Scratch::new(
+        "sanitized",
+        &suite("test \"adds\" {\n  BindingProbe.add(1, 2) |> Test.assert_equal(3)\n}\n"),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(scratch.path())
+        .env("CHIMI_TEST_RUNTIME_SANITIZE", "address,undefined")
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .args(["test", "cases.chimi"])
+        .output()
+        .expect("run chimi");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = build_report(&scratch);
+    assert!(
+        !cache_list(&report, "prebuilt").contains("libchimi_bind_probe.a"),
+        "{report}"
+    );
+    assert!(
+        cache_list(&report, "misses").contains("libchimi_bind_probe.a"),
+        "{report}"
+    );
+    let archive = scratch.path().join("target/chimi/cases/test/libchimi_bind_probe.a");
+    let symbols = Command::new("nm").arg(&archive).output().expect("run nm");
+    assert!(
+        String::from_utf8_lossy(&symbols.stdout).contains("__asan_"),
+        "the probe archive was compiled without AddressSanitizer"
+    );
+}
+
 #[test]
 fn a_program_links_a_binding_package_only_when_it_reaches_it() {
     // A sanitized build (CHIMI_TEST_RUNTIME_SANITIZE) compiles every binding
