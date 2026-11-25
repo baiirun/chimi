@@ -114,7 +114,7 @@ fn apply<A>(run: fn(A) -> A errors Failure needs Clock) -> A {
         type: (function_type
           (named_type name: (type_identifier))
           return_type: (named_type name: (type_identifier))
-          errors: (named_type name: (type_identifier))
+          (errors_clause errors: (named_type name: (type_identifier)))
           (requirement_clause (type_identifier)))))
     return_type: (return_type (named_type name: (type_identifier)))
     body: (block

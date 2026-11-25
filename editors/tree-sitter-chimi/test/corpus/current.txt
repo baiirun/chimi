@@ -1,0 +1,446 @@
+==================
+Import with an alias and members
+==================
+
+import std/clock as Clock.{Clock, Instant}
+
+---
+
+(source_file
+  (import_declaration
+    (module_path
+      (identifier)
+      (identifier))
+    (identifier)
+    (identifier)
+    (identifier)))
+
+==================
+Type alias of a record type
+==================
+
+pub type Pair<T> = { left: T, right: T }
+
+---
+
+(source_file
+  (type_alias_declaration
+    (visibility)
+    (identifier)
+    (generic_parameters
+      (identifier))
+    (record_type
+      (field
+        (identifier)
+        (named_type
+          (type_identifier)))
+      (field
+        (identifier)
+        (named_type
+          (type_identifier))))))
+
+==================
+Native type and native function with a failure row
+==================
+
+pub native type Set<T>
+
+pub native fn render<T>(value: T) -> Text errors RenderError | IoError needs Clock
+
+---
+
+(source_file
+  (native_type_declaration
+    (visibility)
+    (identifier)
+    (generic_parameters
+      (identifier)))
+  (native_function_declaration
+    (visibility)
+    (identifier)
+    (generic_parameters
+      (identifier))
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (errors_clause
+      (union_type
+        (named_type
+          (type_identifier))
+        (named_type
+          (type_identifier))))
+    (requirement_clause
+      (type_identifier))))
+
+==================
+Needs group and a needs clause naming another module's group
+==================
+
+pub needs Store { db: Database, clock: Clock }
+
+fn save(order: Order) -> Void needs Orders.Store + Clock {
+  order
+}
+
+---
+
+(source_file
+  (needs_group_declaration
+    (visibility)
+    (type_identifier)
+    (requirement_record
+      (field
+        (identifier)
+        (named_type
+          (type_identifier)))
+      (field
+        (identifier)
+        (named_type
+          (type_identifier)))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (void_type))
+    (requirement_clause
+      (requirement_group_name
+        (identifier)
+        (type_identifier))
+      (type_identifier))
+    (block
+      (identifier))))
+
+==================
+Process name
+==================
+
+pub process name worker: Message
+
+---
+
+(source_file
+  (process_name_declaration
+    (visibility)
+    (identifier)
+    (named_type
+      (type_identifier))))
+
+==================
+Test block
+==================
+
+test "adds" {
+  Test.assert_equal(1 + 1, 2)
+}
+
+---
+
+(source_file
+  (test_declaration
+    (text
+      (text_content))
+    (block
+      (call_expression
+        (member_expression
+          (identifier)
+          (identifier))
+        (arguments
+          (argument
+            (binary_expression
+              (integer)
+              (integer)))
+          (argument
+            (integer)))))))
+
+==================
+Struct literals by field name
+==================
+
+fn build(base: Config) -> Config {
+  let point = Point { x: 1, y: 2 }
+  let marker = Marker {}
+  Settings.Config { ..base, jobs: 4 }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (let_binding
+        (identifier)
+        (struct_expression
+          (type_identifier)
+          (struct_fields
+            (record_field
+              (identifier)
+              (integer))
+            (record_field
+              (identifier)
+              (integer)))))
+      (let_binding
+        (identifier)
+        (struct_expression
+          (type_identifier)
+          (struct_fields)))
+      (struct_expression
+        (qualified_type_name
+          (identifier)
+          (type_identifier))
+        (struct_fields
+          (record_spread
+            (identifier))
+          (record_field
+            (identifier)
+            (integer)))))))
+
+==================
+Struct patterns
+==================
+
+fn origin(point: Point) -> Bool {
+  case point {
+    Point { x: 0, y: 0 } -> True
+    Geo.Point { x: x, .. } -> x == 0
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (case_expression
+        (identifier)
+        (case_arm
+          (struct_pattern
+            (identifier)
+            (field_pattern
+              (identifier)
+              (integer))
+            (field_pattern
+              (identifier)
+              (integer)))
+          (boolean))
+        (case_arm
+          (struct_pattern
+            (identifier)
+            (identifier)
+            (field_pattern
+              (identifier)
+              (constructor_pattern
+                (identifier)))
+            (rest_pattern))
+          (binary_expression
+            (identifier)
+            (integer)))))))
+
+==================
+A case subject keeps its arms
+==================
+
+fn name(value: Value) -> Text {
+  case value {
+    error: FileError -> describe(error)
+    Text(text) -> text
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (case_expression
+        (identifier)
+        (case_arm
+          (typed_pattern
+            (identifier)
+            (named_type
+              (type_identifier)))
+          (call_expression
+            (identifier)
+            (arguments
+              (argument
+                (identifier)))))
+        (case_arm
+          (constructor_pattern
+            (identifier)
+            (constructor_pattern
+              (identifier)))
+          (identifier))))))
+
+==================
+A struct literal before a loop body
+==================
+
+fn walk(tree: Tree) -> Int {
+  loop state = Walk { tree: tree, depth: 0 } {
+    break state.depth
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (loop_expression
+        (identifier)
+        (struct_expression
+          (type_identifier)
+          (struct_fields
+            (record_field
+              (identifier)
+              (identifier))
+            (record_field
+              (identifier)
+              (integer))))
+        (block
+          (break_expression
+            (member_expression
+              (identifier)
+              (identifier))))))))
+
+==================
+Arms that start like a continuation of the previous arm
+==================
+
+fn status(ended: (Int, Int), message: Message) -> Int {
+  case ended {
+    (0, code) -> exited(code)
+    (_, signal) -> signal
+  }
+  case message {
+    Message.Quit -> break
+    Message.Ping -> 1
+    -2 -> 2
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (tuple_type
+          (named_type
+            (type_identifier))
+          (named_type
+            (type_identifier))))
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (case_expression
+        (identifier)
+        (case_arm
+          (tuple_pattern
+            (integer)
+            (constructor_pattern
+              (identifier)))
+          (call_expression
+            (identifier)
+            (arguments
+              (argument
+                (identifier)))))
+        (case_arm
+          (tuple_pattern
+            (constructor_pattern
+              (identifier))
+            (constructor_pattern
+              (identifier)))
+          (identifier)))
+      (case_expression
+        (identifier)
+        (case_arm
+          (constructor_pattern
+            (identifier)
+            (identifier))
+          (break_expression))
+        (case_arm
+          (constructor_pattern
+            (identifier)
+            (identifier))
+          (integer))
+        (case_arm
+          (negative_literal
+            (integer))
+          (integer))))))
+
+==================
+Using a provider value
+==================
+
+fn main() -> Void {
+  run(job) using providers
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (return_type
+      (void_type))
+    (block
+      (using_expression
+        (call_expression
+          (identifier)
+          (arguments
+            (argument
+              (identifier))))
+        (identifier)))))

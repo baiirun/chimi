@@ -3,6 +3,12 @@
   "fn" @context
   name: (identifier) @name) @item
 
+(native_function_declaration
+  (visibility)? @context
+  "native" @context
+  "fn" @context
+  name: (identifier) @name) @item
+
 (const_declaration
   (visibility)? @context
   "const" @context
@@ -26,3 +32,29 @@
 (variant name: (identifier) @name) @item
 
 (field name: (identifier) @name) @item
+
+(type_alias_declaration
+  (visibility)? @context
+  "type" @context
+  name: (identifier) @name) @item
+
+(native_type_declaration
+  (visibility)? @context
+  "native" @context
+  "type" @context
+  name: (identifier) @name) @item
+
+(needs_group_declaration
+  (visibility)? @context
+  "needs" @context
+  name: (type_identifier) @name) @item
+
+(process_name_declaration
+  (visibility)? @context
+  "process" @context
+  "name" @context
+  name: (identifier) @name) @item
+
+(test_declaration
+  "test" @context
+  name: (text) @name) @item
