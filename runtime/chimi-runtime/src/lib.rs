@@ -16,8 +16,11 @@ pub mod decimal;
 mod decimal_abi;
 pub mod duration;
 mod duration_abi;
+pub mod graphemes;
 pub mod json;
 mod json_abi;
+pub mod text;
+mod text_abi;
 mod text_buffer;
 
 pub use text_buffer::TextBuffer;

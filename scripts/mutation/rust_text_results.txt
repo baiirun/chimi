@@ -1,0 +1,17 @@
+# mutation run at efbbe1e (corpus seeded after the first run's survivor; first 5 from the run at 93c4313)
+# rust_text_mutations.py: 14 mutants against compiler/chimi
+KILLED       ideographic space is not white space [runtime_fuzz] (55s)
+KILLED       no-break space is not white space [runtime_fuzz] (53s)
+KILLED       trim_end trims the start [runtime_fuzz] (53s)
+KILLED       uppercase lowercases [runtime_fuzz] (52s)
+KILLED       CR LF splits [runtime_fuzz] (67s)
+KILLED       spacing marks start a cluster [runtime_fuzz] (52s)
+KILLED       Hangul LV T splits [runtime_fuzz] (53s)
+KILLED       regional indicators pair wrongly [runtime_fuzz] (52s)
+KILLED       emoji ZWJ sequences split [runtime_fuzz] (67s)
+KILLED       conjuncts split [runtime_fuzz] (68s)
+KILLED       property lookup one range late [runtime_fuzz] (54s)
+KILLED       C trim keeps the start [runtime_fuzz] (52s)
+KILLED       C case map drops the last byte [runtime_fuzz] (49s)
+KILLED       C graphemes drop the last cluster [runtime_fuzz] (49s)
+# result: every mutant killed
