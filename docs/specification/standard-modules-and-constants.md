@@ -124,7 +124,7 @@ module qualifier.
 A standard module implements runtime-backed behavior with two declaration
 forms. Each is an ordinary declaration with the `native` modifier and no body:
 
-<!-- chimi: pending ep-a6f138 ts-facbbe -->
+<!-- chimi: pending ep-a6f138 -->
 ```chimi
 // std/map.chimi
 pub native type Map<K, V>
@@ -242,7 +242,9 @@ test suite MUST verify them for the whole tree:
 - every runtime-known declaration exists with the registered shape (`N3105`).
 
 `chimi std check` runs the whole-tree verification without building a
-program.
+program. A tree that lacks a module whose operations are registered reports
+that module once ("module std/exec is missing from the tree"), not once per
+operation.
 
 ### Host operations stay behind providers
 

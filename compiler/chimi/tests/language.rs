@@ -24,13 +24,17 @@ fn scratch_directory(name: &str) -> PathBuf {
 }
 
 fn interpreter_outcome(source: &Path) -> String {
+    let outcome_file = source.with_extension("interpreter-outcome.jsonl");
+    let _ = std::fs::remove_file(&outcome_file);
     let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
         .arg("run")
         .arg(source)
+        .arg(format!("--outcome-file={}", outcome_file.display()))
         .output()
         .expect("run the reference interpreter");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let outcome = stdout
+    let recorded = std::fs::read_to_string(&outcome_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&outcome_file);
+    let outcome = recorded
         .lines()
         .last()
         .unwrap_or_else(|| {
@@ -40,8 +44,9 @@ fn interpreter_outcome(source: &Path) -> String {
             )
         })
         .to_owned();
-    // `chimi run` reports every outcome on stdout and exits as a native runner
-    // does for it; any other status means the compiler or interpreter failed.
+    // `chimi run` records every outcome in its outcome file and exits as a
+    // native runner does for it; any other status means the compiler or
+    // interpreter failed.
     assert_eq!(
         output.status.code(),
         Some(outcome_exit_code(&outcome)),
@@ -49,6 +54,28 @@ fn interpreter_outcome(source: &Path) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     outcome
+}
+
+/// Runs `chimi run <input>` under `--trace=full` and returns its output with
+/// `stdout` replaced by the trace followed by the outcome record, read from
+/// the sink files it wrote beside `scratch`.
+fn interpreter_trace(scratch: &Path, input: &[&std::ffi::OsStr]) -> std::process::Output {
+    let telemetry = scratch.join("interpreter-trace.jsonl");
+    let outcome = scratch.join("interpreter-outcome.jsonl");
+    let _ = std::fs::remove_file(&telemetry);
+    let _ = std::fs::remove_file(&outcome);
+    let mut output = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .arg("run")
+        .args(input)
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .output()
+        .expect("run the reference interpreter");
+    let mut records = std::fs::read(&telemetry).unwrap_or_default();
+    records.extend(std::fs::read(&outcome).unwrap_or_default());
+    output.stdout = records;
+    output
 }
 
 /// The exit status runtime-output-channels.md assigns to an outcome record.
@@ -3666,6 +3693,53 @@ fn struct_fields_are_private_to_their_declaring_module() {
     );
 }
 
+// CHI-311: a `using` provider supplies interface members through its fields,
+// so a struct from another module, whose fields are private there, cannot be
+// one; its own module may still provide it, and a record always may.
+#[test]
+fn a_struct_from_another_module_cannot_provide_through_private_fields() {
+    let store = concat!(
+        "pub interface Greeter {\n",
+        "  greet: fn() -> Text\n",
+        "}\n",
+        "pub struct Store {\n",
+        "  greet: fn() -> Text\n",
+        "}\n",
+        "fn secret() -> Text { \"secret\" }\n",
+        "pub fn make() -> Store { Store { greet: secret } }\n",
+        "pub fn hello() -> Text needs { greeter: Greeter } { greeter.greet() }\n",
+        "pub fn own() -> Text { hello() using { greeter: make() } }\n",
+        "pub fn whole() -> Text needs { store: Store } { \"whole\" }\n",
+    );
+    let main = |provider: &str| {
+        format!(
+            "import store as Store\n\
+             fn secret() -> Text {{ \"mine\" }}\n\
+             pub fn main() -> Text {{ Store.hello() using {{ greeter: {provider} }} }}\n"
+        )
+    };
+    assert_eq!(project_codes(&[("main", &main("Store.make()")), ("store", store)]), ["T4213"]);
+    assert_eq!(
+        project_codes(&[("main", &main("{ greet: secret }")), ("store", store)]),
+        Vec::<String>::new()
+    );
+    // A need written as the struct itself takes the value whole and reads no
+    // field, so a foreign module may supply it.
+    let whole = "import store as Store\npub fn main() -> Text { Store.whole() using { store: Store.make() } }\n";
+    assert_eq!(project_codes(&[("main", whole), ("store", store)]), Vec::<String>::new());
+    let module = |path: &str, source: &str| {
+        ProjectSource::new(path, SourceSnapshot::from_text(format!("{path}.chimi"), source))
+            .expect("valid module path")
+    };
+    let report = Compiler::type_project(vec![module("main", &main("Store.make()")), module("store", store)]);
+    assert_eq!(
+        report.diagnostics()[0].message(),
+        "provider `greeter` is a `Store`, whose fields are private to its module, so it cannot \
+         supply member `greet` here; pass a record, as `{ greet: ... }`, or let `Store`'s module \
+         provide it"
+    );
+}
+
 /// Runs a multi-module project rooted at a scratch directory on both execution paths.
 /// `modules` pairs a module path such as `app/main` with its source; the first is the entry.
 fn run_both_project(name: &str, modules: &[(&str, &str)]) -> String {
@@ -3678,13 +3752,10 @@ fn run_both_project(name: &str, modules: &[(&str, &str)]) -> String {
         assert_formatter_round_trips(source);
     }
     let entry = modules[0].0;
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg("--root")
-        .arg(&root)
-        .arg(entry)
-        .output()
-        .expect("run the reference interpreter");
+    let interpreted = interpreter_trace(
+        &scratch,
+        &["--root".as_ref(), root.as_os_str(), entry.as_ref()],
+    );
     let interpreted = String::from_utf8_lossy(&interpreted.stdout)
         .lines()
         .last()
@@ -4213,11 +4284,7 @@ fn referencing_a_constant_runs_none_of_its_initializer() {
     let scratch = scratch_directory("constant-trace");
     let path = scratch.join("main.chimi");
     std::fs::write(&path, source).unwrap();
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run the reference interpreter");
+    let interpreted = interpreter_trace(path.parent().unwrap(), &[path.as_os_str()]);
     let interpreted = String::from_utf8_lossy(&interpreted.stdout).into_owned();
     let executable = scratch.join("program");
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -7404,11 +7471,7 @@ fn a_clause_call_traces_one_call_and_one_match() {
     let scratch = scratch_directory("clause-trace");
     let path = scratch.join("main.chimi");
     std::fs::write(&path, source).unwrap();
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run the reference interpreter");
+    let interpreted = interpreter_trace(path.parent().unwrap(), &[path.as_os_str()]);
     let interpreted = String::from_utf8_lossy(&interpreted.stdout).into_owned();
     let executable = scratch.join("program");
     let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
@@ -14364,11 +14427,7 @@ pub fn main() -> Void needs { console: Console } { f() using { console: console 
     let scratch = scratch_directory("host-need-one-call");
     let path = scratch.join("main.chimi");
     std::fs::write(&path, source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run the reference interpreter");
+    let output = interpreter_trace(path.parent().unwrap(), &[path.as_os_str()]);
     let calls = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| line.contains("\"event\":\"dependency_called\""))
@@ -14711,4 +14770,56 @@ fn a_record_fits_an_interface_but_a_struct_does_not() {
         .map(|diagnostic| diagnostic.code().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(codes, ["T4203"]);
+}
+
+// CHI-234: a list element, case arm or call argument whose function type does not join with
+// the earlier ones is one error, and the failed join binds nothing. Before, the
+// join unified `pick`'s input with `Text` and then failed on the results, so
+// `items` was left a `List<Text>` and the next line failed too.
+#[test]
+fn a_failed_function_join_binds_nothing() {
+    let program = |alternatives: &str| {
+        format!(
+            concat!(
+                "fn same<A>(items: List<A>) -> fn(A) -> A {{\n",
+                "  fn(value: A) {{ value }}\n",
+                "}}\n",
+                "fn count(text: Text) -> Int {{\n",
+                "  0\n",
+                "}}\n",
+                "pub fn main() -> Int {{\n",
+                "  let items = []\n",
+                "  let pick = same(items)\n",
+                "{}",
+                "  let numbers: List<Int> = items\n",
+                "  0\n",
+                "}}\n",
+            ),
+            alternatives
+        )
+    };
+    let listed = diagnostics_of(&program("  let chosen = [pick, count]\n"));
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].0, "T4203");
+    assert!(listed[0].1.contains("list element"), "{listed:?}");
+    let armed = diagnostics_of(&program(concat!(
+        "  let chosen = case True {\n",
+        "    True -> pick\n",
+        "    False -> count\n",
+        "  }\n",
+    )));
+    assert_eq!(armed.len(), 1, "{armed:?}");
+    assert_eq!(armed[0].0, "T4203");
+    // Two call arguments for one generic: the failed unify of the second with
+    // the first binds nothing either, so the error names the written types.
+    let called = diagnostics_of(&format!(
+        "fn both<B>(first: B, second: B) -> Int {{\n  0\n}}\n{}",
+        program("  let chosen = both(pick, count)\n")
+    ));
+    assert_eq!(called.len(), 1, "{called:?}");
+    assert_eq!(called[0].0, "T4203");
+    assert!(!called[0].1.contains("fn(Text) -> Text"), "{called:?}");
+    // The same program without the clashing alternative checks cleanly, so
+    // the one error above is the clash itself.
+    assert!(check_codes(&program("  let chosen = [pick]\n")).is_empty());
 }
