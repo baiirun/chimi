@@ -6684,6 +6684,49 @@ fn native_process_programs_build_and_an_unregistered_name_is_unavailable() {
 // - Recursion 100,000 calls deep overflows the body's stack. The incarnation ends
 //   `defected` with defect "Process stack overflow", and main still finishes.
 // - A body that divides by zero ends `defected` with its own defect message.
+// A root that deadlocks after a process defected names that defect: the
+// body's own message, or "Process stack overflow" for a body that overflowed
+// its stack and never returned (CHI-308 step 3: the message travels through
+// the scheduler's defect report).
+#[test]
+fn native_a_deadlocked_root_names_the_last_process_defect() {
+    let scratch = scratch_directory("native-process-defect-suffix");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("program");
+    std::fs::write(&source, "import std/int as Int\nimport std/channel as Channel\nimport std/channel.{Receive}\nimport std/clock as Clock\nimport std/clock.{Clock}\nimport std/duration as Duration\nimport std/process as Process\nimport std/supervisor as Supervisor\nimport std/process.{Inbox}\nimport std/list as List\npub enum Message {\n  Deep(depth: Int)\n}\npub process name worker: Message\nfn deep(n: Int) -> Int {\n  case n {\n    0 -> 0\n    _ -> 1 + deep(n - 1)\n  }\n}\nfn work(inbox: Inbox<Message>) -> Void {\n  loop last = 0 {\n    case Process.receive(inbox) {\n      Message.Deep(depth) -> case depth {\n        0 -> 1 / depth\n        _ -> deep(depth)\n      }\n    }\n  }\n}\npub fn main(arguments: List<Text>) -> Int needs { clock: Clock } {\n  let depth = case List.first(arguments) {\n    Some(text) -> Int.parse(text)\n    None -> 0\n  }\n  let member = Process.spec(work, 2, Duration.seconds(1))\n    |> Process.register(worker)\n    |> Supervisor.process(Supervisor.Restart.Never)\n  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))\n  Process.send(worker, Message.Deep(depth))\n  Clock.sleep(Duration.milliseconds(1))\n  let never = Channel.bounded(1)\n  let next = Channel.receive(never.receiver)\n  case next {\n    Receive.Received(value) -> value\n    Receive.Drained -> 0\n  }\n}\n").unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    for (depth, defect) in [
+        ("0", "defected: integer division by zero in `/`: 1 / 0\""),
+        ("100000", "defected: Process stack overflow\""),
+    ] {
+        let outcome = scratch.join(format!("outcome-{depth}.json"));
+        let run = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg("--clock=virtual")
+            .arg("--trace=off")
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg("--")
+            .arg(depth)
+            .output()
+            .unwrap();
+        assert_eq!(run.status.code(), Some(70), "depth {depth}: {run:?}");
+        let written = std::fs::read_to_string(&outcome).unwrap();
+        assert!(
+            written.contains("virtual-time deadlock")
+                && written.contains(&format!("process incarnation 1 of membership 1 {defect}")),
+            "depth {depth}: {written}"
+        );
+    }
+}
+
 #[test]
 fn native_process_stack_depth_and_named_defects() {
     let scratch = scratch_directory("native-process-stack");

@@ -335,9 +335,13 @@ fn receive(channel: Channel) -> Option<(u32, i64)> {
     call(&mut request).then_some((request.status, request.value))
 }
 
+/// Drops a value naming `channel` that was its last (the host counts none
+/// of the fixtures' endpoints), then makes a request, which carries the
+/// release: its status.
 fn release(channel: Channel) -> u32 {
-    let mut request = blank(REQUEST_CHANNEL_RELEASE);
-    request.channel = channel.channel;
+    crate::handles::chimi_fiber_handle_retain(channel.channel);
+    crate::handles::chimi_fiber_handle_drop(channel.channel);
+    let mut request = blank(REQUEST_TIMER_NOW);
     call(&mut request);
     request.status
 }

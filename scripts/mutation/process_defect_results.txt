@@ -1,0 +1,11 @@
+# mutation run at fd2521af0c213ba4cb52f73a97c88b74b004cc6d
+# process_defect_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [cli -- native_process_stack_depth_and_named_defects] (59s)
+BASELINE ok  [cli -- native_a_deadlocked_root_names_the_last_process_defect] (1s)
+KILLED       a defected body reports nothing [cli -- native_process_stack_depth_and_named_defects] (49s)
+KILLED       the report ignores the body's message [cli -- native_process_stack_depth_and_named_defects] (50s)
+KILLED       a stack overflow is not named [cli -- native_a_deadlocked_root_names_the_last_process_defect] (49s)
+KILLED       the scheduler drops a reported message [cli -- native_process_stack_depth_and_named_defects] (53s)
+KILLED       an incarnation does not keep its message [cli -- native_process_stack_depth_and_named_defects] (52s)
+KILLED       the termination record carries no message [cli -- native_process_stack_depth_and_named_defects] (53s)
+# result: every mutant killed
