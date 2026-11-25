@@ -263,6 +263,12 @@ fn cache_list(report: &str, field: &str) -> String {
 
 #[test]
 fn a_program_links_a_binding_package_only_when_it_reaches_it() {
+    // A sanitized build (CHIMI_TEST_RUNTIME_SANITIZE) compiles every binding
+    // package itself rather than use the prebuilt archives this test checks.
+    if std::env::var_os("CHIMI_TEST_RUNTIME_SANITIZE").is_some() {
+        eprintln!("skipped: a sanitized build never uses prebuilt binding packages");
+        return;
+    }
     let reaching = Scratch::new(
         "reaching",
         &suite("test \"adds\" {\n  BindingProbe.add(1, 2) |> Test.assert_equal(3)\n}\n"),

@@ -78,6 +78,11 @@ fn native_list_matches_a_model_under_random_operations() {
     let sanitized = compile(&executable, SANITIZERS);
     let sanitizers = if sanitized.status.success() {
         "address,undefined"
+    } else if cfg!(target_os = "linux") {
+        panic!(
+            "native list fuzz: AddressSanitizer and UndefinedBehaviorSanitizer are required on Linux, but the build failed:\n{}",
+            String::from_utf8_lossy(&sanitized.stderr)
+        );
     } else {
         let plain = compile(&executable, &[]);
         assert!(

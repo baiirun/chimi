@@ -7,6 +7,14 @@ fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}.chimi", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Whether this run builds native programs with sanitizers
+/// (`CHIMI_TEST_RUNTIME_SANITIZE`): such a build compiles its own runtime
+/// instead of the prebuilt one and links the sanitizer libraries, so checks of
+/// the prebuilt archive and of executable size do not apply.
+fn sanitized_runtime() -> bool {
+    std::env::var_os("CHIMI_TEST_RUNTIME_SANITIZE").is_some()
+}
+
 fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -261,7 +269,7 @@ fn build_links_a_runnable_executable_and_reports_its_artifacts() {
     assert!(report.contains("\"dynamic_dependencies\":["));
     assert!(executable.is_file());
     assert!(
-        std::fs::metadata(&executable).unwrap().len() < 1024 * 1024,
+        sanitized_runtime() || std::fs::metadata(&executable).unwrap().len() < 1024 * 1024,
         "an ordinary binary must not retain the unused fiber runtime"
     );
 
@@ -2725,6 +2733,10 @@ fn cached_archives(scratch: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_fresh_project_links_the_compilers_prebuilt_runtime_without_compiling_it() {
+    if sanitized_runtime() {
+        eprintln!("skipped: a sanitized build never uses the prebuilt runtime");
+        return;
+    }
     let scratch = scratch_directory("prebuilt-runtime");
     let project = write_two_module_project(&scratch);
     let executable = scratch.join("app");
@@ -4113,6 +4125,12 @@ fn native_per_owner_heaps_meet_the_prototype_heap_contracts() {
         "-DCHIMI_POISON_YOUNG_CHUNKS",
     ]);
     if !sanitized.status.success() {
+        if cfg!(target_os = "linux") {
+            panic!(
+                "AddressSanitizer and UndefinedBehaviorSanitizer are required on Linux, but the build failed:\n{}",
+                String::from_utf8_lossy(&sanitized.stderr)
+            );
+        }
         let plain = compile(&["-DCHIMI_POISON_YOUNG_CHUNKS"]);
         assert!(
             plain.status.success(),

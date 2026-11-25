@@ -174,7 +174,8 @@ pub fn binding_archive_key(inputs: &BindingArchiveInputs<'_>) -> String {
 /// `.c` file (several at once) with the package's flags and `-I
 /// header_directory` for `chimi_binding.h`, and archives the objects in path
 /// order. The build script and `chimi build` both call this, so a prebuilt
-/// archive and a per-project one come from the same commands.
+/// archive and a per-project one come from the same commands. `extra_flags`
+/// follow `RUNTIME_C_FLAGS`; only a test build of `chimi build` passes any.
 #[allow(dead_code)]
 pub fn compile_binding_archive(
     package: &str,
@@ -182,6 +183,7 @@ pub fn compile_binding_archive(
     header_directory: &std::path::Path,
     directory: &std::path::Path,
     archive: &std::path::Path,
+    extra_flags: &[String],
 ) -> Result<(), String> {
     // A fresh directory, so a file removed from the package is not compiled.
     let _ = std::fs::remove_dir_all(directory);
@@ -245,6 +247,7 @@ pub fn compile_binding_archive(
                     }
                     let output = std::process::Command::new(RUNTIME_C_COMPILER)
                         .args(RUNTIME_C_FLAGS)
+                        .args(extra_flags)
                         .arg("-I")
                         .arg(header_directory)
                         .arg("-I")

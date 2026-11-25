@@ -1,0 +1,214 @@
+" 1"	a=none
+"#7."	a=none
+"+1"	a=none
+"-0"	a="0"
+"-0.501\x0a2"	a="-0.501" b="2" add="1.499" subtract="-2.501" multiply="-1.002" divide(6,3)="-0.250500"
+"-01.5666660002583880011312256666666008488\x0a25"	a="-1.5666660002583880011312256666666008488" b="25" add=none subtract=none multiply=none divide(6,3)="-0.062666"
+"-09.5666660002583880011312256666666008488\x0a25.8"	a="-9.5666660002583880011312256666666008488" b="25.8" add=none subtract=none multiply=none divide(6,3)="-0.370801"
+"-1220258388003880013122566666668.5\x0a0.5022583"	a="-1220258388003880013122566666668.5" b="0.5022583" add="-1220258388003880013122566666667.9977417" subtract="-1220258388003880013122566666669.0022583" multiply="-612884903519569168794918025637.58747355" divide(6,3)="-2429543499836398946762187238455.790576"
+"-12202583880038800131225666666682\x0a-59.80022291"	a="-12202583880038800131225666666682" b="-59.80022291" add=none subtract=none multiply=none divide(6,3)="204055825985863371612399674693.486858"
+"-12202583880038800131225666666682\x0a5.8022583"	a="-12202583880038800131225666666682" b="5.8022583" add=none subtract=none multiply=none divide(6,3)="-2103074914820458808465260270588.436230"
+"-1\x0a-0"	a="-1" b="0" add="-1" subtract="-1" multiply="0"
+"-1\x0a-2"	a="-1" b="-2" add="-3" subtract="1" multiply="2" divide(6,3)="0.500000"
+"-2.50\x0a7"	a="-2.50" b="7" add="4.50" subtract="-9.50" multiply="-17.50" divide(6,3)="-0.357142"
+"-2.5\x0a1"	a="-2.5" b="1" add="-1.5" subtract="-3.5" multiply="-2.5" divide(6,3)="-2.500000"
+"-51\x0a27"	a="-51" b="27" add="-24" subtract="-78" multiply="-1377" divide(6,3)="-1.888888"
+"-5\x0a-3"	a="-5" b="-3" add="-8" subtract="-2" multiply="15" divide(6,3)="1.666667"
+"-5\x0a0"	a="-5" b="0" add="-5" subtract="-5" multiply="0"
+"-7\x0a2"	a="-7" b="2" add="-5" subtract="-9" multiply="-14" divide(6,3)="-3.500000"
+"-8"	a="-8"
+"-\x0a-2"	a=none b="-2"
+"-\x0a1"	a=none b="1"
+"."	a=none
+"..\x0a.."	a=none b=none
+".220"	a=none
+".5"	a=none
+"0"	a="0"
+"0-pp\x00\x00\x00\x00pppppppppppppppppppppppp"	a=none
+"0.00000000000000000000000000000000000001\x0a3"	a="0.00000000000000000000000000000000000001" b="3" add=none subtract=none multiply="0.00000000000000000000000000000000000003" divide(9,6)="0.000000000"
+"0.0000000000907522161121007522956662812666"	a=none
+"0.00000000009075221611210075229\x0a5.802256662812666"	a="0.00000000009075221611210075229" b="5.802256662812666" add="5.80225666290341821611210075229" subtract="-5.80225666272191378388789924771" multiply=none divide(9,6)="0.000000000"
+"0.0000000\x0a5"	a="0.0000000" b="5" add="5.0000000" subtract="-5.0000000" multiply="0.0000000" divide(9,6)="0.000000000"
+"0.156666666665\x0a5"	a="0.156666666665" b="5" add="5.156666666665" subtract="-4.843333333335" multiply="0.783333333325" divide(9,6)="0.031333333"
+"0.2"	a="0.2"
+"0.50\x0a0.2"	a="0.50" b="0.2" add="0.70" subtract="0.30" multiply="0.100" divide(9,6)="2.500000000"
+"0.56666665\x0a2"	a="0.56666665" b="2" add="2.56666665" subtract="-1.43333335" multiply="1.13333330" divide(9,6)="0.283333325"
+"0.566666665\x0a2"	a="0.566666665" b="2" add="2.566666665" subtract="-1.433333335" multiply="1.133333330" divide(9,6)="0.283333332"
+"0.5\x0a0.5"	a="0.5" b="0.5" add="1.0" subtract="0.0" multiply="0.25" divide(9,6)="1.000000000"
+"01"	a="1"
+"01\x0a6"	a="1" b="6" add="7" subtract="-5" multiply="6" divide(9,6)="0.166666667"
+"0\x0a-0"	a="0" b="0" add="0" subtract="0" multiply="0"
+"0\x0a0"	a="0" b="0" add="0" subtract="0" multiply="0"
+"0\x0a8"	a="0" b="8" add="8" subtract="-8" multiply="0" divide(9,6)="0.000000000"
+"0\x0a\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"	a="0" b=none
+"1 "	a=none
+"1."	a=none
+"1..2"	a=none
+"1.002583880013122808488\x0a5025838.801312280258388001312280848"	a="1.002583880013122808488" b="5025838.801312280258388001312280848" add="5025839.803896160271510809800280848" subtract="-5025837.798728400245265192824280848" multiply=none divide(10,0)="0.0000001994"
+"1.0\x0a."	a="1.0" b=none
+"1.15554\x0a5"	a="1.15554" b="5" add="6.15554" subtract="-3.84446" multiply="5.77770" divide(10,0)="0.2311080000"
+"1.1555\x0a55"	a="1.1555" b="55" add="56.1555" subtract="-53.8445" multiply="63.5525" divide(10,0)="0.0210090909"
+"1.155666666665\x0a50"	a="1.155666666665" b="50" add="51.155666666665" subtract="-48.844333333335" multiply="57.783333333250" divide(10,0)="0.0231133333"
+"1.1556666666666666665\x0a550"	a="1.1556666666666666665" b="550" add="551.1556666666666666665" subtract="-548.8443333333333333335" multiply="635.6166666666666665750" divide(10,0)="0.0021012121"
+"1.15666650"	a="1.15666650"
+"1.500000000000020488512\x0a5025838.0004001061568225725633053730537"	a="1.500000000000020488512" b="5025838.0004001061568225725633053730537" add="5025839.5004001061568430610753053730537" subtract="-5025836.5004001061568020840513053730537" multiply=none divide(10,0)="0.0000002984"
+"1.500\x0a4"	a="1.500" b="4" add="5.500" subtract="-2.500" multiply="6.000" divide(10,0)="0.3750000000"
+"1.50\x0a-"	a="1.50" b=none
+"1.50\x0a-0.25"	a="1.50" b="-0.25" add="1.25" subtract="1.75" multiply="-0.3750" divide(10,0)="-6.0000000000"
+"1.50\x0a-554"	a="1.50" b="-554" add="-552.50" subtract="555.50" multiply="-831.00" divide(10,0)="-0.0027075812"
+"1.566366665\x0a102"	a="1.566366665" b="102" add="103.566366665" subtract="-100.433633335" multiply="159.769399830" divide(10,0)="0.0153565359"
+"1.566366665\x0a551"	a="1.566366665" b="551" add="552.566366665" subtract="-549.433633335" multiply="863.068032415" divide(10,0)="0.0028427707"
+"1.5666660002583880011312256666666008488\x0a28"	a="1.5666660002583880011312256666666008488" b="28" add=none subtract=none multiply=none divide(10,0)="0.0559523571"
+"1.5666660002583880013122808488\x0a502583880013122808488"	a="1.5666660002583880013122808488" b="502583880013122808488" add=none subtract=none multiply=none divide(10,0)="0.0000000000"
+"1.566666002666002583880013122808488\x0a5"	a="1.566666002666002583880013122808488" b="5" add="6.566666002666002583880013122808488" subtract="-3.433333997333997416119986877191512" multiply="7.833330013330012919400065614042440" divide(10,0)="0.3133332005"
+"1.56666662665\x0a1"	a="1.56666662665" b="1" add="2.56666662665" subtract="0.56666662665" multiply="1.56666662665" divide(10,0)="1.5666666266"
+"1.566666665\x0a0"	a="1.566666665" b="0" add="1.566666665" subtract="1.566666665" multiply="0.000000000"
+"1.566666665\x0a550"	a="1.566666665" b="550" add="551.566666665" subtract="-548.433333335" multiply="861.666665750" divide(10,0)="0.0028484848"
+"1.56666666630\x0a1"	a="1.56666666630" b="1" add="2.56666666630" subtract="0.56666666630" multiply="1.56666666630" divide(10,0)="1.5666666663"
+"1.56666666666664\x0a5"	a="1.56666666666664" b="5" add="6.56666666666664" subtract="-3.43333333333336" multiply="7.83333333333320" divide(10,0)="0.3133333333"
+"1.566666666666665\x0a55"	a="1.566666666666665" b="55" add="56.566666666666665" subtract="-53.433333333333335" multiply="86.166666666666575" divide(10,0)="0.0284848484"
+"1.56666666666666665\x0a0"	a="1.56666666666666665" b="0" add="1.56666666666666665" subtract="1.56666666666666665" multiply="0.00000000000000000"
+"1.566666666666666666666666665\x0a55"	a="1.566666666666666666666666665" b="55" add="56.566666666666666666666666665" subtract="-53.433333333333333333333333335" multiply="86.166666666666666666666666575" divide(10,0)="0.0284848484"
+"1.6\x0a25.155666666505666666666650"	a="1.6" b="25.155666666505666666666650" add="26.755666666505666666666650" subtract="-23.555666666505666666666650" multiply="40.2490666664090666666666400" divide(10,0)="0.0636039593"
+"12345678901234567890123456789012345678.9"	a=none
+"170141183460469231731687303715884105727"	a=none
+"1\x0a."	a="1" b=none
+"1\x0a0.0"	a="1" b="0.0" add="1.0" subtract="1.0" multiply="0.0"
+"1\x0a0.0000001"	a="1" b="0.0000001" add="1.0000001" subtract="0.9999999" multiply="0.0000001" divide(10,0)="10000000.0000000000"
+"1\x0a1.50"	a="1" b="1.50" add="2.50" subtract="-0.50" multiply="1.50" divide(10,0)="0.6666666666"
+"1\x0a1.550"	a="1" b="1.550" add="2.550" subtract="-0.550" multiply="1.550" divide(10,0)="0.6451612903"
+"1\x0a1.555528085238800001634176877263065"	a="1" b="1.555528085238800001634176877263065" add="2.555528085238800001634176877263065" subtract="-0.555528085238800001634176877263065" multiply="1.555528085238800001634176877263065" divide(10,0)="0.6428684955"
+"1\x0a1.555550"	a="1" b="1.555550" add="2.555550" subtract="-0.555550" multiply="1.555550" divide(10,0)="0.6428594387"
+"1\x0a10"	a="1" b="10" add="11" subtract="-9" multiply="10" divide(10,0)="0.1000000000"
+"1\x0a1550"	a="1" b="1550" add="1551" subtract="-1549" multiply="1550" divide(10,0)="0.0006451612"
+"1\x0a27"	a="1" b="27" add="28" subtract="-26" multiply="27" divide(10,0)="0.0370370370"
+"1\x0a3"	a="1" b="3" add="4" subtract="-2" multiply="3" divide(10,0)="0.3333333333"
+"1\x0a5"	a="1" b="5" add="6" subtract="-4" multiply="5" divide(10,0)="0.2000000000"
+"1\x0a5.5150"	a="1" b="5.5150" add="6.5150" subtract="-4.5150" multiply="5.5150" divide(10,0)="0.1813236627"
+"1\x0a51.128333333"	a="1" b="51.128333333" add="52.128333333" subtract="-50.128333333" multiply="51.128333333" divide(10,0)="0.0195586269"
+"1\x0a9"	a="1" b="9" add="10" subtract="-8" multiply="9" divide(10,0)="0.1111111111"
+"1\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xdc\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xd4\xcc5"	a=none
+"1\xed\xed\xed\xed\xed\xed\xed\xed.\xed\xed\xed\xed\xed\xed\xed\xed50"	a=none
+"1_000"	a=none
+"1e5"	a=none
+"2"	a="2"
+"2.5\x0a1"	a="2.5" b="1" add="3.5" subtract="1.5" multiply="2.5" divide(11,1)="2.50000000000"
+"261112"	a="261112"
+"261112611"	a="261112611"
+"2\x0a0"	a="2" b="0" add="2" subtract="2" multiply="0"
+"312200131225666666682\x0a1228025838800301312255025838.8002583"	a="312200131225666666682" b="1228025838800301312255025838.8002583" add="1228026151000432537921692520.8002583" subtract="-1228025526600170086588359156.8002583" multiply=none divide(12,2)="0.000000254229"
+"312200131225666666682\x0a1228025838800388001312255025838.8002583"	a="312200131225666666682" b="1228025838800388001312255025838.8002583" add="1228025839112588132537921692520.8002583" subtract="-1228025838488187870086588359156.8002583" multiply=none divide(12,2)="0.000000000254"
+"312202583880038800131225696666682\x0a5.8022583"	a="312202583880038800131225696666682" b="5.8022583" add=none subtract=none multiply=none divide(12,2)=none
+"3122802583880308800130225666666682\x0a8.82583"	a="3122802583880308800130225666666682" b="8.82583" add=none subtract=none multiply=none divide(12,2)=none
+"355666666666666566666665\x0a5"	a="355666666666666566666665" b="5" add="355666666666666566666670" subtract="355666666666666566666660" multiply="1778333333333332833333325" divide(12,2)="71133333333333313333333.000000000000"
+"3\x0a-3"	a="3" b="-3" add="0" subtract="6" multiply="-9" divide(12,2)="-1.000000000000"
+"3\x0a10"	a="3" b="10" add="13" subtract="-7" multiply="30" divide(12,2)="0.300000000000"
+"3\x0a5"	a="3" b="5" add="8" subtract="-2" multiply="15" divide(12,2)="0.600000000000"
+"4\x0a8"	a="4" b="8" add="12" subtract="-4" multiply="32" divide(13,3)="0.5000000000000"
+"5.\x0a1."	a=none b=none
+"566666666666665\x0a566666665115566666666660"	a="566666666666665" b="566666665115566666666660" add="566666665682233333333325" subtract="-566666664548899999999995" multiply=none divide(14,4)="0.00000000100000"
+"5\x0a-2"	a="5" b="-2" add="3" subtract="7" multiply="-10" divide(14,4)="-2.50000000000000"
+"5\x0a0"	a="5" b="0" add="5" subtract="5" multiply="0"
+"5\x0a1"	a="5" b="1" add="6" subtract="4" multiply="5" divide(14,4)="5.00000000000000"
+"5\x0a59051"	a="5" b="59051" add="59056" subtract="-59046" multiply="295255" divide(14,4)="0.00008467257117"
+"6002666002584213122808488\x0a55"	a="6002666002584213122808488" b="55" add="6002666002584213122808543" subtract="6002666002584213122808433" multiply="330146630142131721754466840" divide(15,5)=none
+"60026660025880013122808488\x0a55"	a="60026660025880013122808488" b="55" add="60026660025880013122808543" subtract="60026660025880013122808433" multiply="3301466301423400721754466840" divide(15,5)=none
+"666666666665\x0a5651.1554660"	a="666666666665" b="5651.1554660" add="666666672316.1554660" subtract="666666661013.8445340" multiply="3767436977323914.7408900" divide(15,5)="117969974.578823593808382"
+"6666666666666\x0a550"	a="6666666666666" b="550" add="6666666667216" subtract="6666666666116" multiply="3666666666666300" divide(15,5)="12121212121.210909090909091"
+"66\x0a651.15566666666660"	a="66" b="651.15566666666660" add="717.15566666666660" subtract="-585.15566666666660" multiply="42976.27399999999560" divide(15,5)="0.101358251764683"
+"9.6566660002583880011312256666666008488\x0a26"	a="9.6566660002583880011312256666666008488" b="26" add=none subtract=none multiply=none divide(18,1)="0.371410230779168770"
+"95\x0a"	a="95" b=none
+"99999999999999999999999999999999999999\x0a1"	a="99999999999999999999999999999999999999" b="1" add=none subtract="99999999999999999999999999999999999998" multiply="99999999999999999999999999999999999999" divide(18,1)=none
+"99999999999999999999999999999999999999\x0a9999999999999999999999999"	a="99999999999999999999999999999999999999" b="9999999999999999999999999" add=none subtract="99999999999990000000000000000000000000" multiply=none divide(18,1)="10000000000000.000000000001000000"
+"99999999999999999999999999999999999999\x0a99999999999999999999999999999999999999"	a="99999999999999999999999999999999999999" b="99999999999999999999999999999999999999" add=none subtract="0" multiply=none divide(18,1)="1.000000000000000000"
+"9\x0a4"	a="9" b="4" add="13" subtract="5" multiply="36" divide(18,1)="2.250000000000000000"
+"9\x0a5"	a="9" b="5" add="14" subtract="4" multiply="45" divide(18,1)="1.800000000000000000"
+"\x00"	a=none
+"\x00\x0a\x00"	a=none b=none
+"\x0a"	a=none b=none
+"\x0a202"	a=none b="202"
+"\x0a\x00"	a=none b=none
+"\x0a\xdc4-\xdb\x00\x1c\xc3\xdc\xc8\x0a/\xc3\x1d\xc9!\xc9]\xc9\xc9\xc9-\xc3\x1c\xc8\xc8\x0a\xca\xdc4-\xc3\x1c\xc8\x0a\xdc\x17\xc3\x1d\xc8\x0a\xca0"	a=none b=none
+"\xa3\xf0\xf0\xf0\xf2\xf0\xf2\xf2\xf2"	a=none
+"\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5\xa5"	a=none
+"\xa7\xcf\x81\xca\xa7\xcf\x81\x97\xca\xa7\xca\xa7\xcf\x81\x81\xca\xa7\xcf\x81\xcf\x81\xca\xa7\xce\x81\xca\xa7\xcf\x81\xcf\x81\xca\xa7\xce\x81"	a=none
+"\xa8\x8b\x8b\x8b\x8b\x8b\x8b\x8b"	a=none
+"\xac\xb7\xb4\xb4"	a=none
+"\xae1\xb01\xe0\xb0\xe5\xa0\xee\xb0\xe0\xaa\xe5\xb0\xa0\xe5\xb0\xe0\xb0\xe5\xa0\xee\xb0\xe0\xaa\xe5\xb0\xa0\xb0\xe5\xb0\xe0\xb0\xe5\xa0\xee\xb0\xae1\xe0\xb01"	a=none
+"\xae\x8a"	a=none
+"\xb4\xa4\xb4"	a=none
+"\xc8\x0a\xaa\xaa\xaa\xaa\xaa\xaa\x92\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa"	a=none b=none
+"\xc8\x0a\xdc"	a=none b=none
+"\xc8\xc4\xc4\xc4\xc4\xc4\xc4\xc4"	a=none
+"\xc8\xf4\xdc\xf4\xf4\xd4\xdc\xdc\xc8"	a=none
+"\xca\x89\xcf\xa7\xcf\x81"	a=none
+"\xca\xa7"	a=none
+"\xca\xa7\xca\xa7\xcf\x81\xca\xa7\xcf\x81\xcf\x81\xca\xa7\xcf\x81"	a=none
+"\xca\xa7\xcf\x81"	a=none
+"\xca\xa7\xcf\x81\xca\xa7\xcf\x81"	a=none
+"\xca\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xca\xf2\xf51"	a=none
+"\xca\xf5"	a=none
+"\xca\xff\xff\xff\xff\xff\xc8\xff\xff\xff\xff\xba\xf4\xf4\xf4\xf4"	a=none
+"\xcf"	a=none
+"\xcf#\xcf0"	a=none
+"\xcf2\xca4\xc8-\xca0"	a=none
+"\xcf\x1d\xc8\x0a\xdc4-\xc3\x1c\xc8\x0a\xdc\x17\xc3\x1d\xc8\x0a\xca0"	a=none b=none
+"\xcf\xca\xcf"	a=none
+"\xcf\xf5/#\xca\xd2\xcf0"	a=none
+"\xcf`\xdc-\xca0"	a=none
+"\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2"	a=none
+"\xd2\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0"	a=none
+"\xd4\xf5\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xde\xff\xff\xff\xff"	a=none
+"\xd8\x0a\x1d"	a=none b=none
+"\xe0"	a=none
+"\xe0\xb01\xe0\xb0\xe5\xa0\xe5\xb0\xe0\xaa\xe5\xb0\xe5\xb0\xe0\xbe@\x90\xc0"	a=none
+"\xe0\xb0\xe5\xae\xe0\xb0\xe5\xb0"	a=none
+"\xe0\xb0\xe5\xb0\xe0\xbe"	a=none
+"\xe0\xe0"	a=none
+"\xe0\xe0\xe0"	a=none
+"\xe0\xe0\xe0\xe0"	a=none
+"\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0"	a=none
+"\xe5\xa0\xe5\xb0"	a=none
+"\xe6"	a=none
+"\xe6\xe6\xe6\xe6\xe6\xe6\xe6\xe6"	a=none
+"\xe6\xeb"	a=none
+"\xe7\xbe"	a=none
+"\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea"	a=none
+"\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea\xea"	a=none
+"\xec\xec\xec\xec"	a=none
+"\xed!\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\x0a[\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0\xe0~"	a=none b=none
+"\xed"	a=none
+"\xed\xed"	a=none
+"\xed\xed\xed"	a=none
+"\xed\xed\xed\xed"	a=none
+"\xed\xed\xed\xed\xed\xed\xed\xed"	a=none
+"\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed2\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed\xed"	a=none
+"\xf0\xec\xec\xec"	a=none
+"\xf0\xf0"	a=none
+"\xf0\xf0\xf0"	a=none
+"\xf0\xf0\xf0\xf0"	a=none
+"\xf0\xf0\xf0\xf0P\xf0\xf0\xf0\xf0"	a=none
+"\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\x0a\xf0"	a=none b=none
+"\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf0\xf07"	a=none
+"\xf3"	a=none
+"\xf3\xf3\xf3\xf3"	a=none
+"\xf3\xf3\xf3\xf3\xf3\xf3\xf3\xf3\xf0\xf0\xf0\xf0\xf0\xf3\xf3\xf0"	a=none
+"\xf4\xd8z\xf4\xf4\xf4\xf4\xf4\xf4$\xf4\xf4\xf4\xf4\xf4\xf4tz\xf4\xd8\xf4\xf4\xf4z\xf4\xf4\xf4\xf4\xf4$\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4"	a=none
+"\xf4\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf4"	a=none
+"\xf4\xf4"	a=none
+"\xf4\xf4\xf4"	a=none
+"\xf4\xf4\xf4\xf4"	a=none
+"\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4"	a=none
+"\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4\xf4"	a=none
+"\xf4\xf5\xaa"	a=none
+"\xf4\xff\xff\xff\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\x0f\xf1\xfa\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xf1\xdc\xf1\xf1\xf1\xf1\xf1\xf1\xed\xf1\xf1#\xf1\xf4\xf4\xf4"	a=none
+"\xf5\xca#\xcf0"	a=none
+"\xf6\xff\xff\xff\xff\xff\xff\xff"	a=none
+"\xfb\xff\x01\xae"	a=none
+"\xff1"	a=none
+"\xff\x091\x00)]\xff\xff\xff\xff\xff\xff\xff\x00\x02\xae8"	a=none
+"\xff\xf6\xff\xff"	a=none
+"\xff\xff\xfe"	a=none
+"vvvvvvvvvvvvv\x08\x00-"	a=none
+"}"	a=none
+"~\x0a;"	a=none b=none
