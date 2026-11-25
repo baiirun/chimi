@@ -313,8 +313,17 @@ impl ProjectTypeChecker {
             | CanonicalType::PolymorphicFunction { contract, .. } => {
                 // An input of an input is covariant again, but treating every
                 // occurrence under an input as contravariant is the safe reading.
+                // A function's rows sit beside its success: a callback of type
+                // `fn(fn() -> Int errors E)` consumes `E` failures.
                 contract.inputs.iter().any(|input| recurse(*input, true))
                     || recurse(contract.success, inside_input)
+                    || (inside_input
+                        && (self.failure_rows[contract.failures.raw() as usize]
+                            .parameters
+                            .contains(&parameter)
+                            || self.needs_rows[contract.needs.raw() as usize]
+                                .parameters
+                                .contains(&parameter)))
             }
             CanonicalType::Record(fields) => fields
                 .iter()

@@ -68,6 +68,10 @@ MUTATIONS = [
         "requirements_changed || kinds_changed",
         "requirements_changed",
     )], "forwarding_a_generic"),
+    lang("variance: a row under a function input stays covariant", F, [(
+        "                    || (inside_input\n                        && (self.failure_rows[contract.failures.raw() as usize]",
+        "                    || (false\n                        && (self.failure_rows[contract.failures.raw() as usize]",
+    )], "a_failure_row_under_a_function_input_is_not_covariant"),
     lang("note: not appended", Y, [(
         "                            message = format!(\"{message}: {note}\");",
         "",

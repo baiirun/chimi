@@ -11189,8 +11189,11 @@ impl ProjectTypeChecker {
                 });
                 if let Some(bound) = substitution.failures.get(parameter).copied() {
                     if substitution.widenable_failures.remove(parameter) {
-                        self.widen_failure_binding(*parameter, residual, substitution);
-                        self.failure_row_is_subset(bound, residual)
+                        let fits = self.failure_row_is_subset(bound, residual);
+                        if fits {
+                            self.widen_failure_binding(*parameter, residual, substitution);
+                        }
+                        fits
                     } else {
                         self.failure_rows_equivalent(bound, residual)
                     }

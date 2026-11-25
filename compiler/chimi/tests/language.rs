@@ -11821,6 +11821,10 @@ fn two_call_arguments_for_one_generic_join_by_union() {
         )
     );
     assert_eq!(check_codes(&fixed), ["T4346"]);
+    // The same with a failure-set generic: raising `second` makes `E` one.
+    let raised = fixed.replace("  check(second)\n", "  case check(first) {\n    True -> Failure(second)\n    False -> False\n  }\n");
+    assert_ne!(raised, fixed);
+    assert_eq!(check_codes(&raised), ["T4346"]);
     let plain = format!(
         "{FAILURE_SET_ENUMS}{}",
         concat!(
@@ -11833,6 +11837,39 @@ fn two_call_arguments_for_one_generic_join_by_union() {
         )
     );
     assert_eq!(check_codes(&plain), ["T4203"]);
+}
+
+// A data type whose field takes a function that fails with `E` consumes `E`
+// failures, so `E` is not covariant there: neither a later call argument nor a
+// list join may widen it, or the handler would meet a failure it cannot match.
+#[test]
+fn a_failure_row_under_a_function_input_is_not_covariant() {
+    let program = format!(
+        "{FAILURE_SET_ENUMS}{}",
+        concat!(
+            "struct H<E> {\n",
+            "  run: fn(fn() -> Int errors E) -> Text\n",
+            "}\n",
+            "fn handle(op: fn() -> Int errors HttpError.Refused) -> Text {\n",
+            "  case op() {\n",
+            "    Success(_) -> \"ok\"\n",
+            "    Failure(HttpError.Refused(_)) -> \"refused\"\n",
+            "  }\n",
+            "}\n",
+            "fn timeout() -> Int {\n",
+            "  Failure(Timeout.TimedOut)\n",
+            "}\n",
+            "fn use<E>(h: H<E>, op: fn() -> Int errors E) -> Text {\n",
+            "  let f = h.run\n",
+            "  f(op)\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let h = H { run: handle }\n",
+            "  use(h, timeout)\n",
+            "}\n",
+        )
+    );
+    assert_eq!(check_codes(&program), ["T4203"]);
 }
 
 #[test]
