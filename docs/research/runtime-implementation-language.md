@@ -20,7 +20,7 @@ below fails and the measurement is recorded as the reason.
 | Code | Reason |
 | --- | --- |
 | Vendored SQLite and mbedTLS | Upstream is C. Rewriting them is not on the table, and their maintainers ship C. |
-| The G20 binding shims (`net`, `tls`, `exec`, `sqlite`, `postgres`, `terminal`) | For now. Each shim is thin glue against a C library's headers, compiled in the same `cc` pass and per-package archive as that library. A shim with no C library under it (`net`, `exec`, `terminal`) has no such reason and moves when the binding path itself moves (step 4). |
+| The G20 binding shims (`net`, `tls`, `exec`, `sqlite`, `postgres`, `terminal`) | For now. Each shim is thin glue against a C library's headers, compiled in the same `cc` pass and per-package archive as that library. A shim with no C library under it (`net`, `exec`, `terminal`) has no such reason and moves to Rust in step 4; `terminal` has (CHI-309), into `runtime/chimi-runtime/src/binding/`. |
 
 Nothing else has a recorded reason. Anything added to this table needs one.
 

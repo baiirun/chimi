@@ -152,6 +152,9 @@ dependencies = [
 [[package]]
 name = "chimi-runtime"
 version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "chimi-runtime-standalone"

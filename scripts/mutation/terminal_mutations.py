@@ -11,7 +11,8 @@ CRATE = "compiler/chimi"
 CARGO_TEST_ARGS = ["--release"]
 
 MODULE = "std/terminal.chimi"
-BINDING = "runtime/native/bindings/terminal/terminal.c"
+BINDING = "../../runtime/chimi-runtime/src/binding/terminal.rs"
+NATIVE = "src/backend/native.rs"
 
 
 def terminal_test(name, file, edits):
@@ -48,15 +49,20 @@ MUTATIONS = [
     terminal_test("the provider asks stdout for every stream", MODULE, [
         ("    Standard.Error -> 2\n", "    Standard.Error -> 1\n")]),
     terminal_test("columns and rows swap", BINDING, [
-        ("chimi_binding_make_integer(call, size.ws_col),\n                                 chimi_binding_make_integer(call, size.ws_row)",
-         "chimi_binding_make_integer(call, size.ws_row),\n                                 chimi_binding_make_integer(call, size.ws_col)")]),
+        ("call.make_integer(i64::from(columns)),\n                call.make_integer(i64::from(rows)),",
+         "call.make_integer(i64::from(rows)),\n                call.make_integer(i64::from(columns)),")]),
     terminal_test("a pipe has a size", BINDING, [
-        ("  if (!isatty(fd) || ioctl(fd, TIOCGWINSZ, &size) != 0 || size.ws_col == 0 || size.ws_row == 0)\n    return chimi_binding_success(call, chimi_binding_none(call));",
-         "  if (ioctl(fd, TIOCGWINSZ, &size) != 0) { size.ws_col = 80; size.ws_row = 24; }")]),
+        ("    if !is_terminal(fd) {\n        return None;\n    }\n", ""),
+        ("    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } != 0 {\n        return None;\n    }",
+         "    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } != 0 {\n        size.ws_col = 80;\n        size.ws_row = 24;\n    }")]),
     terminal_test("zero columns is a size", BINDING, [
-        (" || size.ws_col == 0 || size.ws_row == 0)", " || size.ws_row == 0)")]),
+        ("(size.ws_col != 0 && size.ws_row != 0)", "(size.ws_row != 0)")]),
     terminal_test("zero rows is a size", BINDING, [
-        (" || size.ws_col == 0 || size.ws_row == 0)", " || size.ws_col == 0)")]),
+        ("(size.ws_col != 0 && size.ws_row != 0)", "(size.ws_col != 0)")]),
     terminal_test("every stream is a terminal", BINDING, [
-        ("chimi_binding_make_boolean(call, isatty(fd) == 1)", "chimi_binding_make_boolean(call, 1)")]),
+        ("call.make_boolean(is_terminal(fd))", "call.make_boolean(true)")]),
+    terminal_test("the stream code is off by one", BINDING, [
+        (".map(|code| code as c_int)", ".map(|code| ((code + 1) % 3) as c_int)")]),
+    terminal_test("the link keeps every Rust binding", NATIVE, [
+        ('        "-Wl,-dead_strip"\n    } else {\n        "-Wl,--gc-sections"\n    });', '        "-Wl,-v"\n    } else {\n        "-Wl,-v"\n    });')]),
 ]

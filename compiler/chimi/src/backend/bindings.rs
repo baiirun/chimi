@@ -1,8 +1,11 @@
-//! C binding packages (G20): which ones a program reaches, and how each is
-//! compiled into its own archive. The sources live under
+//! Binding packages (G20): which ones a program reaches, and where each one's
+//! code comes from. A C package's sources live under
 //! `runtime/native/bindings/<package>/`, at any depth; `build.rs` embeds every
 //! `.c` and `.h` file there, so the compiler ships them as it ships
-//! `runtime.c`, and prebuilds each package's archive.
+//! `runtime.c`, and prebuilds each package's archive. A Rust package (one
+//! with no C library under it) is compiled into the Rust runtime archive
+//! every program links, and the link keeps only the functions a program
+//! reaches.
 
 use crate::operations::Binding;
 
@@ -10,6 +13,13 @@ include!(concat!(env!("OUT_DIR"), "/binding_sources.rs"));
 
 /// `chimi_binding.h`, the only runtime header a binding may include.
 pub(super) const BINDING_HEADER: &str = include_str!("../../runtime/native/chimi_binding.h");
+
+/// The packages written in Rust, in `runtime/chimi-runtime/src/binding/`,
+/// with their source, which the registry test reads.
+pub(super) const RUST_PACKAGES: &[(&str, &str)] = &[(
+    "terminal",
+    include_str!("../../../../runtime/chimi-runtime/src/binding/terminal.rs"),
+)];
 
 /// Operating-system libraries a package links, which the build report lists
 /// (Principle 15). Every package not named here links none.
@@ -23,16 +33,29 @@ const SYSTEM_LIBRARIES: &[(&str, &[&str])] = &[
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct BindingPackage {
     pub(super) name: &'static str,
-    /// `(path in the package, text)` of every source and header, in path order.
-    pub(super) files: Vec<(&'static str, &'static str)>,
+    pub(super) code: PackageCode,
     pub(super) system_libraries: &'static [&'static str],
+}
+
+/// Where a package's functions come from.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum PackageCode {
+    /// `(path in the package, text)` of every source and header, in path
+    /// order, compiled into the package's own archive.
+    C(Vec<(&'static str, &'static str)>),
+    /// Compiled into the Rust runtime archive; nothing to build.
+    Rust,
 }
 
 impl BindingPackage {
     /// The `.c` files, which compile one object each.
     #[cfg(test)]
     pub(super) fn sources(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.files
+        let files: &[(&str, &str)] = match &self.code {
+            PackageCode::C(files) => files,
+            PackageCode::Rust => &[],
+        };
+        files
             .iter()
             .map(|(name, _)| *name)
             .filter(|name| name.ends_with(".c"))
@@ -45,8 +68,9 @@ impl BindingPackage {
 
 /// The packages that define `bindings`, each once, in name order.
 ///
-/// Requires: every binding names a package with embedded sources, which the
-/// registry test `every_binding_package_has_sources` checks.
+/// Requires: every binding names a package with embedded sources or a Rust
+/// package, which the registry test `every_binding_package_has_sources`
+/// checks.
 pub(super) fn packages_for(bindings: &[Binding]) -> Vec<BindingPackage> {
     let mut names = bindings
         .iter()
@@ -58,11 +82,17 @@ pub(super) fn packages_for(bindings: &[Binding]) -> Vec<BindingPackage> {
         .into_iter()
         .map(|name| BindingPackage {
             name,
-            files: BINDING_SOURCES
-                .iter()
-                .filter(|(package, _, _)| *package == name)
-                .map(|(_, file, text)| (*file, *text))
-                .collect(),
+            code: if RUST_PACKAGES.iter().any(|(package, _)| *package == name) {
+                PackageCode::Rust
+            } else {
+                PackageCode::C(
+                    BINDING_SOURCES
+                        .iter()
+                        .filter(|(package, _, _)| *package == name)
+                        .map(|(_, file, text)| (*file, *text))
+                        .collect(),
+                )
+            },
             system_libraries: SYSTEM_LIBRARIES
                 .iter()
                 .find(|(package, _)| *package == name)
@@ -73,22 +103,34 @@ pub(super) fn packages_for(bindings: &[Binding]) -> Vec<BindingPackage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BINDING_SOURCES, packages_for};
+    use super::{BINDING_SOURCES, PackageCode, RUST_PACKAGES, packages_for};
     use crate::operations::OPERATIONS;
 
     #[test]
     fn every_binding_package_has_sources() {
         for binding in OPERATIONS.iter().filter_map(|operation| operation.binding) {
             let packages = packages_for(&[binding]);
-            assert!(
-                packages[0].sources().next().is_some(),
-                "binding package {} has no C source",
-                binding.package
-            );
-            let defined = packages[0]
-                .files
-                .iter()
-                .any(|(_, text)| text.contains(&format!("*{}(ChimiBindingCall", binding.symbol)));
+            let defined = match &packages[0].code {
+                PackageCode::C(files) => {
+                    assert!(
+                        packages[0].sources().next().is_some(),
+                        "binding package {} has no C source",
+                        binding.package
+                    );
+                    files
+                        .iter()
+                        .any(|(_, text)| text.contains(&format!("*{}(ChimiBindingCall", binding.symbol)))
+                }
+                PackageCode::Rust => RUST_PACKAGES
+                    .iter()
+                    .filter(|(package, _)| *package == binding.package)
+                    .any(|(_, text)| {
+                        text.contains(&format!(
+                            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {}(",
+                            binding.symbol
+                        ))
+                    }),
+            };
             assert!(
                 defined,
                 "{} is not defined in package {}",
@@ -100,6 +142,45 @@ mod tests {
                 .iter()
                 .all(|(_, _, text)| !text.contains("runtime.h"))
         );
+        for (package, _) in RUST_PACKAGES {
+            assert!(
+                BINDING_SOURCES.iter().all(|(c_package, _, _)| c_package != package),
+                "package {package} has both C sources and Rust code"
+            );
+        }
+    }
+
+    /// The Rust view of the binding API is written by hand, so check each
+    /// import against `chimi_binding.h`: same name, same number of
+    /// parameters.
+    #[test]
+    fn the_rust_binding_api_matches_the_header() {
+        const API: &str = include_str!("../../../../runtime/chimi-runtime/src/binding/api.rs");
+        let header = super::BINDING_HEADER;
+        let parameters = |text: &str, name: &str| {
+            let start = text.find(&format!("{name}(")).map(|at| at + name.len() + 1)?;
+            let end = start + text[start..].find(')')?;
+            let list = text[start..end].trim();
+            Some(if list == "void" {
+                0
+            } else {
+                list.split(',').filter(|part| !part.trim().is_empty()).count()
+            })
+        };
+        let imports = API.split("    fn ").skip(1).filter_map(|rest| {
+            let name = rest.split('(').next()?;
+            name.starts_with("chimi_binding_").then_some(name)
+        });
+        let mut checked = 0;
+        for name in imports {
+            assert_eq!(
+                parameters(API, name),
+                parameters(header, name),
+                "{name}: the Rust import and chimi_binding.h disagree"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "found no imports in api.rs");
     }
 
     #[test]
