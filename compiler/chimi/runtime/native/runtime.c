@@ -78,6 +78,7 @@ __attribute__((weak)) size_t chimi_scheduler_peak_task_records(void) { return 0;
 __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
+__attribute__((weak)) uint64_t chimi_fiber_current_incarnation(void) { return 0; }
 /* Without the fiber archive no time passes. */
 __attribute__((weak)) int64_t chimi_fiber_now(void) { return 0; }
 /* Program data from a build defines the trace's module list; C fixtures that
@@ -2795,6 +2796,32 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
           callable->requirement, callable->interface_symbol); json_string(output, callable->name);
   fprintf(output, ",\"method_semantic_id\":%u,\"time_ns\":%" PRId64 "}}\n", callable->method,
           chimi_fiber_now());
+  pthread_mutex_unlock(&trace_lock);
+}
+
+static void json_identity(FILE *output, const char *key, uint64_t identity);
+
+/* A process body's own span (CHI-312): `process_body_started` when the body
+   begins and `process_body_completed` with its outcome when it ends, both
+   naming the incarnation, so a trace reader can hang the body's operations
+   under that incarnation's `process_started`. A body the scheduler abandons
+   at a park writes no completion. */
+static void emit_process_body(ChimiRuntime *runtime, uint64_t span, uint64_t incarnation,
+                              const ChimiControl *outcome) {
+  FILE *output = runtime->telemetry;
+  pthread_mutex_lock(&trace_lock);
+  ++runtime->trace_events_constructed;
+  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
+  json_string(output, outcome ? "process_body_completed" : "process_body_started");
+  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
+  json_string(output, runtime->computation);
+  fputs(",\"execution_id\":", output);
+  json_string(output, runtime->execution_id);
+  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":null", span);
+  json_identity(output, "incarnation_id", incarnation);
+  fputs(",\"operation\":\"process_body\",\"attributes\":{", output);
+  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); fputc(',', output); }
+  fprintf(output, "\"time_ns\":%" PRId64 "}}\n", chimi_fiber_now());
   pthread_mutex_unlock(&trace_lock);
 }
 
@@ -9499,9 +9526,13 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     }
   }
   uint64_t span = take_spans(runtime, 1);
+  bool traced = !runtime->silent && !control;
+  uint64_t incarnation = traced ? chimi_fiber_current_incarnation() : 0;
+  if (traced) emit_process_body(runtime, span, incarnation, NULL);
   if (!control)
     control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
                      new_environment(0));
+  if (traced) emit_process_body(runtime, span, incarnation, control);
   ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
   switch (control->kind) {
     case CONTROL_SUCCESS: break;

@@ -315,6 +315,10 @@ Rules:
 - When a place is still not in the given source, the report prints and a
   warning on standard error says the source is likely not the one the run
   was built from.
+- A process body is its own tree, rooted at its `process_body_started`
+  event and named `process <name> incarnation <n>` (the name from the
+  incarnation's `process_started`), so it matches the incarnation's entry in
+  the process list below. The body's operations are listed under it.
 - After the tree come the process incarnations that ended other than by
   returning, with their name (from `process_terminated`, or else the
   incarnation's `process_started`), cause and defect message, and the tasks that never
@@ -322,10 +326,8 @@ Rules:
   `channel_receive_parked` or `channel_send_parked` event after its
   `task_parked`): the usual reasons a concurrent run stops or hangs.
 
-Not yet: channel and clock event detail, linking a process's spans to its
-entry in the process list (no operation event names the incarnation it ran
-in, so a process body's tree is listed after the computation's on its own),
-and a browsable or interactive view. Chimi has no REPL
+Not yet: channel and clock event detail, and a browsable or interactive
+view. Chimi has no REPL
 (decisions.md, 2026-11-17): exploration happens in tests and runnable doc
 examples.
 
@@ -390,7 +392,11 @@ Rules:
   `path:line:column`, found and checked against the trace's recorded
   modules as for `chimi trace show`: a source that lacks a recorded module
   or has a changed one MUST fail the same way.
-- Scheduler, task, channel, clock and process events are not exported.
+- A process body is a span named as in `chimi trace show`
+  (`process app/main.worker incarnation 2`), from its `process_body_started`
+  to its `process_body_completed`, with the body's operations as children.
+  It also carries `chimi.incarnation_id`.
+- Other scheduler, task, channel, clock and process events are not exported.
 
 Implementation: `compiler/chimi/src/trace_export.rs` (`export_trace_otlp`).
 Tests: `compiler/chimi/tests/trace_export.rs`.

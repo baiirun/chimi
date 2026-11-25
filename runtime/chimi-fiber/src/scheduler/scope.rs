@@ -57,7 +57,7 @@
 
 use super::clock::{Instant, TimerTarget};
 use super::{
-    ClockEvent, ClockEventKind, RequestHeader, Scheduler, TaskEventKind, TaskId, TaskOutcome,
+    ClockEvent, ClockEventKind, IncarnationId, RequestHeader, Scheduler, TaskEventKind, TaskId, TaskOutcome,
     TaskPhase, cause,
 };
 use crate::ChimiFiberCommand;
@@ -157,6 +157,7 @@ thread_local! {
     static RESUME_TERMINAL: Cell<bool> = const { Cell::new(false) };
     static RESUME_SCOPE_PENDING: Cell<bool> = const { Cell::new(false) };
     static RESUME_POLLS: Cell<bool> = const { Cell::new(false) };
+    static RESUME_INCARNATION: Cell<u64> = const { Cell::new(0) };
 }
 
 /// What the fiber about to resume may read about its own cancellation state.
@@ -169,14 +170,20 @@ pub(super) struct ResumeContext {
     pub(super) scope_pending: bool,
     /// Loop passes must poll the scheduler for scope deadlines.
     pub(super) polls: bool,
+    /// The process incarnation the task runs, when it runs one.
+    pub(super) incarnation: Option<IncarnationId>,
 }
 
 impl ResumeContext {
-    pub(super) const TERMINAL: Self = Self {
-        terminal: true,
-        scope_pending: false,
-        polls: false,
-    };
+    /// A task-level cancellation of a task running `incarnation`, if any.
+    pub(super) fn terminal(incarnation: Option<IncarnationId>) -> Self {
+        Self {
+            terminal: true,
+            scope_pending: false,
+            polls: false,
+            incarnation,
+        }
+    }
 }
 
 /// Records `context` for the fiber about to resume. Every resume sets it.
@@ -184,6 +191,15 @@ pub(super) fn set_resume_context(context: ResumeContext) {
     RESUME_TERMINAL.with(|cell| cell.set(context.terminal));
     RESUME_SCOPE_PENDING.with(|cell| cell.set(context.scope_pending));
     RESUME_POLLS.with(|cell| cell.set(context.polls));
+    RESUME_INCARNATION.with(|cell| cell.set(context.incarnation.map_or(0, IncarnationId::get)));
+}
+
+#[unsafe(no_mangle)]
+/// The process incarnation the running fiber's task runs, or 0 when the task
+/// is not a process body. It reads no scheduler state and cannot park, so a
+/// traced body can name itself without a request a cancellation could answer.
+pub extern "C" fn chimi_fiber_current_incarnation() -> u64 {
+    RESUME_INCARNATION.with(Cell::get)
 }
 
 #[unsafe(no_mangle)]

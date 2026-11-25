@@ -2350,6 +2350,7 @@ impl Scheduler {
                 && self.is_forced(task),
             scope_pending: self.scope_cancel_pending(task),
             polls: self.polls_scope_deadlines(task),
+            incarnation: self.tasks[&task].process,
         };
         let clock = self.clock.reading();
         let fiber = self
@@ -2402,7 +2403,8 @@ impl Scheduler {
                 );
                 let record = self.tasks.get_mut(&task)?;
                 debug_assert!(matches!(record.phase, TaskPhase::Draining(_)), "an unwind job's task drains");
-                let fiber = record.fiber.as_mut()?.enter(scope::ResumeContext::TERMINAL, clock);
+                let context = scope::ResumeContext::terminal(record.process);
+                let fiber = record.fiber.as_mut()?.enter(context, clock);
                 Some(carrier::Runnable {
                     task,
                     fiber,
@@ -2978,12 +2980,13 @@ impl Scheduler {
             return;
         }
         let clock = self.clock.reading();
-        let cleanup = self
-            .tasks
-            .get_mut(&task)
-            .and_then(|record| record.fiber.as_mut())
+        let record = self.tasks.get_mut(&task).expect("non-terminal task");
+        let context = scope::ResumeContext::terminal(record.process);
+        let cleanup = record
+            .fiber
+            .as_mut()
             .expect("non-terminal task owns a fiber")
-            .enter(scope::ResumeContext::TERMINAL, clock);
+            .enter(context, clock);
         let cleanup = resume_fiber(cleanup, ChimiFiberCommand::Cancel);
         self.end_after_unwind(task, outcome, &cleanup);
     }

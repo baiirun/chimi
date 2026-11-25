@@ -439,3 +439,69 @@ fn hand_written_traces_export_as_valid_spans() {
     let sleep = by_name("sleep");
     assert_eq!((sleep.parent.as_deref(), sleep.status.as_deref()), (None, None));
 }
+
+// CHI-312: a process body is a span named after its incarnation, tagged with
+// the incarnation id, with the body's operations under it. Rejects a body
+// left out (its operations would have no parent), a name without the
+// process, and a span without `chimi.incarnation_id`.
+#[test]
+fn a_process_body_is_a_span_tagged_with_its_incarnation() {
+    let directory = scratch("process-body");
+    let trace = directory.join("trace.jsonl");
+    let process = |event: &str, sequence: u32, extra: &str, attributes: &str| {
+        format!(
+            "{{\"schema\":\"chimi.runtime.v1\",\"event\":\"{event}\",\"sequence\":{sequence},\
+             \"computation\":\"main\",\"execution_id\":\"x\",{extra}\"incarnation_id\":2,\
+             \"attributes\":{{{attributes}}}}}\n"
+        )
+    };
+    let text = [
+        event(
+            "computation_started",
+            0,
+            1,
+            "null",
+            "computation",
+            "\"time_ns\":0,\"start_unix_ns\":100",
+        ),
+        process("process_started", 1, "", "\"time_ns\":0,\"name\":\"main.worker\""),
+        process(
+            "process_body_started",
+            2,
+            "\"span_id\":5,\"parent_span_id\":null,\"operation\":\"process_body\",",
+            "\"time_ns\":1",
+        ),
+        event("operation_started", 3, 6, "5", "call", "\"time_ns\":1"),
+        event(
+            "operation_completed",
+            4,
+            6,
+            "5",
+            "call",
+            "\"outcome\":\"defect\",\"time_ns\":3",
+        ),
+        process(
+            "process_body_completed",
+            5,
+            "\"span_id\":5,\"parent_span_id\":null,\"operation\":\"process_body\",",
+            "\"outcome\":\"defect\",\"time_ns\":4",
+        ),
+    ]
+    .concat();
+    std::fs::write(&trace, text).unwrap();
+    let spans = spans(&export(&[trace.to_str().unwrap()]));
+    let body = spans
+        .iter()
+        .find(|span| span.name == "process main.worker incarnation 2")
+        .unwrap_or_else(|| panic!("no body span: {:?}", spans.iter().map(|s| &s.name).collect::<Vec<_>>()));
+    assert_eq!((body.start, body.end, body.parent.as_deref()), (101, 104, None));
+    assert!(
+        body.text
+            .contains("{\"key\":\"chimi.incarnation_id\",\"value\":{\"intValue\":\"2\"}}"),
+        "{}",
+        body.text
+    );
+    let call = spans.iter().find(|span| span.name == "call").unwrap();
+    assert_eq!(call.parent.as_deref(), Some(body.id.as_str()));
+    std::fs::remove_dir_all(directory).unwrap();
+}

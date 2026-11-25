@@ -840,6 +840,9 @@ ChimiFiberCommand chimi_fiber_request(void *request, const ChimiRootFrame *roots
    cancellation a process body's receive returns once its drain is done, is
    not terminal. */
 uint32_t chimi_fiber_cancel_is_terminal(void);
+/* The process incarnation the running fiber's task runs, or 0 when it is not
+   a process body. It reads only the fiber's resume state and cannot park. */
+uint64_t chimi_fiber_current_incarnation(void);
 /* 1 when a fired cancellation scope of the running task waits for its next
    cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */
 uint32_t chimi_fiber_scope_cancel_pending(void);

@@ -5,12 +5,14 @@
 //! Each execution is one trace. The computation and every operation are a
 //! span, from its `*_started` event to its `*_completed` event. A dependency
 //! call has no completion event, and the provider's operations are its
-//! caller's children, so the call is a span with no length. Scheduler, task and process events are not spans and
-//! are left out. Times are `start_unix_ns` plus each event's `time_ns`
+//! caller's children, so the call is a span with no length. A process body
+//! is a span too, named after its incarnation and tagged
+//! `chimi.incarnation_id`, with the body's operations under it. Other
+//! scheduler, task and process events are not spans and are left out. Times are `start_unix_ns` plus each event's `time_ns`
 //! (runtime-output-channels.md, "Event times").
 
 use crate::json::{JsonData, decode_json, write_json_string};
-use crate::trace_view::{FileModules, Locate, Record, SCHEMA, TraceError};
+use crate::trace_view::{FileModules, Locate, Record, SCHEMA, TraceError, process_label};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -40,6 +42,8 @@ struct Execution {
     spans: Vec<Span>,
     span_index: HashMap<u64, usize>,
     modules: FileModules,
+    /// Each process incarnation's name, from its `process_started`.
+    process_names: HashMap<u64, String>,
 }
 
 struct Span {
@@ -57,6 +61,8 @@ struct Span {
     source: (u64, u64),
     dependency: Option<(String, String)>,
     outcome: Option<String>,
+    /// For a process body, the incarnation it ran.
+    incarnation: Option<u64>,
 }
 
 fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
@@ -84,9 +90,23 @@ fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
             }
             return Err(error("neither an event nor an outcome".to_owned()));
         };
+        if event == "process_started" {
+            let id = record.text("execution_id").unwrap_or("");
+            if let (Some(&slot), Some(incarnation), Some(name)) = (
+                by_id.get(id),
+                record.number("incarnation_id"),
+                record.attribute_text("name"),
+            ) {
+                executions[slot]
+                    .process_names
+                    .insert(incarnation, name.to_owned());
+            }
+            continue;
+        }
         let started = match event {
-            "computation_started" | "operation_started" | "dependency_called" => true,
-            "computation_completed" | "operation_completed" => false,
+            "computation_started" | "operation_started" | "dependency_called"
+            | "process_body_started" => true,
+            "computation_completed" | "operation_completed" | "process_body_completed" => false,
             _ => continue,
         };
         let time = record.attribute_number("time_ns").ok_or_else(|| {
@@ -113,6 +133,7 @@ fn read(text: &str) -> Result<Vec<Execution>, TraceError> {
                     spans: Vec::new(),
                     span_index: HashMap::new(),
                     modules: FileModules::of(&record),
+                    process_names: HashMap::new(),
                 });
                 by_id.insert(id, executions.len() - 1);
                 executions.len() - 1
@@ -156,9 +177,18 @@ impl Execution {
                 record.attribute_text("method").unwrap_or("?").to_owned(),
             )
         });
+        let incarnation = (event == "process_body_started")
+            .then(|| record.number("incarnation_id"))
+            .flatten();
         let name = match (&dependency, event) {
             (Some((requirement, method)), _) => format!("dependency {requirement}.{method}"),
             (None, "computation_started") => format!("computation {}", self.computation),
+            (None, "process_body_started") => process_label(
+                incarnation
+                    .and_then(|id| self.process_names.get(&id))
+                    .map(String::as_str),
+                incarnation,
+            ),
             _ => operation.clone(),
         };
         self.span_index.insert(id, self.spans.len());
@@ -178,6 +208,7 @@ impl Execution {
             ),
             dependency,
             outcome: None,
+            incarnation,
         });
     }
 
@@ -265,6 +296,10 @@ impl Execution {
             string_attribute(output, "chimi.requirement", requirement);
             output.push(',');
             string_attribute(output, "chimi.method", method);
+        }
+        if let Some(incarnation) = span.incarnation {
+            output.push(',');
+            int_attribute(output, "chimi.incarnation_id", incarnation);
         }
         if let Some(outcome) = &span.outcome {
             output.push(',');
