@@ -491,6 +491,44 @@ test "a directory named like the program" {
     assert_passed(&run, 1);
 }
 
+// Rejects a relative program that cannot be started, or never returns, when
+// the working directory's path is longer than a first guess at its size:
+// the program is made absolute against a directory of over 600 bytes.
+#[test]
+fn a_relative_program_starts_from_a_long_working_directory() {
+    let scratch = build_main(
+        "long-cwd",
+        r#"pub fn main() -> Void needs { commands: Commands } {
+  let status = Exec.run(Exec.command("./tool", []))
+  case status {
+    Status.Exited(3) -> Void
+    other -> Debug.crash("the child ended with ${Debug.render(other)}")
+  }
+}
+"#,
+    );
+    let deep = (0..12).fold(scratch.0.clone(), |path, level| path.join(format!("{level:02}-{}", "d".repeat(48))));
+    assert!(deep.as_os_str().len() > 600);
+    std::fs::create_dir_all(&deep).unwrap();
+    let tool = deep.join("tool");
+    std::fs::write(&tool, "#!/bin/sh\nexit 3\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(scratch.0.join("runner")).current_dir(&deep).spawn().expect("run the program");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(30) {
+            let _ = child.kill();
+            panic!("the program did not finish");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(0));
+}
+
 // Rejects a child wait that holds the scheduler thread, and one that finds
 // an exit only by polling. The child exits once another task has touched a
 // file, which that task can do only while the wait is parked; and a child

@@ -20,7 +20,7 @@ below fails and the measurement is recorded as the reason.
 | Code | Reason |
 | --- | --- |
 | Vendored SQLite and mbedTLS | Upstream is C. Rewriting them is not on the table, and their maintainers ship C. |
-| The G20 binding shims (`net`, `tls`, `exec`, `sqlite`, `postgres`, `terminal`) | For now. Each shim is thin glue against a C library's headers, compiled in the same `cc` pass and per-package archive as that library. A shim with no C library under it (`net`, `exec`, `terminal`) has no such reason and moves to Rust in step 4; `terminal` and `net` have (CHI-309), into `runtime/chimi-runtime/src/binding/`. |
+| The G20 binding shims (`net`, `tls`, `exec`, `sqlite`, `postgres`, `terminal`) | For now. Each shim is thin glue against a C library's headers, compiled in the same `cc` pass and per-package archive as that library. A shim with no C library under it (`net`, `exec`, `terminal`) has no such reason and moves to Rust in step 4; all three have (CHI-309), into `runtime/chimi-runtime/src/binding/`. |
 
 Nothing else has a recorded reason. Anything added to this table needs one.
 
@@ -97,7 +97,7 @@ The recommendation is a split by kind of code, not a rewrite:
 | Part | Language | Size |
 | --- | --- | ---: |
 | `compiler/chimi/runtime/native/runtime.c`, `runtime.h`, `chimi_binding.h` | C | about 14,800 lines |
-| G20 binding shims (`exec`, `net`, `tls`, `postgres`, `sqlite`, `terminal`) | C | about 3,000 lines |
+| G20 binding shims (`tls`, `postgres`, `sqlite`; `exec`, `net` and `terminal` moved to Rust in CHI-309) | C | about 3,000 lines before the move |
 | Vendored SQLite and mbedTLS | C | about 480,000 lines |
 | Scheduler, fibers, channels (`runtime/chimi-fiber`) | Rust | about 9,900 lines of source |
 | Compiler, LSP | Rust | most of the 164,000 Rust lines |

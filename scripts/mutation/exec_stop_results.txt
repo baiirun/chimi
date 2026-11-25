@@ -1,14 +1,13 @@
-# mutation run at 898582f0f9783dc6d956ecd14854411021b60233
+# mutation run at b131d538adb0024ab680f2b7237275cb769c51a3
 # exec_stop_mutations.py: 9 mutants against compiler/chimi
-BASELINE ok  [std_exec] (94s)
-KILLED       no SIGTERM first [std_exec] (52s)
-KILLED       no SIGKILL after the time [std_exec] (104s)
-KILLED       the deadline is ignored [std_exec] (104s)
-KILLED       the stop blocks the scheduler [std_exec] (50s)
-KILLED       the start does not stop its child [std_exec] (49s)
-KILLED       the pipes close after the stop [std_exec] (50s)
-KILLED       stop_within is not kept [std_exec] (51s)
-KILLED       a negative stop_within is kept [std_exec] (49s)
-KILLED       the backstop leaves the child [std_exec] (81s)
-# result: every mutant killed
-# (2026-11-16, after merging main with PR 97: the cancel mutant was dropped; see the script header)
+KILLED       no SIGTERM first [std_exec] (116s)
+TIMEOUT      no SIGKILL after the time [std_exec] (695s)
+TIMEOUT      the deadline is ignored [std_exec] (704s)
+KILLED       the stop blocks the scheduler [std_exec] (104s)
+KILLED       the start does not stop its child [std_exec] (98s)
+KILLED       the pipes close after the stop [std_exec] (93s)
+KILLED       stop_within is not kept [std_exec] (rerun with the refreshed text) (95s)
+KILLED       a negative stop_within is kept [std_exec] (94s)
+KILLED       the backstop leaves the child [std_exec] (129s)
+# One mutant's text had drifted (STALE); it was refreshed and rerun.
+# result: every mutant killed (a TIMEOUT counts as caught)

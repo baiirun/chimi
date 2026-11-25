@@ -10,7 +10,7 @@ the same test against the macOS branch.
 
 CRATE = "compiler/chimi"
 
-C = "runtime/native/bindings/exec/exec.c"
+C = "../../runtime/chimi-runtime/src/binding/exec.rs"
 
 
 def m(name, old, new):
@@ -18,13 +18,13 @@ def m(name, old, new):
 
 
 MUTATIONS = [
-    m("other descriptors stay open",
-      "    if (error == 0) error = close_other_descriptors(&actions);",
-      ""),
-    m("standard error is closed too",
-      "addclosefrom_np(actions, STDERR_FILENO + 1);",
-      "addclosefrom_np(actions, STDERR_FILENO);"),
-    m("descriptors close before the streams are connected",
-      "    for (int fd = 0; fd < 3 && error == 0; ++fd)\n      if (!connect_stdio(",
-      "    if (error == 0) error = close_other_descriptors(&actions);\n    for (int fd = 0; fd < 3 && error == 0; ++fd)\n      if (!connect_stdio("),
+    m('other descriptors stay open',
+      '    if error == 0 {\n        error = close_other_descriptors(&mut spawn.actions);\n    }\n',
+      ''),
+    m('standard error is closed too',
+      'addclosefrom_np(actions, libc::STDERR_FILENO + 1)',
+      'addclosefrom_np(actions, libc::STDERR_FILENO)'),
+    m('descriptors close before the streams are connected',
+      '    for (fd, (mode, end)) in (0..).zip(modes.iter().zip(ends.iter())) {\n',
+      '    if error == 0 {\n        error = close_other_descriptors(&mut spawn.actions);\n    }\n    for (fd, (mode, end)) in (0..).zip(modes.iter().zip(ends.iter())) {\n'),
 ]

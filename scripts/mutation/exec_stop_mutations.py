@@ -19,7 +19,7 @@ Run: scripts/mutation/mutate.py scripts/mutation/exec_stop_mutations.py
 CRATE = "compiler/chimi"
 CARGO_TEST_ARGS = ["--release"]
 
-EXEC = "runtime/native/bindings/exec/exec.c"
+EXEC = "../../runtime/chimi-runtime/src/binding/exec.rs"
 MODULE = "std/exec.chimi"
 
 
@@ -28,24 +28,28 @@ def exec_test(name, file, edits):
 
 
 MUTATIONS = [
-    exec_test("no SIGTERM first", EXEC, [
-        ("    kill(child->pid, SIGTERM);\n    waited = await_exit_until", "    waited = await_exit_until")]),
-    exec_test("no SIGKILL after the time", EXEC, [
-        ("    kill(child->pid, SIGKILL);\n    if (waited == STOP_CANCELLED)", "    if (waited == STOP_CANCELLED)")]),
-    exec_test("the deadline is ignored", EXEC, [
-        ("    if (monotonic_ms() >= deadline) return STOP_DEADLINE;\n", "")]),
-    exec_test("the stop blocks the scheduler", EXEC, [
-        ("    if (chimi_binding_wait(call, CHIMI_BINDING_NO_HANDLE, ticker, CHIMI_BINDING_READABLE) != CHIMI_BINDING_READY)\n      return STOP_CANCELLED;",
-         "    usleep(STOP_TICK_MS * 1000);")]),
+    exec_test('no SIGTERM first', EXEC, [
+        ('            unsafe { libc::kill(pid, libc::SIGTERM) };\n            waited = await_exit_until',
+         '            waited = await_exit_until')]),
+    exec_test('no SIGKILL after the time', EXEC, [
+        ('            unsafe { libc::kill(pid, libc::SIGKILL) };\n            if waited == StopWait::Cancelled {',
+         '            if waited == StopWait::Cancelled {')]),
+    exec_test('the deadline is ignored', EXEC, [
+        ('        if monotonic_ms() >= deadline {\n            return StopWait::Deadline;\n        }\n',
+         '')]),
+    exec_test('the stop blocks the scheduler', EXEC, [
+        ('        if call.wait(None, ticker, Interest::Readable) != Waited::Ready {\n            return StopWait::Cancelled;\n        }',
+         '        let _ = &call;\n        unsafe { libc::usleep((STOP_TICK_MS * 1000) as _) };')]),
     exec_test("the start does not stop its child", MODULE, [
         ("      native_stop(process, Duration.to_milliseconds(command.stop_within))\n", "")]),
     exec_test("the pipes close after the stop", MODULE, [
         ("      close_pipe(input_pipe)\n      close_pipe(output_pipe)\n      close_pipe(errors_pipe)\n      native_stop(process, Duration.to_milliseconds(command.stop_within))\n      native_release(process)\n",
          "      native_stop(process, Duration.to_milliseconds(command.stop_within))\n      native_release(process)\n      close_pipe(input_pipe)\n      close_pipe(output_pipe)\n      close_pipe(errors_pipe)\n")]),
     exec_test("stop_within is not kept", MODULE, [
-        ("    command.stderr,\n    duration,\n  )", "    command.stderr,\n    command.stop_within,\n  )")]),
+        ("    stop_within: duration,\n", "    stop_within: command.stop_within,\n")]),
     exec_test("a negative stop_within is kept", MODULE, [
         ("  case duration < Duration.zero {", "  case duration < Duration.milliseconds(-1000000) {")]),
-    exec_test("the backstop leaves the child", EXEC, [
-        ("  if (!child->reaped) {\n    kill(child->pid, SIGKILL);\n", "  if (!child->reaped) {\n")]),
+    exec_test('the backstop leaves the child', EXEC, [
+        ('            unsafe { libc::kill(self.pid, libc::SIGKILL) };\n            while',
+         '            while')]),
 ]
