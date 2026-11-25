@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 30u
+#define CHIMI_FIBER_ABI_VERSION 31u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -558,18 +558,25 @@ enum {
   /* A send carried the Receiver of the channel it was sent on: once the
      message is queued, no task could ever receive it. */
   CHIMI_VIOLATION_OWN_RECEIVER = 9,
+  /* A task request named a task that does not exist. */
+  CHIMI_VIOLATION_UNKNOWN_TASK = 10,
 };
 
 enum {
   CHIMI_CAPABILITY_NONE = 0,
   CHIMI_CAPABILITY_RECEIVER = 1,
   CHIMI_CAPABILITY_COMPLETION = 2,
+  /* A Task handle: a task's result, cancel or wait on a task it did not start. */
+  CHIMI_CAPABILITY_TASK = 3,
 };
 
-/* One channel capability violation. The scheduler defects `task` with a
-   channel capability violation code and reports this record first.
-   Identities are 0 when absent: `owner` is 0 when the capability's last
-   owner ended, and `destination` is set only for a transfer. */
+/* One capability violation. The scheduler defects `task` with a channel
+   capability violation code (or, for CHIMI_CAPABILITY_TASK, the task one)
+   and reports this record first. Identities are 0 when absent: `owner` is 0
+   when the capability's last owner ended or no task owns the handle.
+   `destination` is the receiving task of a transfer, and for
+   CHIMI_CAPABILITY_TASK the task the handle names; `channel` is then 0.
+   `reason` is CHIMI_VIOLATION_WRONG_OWNER or _UNKNOWN_TASK for a task handle. */
 typedef struct {
   uint64_t task;
   uint64_t channel;

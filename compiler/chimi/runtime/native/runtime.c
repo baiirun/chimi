@@ -13145,12 +13145,54 @@ static const char *channel_operation(uint32_t request_kind) {
   }
 }
 
-/* Records the defect message of a channel capability violation
+/* Keeps `text` as the defect message of `task`, which the scheduler is ending. */
+static void add_violation_note(ChimiRuntime *runtime, uint64_t task, const char *text) {
+  CapabilityViolationNote *note = malloc(sizeof(*note));
+  char *message = strdup(text);
+  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
+  *note = (CapabilityViolationNote){.task = task, .message = message, .next = runtime->capability_violations};
+  runtime->capability_violations = note;
+}
+
+/* The message of a task using a Task handle it does not own, or one naming no
+   task. The handle travelled where the checker does not follow it, for
+   example inside a closure held by an interface value (CHI-311, CHI-316). */
+static void task_violation_text(const ChimiCapabilityViolation *violation, char *text, size_t size) {
+  char action[96];
+  switch (violation->request_kind) {
+    case CHIMI_REQUEST_TASK_RESULT:
+      snprintf(action, sizeof(action), "read the result of task %" PRIu64, violation->destination);
+      break;
+    case CHIMI_REQUEST_TASK_CANCEL:
+      snprintf(action, sizeof(action), "cancel task %" PRIu64, violation->destination);
+      break;
+    default:
+      snprintf(action, sizeof(action), "wait for task %" PRIu64, violation->destination);
+      break;
+  }
+  char holder[64];
+  if (violation->reason == CHIMI_VIOLATION_UNKNOWN_TASK)
+    snprintf(holder, sizeof(holder), "there is no such task");
+  else if (violation->owner == 0)
+    snprintf(holder, sizeof(holder), "no task owns it");
+  else
+    snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
+  snprintf(text, size, "task capability violation: task %" PRIu64 " cannot %s: %s",
+           violation->task, action, holder);
+}
+
+/* Records the defect message of a channel or task capability violation
    (task-and-channel-capabilities.md, "Checked at run time"). The exclusive-move
    rule does not follow a capability across function boundaries, so this is the
    check that turns two owners of one Receiver or Completion into a defect. */
 static void record_capability_violation(void *context, const ChimiCapabilityViolation *violation) {
   ChimiRuntime *runtime = context;
+  char text[320];
+  if (violation->capability == CHIMI_CAPABILITY_TASK) {
+    task_violation_text(violation, text, sizeof(text));
+    add_violation_note(runtime, violation->task, text);
+    return;
+  }
   char holder[96];
   if (violation->owner == 0)
     snprintf(holder, sizeof(holder), "the task it was handed to has ended");
@@ -13162,7 +13204,6 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
              " owns the capability", violation->task);
   else
     snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
-  char text[320];
   bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||
                   violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION;
   switch (violation->reason) {
@@ -13227,12 +13268,7 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                " while a task still holds it", violation->task, violation->channel);
       break;
   }
-  CapabilityViolationNote *note = malloc(sizeof(*note));
-  char *message = strdup(text);
-  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
-  *note = (CapabilityViolationNote){
-    .task = violation->task, .message = message, .next = runtime->capability_violations};
-  runtime->capability_violations = note;
+  add_violation_note(runtime, violation->task, text);
 }
 
 /* The capability-violation message of the task the scheduler defected, if any. */

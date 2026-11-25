@@ -57,7 +57,7 @@ const FIBER_HEADER: &str = include_str!("../../../../runtime/chimi-fiber/include
 /// cancel request in 18, the task combinators in 19, the descriptor wait in
 /// 20, the descriptor withdraw in 21, the signal wait in 22, task release and
 /// the own-receiver violation in 23 to 25, the child wait in 26, and the
-/// masked acquire's use request in 27, the release drain hook in 28, the carrier count in 29, and the lock-free clock read in 30), and the runner writes process events with their own
+/// masked acquire's use request in 27, the release drain hook in 28, the carrier count in 29, the lock-free clock read in 30, and task-handle violation reports in 31), and the runner writes process events with their own
 /// identity fields: SV01's three `process_started` events each name
 /// an incarnation and that incarnation's task, which differ (the root is task
 /// 1, so the first incarnation runs as task 2).
@@ -67,9 +67,9 @@ pub(super) fn trace_abi_version() -> Result<(), String> {
         .find_map(|line| line.strip_prefix("#define CHIMI_FIBER_ABI_VERSION "))
         .map(|value| value.trim().trim_end_matches('u'))
         .ok_or("chimi_fiber.h does not define CHIMI_FIBER_ABI_VERSION")?;
-    if header != "30" || chimi_fiber::ABI_VERSION != 30 {
+    if header != "31" || chimi_fiber::ABI_VERSION != 31 {
         return Err(format!(
-            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 30",
+            "the trace ABI is {} in chimi_fiber.h and {} in chimi-fiber, expected 31",
             header,
             chimi_fiber::ABI_VERSION
         ));

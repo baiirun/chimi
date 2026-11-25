@@ -323,21 +323,25 @@ pub const VIOLATION_IN_FLIGHT: u32 = 6;
 pub const VIOLATION_PUBLISHED_CAPABILITY: u32 = 7;
 pub const VIOLATION_WRONG_KIND: u32 = 8;
 pub const VIOLATION_OWN_RECEIVER: u32 = 9;
+pub const VIOLATION_UNKNOWN_TASK: u32 = 10;
 pub const CAPABILITY_NONE: u32 = 0;
 pub const CAPABILITY_RECEIVER: u32 = 1;
 pub const CAPABILITY_COMPLETION: u32 = 2;
+pub const CAPABILITY_TASK: u32 = 3;
 
-/// One channel capability violation, reported the moment the scheduler
-/// defects the task that made it. Identities are 0 when absent.
+/// One channel or task capability violation, reported the moment the
+/// scheduler defects the task that made it. Identities are 0 when absent.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChimiCapabilityViolation {
     /// The task whose request broke the contract; it defects.
     pub task: u64,
     pub channel: u64,
-    /// The task that owns the capability now, or 0 when its last owner ended.
+    /// The task that owns the capability now, or 0 when its last owner ended
+    /// (or, for a task handle, when no task owns it).
     pub owner: u64,
-    /// For a transfer, the task it was to be handed to.
+    /// For a transfer, the task it was to be handed to; for a task handle
+    /// (`CAPABILITY_TASK`), the task the handle names.
     pub destination: u64,
     /// The request kind (`REQUEST_CHANNEL_RECEIVE`, ...).
     pub request_kind: u32,
@@ -424,6 +428,31 @@ impl ChimiCapabilityViolation {
             capability,
             reason,
         }
+    }
+}
+
+impl ChimiCapabilityViolation {
+    /// The record of `task` using a task handle it does not own in a
+    /// `request_kind` request, from the error `require_owner` returned.
+    fn task_handle(task: TaskId, error: SchedulerError, request_kind: u32) -> Option<Self> {
+        let (reason, handle, owner) = match error {
+            SchedulerError::WrongOwner {
+                task: handle,
+                expected,
+                ..
+            } => (VIOLATION_WRONG_OWNER, handle, expected),
+            SchedulerError::UnknownTask(handle) => (VIOLATION_UNKNOWN_TASK, handle, None),
+            _ => return None,
+        };
+        Some(Self {
+            task: task.get(),
+            channel: 0,
+            owner: owner.map_or(0, TaskId::get),
+            destination: handle.get(),
+            request_kind,
+            capability: CAPABILITY_TASK,
+            reason,
+        })
     }
 }
 
@@ -1743,8 +1772,7 @@ impl Scheduler {
         task: TaskId,
     ) -> Result<TaskResult, SchedulerError> {
         if let Err(error) = self.require_owner(owner, task) {
-            self.defect_contract_violator(owner);
-            return Err(error);
+            return Err(self.task_handle_violation(owner, error, REQUEST_TASK_RESULT));
         }
         let phase = self
             .tasks
@@ -1770,8 +1798,7 @@ impl Scheduler {
 
     pub fn cancel(&mut self, owner: Option<TaskId>, task: TaskId) -> Result<(), SchedulerError> {
         if let Err(error) = self.require_owner(owner, task) {
-            self.defect_contract_violator(owner);
-            return Err(error);
+            return Err(self.task_handle_violation(owner, error, REQUEST_TASK_CANCEL));
         }
         if matches!(
             self.tasks.get(&task).map(|record| record.phase),
@@ -2677,7 +2704,7 @@ impl Scheduler {
                     request.status = RESPONSE_ERROR;
                     let _ = self.wake_front(owner);
                 } else {
-                    match self.first_terminal(owner, &tasks) {
+                    match self.first_terminal(owner, &tasks, request.kind) {
                         Ok(Some(task)) => {
                             request.task = task.get();
                             let TaskPhase::Terminal(outcome) = self.tasks[&task].phase else {
@@ -3204,11 +3231,11 @@ impl Scheduler {
         &mut self,
         owner: TaskId,
         tasks: &[TaskId],
+        request_kind: u32,
     ) -> Result<Option<TaskId>, SchedulerError> {
         for task in tasks {
             if let Err(error) = self.require_owner(Some(owner), *task) {
-                self.defect_contract_violator(Some(owner));
-                return Err(error);
+                return Err(self.task_handle_violation(Some(owner), error, request_kind));
             }
         }
         let first = tasks
@@ -3265,11 +3292,27 @@ impl Scheduler {
         Ok(())
     }
 
-    fn defect_contract_violator(&mut self, owner: Option<TaskId>) {
+    /// Defects `owner` for a `request_kind` request on a task handle it does
+    /// not own, and tells the host which handle and owner, then hands back
+    /// `error`. A request with no owner (the host's own) defects nobody.
+    fn task_handle_violation(
+        &mut self,
+        owner: Option<TaskId>,
+        error: SchedulerError,
+        request_kind: u32,
+    ) -> SchedulerError {
         let Some(owner) = owner else {
-            return;
+            return error;
         };
         if self.tasks.get(&owner).is_some_and(|record| record.phase.is_live()) {
+            let violation = ChimiCapabilityViolation::task_handle(owner, error, request_kind);
+            if let (Some((report, context)), Some(violation)) =
+                (self.config.capability_violation_report, violation)
+            {
+                // SAFETY: the host keeps the hook and its context valid while
+                // the scheduler runs; the record lives for the call.
+                unsafe { report(context, &violation) };
+            }
             self.force_terminal(
                 owner,
                 TaskOutcome::Defected {
@@ -3279,6 +3322,7 @@ impl Scheduler {
                 false,
             );
         }
+        error
     }
 
     fn emit(&mut self, task: TaskId, kind: TaskEventKind, cause: Option<TaskId>, full_only: bool) {
@@ -5508,6 +5552,54 @@ mod tests {
                     capability: CAPABILITY_RECEIVER,
                     reason: VIOLATION_WRONG_OWNER,
                 },
+            ]
+        );
+    }
+
+    // CHI-316: a task that uses a Task handle it does not own must be reported
+    // with the handle's task, the request, and the owner, so the host can name
+    // them instead of falling back to a deadlock message. A handle naming no
+    // task reports no owner, and the host's own requests report nothing.
+    // Rejects a missing report, the intruder reported as the owner, or the
+    // handle's task left out.
+    #[test]
+    fn a_task_handle_used_by_another_task_reports_the_handle_and_its_owner() {
+        let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
+        let mut violations: Vec<ChimiCapabilityViolation> = Vec::new();
+        let mut scheduler = Scheduler::with_options(SchedulerOptions {
+            capability_violation_report: Some(collect_violation),
+            violation_context: (&mut violations as *mut Vec<ChimiCapabilityViolation>).cast(),
+            ..SchedulerOptions::new(64 * 1024, TraceMode::Off, ClockMode::Real)
+        });
+        let parent = start_parked(&mut scheduler);
+        let child = scheduler
+            .start_child(parent, chimi_fixture_generated_many_parks)
+            .expect("child");
+        scheduler.drive();
+        assert!(scheduler.result(None, child).is_err());
+        let reader = start_parked(&mut scheduler);
+        assert!(scheduler.result(Some(reader), child).is_err());
+        let canceller = start_parked(&mut scheduler);
+        assert!(scheduler.cancel(Some(canceller), child).is_err());
+        let guesser = start_parked(&mut scheduler);
+        let missing = TaskId(999);
+        assert!(scheduler.result(Some(guesser), missing).is_err());
+
+        let violation = |task: TaskId, owner: u64, request_kind, reason| ChimiCapabilityViolation {
+            task: task.get(),
+            channel: 0,
+            owner,
+            destination: if reason == VIOLATION_UNKNOWN_TASK { missing.get() } else { child.get() },
+            request_kind,
+            capability: CAPABILITY_TASK,
+            reason,
+        };
+        assert_eq!(
+            violations,
+            [
+                violation(reader, parent.get(), REQUEST_TASK_RESULT, VIOLATION_WRONG_OWNER),
+                violation(canceller, parent.get(), REQUEST_TASK_CANCEL, VIOLATION_WRONG_OWNER),
+                violation(guesser, 0, REQUEST_TASK_RESULT, VIOLATION_UNKNOWN_TASK),
             ]
         );
     }

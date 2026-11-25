@@ -177,8 +177,8 @@ impl Scheduler {
             },
             SELECT_TASK => {
                 let task = TaskId(source.task);
-                if self.require_owner(Some(owner), task).is_err() {
-                    self.defect_contract_violator(Some(owner));
+                if let Err(error) = self.require_owner(Some(owner), task) {
+                    self.task_handle_violation(Some(owner), error, super::REQUEST_SELECT);
                     return Poll::Violation;
                 }
                 if matches!(self.tasks[&task].phase, TaskPhase::Terminal(_)) {
