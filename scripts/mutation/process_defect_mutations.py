@@ -4,7 +4,8 @@ incarnation and hands it to the runtime's defect report.
 
 Run: scripts/mutation/mutate.py scripts/mutation/process_defect_mutations.py
 Each mutant must turn `cli.rs` `native_process_stack_depth_and_named_defects`
-red (a body's own message and a stack overflow both reach the outcome), and
+red (a body's own message and a stack overflow both reach the outcome), or
+`native_a_deadlocked_root_names_the_last_process_defect`, and
 the scheduler-side ones the chimi-fiber unit test
 `a_defected_bodys_message_reaches_the_defect_report` too.
 Results: scripts/mutation/process_defect_results.txt.
@@ -33,9 +34,12 @@ MUTATIONS = [
     m("the report ignores the body's message", R, [(
         "strdup(termination->stack_overflow ? \"Process stack overflow\" : termination->message);",
         "strdup(termination->stack_overflow ? \"Process stack overflow\" : \"defect\");")]),
-    m("a stack overflow is not named", R, [(
+    # The outcome event names an overflow itself; the defect report's name
+    # shows in the message of a root that ends after the process defected.
+    dict(name="a stack overflow is not named", file=R, edits=[(
         "  if (termination->stack_overflow || termination->message) {",
-        "  if (termination->message) {")]),
+        "  if (termination->message) {")], targets=["cli"],
+        filter="native_a_deadlocked_root_names_the_last_process_defect"),
     m("the scheduler drops a reported message", SCOPE, [(
         "    DEFECT_MESSAGE.with(|cell| *cell.borrow_mut() = Some(copy));",
         "    drop(copy);")]),
