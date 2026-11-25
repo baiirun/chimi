@@ -4279,7 +4279,9 @@ typedef struct { const char *bytes; size_t length; void *owned; } ChimiOwnedText
 ChimiTextSpan chimi_text_trim_v1(const char *bytes, size_t length, bool end);
 ChimiOwnedText chimi_text_case_map_v1(const char *bytes, size_t length, bool upper);
 void chimi_text_release_v1(ChimiOwnedText owned);
-size_t chimi_text_grapheme_end_v1(const char *bytes, size_t length, size_t start);
+typedef struct { const size_t *ends; size_t count; void *owned; } ChimiGraphemeEnds;
+ChimiGraphemeEnds chimi_text_grapheme_ends_v1(const char *bytes, size_t length);
+void chimi_text_release_ends_v1(ChimiGraphemeEnds owned);
 
 /* Text.lowercase and Text.uppercase: the Unicode default case conversion, Final_Sigma
    included. Mappings change length (U+00DF ß uppercases to "SS"). */
@@ -4288,11 +4290,6 @@ static ChimiValue *text_case_map(const ChimiValue *value, bool upper) {
   ChimiValue *result = text_from_bytes(mapped.bytes, mapped.length);
   chimi_text_release_v1(mapped);
   return result;
-}
-/* The byte offset where the grapheme cluster (Unicode UAX #29) that starts at the
-   character boundary `start` ends, or `length` when `start` is the end. */
-static size_t grapheme_end(const char *text, size_t length, size_t start) {
-  return chimi_text_grapheme_end_v1(text, length, start);
 }
 /* Text.trim_start, or with `end` Text.trim_end: Unicode White_Space removed. */
 static ChimiValue *text_trim(const ChimiValue *value, bool end) {
@@ -4396,11 +4393,12 @@ static ChimiControl *invoke_core_operation(uint32_t intrinsic, ChimiValue **argu
       if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
       const char *text = arguments[0]->as.text.bytes;
       size_t length = arguments[0]->as.text.length;
+      /* Extended grapheme clusters (Unicode UAX #29). */
+      ChimiGraphemeEnds ends = chimi_text_grapheme_ends_v1(text, length);
       ChimiValue *graphemes = list_value((ListVector){NULL, NULL, 0}, 0, 0);
-      for (size_t start = 0, end; start < length; start = end) {
-        end = grapheme_end(text, length, start);
-        graphemes = list_push(graphemes, text_from_bytes(text + start, end - start));
-      }
+      for (size_t index = 0, start = 0; index < ends.count; start = ends.ends[index++])
+        graphemes = list_push(graphemes, text_from_bytes(text + start, ends.ends[index] - start));
+      chimi_text_release_ends_v1(ends);
       return success(graphemes);
     }
     case CHIMI_INTRINSIC_LIST_GET: {

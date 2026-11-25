@@ -5,6 +5,7 @@
 use crate::{graphemes, text};
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// # Safety
 ///
@@ -83,19 +84,44 @@ pub unsafe extern "C" fn chimi_text_release_v1(owned: ChimiOwnedText) {
     drop(unsafe { Box::from_raw(owned.owned) });
 }
 
-/// The byte offset where the grapheme cluster starting at `start` ends, or
-/// `length` when `start` is `length`. A `start` past the end or inside a
-/// UTF-8 sequence is a runtime bug and aborts.
+/// The end offsets of a text's grapheme clusters, in order, for the C
+/// runtime to read and then release with [`chimi_text_release_ends_v1`].
+#[repr(C)]
+pub struct ChimiGraphemeEnds {
+    pub ends: *const usize,
+    pub count: usize,
+    owned: *mut Vec<usize>,
+}
+
+/// `Text.graphemes`, as the byte offset where each cluster ends; the text is
+/// read once, so this is linear in its length.
 ///
 /// # Safety
 ///
 /// `bytes` must point to `length` readable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_text_grapheme_end_v1(bytes: *const u8, length: usize, start: usize) -> usize {
+pub unsafe extern "C" fn chimi_text_grapheme_ends_v1(bytes: *const u8, length: usize) -> ChimiGraphemeEnds {
     // SAFETY: forwarded from the caller.
     let whole = unsafe { utf8(bytes, length) };
-    if !whole.is_char_boundary(start) {
-        panic!();
+    let mut ends = Box::new(Vec::new());
+    let mut start = 0;
+    while start < whole.len() {
+        start = graphemes::grapheme_end(whole, start);
+        ends.push(start);
     }
-    graphemes::grapheme_end(whole, start)
+    ChimiGraphemeEnds {
+        ends: ends.as_ptr(),
+        count: ends.len(),
+        owned: Box::into_raw(ends),
+    }
+}
+
+/// # Safety
+///
+/// `owned` must come from [`chimi_text_grapheme_ends_v1`] and not have been
+/// released already.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_text_release_ends_v1(owned: ChimiGraphemeEnds) {
+    // SAFETY: the caller passes back the box `chimi_text_grapheme_ends_v1` made.
+    drop(unsafe { Box::from_raw(owned.owned) });
 }
