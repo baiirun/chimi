@@ -1,6 +1,7 @@
 //! LSP transport: protocol messages in, `Workspace` calls, protocol messages out.
 //!
-//! Initialization options name the projects, because Chimi has no manifest:
+//! A package is found from an open file's `chimi.toml`. Initialization options
+//! name projects that have no manifest:
 //! `{"projects": [{"root": "<dir>", "entry": "<module>"}]}`. A relative root
 //! resolves against the first workspace folder.
 
