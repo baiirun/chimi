@@ -447,7 +447,7 @@ pub fn strip(text: Text) -> Text
 - Styling is pure, with no needs. A program decides once with `uses_color`
   and styles with an empty list when it should not.
 - On the native backend the provider is a binding package
-  (`runtime/native/bindings/terminal`) of two calls that never wait. The
+  (`runtime/chimi-runtime/src/binding/terminal.rs`, in Rust) of two calls that never wait. The
   interpreter cannot call it (`E5204`); a test supplies a fake record with
   `using` on both backends, and the pure functions run on both.
 - Not in this module: 256 and RGB colors, `FORCE_COLOR`, visible width,
