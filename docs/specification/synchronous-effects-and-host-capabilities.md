@@ -52,7 +52,7 @@ effects effect-row
 
 The first source spelling places effects after needs:
 
-<!-- chimi: pending ts-facbbe -->
+<!-- chimi: fragment -->
 ```chimi
 import std/io.{Path}
 
@@ -85,7 +85,7 @@ silently creating user effects.
 
 Generic parameters used in effect position have effect-row kind:
 
-<!-- chimi: pending ts-facbbe -->
+<!-- chimi: fragment -->
 ```chimi
 fn apply<A, B, E>(
   value: A,
@@ -329,7 +329,7 @@ target native-cli cannot execute root effects { unsupported_effect }
 For example, supplying the dependency in this guard does not erase the
 operation's effect:
 
-<!-- chimi: pending ts-facbbe -->
+<!-- chimi: fragment -->
 ```chimi
 interface FeatureFlags {
   enabled: fn(Text) -> Bool effects { io }
