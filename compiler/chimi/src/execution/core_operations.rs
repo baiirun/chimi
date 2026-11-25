@@ -1,29 +1,11 @@
 //! The native core of `std/option`, `std/text`, `std/list`, and `Debug.crash` on
 //! the reference interpreter. `runtime.c` implements the same operations for the
-//! native backend, and the `std-tests` programs run on both and must agree.
+//! native backend (the Unicode ones by calling `chimi_runtime::text`, as this
+//! file does), and the `std-tests` programs run on both and must agree.
 
 use super::{Control, Evaluator, RuntimeValue, debug};
 use crate::ids::CoreNodeId;
 use crate::standard::{StandardConstructor, StandardFunction};
-
-/// Unicode `White_Space`, the characters `Text.trim_start` and `Text.trim_end`
-/// remove. `runtime.c` keeps the same table.
-pub(crate) fn is_white_space(character: char) -> bool {
-    matches!(
-        character,
-        '\u{9}'..='\u{d}'
-            | ' '
-            | '\u{85}'
-            | '\u{a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-    )
-}
 
 /// Clamps `start..end` to `0..length`; a reversed range clamps to empty.
 pub(super) fn clamp_range(start: i64, end: i64, length: usize) -> std::ops::Range<usize> {
@@ -317,19 +299,16 @@ impl Evaluator<'_> {
                 text(value.replace(old.as_str(), new))
             }
             (StandardFunction::TextTrimStart, [RuntimeValue::Text(value)]) => {
-                text(value.trim_start_matches(is_white_space).to_owned())
+                text(chimi_runtime::text::trim_start(value).to_owned())
             }
             (StandardFunction::TextTrimEnd, [RuntimeValue::Text(value)]) => {
-                text(value.trim_end_matches(is_white_space).to_owned())
+                text(chimi_runtime::text::trim_end(value).to_owned())
             }
-            // Rust's mappings are the Unicode default case conversion, Final_Sigma
-            // included; `runtime.c` holds tables generated from them
-            // (`tests/unicode_tables.rs`).
             (StandardFunction::TextLowercase, [RuntimeValue::Text(value)]) => {
-                text(value.to_lowercase())
+                text(chimi_runtime::text::lowercase(value))
             }
             (StandardFunction::TextUppercase, [RuntimeValue::Text(value)]) => {
-                text(value.to_uppercase())
+                text(chimi_runtime::text::uppercase(value))
             }
             (StandardFunction::TextGraphemes, [RuntimeValue::Text(value)]) => {
                 Control::Success(RuntimeValue::List(

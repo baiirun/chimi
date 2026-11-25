@@ -2,22 +2,15 @@
 //! checked-in copy is stale. Regenerate with
 //! `CHIMI_UPDATE_UNICODE_TABLES=1 cargo test -p chimi --test unicode_tables`.
 //!
-//! - Case tables for `Text.lowercase` and `Text.uppercase` in `runtime.c`. The
-//!   interpreter calls Rust's `str::to_lowercase` and `str::to_uppercase`, so
-//!   the tables are derived from those functions, and a toolchain whose Unicode
-//!   version moves fails here.
-//! - The grapheme cluster property table, in `src/graphemes/table.rs` and in
-//!   `runtime.c`, from the vendored files in `compiler/chimi/unicode/`, whose
-//!   version must equal the toolchain's so case and segmentation agree.
+//! - The grapheme cluster property table, in
+//!   `runtime/chimi-runtime/src/graphemes/table.rs`, from the vendored files in
+//!   `compiler/chimi/unicode/`, whose version must equal the toolchain's:
+//!   `Text.lowercase` and `Text.uppercase` use the toolchain's own case tables
+//!   (`str::to_lowercase`), so case and segmentation then agree.
 //! - `std-tests/text/grapheme_break_test`, the official `GraphemeBreakTest.txt`
 //!   cases as a program both backends run, with its expected outcome.
 
 use std::path::{Path, PathBuf};
-
-const CASE_BEGIN: &str = "/* BEGIN GENERATED unicode case tables";
-const CASE_END: &str = "/* END GENERATED unicode case tables */";
-const GRAPHEME_BEGIN: &str = "/* BEGIN GENERATED grapheme table";
-const GRAPHEME_END: &str = "/* END GENERATED grapheme table */";
 
 fn manifest_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -28,136 +21,33 @@ fn unicode_version() -> String {
     format!("{major}.{minor}.{update}")
 }
 
-// Case tables.
-
-/// Where a character stands in Rust's Final_Sigma test, which skips
-/// `Case_Ignorable` characters and then asks whether the next one is `Cased`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SigmaContext {
-    Cased,
-    Ignorable,
-}
-
-impl SigmaContext {
-    const fn c_name(self) -> &'static str {
-        match self {
-            Self::Cased => "SIGMA_CONTEXT_CASED",
-            Self::Ignorable => "SIGMA_CONTEXT_IGNORABLE",
-        }
-    }
-
-    /// Probes `str::to_lowercase`, the oracle the interpreter uses, instead of
-    /// reading the Unicode property files the toolchain does not expose.
-    fn of(character: char) -> Option<Self> {
-        let final_sigma = |text: String| text.to_lowercase().ends_with('ς');
-        // Only a Cased, non-ignorable character makes a lone `Σ` after it final.
-        if final_sigma(format!("{character}Σ")) {
-            Some(Self::Cased)
-        } else if final_sigma(format!("A{character}Σ")) {
-            Some(Self::Ignorable)
-        } else {
-            None
-        }
-    }
-}
-
-fn characters() -> impl Iterator<Item = char> {
-    (0..=0x10ffff).filter_map(char::from_u32)
-}
-
-fn mapping_table<I: Iterator<Item = char>>(name: &str, map: impl Fn(char) -> I) -> String {
-    let mut entries = Vec::new();
-    for character in characters() {
-        let mapped: Vec<char> = map(character).collect();
-        if mapped != [character] {
-            assert!(
-                mapped.len() <= 3,
-                "{character:?} maps to more than three characters"
-            );
-            let codes: Vec<String> = mapped
-                .iter()
-                .map(|c| format!("0x{:x}", u32::from(*c)))
-                .collect();
-            entries.push(format!(
-                "{{0x{:x}, {{{}}}}}",
-                u32::from(character),
-                codes.join(", ")
-            ));
-        }
-    }
-    let mut table = format!("static const CaseMapping {name}[] = {{\n");
-    for line in entries.chunks(6) {
-        table.push_str(&format!("  {},\n", line.join(", ")));
-    }
-    table.push_str("};\n");
-    table
-}
-
-fn sigma_context_table() -> String {
-    let mut ranges: Vec<(u32, u32, SigmaContext)> = Vec::new();
-    for character in characters() {
-        let Some(context) = SigmaContext::of(character) else {
-            continue;
-        };
-        let code = u32::from(character);
-        match ranges.last_mut() {
-            Some((_, last, previous)) if *last + 1 == code && *previous == context => *last = code,
-            _ => ranges.push((code, code, context)),
-        }
-    }
-    let entries: Vec<String> = ranges
-        .iter()
-        .map(|(first, last, context)| format!("{{0x{first:x}, 0x{last:x}, {}}}", context.c_name()))
-        .collect();
-    let mut table = String::from("static const SigmaContextRange sigma_context_ranges[] = {\n");
-    for line in entries.chunks(3) {
-        table.push_str(&format!("  {},\n", line.join(", ")));
-    }
-    table.push_str("};\n");
-    table
-}
-
-fn case_region() -> String {
-    format!(
-        "{CASE_BEGIN} (tests/unicode_tables.rs, Unicode {}) */\n{}{}{}{CASE_END}",
-        unicode_version(),
-        mapping_table("lowercase_mappings", char::to_lowercase),
-        mapping_table("uppercase_mappings", char::to_uppercase),
-        sigma_context_table(),
-    )
-}
-
 // Grapheme cluster properties.
 
 /// Grapheme_Cluster_Break values as the data files spell them, with the
-/// variant names of `src/graphemes.rs` and `runtime.c`.
-const BREAKS: &[(&str, &str, &str)] = &[
-    ("Other", "Other", "GB_OTHER"),
-    ("CR", "Cr", "GB_CR"),
-    ("LF", "Lf", "GB_LF"),
-    ("Control", "Control", "GB_CONTROL"),
-    ("Extend", "Extend", "GB_EXTEND"),
-    ("ZWJ", "Zwj", "GB_ZWJ"),
-    (
-        "Regional_Indicator",
-        "RegionalIndicator",
-        "GB_REGIONAL_INDICATOR",
-    ),
-    ("Prepend", "Prepend", "GB_PREPEND"),
-    ("SpacingMark", "SpacingMark", "GB_SPACING_MARK"),
-    ("L", "L", "GB_L"),
-    ("V", "V", "GB_V"),
-    ("T", "T", "GB_T"),
-    ("LV", "Lv", "GB_LV"),
-    ("LVT", "Lvt", "GB_LVT"),
+/// variant names of `graphemes.rs`.
+const BREAKS: &[(&str, &str)] = &[
+    ("Other", "Other"),
+    ("CR", "Cr"),
+    ("LF", "Lf"),
+    ("Control", "Control"),
+    ("Extend", "Extend"),
+    ("ZWJ", "Zwj"),
+    ("Regional_Indicator", "RegionalIndicator"),
+    ("Prepend", "Prepend"),
+    ("SpacingMark", "SpacingMark"),
+    ("L", "L"),
+    ("V", "V"),
+    ("T", "T"),
+    ("LV", "Lv"),
+    ("LVT", "Lvt"),
 ];
 
 /// Indic_Conjunct_Break values, the same way.
-const CONJUNCTS: &[(&str, &str, &str)] = &[
-    ("None", "None", "INCB_NONE"),
-    ("Linker", "Linker", "INCB_LINKER"),
-    ("Consonant", "Consonant", "INCB_CONSONANT"),
-    ("Extend", "Extend", "INCB_EXTEND"),
+const CONJUNCTS: &[(&str, &str)] = &[
+    ("None", "None"),
+    ("Linker", "Linker"),
+    ("Consonant", "Consonant"),
+    ("Extend", "Extend"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -195,7 +85,7 @@ fn data_rows(text: &str) -> Vec<(u32, u32, Vec<&str>)> {
     rows
 }
 
-fn position(values: &[(&str, &str, &str)], name: &str) -> usize {
+fn position(values: &[(&str, &str)], name: &str) -> usize {
     values
         .iter()
         .position(|(data_name, ..)| *data_name == name)
@@ -270,30 +160,6 @@ fn grapheme_rust_table(ranges: &[(u32, u32, GraphemeProperties)]) -> String {
     table
 }
 
-fn grapheme_c_region(ranges: &[(u32, u32, GraphemeProperties)]) -> String {
-    let mut region = format!(
-        "{GRAPHEME_BEGIN} (tests/unicode_tables.rs, Unicode {}) */\n\
-         static const GraphemeRange grapheme_ranges[] = {{\n",
-        unicode_version()
-    );
-    let entries: Vec<String> = ranges
-        .iter()
-        .map(|(first, last, property)| {
-            format!(
-                "{{0x{first:x}, 0x{last:x}, {}, {}, {}}}",
-                BREAKS[property.grapheme_break].2,
-                CONJUNCTS[property.conjunct].2,
-                u8::from(property.pictographic)
-            )
-        })
-        .collect();
-    for line in entries.chunks(3) {
-        region.push_str(&format!("  {},\n", line.join(", ")));
-    }
-    region.push_str(&format!("}};\n{GRAPHEME_END}"));
-    region
-}
-
 // The official break test as a std-tests program.
 
 /// The program and its expected outcome record. Each line of the result is
@@ -361,35 +227,13 @@ fn grapheme_break_test_program() -> (String, String) {
 
 // Checking and updating.
 
-fn replace_region(source: &str, begin: &str, end: &str, region: &str) -> String {
-    let start = source
-        .find(begin)
-        .unwrap_or_else(|| panic!("runtime.c has no region {begin}"));
-    let stop = source[start..]
-        .find(end)
-        .expect("the generated region ends")
-        + start
-        + end.len();
-    format!("{}{region}{}", &source[..start], &source[stop..])
-}
-
 #[test]
 fn generated_unicode_files_are_current() {
     let ranges = grapheme_ranges();
-    let runtime_path = manifest_path("runtime/native/runtime.c");
-    let runtime = std::fs::read_to_string(&runtime_path).expect("read runtime.c");
-    let runtime_expected = replace_region(&runtime, CASE_BEGIN, CASE_END, &case_region());
-    let runtime_expected = replace_region(
-        &runtime_expected,
-        GRAPHEME_BEGIN,
-        GRAPHEME_END,
-        &grapheme_c_region(&ranges),
-    );
     let (program, expected_outcome) = grapheme_break_test_program();
     let outputs = [
-        (runtime_path, runtime_expected),
         (
-            manifest_path("src/graphemes/table.rs"),
+            manifest_path("../../runtime/chimi-runtime/src/graphemes/table.rs"),
             grapheme_rust_table(&ranges),
         ),
         (
