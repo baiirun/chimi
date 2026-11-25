@@ -37,14 +37,16 @@ MUTATIONS = [
         "            } else if names_a_type && self.at_bracketless_case_subject_literal() {",
         "            } else if false && self.at_bracketless_case_subject_literal() {",
     )]),
-    mutant("an arm list counts as a literal", SYNTAX, [(
-        "                TokenKind::Arrow if depth == 1 => return false,",
-        "",
-    )]),
-    mutant("no brace needed after the literal", SYNTAX, [(
-        "        self.kind_at(position) == TokenKind::LeftBrace\n    }\n\n    /// Reports the struct literal",
-        "        true\n    }\n\n    /// Reports the struct literal",
-    )]),
+    mutant("an arm list that starts with a typed pattern counts as a literal", SYNTAX, [
+        (
+            "                TokenKind::Arrow if depth == 1 => return false,",
+            "",
+        ),
+        (
+            "        self.kind_at(position) == TokenKind::LeftBrace\n    }\n\n    /// Reports the struct literal",
+            "        true\n    }\n\n    /// Reports the struct literal",
+        ),
+    ]),
     mutant("the subject fix adds no parentheses", SYNTAX, [(
         "        .with_fix(range, format!(\"({text})\"));",
         "        .with_fix(range, text.to_owned());",
