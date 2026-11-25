@@ -39,7 +39,7 @@ MUTATIONS = [
     )]),
     mutant("a bare pattern keeps its field-count error", TYPING, [(
         "                    if arguments.is_empty() && !rejected.arity_matches {",
-        "                    if false {",
+        "                    if arguments.len() > 99 && !rejected.arity_matches {",
     )]),
     mutant("a bracketless subject literal is not detected", SYNTAX, [(
         "            } else if names_a_type && self.at_bracketless_case_subject_literal() {",
