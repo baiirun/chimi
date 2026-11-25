@@ -2473,6 +2473,7 @@ impl Scheduler {
             let process = record.process.is_some();
             self.emit(task, TaskEventKind::Parked, None, true);
             if process && self.is_forced(task) {
+                self.release_abandoned_start(event.request);
                 self.abandon_forced(task);
                 return;
             }
@@ -2531,14 +2532,23 @@ impl Scheduler {
         if kind != REQUEST_SIGNAL_WAIT {
             self.withdraw_signal_wait(owner);
         }
+        // A start hands its specification contexts over when issued, so a
+        // start that is not served releases them. They are read now, while
+        // the caller's stack holds the request.
+        let unserved_start = process_abi::is_start(kind).then(|| {
+            // SAFETY: a start request is a `ChimiProcessRequest`.
+            unsafe { process_abi::start_contexts(request.cast()) }
+        });
         // After the clears, so a channel the task watched is no longer
         // among its select sources when its last handle is released.
         if !self.apply_task_releases(owner) {
+            self.release_spec_contexts(unserved_start);
             return;
         }
         self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {
             self.withdraw_signal_wait(owner);
+            self.release_spec_contexts(unserved_start);
             return;
         }
         if (REQUEST_PROCESS_SELF..=REQUEST_SUPERVISOR_REMOVE_SUPERVISOR).contains(&kind)
@@ -2976,6 +2986,25 @@ impl Scheduler {
         self.end_after_unwind(task, outcome, &cleanup);
     }
 
+    /// Releases the specification contexts of `request` if it is a start
+    /// whose fiber is being abandoned while parked on it: the start was
+    /// issued, so its contexts are the scheduler's, and it will never be
+    /// served. Called before the fiber is forgotten; its stack still holds
+    /// the record either way.
+    fn release_abandoned_start(&self, request: *mut c_void) {
+        if request.is_null() {
+            return;
+        }
+        // SAFETY: every request record starts with `RequestHeader`, and the
+        // parked fiber's stack holds it.
+        let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
+        if process_abi::is_start(kind) {
+            // SAFETY: a start request is a `ChimiProcessRequest`.
+            let contexts = unsafe { process_abi::start_contexts(request.cast()) };
+            self.release_spec_contexts(Some(contexts));
+        }
+    }
+
     /// Records an end decided while `task`'s fiber runs; the strongest wins,
     /// as for `terminating`: a defect over any other outcome.
     fn record_pending_end(&mut self, task: TaskId, outcome: TaskOutcome) {
@@ -3001,6 +3030,10 @@ impl Scheduler {
     fn end_after_unwind(&mut self, task: TaskId, mut outcome: TaskOutcome, cleanup: &ChimiFiberEvent) {
         self.keep_task_value(task, cleanup);
         let cleanup_parked = cleanup.state == ChimiFiberState::Parked as u32;
+        if cleanup_parked {
+            // The fiber is abandoned below with this request unanswered.
+            self.release_abandoned_start(cleanup.request);
+        }
         if !outcome.is_defect() {
             outcome = match cleanup.state {
                 value if value == ChimiFiberState::Defected as u32 => TaskOutcome::Defected {
