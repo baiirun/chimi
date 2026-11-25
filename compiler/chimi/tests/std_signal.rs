@@ -28,7 +28,7 @@ import std/clock as Clock
 import std/clock.{Clock}
 import std/duration as Duration
 import std/io.{Console}
-import std/select as Select
+import std/wait as Wait
 import std/signal as Signal
 import std/signal.{Signal, Signals}
 import std/task as Task
@@ -141,7 +141,7 @@ fn success(value: &str) -> String {
 // One program walks the rules in order: a waiter wakes when its signal
 // arrives; signals that arrive while nobody waits are kept, and repeats
 // coalesce into one; the first listed pending signal wins; a `next` that
-// loses a `Select.first` race and is cancelled takes nothing, so a later
+// loses a `Wait.first` race and is cancelled takes nothing, so a later
 // `next` still gets the next signal; and a signal no waiter wants stays
 // latched until one asks for it.
 #[test]
@@ -154,9 +154,9 @@ fn signals_wake_waiters_coalesce_and_wait_their_turn() {
   let coalesced = waited([Signal.Hangup])
   let user = waited([Signal.Hangup, Signal.User1])
   let racer = Task.start(fn() { waited([Signal.Hangup]) })
-  let raced = Select.first([
-    Select.task(racer, fn(got: Text) { got }),
-    Select.after(Duration.seconds(1), \"timeout\"),
+  let raced = Wait.first([
+    Wait.task(racer, fn(got: Text) { got }),
+    Wait.after(Duration.seconds(1), \"timeout\"),
   ])
   Task.cancel(racer)
   let later = waited([Signal.Hangup])
@@ -213,8 +213,8 @@ fn each_signal_wakes_the_oldest_waiter() {
   Clock.sleep(Duration.milliseconds(10))
   let b = Task.start(fn() { Text.concat([\"b:\", waited([Signal.User1, Signal.Hangup])]) })
   Clock.sleep(Duration.milliseconds(10))
-  let first = Select.first([Select.task(a, fn(got: Text) { got }), Select.task(b, fn(got: Text) { got })])
-  let second = Select.first([Select.task(b, fn(got: Text) { got })])
+  let first = Wait.first([Wait.task(a, fn(got: Text) { got }), Wait.task(b, fn(got: Text) { got })])
+  let second = Wait.first([Wait.task(b, fn(got: Text) { got })])
   Text.join([first, second], \" \")
 }
 ",
@@ -239,8 +239,8 @@ fn a_woken_waiter_that_is_cancelled_passes_its_signal_on() {
   })
   Clock.sleep(Duration.milliseconds(10))
   let b = Task.start(fn() { Text.concat([\"b:\", waited([Signal.Hangup])]) })
-  let first = Select.first([Select.task(a, fn(got: Text) { got })])
-  let second = Select.first([Select.task(b, fn(got: Text) { got })])
+  let first = Wait.first([Wait.task(a, fn(got: Text) { got })])
+  let second = Wait.first([Wait.task(b, fn(got: Text) { got })])
   Text.join([first, second], \" \")
 }
 ",
@@ -262,9 +262,9 @@ fn a_new_wait_does_not_take_a_signal_handed_to_an_older_waiter() {
   })
   let first = waited([Signal.User1, Signal.Hangup])
   let second = waited([Signal.Hangup])
-  let older = Select.first([
-    Select.task(a, fn(got: Text) { got }),
-    Select.after(Duration.milliseconds(1), \"a:pending\"),
+  let older = Wait.first([
+    Wait.task(a, fn(got: Text) { got }),
+    Wait.after(Duration.milliseconds(1), \"a:pending\"),
   ])
   Text.join([first, second, older], \" \")
 }

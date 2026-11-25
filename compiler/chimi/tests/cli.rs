@@ -2225,7 +2225,7 @@ fn native_concurrency_pipeline_forces_the_connected_runtime() {
 
 /// The Phase 3 forcing program (CHI-207): a checkout service that combines
 /// failure-set types, `std/result`, causes, retry, timeouts and deadlines,
-/// `Task.all`, `Task.results`, `Task.race`, `Select.first`, a broadcast, and a
+/// `Task.all`, `Task.results`, `Task.race`, `Wait.first`, a broadcast, and a
 /// watch. Under the virtual clock its report, outcome, and select and scope
 /// trace events are exact, and its own `chimi test` suite passes.
 #[test]
@@ -2268,8 +2268,8 @@ fn native_checkout_service_forces_the_phase_3_surface() {
         std::fs::read_to_string(root.join("expected.outcome")).unwrap()
     );
     for event in [
-        "clock_select_parked",
-        "clock_select_committed",
+        "clock_wait_parked",
+        "clock_wait_committed",
         "clock_scope_fired",
         "channel_receiver_transferred",
     ] {

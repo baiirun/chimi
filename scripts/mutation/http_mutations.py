@@ -83,7 +83,7 @@ MUTATIONS = [
     # Not a mutant: dropping the explicit Supervisor.stop survives, because a
     # root supervisor also stops when the task that started it ends.
     mutant("a connection's process waits only for its task",
-           "    _ -> Select.first([\n      Select.task(serving, fn(_) { Woken.Served }),\n      Select.inbox(inbox, fn(_) { Woken.Stopped }),\n      Select.watch(drained, fn(_) { Woken.Draining }),\n    ])",
+           "    _ -> Wait.first([\n      Wait.task(serving, fn(_) { Woken.Served }),\n      Wait.inbox(inbox, fn(_) { Woken.Stopped }),\n      Wait.watch(drained, fn(_) { Woken.Draining }),\n    ])",
            "    _ -> {\n      let _ = Task.result(serving)\n      Woken.Served\n    }"),
     dict(name="the verifier counts a body closure's own locals as captures",
          file="src/executable/verify.rs",
@@ -256,10 +256,10 @@ MUTATIONS = [
            " and not draining_now(signals)",
            ""),
     mutant("an idle connection is left open by the drain",
-           "    (Woken.Draining, True) -> Select.first(",
-           "    (Woken.Draining, _) -> Select.first("),
+           "    (Woken.Draining, True) -> Wait.first(",
+           "    (Woken.Draining, _) -> Wait.first("),
     mutant("a busy connection is cut off by the drain",
-           "    (Woken.Draining, True) -> Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])",
+           "    (Woken.Draining, True) -> Wait.first([Wait.task(serving, fn(_) { Void }), Wait.inbox(inbox, fn(_) { Void })])",
            "    (Woken.Draining, True) -> Void"),
     mutant("a connection is never marked busy",
            "          mark_working(signals, True)\n          Some(Cursor(bytes, 0))",

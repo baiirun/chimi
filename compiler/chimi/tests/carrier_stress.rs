@@ -25,7 +25,7 @@ import std/process as Process
 import std/process.{Inbox}
 import std/resource as Resource
 import std/result as Result
-import std/select as Select
+import std/wait as Wait
 import std/stream as Stream
 import std/supervisor as Supervisor
 import std/task as Task
@@ -101,7 +101,7 @@ pub fn main() -> Int {
 
 /// Eight processes share one queue through receivers of their own while
 /// three producer processes send 1 to 6000 into it, and main then closes
-/// it. Half the receivers take values with a two-arm `Select.first` (an idle
+/// it. Half the receivers take values with a two-arm `Wait.first` (an idle
 /// queue first, so the select really polls both), and half with
 /// `Channel.receive` followed by a little work, so selects and plain
 /// receives both take a large share. Each value must reach exactly one of
@@ -131,7 +131,7 @@ fn worker(inbox: Inbox<Message>) -> Void {
       let (count, sum) = loop state = (0, 0) {
         let (count, sum) = state
         let next = case selects {
-          True -> Select.first([Select.receive(idle, same), Select.receive(jobs, same)])
+          True -> Wait.first([Wait.receive(idle, same), Wait.receive(jobs, same)])
           False -> {
             let got = Channel.receive(jobs)
             let _ = spin(300)
@@ -274,7 +274,7 @@ fn ask(send: fn(Int) -> Void, receiver: Receiver<Int>, round: Int) -> Int needs 
   loop attempts = 1 {
     send(round)
     let got = loop stale = 0 {
-      let next = Select.first([Select.receive(receiver, answer), Select.after(Duration.milliseconds(20), -1)])
+      let next = Wait.first([Wait.receive(receiver, answer), Wait.after(Duration.milliseconds(20), -1)])
       case next == round or next == -1 {
         True -> break next
         False -> stale + 1

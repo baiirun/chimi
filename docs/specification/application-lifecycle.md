@@ -84,7 +84,7 @@ restarted), and an end at the deadline is `forced`.
 
 A body that never looks at its inbox, such as a ticker looping on
 `Clock.sleep`, learns of the stop only at its deadline. A ticker that waits
-with `Select.first` on `Select.inbox` and a timer learns at once: during the
+with `Wait.first` on `Wait.inbox` and a timer learns at once: during the
 drain the inbox event is ready as soon as the mailbox is empty, and its
 receive returns cancellation (SD13).
 

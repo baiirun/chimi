@@ -241,8 +241,8 @@ pub fn next(wanted: List<Signal>) -> Signal
 - `next(wanted)` MUST return a pending signal from `wanted` at once, the first
   in `wanted`'s order when several are pending, and otherwise wait, letting
   other tasks run, until one arrives. It defects when `wanted` is empty. It is a
-  cancellation point, so it races a timeout or a channel inside `Select.first`
-  through `Select.task`.
+  cancellation point, so it races a timeout or a channel inside `Wait.first`
+  through `Wait.task`.
 - Each signal is pending at most once: repeats that arrive before a waiter
   takes it coalesce, as the operating system's do. A signal that arrives while
   no task waits for it MUST be kept until one asks for it, and it is never
@@ -628,7 +628,7 @@ its event lines.
   closes `files`; `temporary_directory` and `files_within` are test-only, so a
   test reaches real files only inside a directory it owns.
 - **`next(wanted)` over a subscription value.** A one-function interface keeps
-  a fake to one closure, and `Select.task` already composes a waiting call with
+  a fake to one closure, and `Wait.task` already composes a waiting call with
   timeouts and channels, so `std/signal` adds no receiver type.
 - **Latch, one waiter per signal.** One pending bit per signal matches what the
   kernel can promise (it coalesces too), and handing each signal to one waiter
@@ -679,7 +679,7 @@ its event lines.
 | The runner closes `files` on `main` on both backends | `std-tests/fs/runner_provider.chimi`; `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
 | Reading, writing, appending, streaming past one chunk, listing, renaming, and each error variant on both backends | `tests/host_modules.rs` `the_runner_provides_the_file_system_to_main` |
 | Metadata follows links; `create_directories` accepts existing directories and stops at a file | `tests/host_modules.rs` `metadata_reads_kind_size_and_modification_time` (native) |
-| A waiter wakes; signals coalesce; the first listed pending signal wins; a cancelled `next` in a `Select.first` race takes nothing; an unwanted signal stays latched | `tests/std_signal.rs` `signals_wake_waiters_coalesce_and_wait_their_turn` |
+| A waiter wakes; signals coalesce; the first listed pending signal wins; a cancelled `next` in a `Wait.first` race takes nothing; an unwanted signal stays latched | `tests/std_signal.rs` `signals_wake_waiters_coalesce_and_wait_their_turn` |
 | One signal wakes the oldest waiter | `tests/std_signal.rs` `each_signal_wakes_the_oldest_waiter` |
 | SIGTERM still drains after a SIGHUP (the second stop signal's rule is unchanged, `tests/signals.rs`) | `tests/std_signal.rs` `a_hangup_reloads_and_a_later_terminate_still_drains`, `stop_signals_keep_their_meaning_after_a_hangup` |
 | A waiter with nothing to come is a deadlock under the virtual clock; injected signals after `main` change nothing; `--signal=` rules; empty `wanted` defects | `tests/std_signal.rs` `a_waiter_with_no_signal_coming_is_a_deadlock`, `a_signal_due_after_main_ends_changes_nothing`, `the_signal_option_takes_the_three_signals_under_the_virtual_clock_only` (also the 64 cap), `waiting_for_no_signal_defects` and, for the interpreter, `the_interpreter_needs_the_native_runtime_to_wait` |

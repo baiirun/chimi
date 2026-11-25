@@ -10529,7 +10529,7 @@ fn a_constructor_holding_a_closure_is_no_more_shareable_than_the_closure() {
 // Rejects a Core verifier that counts a handoff body closure's own parameters
 // and locals as captures: this body captures only `step`, a shareable
 // function, but binds an inbox and a task handle of its own, which a nested
-// closure and `Select` use. The native build lowers and verifies the program.
+// closure and `Wait` use. The native build lowers and verifies the program.
 #[test]
 fn a_process_body_closure_may_bind_values_that_are_not_shareable() {
     let scratch = scratch_directory("handoff-closure-locals");
@@ -10540,7 +10540,7 @@ fn a_process_body_closure_may_bind_values_that_are_not_shareable() {
             "import std/duration as Duration\n",
             "import std/process as Process\n",
             "import std/process.{Inbox}\n",
-            "import std/select as Select\n",
+            "import std/wait as Wait\n",
             "import std/supervisor as Supervisor\n",
             "import std/task as Task\n",
             "enum Message {\n  Ping\n}\n",
@@ -10548,7 +10548,7 @@ fn a_process_body_closure_may_bind_values_that_are_not_shareable() {
             "fn host(step: fn(Int) -> Int) -> Int {\n",
             "  let spec = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) {\n",
             "    let running = Task.start(fn() { step(n) })\n",
-            "    Select.first([Select.task(running, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])\n",
+            "    Wait.first([Wait.task(running, fn(_) { Void }), Wait.inbox(inbox, fn(_) { Void })])\n",
             "  }, 1, Duration.seconds(1))\n",
             "  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))\n",
             "  let started = case Supervisor.start_handoff(root, spec, 1) {\n",

@@ -19,7 +19,7 @@ import std/duration as Duration
 import std/resource as Resource
 import std/task as Task
 import std/task.{Timeout}
-import std/select as Select
+import std/wait as Wait
 import std/process as Process
 import std/process.{Inbox}
 import std/supervisor as Supervisor
@@ -530,7 +530,7 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
         Clock.sleep(Duration.seconds(1))
         divide(held, 0)
       })
-      let _ = Select.first([Select.task(helper, tenfold)])
+      let _ = Wait.first([Wait.task(helper, tenfold)])
       Channel.send(sender, held)
     },
     fn(held) { held },
@@ -640,7 +640,7 @@ pub fn main() -> Int needs { clock: Clock.Clock } {
   let elapsed = Duration.to_seconds(Clock.since(start))
   Supervisor.stop(root)
   let first = take(reports.receiver)
-  let second = Select.first([Select.receive(reports.receiver, read), Select.after(Duration.seconds(1), 0)])
+  let second = Wait.first([Wait.receive(reports.receiver, read), Wait.after(Duration.seconds(1), 0)])
   first * 1000 + second * 10 + elapsed
 }
 "#,
@@ -951,7 +951,7 @@ fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {
           Clock.sleep(Duration.seconds(2))
           held / 0
         })
-        let _ = Select.first([Select.task(helper, fn(value: Int) -> Int { value })])
+        let _ = Wait.first([Wait.task(helper, fn(value: Int) -> Int { value })])
         Channel.send(report, held)
       },
       fn(_held) { Void },

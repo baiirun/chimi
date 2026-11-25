@@ -340,7 +340,7 @@ documentation states its cost. `chimi doc std/list` shows one module, and
 - **Services:** `http`, `net`, `tls`, `sql`, `sqlite`, `postgres`, `retry`,
   `schedule`, `resource`, `stream`
 - **Concurrency:** `process`, `supervisor`, `task`, `channel`, `broadcast`,
-  `watch`, `select`, `signal`
+  `watch`, `wait`, `signal`
 - **Observability:** `log`, `metrics`, `otel`, `cause`, `debug`
 - **System:** `cli`, `env`, `exec`, `fs`, `path`, `terminal`, `random`,
   `clock`, `duration`, `io`

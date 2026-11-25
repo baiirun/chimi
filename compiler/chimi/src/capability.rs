@@ -89,7 +89,7 @@ struct FlowValue {
     /// the value moves them. Empty for a value read out of a binding's field.
     carries: BTreeSet<SymbolId>,
     /// The exclusive bindings this value reads without holding them: the receiver
-    /// of a `Select.receive` or `Select.watch` event. Taking the value moves
+    /// of a `Wait.receive` or `Wait.watch` event. Taking the value moves
     /// nothing, but using it after one of them moved is `T4241`.
     borrows: BTreeSet<SymbolId>,
 }
@@ -574,7 +574,7 @@ impl CapabilityChecker<'_> {
                     }
                 }
                 // A call that may return an event, such as a helper that wraps
-                // `Select.receive` or a closure that returns a captured event,
+                // `Wait.receive` or a closure that returns a captured event,
                 // may read from any receiver it was given or its callee borrows.
                 if standard.is_none()
                     && result_type.is_some_and(|result| self.typed.type_may_hold_select_event(result))
@@ -588,7 +588,7 @@ impl CapabilityChecker<'_> {
                             .extend(self.field_root_binding(module_id, argument, environment));
                     }
                 }
-                if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
+                if let Some(StandardFunction::WaitReceive | StandardFunction::WaitWatch) =
                     standard
                     && let Some((argument, receiver)) = arguments.first()
                 {
@@ -1242,7 +1242,7 @@ impl CapabilityChecker<'_> {
         }
     }
 
-    /// Binds each name in `pattern`. A name whose type may hold a `Select`
+    /// Binds each name in `pattern`. A name whose type may hold a `Wait`
     /// event borrows what the subject borrows, since the event may be the one
     /// the subject held.
     fn add_pattern_bindings(

@@ -1,7 +1,7 @@
 //! Conformance for the channel variants (task-and-channel-capabilities.md,
 //! "Channel variants"): several receivers of one queue through
 //! `Channel.add_receiver`, `std/broadcast`, and `std/watch`, each also as a
-//! `Select` source.
+//! `Wait` source.
 //!
 //! Every native run uses the virtual clock, so a program that would wait on
 //! the wall clock times the suite out instead of passing slowly.
@@ -22,7 +22,7 @@ const IMPORTS: &str = concat!(
     "import std/duration as Duration\n",
     "import std/process as Process\n",
     "import std/process.{Inbox}\n",
-    "import std/select as Select\n",
+    "import std/wait as Wait\n",
     "import std/supervisor as Supervisor\n",
     "import std/task as Task\n",
     "import std/watch as Watch\n",
@@ -353,7 +353,7 @@ fn broadcast_waits_for_the_slowest_subscription() {
             "  let publisher = news.publisher\n",
             "  let pusher = Task.start(fn() { push(publisher, 2) })\n",
             "  let f1 = value(Channel.receive(fast))\n",
-            "  let waited = Select.first([Select.receive(fast, value), Select.after(Duration.seconds(1), 99)])\n",
+            "  let waited = Wait.first([Wait.receive(fast, value), Wait.after(Duration.seconds(1), 99)])\n",
             "  let s1 = value(Channel.receive(slow))\n",
             "  let f2 = value(Channel.receive(fast))\n",
             "  let s2 = value(Channel.receive(slow))\n",
@@ -433,11 +433,11 @@ fn watch_delivers_the_latest_value() {
     assert_eq!(result, success("577808"));
 }
 
-// ----- Select sources -----------------------------------------------------------
+// ----- Wait sources -------------------------------------------------------------
 
 // An added receiver, a broadcast subscription and a watch subscription are
-// each a Select source, committed in list order, and a publish from another
-// task wakes a parked select on a watch.
+// each a wait source, committed in list order, and a publish from another
+// task wakes a parked wait on a watch.
 #[test]
 fn every_variant_is_a_select_source() {
     let result = run_virtual(
@@ -456,12 +456,12 @@ fn every_variant_is_a_select_source() {
             "  let follower = Watch.subscribe(state.publisher)\n",
             "  Channel.send(jobs.sender, 1)\n",
             "  Broadcast.publish(news.publisher, 2)\n",
-            "  let a = Select.first([Select.receive(sub, value), Select.receive(other, value)])\n",
-            "  let b = Select.first([Select.receive(sub, value), Select.receive(other, value)])\n",
-            "  let c = Select.first([Select.receive(sub, value), Select.watch(follower, value)])\n",
+            "  let a = Wait.first([Wait.receive(sub, value), Wait.receive(other, value)])\n",
+            "  let b = Wait.first([Wait.receive(sub, value), Wait.receive(other, value)])\n",
+            "  let c = Wait.first([Wait.receive(sub, value), Wait.watch(follower, value)])\n",
             "  let publisher = state.publisher\n",
             "  let pusher = Task.start(fn() { push(publisher, 9) })\n",
-            "  let d = Select.first([Select.receive(sub, value), Select.watch(follower, value)])\n",
+            "  let d = Wait.first([Wait.receive(sub, value), Wait.watch(follower, value)])\n",
             "  a * 1000 + b * 100 + c * 10 + d + Task.result(pusher)\n",
             "}\n",
         ),
@@ -661,13 +661,13 @@ fn an_event_cannot_outlive_its_receiver() {
         "pub fn main() -> Int {\n",
         "  let jobs = Channel.bounded(1)\n",
         "  let receiver = jobs.receiver\n",
-        "  let event = Select.receive(receiver, value)\n",
+        "  let event = Wait.receive(receiver, value)\n",
         "  let worker = Task.start(fn() { drain(receiver) })\n",
         "  let state = Watch.starting_with(5)\n",
         "  let follower = Watch.subscribe(state.publisher)\n",
-        "  let watched = Select.watch(follower, value)\n",
+        "  let watched = Wait.watch(follower, value)\n",
         "  let reader = Task.start(fn() { value(Watch.receive(follower)) })\n",
-        "  Select.first([event]) + Select.first([watched])\n",
+        "  Wait.first([event]) + Wait.first([watched])\n",
         "}\n",
     ));
     assert_eq!(codes, ["T4241", "T4241"]);
@@ -676,7 +676,7 @@ fn an_event_cannot_outlive_its_receiver() {
         "  let jobs = Channel.bounded(1)\n",
         "  Channel.send(jobs.sender, 4)\n",
         "  let receiver = jobs.receiver\n",
-        "  let chosen = Select.first([Select.receive(receiver, value)])\n",
+        "  let chosen = Wait.first([Wait.receive(receiver, value)])\n",
         "  let worker = Task.start(fn() { drain(receiver) })\n",
         "  chosen\n",
         "}\n",
@@ -685,9 +685,9 @@ fn an_event_cannot_outlive_its_receiver() {
     let through_a_field = type_codes(concat!(
         "pub fn main() -> Int {\n",
         "  let jobs = Channel.bounded(1)\n",
-        "  let event = Select.receive(jobs.receiver, value)\n",
+        "  let event = Wait.receive(jobs.receiver, value)\n",
         "  let worker = Task.start(fn() { drain(jobs.receiver) })\n",
-        "  Select.first([event])\n",
+        "  Wait.first([event])\n",
         "}\n",
     ));
     assert_eq!(through_a_field, ["T4241"], "a receiver read from a field");
@@ -696,9 +696,9 @@ fn an_event_cannot_outlive_its_receiver() {
         "  let jobs = Channel.bounded(1)\n",
         "  Channel.send(jobs.sender, 4)\n",
         "  let receiver = jobs.receiver\n",
-        "  let event = Select.receive(receiver, value)\n",
+        "  let event = Wait.receive(receiver, value)\n",
         "  let mine = receiver\n",
-        "  Select.first([event])\n",
+        "  Wait.first([event])\n",
         "}\n",
     ));
     assert!(rebound.is_empty(), "a receiver rebound in its own task: {rebound:?}");
@@ -713,18 +713,18 @@ fn an_event_cannot_outlive_its_receiver() {
 fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
     let escapes = |make: &str, moved: &str, after_move: bool| {
         let (before, after) = if after_move {
-            ("", "  Select.first([event])\n")
+            ("", "  Wait.first([event])\n")
         } else {
-            ("  let answer = Select.first([event])\n", "  answer\n")
+            ("  let answer = Wait.first([event])\n", "  answer\n")
         };
         type_codes(&format!(
-            "import std/select.{{Event}}\n\
+            "import std/wait.{{Event}}\n\
              struct Held {{\n\
              \x20 event: Event<Int, ChannelError>,\n\
              \x20 n: Int,\n\
              }}\n\
              fn event_of(receiver: Receiver<Int>) -> Event<Int, ChannelError> {{\n\
-             \x20 Select.receive(receiver, value)\n\
+             \x20 Wait.receive(receiver, value)\n\
              }}\n\
              pub fn main() -> Int {{\n\
              \x20 let jobs = Channel.bounded(1)\n\
@@ -738,11 +738,11 @@ fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
         ))
     };
     let helper = "  let event = event_of(receiver)\n";
-    let broken = "  let event = loop n = 0 {\n    break Select.receive(receiver, value)\n  }\n";
-    let taken_apart = "  let (event, _) = (Select.receive(receiver, value), 1)\n";
+    let broken = "  let event = loop n = 0 {\n    break Wait.receive(receiver, value)\n  }\n";
+    let taken_apart = "  let (event, _) = (Wait.receive(receiver, value), 1)\n";
     let through_a_field = "  let event = event_of(jobs.receiver)\n";
-    let from_a_closure = "  let made = Select.receive(receiver, value)\n  let get = fn() { made }\n  let event = get()\n";
-    let from_a_struct = "  let held = Held { event: Select.receive(receiver, value), n: 1 }\n  let event = held.event\n";
+    let from_a_closure = "  let made = Wait.receive(receiver, value)\n  let get = fn() { made }\n  let event = get()\n";
+    let from_a_struct = "  let held = Held { event: Wait.receive(receiver, value), n: 1 }\n  let event = held.event\n";
     for (form, make, moved) in [
         ("closure", from_a_closure, "receiver"),
         ("struct field", from_a_struct, "receiver"),
@@ -760,7 +760,7 @@ fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
         "pub fn main() -> Int {\n",
         "  let jobs = Channel.bounded(1)\n",
         "  let receiver = jobs.receiver\n",
-        "  let (event, n) = (Select.receive(receiver, value), 1)\n",
+        "  let (event, n) = (Wait.receive(receiver, value), 1)\n",
         "  let worker = Task.start(fn() { drain(receiver) })\n",
         "  n\n",
         "}\n",

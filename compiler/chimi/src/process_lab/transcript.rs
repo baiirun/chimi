@@ -68,8 +68,8 @@ const CLOCK_EVENTS: &[&str] = &[
     "clock_deadlock_waiter",
     "clock_scope_fired",
     SIGNAL_RECEIVED,
-    "clock_select_parked",
-    "clock_select_committed",
+    "clock_wait_parked",
+    "clock_wait_committed",
 ];
 
 /// Projects telemetry onto the transcript lines the lab compares.
@@ -105,7 +105,7 @@ pub fn project(telemetry: &str, extra_events: &[&str]) -> Result<Vec<String>, St
         let name = event.name.as_str();
         let family = if PROCESS_EVENTS.contains(&name) {
             Some((PROCESS_IDENTITIES, PROCESS_ATTRIBUTES))
-        } else if name == "clock_select_committed" {
+        } else if name == "clock_wait_committed" {
             Some((&[][..], SELECT_COMMITTED_ATTRIBUTES))
         } else if CLOCK_EVENTS.contains(&name) {
             Some((&[][..], CLOCK_ATTRIBUTES))
