@@ -11706,6 +11706,30 @@ fn forwarding_a_generic_to_a_failure_set_parameter_makes_it_a_failure_set() {
         "fn text(result: Result<Int, Text>) -> Int {\n  wrap(result)\n}\n\npub fn main() -> Text {",
     );
     assert_eq!(check_codes(&text), ["T4203"]);
+    // A promotion that leaves every contract unchanged must still reach a
+    // caller checked first: `outer` learns that `wrap`'s `X` is a failure set
+    // one pass after `wrap` does, and only then can `main` be rejected.
+    let silent = concat!(
+        "enum Lost {\n",
+        "  Gone\n",
+        "}\n",
+        "fn lost() -> Int {\n",
+        "  Failure(Lost.Gone)\n",
+        "}\n",
+        "pub fn main() -> Int {\n",
+        "  outer(\"text\")\n",
+        "}\n",
+        "fn outer<Y>(value: Y) -> Int {\n",
+        "  wrap(value)\n",
+        "}\n",
+        "fn pair<E>(operation: fn() -> Int errors E, value: E) -> Int {\n",
+        "  0\n",
+        "}\n",
+        "fn wrap<X>(value: X) -> Int {\n",
+        "  pair(lost, value)\n",
+        "}\n",
+    );
+    assert_eq!(check_codes(silent), ["T4203"]);
 }
 
 // CHI-218: a constructor written where a closed failure set is expected has its
