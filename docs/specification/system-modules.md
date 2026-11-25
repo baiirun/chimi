@@ -393,7 +393,7 @@ pub fn host_for_tests() -> Commands                      // test-only
   and no file the runtime opens for itself (the telemetry, outcome, profile
   and memory reports) stays open in it.
 - On the native backend `std/exec` is a binding package
-  (`runtime/native/bindings/exec`). It spawns with `posix_spawn` and waits
+  (`runtime/chimi-runtime/src/binding/exec.rs`, in Rust). It spawns with `posix_spawn` and waits
   with `chimi_binding_wait_child` (binding ABI 2), which issues
   `CHIMI_REQUEST_CHILD_WAIT`: the scheduler only looks at the child (`waitid`
   with `WNOWAIT`) and the binding reaps it. The runner's SIGCHLD handler,

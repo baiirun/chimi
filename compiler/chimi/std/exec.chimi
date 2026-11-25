@@ -563,7 +563,7 @@ fn fake_writer(writer: Writer<StreamError>, program: Text) -> Writer<ExecError> 
   })
 }
 
-// The binding's failure codes (runtime/native/bindings/exec/exec.c): a
+// The binding's failure codes (runtime/chimi-runtime/src/binding/exec.rs): a
 // spawn fails with 1, 2, 3 or 5, and a wait with 4 or 5.
 fn started<T>(command: Command, result: Result<T, (Int, Text)>) -> T {
   case result {

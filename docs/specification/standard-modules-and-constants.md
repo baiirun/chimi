@@ -378,7 +378,7 @@ a runtime one.
   compiler needs no installed sources. `backend/bindings.rs` lists any
   operating-system libraries a package requires; none does yet.
 - A standard package with no C library under it is written in Rust instead
-  (CHI-309: `terminal` and `net` so far), in `runtime/chimi-runtime/src/binding/`, and
+  (CHI-309: `terminal`, `net` and `exec`), in `runtime/chimi-runtime/src/binding/`, and
   talks to the runtime through the same `chimi_binding.h` functions. It is
   compiled into the Rust runtime archive every program links, so it has no
   directory or archive of its own.

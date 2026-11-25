@@ -27,6 +27,7 @@
 )]
 
 mod api;
+mod exec;
 mod net;
 mod os;
 mod terminal;

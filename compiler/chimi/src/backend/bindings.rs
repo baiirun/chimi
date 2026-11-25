@@ -18,6 +18,10 @@ pub(super) const BINDING_HEADER: &str = include_str!("../../runtime/native/chimi
 /// with their source, which the registry test reads.
 pub(super) const RUST_PACKAGES: &[(&str, &str)] = &[
     (
+        "exec",
+        include_str!("../../../../runtime/chimi-runtime/src/binding/exec.rs"),
+    ),
+    (
         "net",
         include_str!("../../../../runtime/chimi-runtime/src/binding/net.rs"),
     ),
@@ -134,7 +138,8 @@ mod tests {
                         text.contains(&format!(
                             "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {}(",
                             binding.symbol
-                        ))
+                        )) || (text.contains("macro_rules! binding")
+                            && text.contains(&format!("\n    {} => ", binding.symbol)))
                     }),
             };
             assert!(

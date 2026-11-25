@@ -108,6 +108,8 @@ unsafe extern "C" {
     fn chimi_binding_cancelled(call: *mut ChimiBindingCall) -> *mut ChimiBindingResult;
     fn chimi_binding_wait(call: *mut ChimiBindingCall, handle: u32, fd: c_int, interest: c_int)
     -> c_int;
+    fn chimi_binding_prepare_children();
+    fn chimi_binding_wait_child(call: *mut ChimiBindingCall, handle: u32, pid: c_int) -> c_int;
     fn chimi_binding_integer(call: *const ChimiBindingCall, index: u32, out: *mut i64) -> c_int;
     fn chimi_binding_make_integer(call: *mut ChimiBindingCall, value: i64) -> *mut ChimiBindingValue;
     fn chimi_binding_make_boolean(call: *mut ChimiBindingCall, value: c_int) -> *mut ChimiBindingValue;
@@ -188,6 +190,22 @@ pub enum Waited {
     Failed,
     /// The handle the descriptor belongs to was closed: do not touch it.
     Closed,
+}
+
+fn waited(answer: c_int) -> Waited {
+    match answer {
+        0 => Waited::Ready,
+        1 => Waited::Cancelled,
+        3 => Waited::Closed,
+        _ => Waited::Failed,
+    }
+}
+
+/// Installs the runtime's SIGCHLD handler, once; call it before starting a
+/// child, so the child's exit wakes the scheduler.
+pub fn prepare_children() {
+    // SAFETY: it takes no arguments and is idempotent.
+    unsafe { chimi_binding_prepare_children() }
 }
 
 /// A descriptor that belongs to no handle argument.
@@ -281,14 +299,17 @@ impl<'call> Call<'call> {
     /// (or to no handle), is ready for `interest`, letting other tasks run.
     pub fn wait(&mut self, handle: Option<u32>, fd: c_int, interest: Interest) -> Waited {
         // SAFETY: `raw` is the live call.
-        match unsafe {
+        waited(unsafe {
             chimi_binding_wait(self.raw, handle.unwrap_or(NO_HANDLE), fd, interest as c_int)
-        } {
-            0 => Waited::Ready,
-            1 => Waited::Cancelled,
-            3 => Waited::Closed,
-            _ => Waited::Failed,
-        }
+        })
+    }
+
+    /// Waits until the child `pid`, which belongs to the handle argument at
+    /// `handle` (or to no handle), has exited, letting other tasks run. It
+    /// does not reap the child, and `Ready` can come early.
+    pub fn wait_child(&mut self, handle: Option<u32>, pid: c_int) -> Waited {
+        // SAFETY: `raw` is the live call.
+        waited(unsafe { chimi_binding_wait_child(self.raw, handle.unwrap_or(NO_HANDLE), pid) })
     }
 
     pub fn void(&mut self) -> Value<'call> {
