@@ -25,5 +25,5 @@ MUTATIONS = [
     dict(name="a native handle no value names stays open", file=R, edits=[(
         "  if (handle_table_release(key)) native_handle_unreferenced(key);\n",
         "  (void)handle_table_release(key);\n",
-    )], targets=["exec", "net"], filter=""),
+    )], targets=["net", "std_exec"], filter=""),
 ]

@@ -906,6 +906,25 @@ unsafe extern "C" fn drops_a_channel_then_asks_the_time(_context: *mut c_void) -
     }
 }
 
+/// Leaves its channel counted: a value of this run that was never freed.
+unsafe extern "C" fn leaves_a_channel_counted(_context: *mut c_void) -> ChimiFiberResult {
+    let channel = bounded(1);
+    crate::handles::chimi_fiber_handle_retain(channel.channel);
+    succeeded(0)
+}
+
+/// A run starts with no handle counted: the channel the next run makes has
+/// the same id as one an earlier run left counted, and it is still
+/// released when the next run drops its one value.
+#[test]
+fn each_run_counts_its_handles_afresh() {
+    let (outcome, _) = execute_once(leaves_a_channel_counted, Entry::Run);
+    assert_eq!(outcome.state, ChimiFiberState::Succeeded as u32);
+    let (_, log) = execute_once(drops_a_channel_then_asks_the_time, Entry::Run);
+    assert_eq!(log.channels, vec![994]);
+    assert_eq!(log.checkpoints[1], ("after the request", 0, 1, 0));
+}
+
 #[test]
 fn a_fibers_request_carries_the_releases_it_dropped() {
     let (outcome, log) = execute(drops_a_channel_then_asks_the_time);
