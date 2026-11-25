@@ -50,6 +50,10 @@ pub struct Measurement {
 /// The capability to record metrics. The runner's provider aggregates and
 /// writes them at exit; a test's fake is a record with this one function,
 /// such as one that keeps measurements in a `std/test` recorder.
+///
+/// The runner supplies it to `main` as the need `metrics`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Metrics {
   /// Adds `measurement` into its aggregate.
   record: fn(Measurement) -> Void

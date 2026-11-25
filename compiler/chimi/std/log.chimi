@@ -49,6 +49,10 @@ pub struct Entry {
 /// The capability to log. The runner's provider writes JSON lines; a test's
 /// fake is a record with this one function, such as one that keeps entries
 /// in a `std/test` recorder.
+///
+/// The runner supplies it to `main` as the need `log`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Log {
   /// Writes `entry`, or leaves it out when its level is filtered.
   write: fn(Entry) -> Void

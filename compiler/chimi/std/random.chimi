@@ -16,6 +16,10 @@ import std/range as Range
 
 /// A source of random bits. Supply another with `using { random: ... }`, as
 /// with `Clock`.
+///
+/// The runner supplies one seeded from the operating system to `main` when
+/// the need is named `random`, and a test gets one seeded from the run seed;
+/// docs/runner-supplied-needs.md lists every need the runner supplies.
 pub interface Random {
   /// 64 uniformly distributed bits, as an `Int`.
   next_int: fn() -> Int

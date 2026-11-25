@@ -592,6 +592,73 @@ pub(crate) fn runner_provider(interface: StandardType, need: &str) -> Option<&'s
         .find(|provider| provider.interface == interface && provider.need == need)
 }
 
+/// What a test root gets for a need the runner supplies on `main`
+/// (testing.md, "The test provider plan").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TestSupply {
+    /// The execution clock under the virtual source.
+    VirtualClock,
+    /// A generator seeded from the run seed and the test's identity.
+    SeededRandom,
+    /// A capture kept with the test's report.
+    CapturedConsole,
+    /// Nothing: the test supplies it with `using` (`T4400`).
+    Using,
+}
+
+impl TestSupply {
+    /// How a person would name what a test gets.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::VirtualClock => "the virtual clock",
+            Self::SeededRandom => "a seeded random source",
+            Self::CapturedConsole => "a captured console",
+            Self::Using => "nothing: supply it with `using`",
+        }
+    }
+
+    /// The token `chimi inspect` writes for it.
+    pub(crate) fn token(self) -> &'static str {
+        match self {
+            Self::VirtualClock => "virtual_clock",
+            Self::SeededRandom => "seeded_random",
+            Self::CapturedConsole => "captured_console",
+            Self::Using => "using",
+        }
+    }
+}
+
+/// How the runner supplies a host interface to `main`, for tooling that
+/// explains where a need comes from. The type checker's `runner_closes` and
+/// `test_plan_closes` are the rules; tests/runner_needs.rs holds this table to
+/// them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RunnerSupply {
+    /// The only need name the runner closes, or `None` for any name.
+    pub(crate) fixed_name: Option<&'static str>,
+    pub(crate) in_tests: TestSupply,
+}
+
+/// The runner's supply of `interface`, if the runner closes some need on it.
+pub(crate) fn runner_supply(interface: StandardType) -> Option<RunnerSupply> {
+    let supply = |fixed_name, in_tests| {
+        Some(RunnerSupply {
+            fixed_name,
+            in_tests,
+        })
+    };
+    match interface {
+        StandardType::Console => supply(None, TestSupply::CapturedConsole),
+        StandardType::FileSystem => supply(None, TestSupply::Using),
+        StandardType::Clock => supply(Some("clock"), TestSupply::VirtualClock),
+        StandardType::Random => supply(Some("random"), TestSupply::SeededRandom),
+        _ => RUNNER_PROVIDERS
+            .iter()
+            .find(|provider| provider.interface == interface)
+            .and_then(|provider| supply(Some(provider.need), TestSupply::Using)),
+    }
+}
+
 /// The qualified name of a host operation, which a constant must not call;
 /// `None` for any other operation.
 pub(crate) fn host_operation_name(function: StandardFunction) -> Option<&'static str> {
