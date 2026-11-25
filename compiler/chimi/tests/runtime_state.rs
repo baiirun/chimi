@@ -48,8 +48,7 @@ const SHARED: &[&str] = &[
     "binding_free_slot",
     "binding_handle_lock",
     "binding_handle_free",
-    "fs_files",
-    "fs_file_count",
+    // Guards the Rust runtime's open-file table (chimi-runtime files_abi.rs).
     "fs_file_lock",
     "test_logs",
     "test_log_count",

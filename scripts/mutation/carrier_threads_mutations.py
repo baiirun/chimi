@@ -59,23 +59,6 @@ MUTATIONS = [
     m("heap owners come from a plain counter", [(
         "  heap->owner = atomic_fetch_add_explicit(&next_heap_owner, 1, memory_order_relaxed);",
         "  heap->owner = (*(uint64_t *)&next_heap_owner)++;")]),
-    m("the file table has no lock in fs_take", [(
-        "static int fs_take(int64_t handle) {\n  pthread_mutex_lock(&fs_file_lock);",
-        "static int fs_take(int64_t handle) {"), (
-        "    fd = file->fd;\n  }\n  pthread_mutex_unlock(&fs_file_lock);\n  return fd;",
-        "    fd = file->fd;\n  }\n  return fd;")]),
-    m("a read does not count as a user", [(
-        "  if (file) {\n    ++file->users;\n    fd = file->fd;\n  }",
-        "  if (file) {\n    fd = file->fd;\n  }")]),
-    m("a close ignores the users", [(
-        "    ++file->generation;\n    if (file->users == 0) {",
-        "    ++file->generation;\n    if (true) {")]),
-    m("the last user does not close", [(
-        "  if (--file->users == 0 && !file->open) {",
-        "  if (--file->users == 0 && !file->open && false) {")]),
-    m("a slot is reused while its descriptor is in use", [(
-        "  while (slot < fs_file_count && (fs_files[slot].open || fs_files[slot].fd >= 0)) ++slot;",
-        "  while (slot < fs_file_count && fs_files[slot].open) ++slot;")]),
     m("the sum skips carrier 0", [(
         "  HeapTotals sum = {0};\n  for (size_t index = 0; index < carrier_count; ++index) {",
         "  HeapTotals sum = {0};\n  for (size_t index = 1; index < carrier_count; ++index) {")]),
