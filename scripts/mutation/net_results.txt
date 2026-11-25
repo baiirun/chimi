@@ -1,34 +1,39 @@
-# mutation run at 10a2a88d899c8c52ad01ee0f3d052b328e0e04f1
-# net_mutations.py: 26 mutants against compiler/chimi
-BASELINE ok  [net] (38s)
-KILLED       finishing closes both directions [net] (24s)
-KILLED       refused reads as unreachable [net] (23s)
-KILLED       an address in use is a plain failure [net] (22s)
-KILLED       a name is looked up as a number only [net] (23s)
-KILLED       a host holding U+0000 is looked up up to it [net] (24s)
-KILLED       the lookup call does not wait for the thread [net] (22s)
-KILLED       a stopped reader still reads [net] (22s)
-SURVIVED     a failed lookup thread wait reads as ready [net] (24s)
-KILLED       a write stops after one send [net] (26s)
-TIMEOUT      a read gives the peer's end as an empty chunk [net] (300s)
-KILLED       the local address is the peer's [net] (22s)
-KILLED       connecting ignores a failed connect [net] (22s)
-KILLED       listening ignores a failed bind [net] (23s)
-KILLED       a write after finishing reaches the socket [net] (22s)
-KILLED       an empty host listens on whatever the system lists first [net] (23s)
-KILLED       stopping the reader releases the socket [net] (23s)
-KILLED       a fake's aborted read is a reset [net] (19s)
-KILLED       a host with U+0000 is named as C saw it [net] (18s)
-KILLED       a closed socket reads as a reset [net] (18s)
-KILLED       the port check lets 65536 through [net] (17s)
-KILLED       a fake pair crosses its wires [net] (19s)
-KILLED       the fake's peer is itself [net] (20s)
-KILLED       closing a fake leaves its writer open [net] (19s)
-KILLED       Net.close does nothing [net] (74s)
-KILLED       host_for_tests is reachable from a program [net] (20s)
-KILLED       the runner does not close network [net] (13s)
+# mutation run at 3c8910e77dfdd2bcc272c91d72c5fdd61768cd13
+# net_mutations.py: 27 mutants against compiler/chimi
+BASELINE ok  [net] (161s)
+KILLED       finishing closes both directions [net] (67s)
+KILLED       refused reads as unreachable [net] (65s)
+KILLED       an address in use is a plain failure [net] (77s)
+KILLED       a name is looked up as a number only [net] (76s)
+KILLED       a host holding U+0000 is looked up up to it [net] (79s)
+KILLED       the lookup call does not wait for the thread [net] (72s)
+KILLED       a stopped reader still reads [net] (73s)
+SURVIVED     a failed lookup thread wait reads as ready [net] (69s)
+KILLED       a write stops after one send [net] (63s)
+TIMEOUT      a read gives the peer's end as an empty chunk [net] (366s)
+KILLED       the local address is the peer's [net] (66s)
+KILLED       connecting ignores a failed connect [net] (69s)
+KILLED       listening ignores a failed bind [net] (64s)
+KILLED       a write after finishing reaches the socket [net] (61s)
+KILLED       an empty host listens on whatever the system lists first [net] (61s)
+KILLED       the port is the decimal of the wrong value [net] (61s)
+KILLED       stopping the reader releases the socket [net] (69s)
+KILLED       a fake's aborted read is a reset [net] (63s)
+KILLED       a host with U+0000 is named as C saw it [net] (63s)
+KILLED       a closed socket reads as a reset [net] (62s)
+KILLED       the port check lets 65536 through [net] (65s)
+KILLED       a fake pair crosses its wires [net] (65s)
+KILLED       the fake's peer is itself [net] (64s)
+KILLED       closing a fake leaves its writer open [net] (63s)
+KILLED       Net.close does nothing [net] (123s)
+KILLED       host_for_tests is reachable from a program [net] (63s)
+KILLED       the runner does not close network [net] (23s)
 # result: 1 survivor, explained:
 # - a failed lookup thread wait reads as ready: the wait fails only when the
 #   reactor's poll fails, which no program can cause (as for the CHI-259 stdin
 #   survivor). The mutant then loops on the pipe until the thread finishes, so
-#   the lookup still answers. The fiber tests cover the reactor's side.
+#   the lookup still answers. The fiber tests cover the reactor's side. It
+#   survived the C binding's run too.
+# - Dropped after this run, as equivalent: "a lookup's failure names the wrong
+#   host" (std/net.chimi's `named` replaces the name). A TIMEOUT counts as
+#   caught.

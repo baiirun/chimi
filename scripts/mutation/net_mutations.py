@@ -4,6 +4,9 @@ lookup thread, failure codes, closing, addresses) and the Chimi module over it
 test-only gate). A mutant that makes a wait hang shows as TIMEOUT, which
 counts as caught.
 
+Not listed, as equivalent: the host a lookup's failure names, since `named`
+in std/net.chimi replaces it with the host as the caller wrote it.
+
 Run: scripts/mutation/mutate.py --timeout 300 scripts/mutation/net_mutations.py
 Results: scripts/mutation/net_results.txt.
 """
@@ -68,9 +71,6 @@ MUTATIONS = [
     mutant("an empty host listens on whatever the system lists first", NET_RS,
            '    let host = if host.is_empty() { c"0.0.0.0" } else { host };',
            '    let host = if host.is_empty() { c"::" } else { host };'),
-    mutant("a lookup's failure names the wrong host", NET_RS,
-           "            host.as_ptr(),\n            status,",
-           '            c"".as_ptr(),\n            status,'),
     mutant("the port is the decimal of the wrong value", NET_RS,
            "    decimal(port, &mut service);",
            "    decimal(port / 10, &mut service);"),

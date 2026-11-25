@@ -31,9 +31,9 @@ const BACKLOG: c_int = 128;
 /// The most name lookups in flight at once, across the program.
 const LOOKUPS: usize = 8;
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 const SEND_FLAGS: c_int = libc::MSG_NOSIGNAL;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
 const SEND_FLAGS: c_int = 0;
 
 /// An open socket's state. The descriptor closes when the runtime releases
