@@ -25,7 +25,7 @@ MUTATIONS = [
         "        Some(match None::<String> {\n            None => Ok(()),",
     )]),
     mutant("the reason is dropped from the message", TYPING, [(
-        "                    format!(\"{message}; the record {reason}\"),",
+        "                    format!(\"{message}; the value {reason}\"),",
         "                    message,",
     )]),
     mutant("generic calls skip the interface rule", TYPING, [(
@@ -45,11 +45,11 @@ MUTATIONS = [
         "        if let Some(Ok(())) = self.record_interface_conformance(right, left) {\n            return Some(right);",
     )]),
     mutant("struct fields and arguments skip the interface rule", TYPING, [(
-        "            (CanonicalType::Record(_), CanonicalType::Named { .. })\n                if self.is_interface_type(expected) =>",
-        "            (CanonicalType::Record(_), CanonicalType::Named { .. })\n                if false =>",
+        "                if self.is_structural_value_type(actual) && self.is_interface_type(expected) =>",
+        "                if false =>",
     )]),
-    mutant("structs count as interfaces", TYPING, [(
-        "                self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Interface\n            }\n            _ => false,",
-        "                matches!(self.resolved.symbol(*symbol).kind, ProjectSymbolKind::Interface | ProjectSymbolKind::Struct)\n            }\n            _ => false,",
+    mutant("a struct is not a structural value", TYPING, [(
+        "                self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Struct",
+        "                self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Interface",
     )]),
 ]

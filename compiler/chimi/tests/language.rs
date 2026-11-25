@@ -14197,8 +14197,9 @@ pub fn main() -> Text { top() using { greeter: g("a") } }
     }
 }
 
-// CHI-244: a record fits an interface wherever the interface is written as a
-// type, by the provider rule. Field order and extra fields do not matter.
+// CHI-244: a record or struct fits an interface wherever the interface is
+// written as a type, by the provider rule. Field order and extra fields do not
+// matter.
 #[test]
 fn a_record_fits_an_interface_written_as_a_type() {
     let outcome = run_both(
@@ -14225,6 +14226,12 @@ fn a_record_fits_an_interface_written_as_a_type() {
             "  }\n",
             "}\n",
             "fn tagged<T>(p: Pair, tag: T) -> T { tag }\n",
+            "struct Fixed {\n",
+            "  mid: Int,\n",
+            "  alpha: fn(Int) -> Int,\n",
+            "  label: Text,\n",
+            "  zeta: fn() -> Text,\n",
+            "}\n",
             "fn chosen(first: Bool) -> Pair {\n",
             "  case first {\n",
             "    True -> made()\n",
@@ -14239,13 +14246,14 @@ fn a_record_fits_an_interface_written_as_a_type() {
             "    _ -> \"?\"\n",
             "  }\n",
             "  let names = \"${made().zeta()}${held.zeta()}${chosen(False).zeta()}\"\n",
-            "  \"${scores} ${names} ${score(chosen(False))} ${tagged(failing(), 9)}\"\n",
+            "  let fixed = Fixed { label: \"S\", zeta: fn() -> Text { \"S\" }, alpha: fn(n: Int) -> Int { n * 2 }, mid: 6 }\n",
+            "  \"${scores} ${names} ${score(chosen(False))} ${tagged(failing(), 9)} ${score(fixed)}\"\n",
             "}\n",
         ),
     );
     assert_eq!(
         outcome,
-        "\"outcome\":\"success\",\"value\":\"4 -4 7 ZFC 50 9\""
+        "\"outcome\":\"success\",\"value\":\"4 -4 7 ZFC 50 9 12\""
     );
 }
 
@@ -14277,11 +14285,11 @@ fn a_record_that_does_not_conform_says_which_member_is_wrong() {
         [
             (
                 "T4203".to_owned(),
-                "function result has type `{ other: Int }`, expected `Inv`; the record is missing member `reserve`".to_owned()
+                "function result has type `{ other: Int }`, expected `Inv`; the value is missing member `reserve`".to_owned()
             ),
             (
                 "T4203".to_owned(),
-                "the value of this annotated `let` has type `{ reserve: fn(Text) -> Text }`, expected `Inv`; the record has incompatible member `reserve`: success type differs".to_owned()
+                "the value of this annotated `let` has type `{ reserve: fn(Text) -> Text }`, expected `Inv`; the value has incompatible member `reserve`: success type differs".to_owned()
             ),
             (
                 "T4203".to_owned(),
@@ -14289,7 +14297,7 @@ fn a_record_that_does_not_conform_says_which_member_is_wrong() {
             ),
             (
                 "T4203".to_owned(),
-                "call argument has type `{ reserve: fn(Text) -> Int errors F }`, expected `Inv`; the record has incompatible member `reserve`: it exposes failures outside the interface contract".to_owned()
+                "call argument has type `{ reserve: fn(Text) -> Int errors F }`, expected `Inv`; the value has incompatible member `reserve`: it exposes failures outside the interface contract".to_owned()
             ),
         ]
     );
