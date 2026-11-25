@@ -444,3 +444,86 @@ fn main() -> Void {
             (argument
               (identifier))))
         (identifier)))))
+
+==================
+A bracket on the next line starts a new item
+==================
+
+fn update(base: Config) -> Config {
+  let config = base
+  { ..config, jobs: 4 }
+}
+
+fn call() -> Int {
+  let point = Point { x: f (1) }
+  point.x
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (named_type
+          (type_identifier))))
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (let_binding
+        (identifier)
+        (identifier))
+      (record_expression
+        (record_spread
+          (identifier))
+        (record_field
+          (identifier)
+          (integer)))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (return_type
+      (named_type
+        (type_identifier)))
+    (block
+      (let_binding
+        (identifier)
+        (struct_expression
+          (type_identifier)
+          (struct_fields
+            (record_field
+              (identifier)
+              (call_expression
+                (identifier)
+                (arguments
+                  (argument
+                    (integer))))))))
+      (member_expression
+        (identifier)
+        (identifier)))))
+
+==================
+The old plus spelling of a failure row
+==================
+
+native fn read() -> Int errors ReadError + IoError needs Clock
+
+---
+
+(source_file
+  (native_function_declaration
+    (identifier)
+    (parameters)
+    (return_type
+      (named_type
+        (type_identifier)))
+    (errors_clause
+      (named_type
+        (type_identifier))
+      (named_type
+        (type_identifier)))
+    (requirement_clause
+      (type_identifier))))

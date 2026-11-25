@@ -5,8 +5,9 @@
  * authority. This grammar is deliberately more permissive: line breaks are
  * whitespace here, so a few constructs that span lines parse differently than
  * in the compiler. That only affects highlighting of code the compiler already
- * reports. A call's `(` must follow its callee with no space, which is how
- * `(` on the next line still starts a new case arm or block item.
+ * reports. A call's `(` and a struct literal's `{` must be on the same line
+ * as the name before them (see `sameLine`), so a bracket on the next line
+ * still starts a new case arm or block item, as in the compiler.
  *
  * scripts/check-grammar.sh, run in CI, checks that every .chimi file the
  * compiler parses also parses here.
@@ -217,7 +218,11 @@ module.exports = grammar({
         ),
       ),
 
-    errors_clause: ($) => prec.right(seq('errors', field('errors', $._type))),
+    // `+` is the old spelling of `|` in a failure row; the formatter rewrites it.
+    errors_clause: ($) =>
+      prec.right(
+        seq('errors', field('errors', $._type), repeat(seq('+', field('errors', $._type)))),
+      ),
 
     const_declaration: ($) =>
       seq(
@@ -405,10 +410,9 @@ module.exports = grammar({
     call_expression: ($) =>
       prec(PREC.postfix, seq(field('function', $._expression), field('arguments', $.arguments))),
 
-    // The `(` of a call follows its callee directly. A line break ends an
-    // expression in the compiler, so `(` on the next line starts a new item,
-    // such as a case arm's tuple pattern; whitespace is the nearest test here.
-    arguments: ($) => seq(token.immediate('('), commaSep($.argument), ')'),
+    // A `(` on the next line starts a new item, such as a case arm's tuple
+    // pattern, not a call.
+    arguments: ($) => seq(sameLine('('), commaSep($.argument), ')'),
 
     argument: ($) =>
       seq(optional(seq(field('name', $.identifier), ':')), field('value', $._expression)),
@@ -430,7 +434,7 @@ module.exports = grammar({
     // A record update puts `..base` first: `{ ..config, jobs: jobs }`.
     record_expression: ($) =>
       seq(
-        '{',
+        openBrace(),
         choice(
           seq($.record_spread, repeat(seq(',', $.record_field)), optional(',')),
           commaSep1($.record_field),
@@ -454,7 +458,7 @@ module.exports = grammar({
 
     struct_fields: ($) =>
       seq(
-        '{',
+        sameLine('{'),
         optional(
           choice(
             seq($.record_spread, repeat(seq(',', $.record_field)), optional(',')),
@@ -469,14 +473,16 @@ module.exports = grammar({
     record_field: ($) =>
       seq(field('name', $.identifier), ':', field('value', $._expression)),
 
-    block: ($) => seq('{', repeat1(choice($.let_binding, $._expression)), '}'),
+    // A block may follow a name on the same line, as in `loop state = next {`,
+    // so it takes the same-line `{` too.
+    block: ($) => seq(openBrace(), repeat1(choice($.let_binding, $._expression)), '}'),
 
     case_expression: ($) =>
       seq(
         'case',
         field('subject', $._expression),
         repeat(seq(',', field('subject', $._expression))),
-        '{',
+        openBrace(),
         repeat($.case_arm),
         '}',
       ),
@@ -632,4 +638,20 @@ function plainState($) {
 
 function sep1(rule, separator) {
   return seq(rule, repeat(seq(separator, rule)));
+}
+
+// `bracket` on the same line as the token before it, with only spaces or tabs
+// between. The compiler ends an expression at a line break, so a `(` or `{` on
+// the next line starts a new item instead of a call or a struct literal. The
+// node is still named after the bracket, so bracket queries match it.
+function sameLine(bracket) {
+  const escaped = bracket.replace(/[(){}[\]]/g, (c) => '\\' + c);
+  return alias(token.immediate(prec(1, new RegExp('[ \\t]*' + escaped))), bracket);
+}
+
+// A `{` that opens a block or case body, written either way. The lexer reads a
+// same-line `{` whenever a struct literal could start, so these bodies accept
+// it as well; the parser keeps both readings until one fails.
+function openBrace() {
+  return choice('{', sameLine('{'));
 }

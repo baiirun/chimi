@@ -564,7 +564,7 @@
     "named": true,
     "fields": {
       "errors": {
-        "multiple": false,
+        "multiple": true,
         "required": true,
         "types": [
           {

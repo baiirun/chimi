@@ -31,7 +31,9 @@
 
 (variant name: (identifier) @name) @item
 
-(field name: (identifier) @name) @item
+(struct_declaration (field_list (field name: (identifier) @name) @item))
+
+(interface_declaration (field_list (field name: (identifier) @name) @item))
 
 (type_alias_declaration
   (visibility)? @context
