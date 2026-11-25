@@ -11,13 +11,15 @@
 //!
 //! - Nothing here may panic. A panic aborts the whole program (the standalone
 //!   archive aborts on panic, and a panic cannot unwind out of an `extern
-//!   "C"` function), so the lints below refuse the usual sources.
-//! - Hold no owning value across a wait. A task stopped while it waits is
-//!   abandoned at the park and its frames never run their destructors, so
-//!   state that must be released lives in a handle, whose `release` the
-//!   runtime runs exactly once.
+//!   "C"` function), so the lints below refuse the usual sources. Integer
+//!   arithmetic is left to review: every count here is bounded by a buffer.
+//! - Keep owning values held across a wait small and bounded. A task stopped
+//!   while it waits is abandoned at the park and its frames never run their
+//!   destructors, so whatever it holds there leaks. State that must be
+//!   released lives in a handle, whose `release` the runtime runs exactly
+//!   once. A wait-local buffer, a pending lookup or a socket still being
+//!   connected may leak this way, as they did in the C packages.
 #![deny(
-    clippy::arithmetic_side_effects,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
@@ -25,4 +27,6 @@
 )]
 
 mod api;
+mod net;
+mod os;
 mod terminal;

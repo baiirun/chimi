@@ -319,7 +319,7 @@ fn checked_port(port: Int) -> Int {
   }
 }
 
-// The binding's failure codes (runtime/native/bindings/net/net.c).
+// The binding's failure codes (runtime/chimi-runtime/src/binding/net.rs).
 fn net<T>(result: Result<T, (Int, Text)>) -> T {
   case result {
     Ok(value) -> value
