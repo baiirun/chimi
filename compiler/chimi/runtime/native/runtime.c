@@ -78,6 +78,7 @@ __attribute__((weak)) size_t chimi_scheduler_peak_task_records(void) { return 0;
 __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
+__attribute__((weak)) uint64_t chimi_fiber_current_incarnation(void) { return 0; }
 /* Without the fiber archive no time passes. */
 __attribute__((weak)) int64_t chimi_fiber_now(void) { return 0; }
 /* Program data from a build defines the trace's module list; C fixtures that
@@ -2798,6 +2799,32 @@ static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t sp
           callable->requirement, callable->interface_symbol); json_string(output, callable->name);
   fprintf(output, ",\"method_semantic_id\":%u,\"time_ns\":%" PRId64 "}}\n", callable->method,
           chimi_fiber_now());
+  pthread_mutex_unlock(&trace_lock);
+}
+
+static void json_identity(FILE *output, const char *key, uint64_t identity);
+
+/* A process body's own span (CHI-312): `process_body_started` when the body
+   begins and `process_body_completed` with its outcome when it ends, both
+   naming the incarnation, so a trace reader can hang the body's operations
+   under that incarnation's `process_started`. A body the scheduler abandons
+   at a park writes no completion. */
+static void emit_process_body(ChimiRuntime *runtime, uint64_t span, uint64_t incarnation,
+                              const ChimiControl *outcome) {
+  FILE *output = runtime->telemetry;
+  pthread_mutex_lock(&trace_lock);
+  ++runtime->trace_events_constructed;
+  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
+  json_string(output, outcome ? "process_body_completed" : "process_body_started");
+  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
+  json_string(output, runtime->computation);
+  fputs(",\"execution_id\":", output);
+  json_string(output, runtime->execution_id);
+  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":null", span);
+  json_identity(output, "incarnation_id", incarnation);
+  fputs(",\"operation\":\"process_body\",\"attributes\":{", output);
+  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); fputc(',', output); }
+  fprintf(output, "\"time_ns\":%" PRId64 "}}\n", chimi_fiber_now());
   pthread_mutex_unlock(&trace_lock);
 }
 
@@ -9416,9 +9443,13 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     }
   }
   uint64_t span = take_spans(runtime, 1);
+  bool traced = !runtime->silent && !control;
+  uint64_t incarnation = traced ? chimi_fiber_current_incarnation() : 0;
+  if (traced) emit_process_body(runtime, span, incarnation, NULL);
   if (!control)
     control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
                      new_environment(0));
+  if (traced) emit_process_body(runtime, span, incarnation, control);
   ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
   switch (control->kind) {
     case CONTROL_SUCCESS: break;
@@ -13057,12 +13088,54 @@ static const char *channel_operation(uint32_t request_kind) {
   }
 }
 
-/* Records the defect message of a channel capability violation
+/* Keeps `text` as the defect message of `task`, which the scheduler is ending. */
+static void add_violation_note(ChimiRuntime *runtime, uint64_t task, const char *text) {
+  CapabilityViolationNote *note = malloc(sizeof(*note));
+  char *message = strdup(text);
+  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
+  *note = (CapabilityViolationNote){.task = task, .message = message, .next = runtime->capability_violations};
+  runtime->capability_violations = note;
+}
+
+/* The message of a task using a Task handle it does not own, or one naming no
+   task. The handle travelled where the checker does not follow it, for
+   example inside a closure held by an interface value (CHI-311, CHI-316). */
+static void task_violation_text(const ChimiCapabilityViolation *violation, char *text, size_t size) {
+  char action[96];
+  switch (violation->request_kind) {
+    case CHIMI_REQUEST_TASK_RESULT:
+      snprintf(action, sizeof(action), "read the result of task %" PRIu64, violation->destination);
+      break;
+    case CHIMI_REQUEST_TASK_CANCEL:
+      snprintf(action, sizeof(action), "cancel task %" PRIu64, violation->destination);
+      break;
+    default:
+      snprintf(action, sizeof(action), "wait for task %" PRIu64, violation->destination);
+      break;
+  }
+  char holder[64];
+  if (violation->reason == CHIMI_VIOLATION_UNKNOWN_TASK)
+    snprintf(holder, sizeof(holder), "there is no such task");
+  else if (violation->owner == 0)
+    snprintf(holder, sizeof(holder), "no task owns it");
+  else
+    snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
+  snprintf(text, size, "task capability violation: task %" PRIu64 " cannot %s: %s",
+           violation->task, action, holder);
+}
+
+/* Records the defect message of a channel or task capability violation
    (task-and-channel-capabilities.md, "Checked at run time"). The exclusive-move
    rule does not follow a capability across function boundaries, so this is the
    check that turns two owners of one Receiver or Completion into a defect. */
 static void record_capability_violation(void *context, const ChimiCapabilityViolation *violation) {
   ChimiRuntime *runtime = context;
+  char text[320];
+  if (violation->capability == CHIMI_CAPABILITY_TASK) {
+    task_violation_text(violation, text, sizeof(text));
+    add_violation_note(runtime, violation->task, text);
+    return;
+  }
   char holder[96];
   if (violation->owner == 0)
     snprintf(holder, sizeof(holder), "the task it was handed to has ended");
@@ -13074,7 +13147,6 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
              " owns the capability", violation->task);
   else
     snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
-  char text[320];
   bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||
                   violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION;
   switch (violation->reason) {
@@ -13139,12 +13211,7 @@ static void record_capability_violation(void *context, const ChimiCapabilityViol
                " while a task still holds it", violation->task, violation->channel);
       break;
   }
-  CapabilityViolationNote *note = malloc(sizeof(*note));
-  char *message = strdup(text);
-  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
-  *note = (CapabilityViolationNote){
-    .task = violation->task, .message = message, .next = runtime->capability_violations};
-  runtime->capability_violations = note;
+  add_violation_note(runtime, violation->task, text);
 }
 
 /* The capability-violation message of the task the scheduler defected, if any. */

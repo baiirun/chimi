@@ -505,6 +505,8 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       CHIMI_IO_WRITABLE,
       CHIMI_IO_HANGUP,
       CHIMI_IO_ERROR,
+      CHIMI_CAPABILITY_TASK,
+      CHIMI_VIOLATION_UNKNOWN_TASK,
   };
   size_t count = sizeof(values) / sizeof(*values);
   for (size_t index = 0; index < count; index += 1) out[index] = values[index];

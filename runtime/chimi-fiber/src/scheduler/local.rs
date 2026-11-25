@@ -197,6 +197,7 @@ impl<'kernel> Local<'kernel> {
             terminal: false,
             scope_pending: false,
             polls: false,
+            incarnation: record.process,
         };
         let fiber = record
             .fiber

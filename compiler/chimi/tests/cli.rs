@@ -5630,27 +5630,48 @@ fn native_backstop_a_callee_that_hands_its_parameter_to_a_task_defects_the_calle
 // task-and-channel-capabilities.md, "Checked at run time" (CHI-311): a Task
 // handle captured by a closure that crosses a function boundary as an interface
 // value is not followed by the checker, so a child task may reach it. The run
-// must defect rather than hand the child the result (which would print 7).
-// The message is the scheduler's deadlock one until CHI-316 names the handle.
+// must defect rather than act on the handle (reading it would print 7), and the
+// defect must name the handle, the task that used it and its owner (CHI-316).
+// Rejects the scheduler's generic "every task is parked (deadlock)" message,
+// which points at a deadlock that is not there.
 #[test]
 fn native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader() {
-    let message = native_capability_defect(
-        "interface-hides-task",
-        concat!(
-            "interface Peek {\n",
-            "  read: fn() -> Int\n",
-            "}\n",
-            "fn run(peek: Peek) -> Int {\n",
-            "  let child = Task.start(fn() -> Int { peek.read() })\n",
-            "  Task.result(child)\n",
-            "}\n",
-            "pub fn main() -> Int {\n",
-            "  let task = Task.start(fn() -> Int { 7 })\n",
-            "  run({ read: fn() -> Int { Task.result(task) } })\n",
-            "}\n",
+    for (name, use_handle, expected) in [
+        (
+            "interface-hides-task-result",
+            "Task.result(task)",
+            "task capability violation: task 3 cannot read the result of task 2: task 1 owns it",
         ),
-    );
-    assert!(!message.is_empty());
+        (
+            "interface-hides-task-cancel",
+            "{\n    Task.cancel(task)\n    0\n  }",
+            "task capability violation: task 3 cannot cancel task 2: task 1 owns it",
+        ),
+        (
+            "interface-hides-task-wait",
+            "Wait.first([Wait.task(task, fn(value: Int) -> Int { value })])",
+            "task capability violation: task 3 cannot wait for task 2: task 1 owns it",
+        ),
+    ] {
+        let message = native_capability_defect(
+            name,
+            &format!(
+                "import std/wait as Wait\n\
+                 interface Peek {{\n\
+                 \x20 read: fn() -> Int\n\
+                 }}\n\
+                 fn run(peek: Peek) -> Int {{\n\
+                 \x20 let child = Task.start(fn() -> Int {{ peek.read() }})\n\
+                 \x20 Task.result(child)\n\
+                 }}\n\
+                 pub fn main() -> Int {{\n\
+                 \x20 let task = Task.start(fn() -> Int {{ 7 }})\n\
+                 \x20 run({{ read: fn() -> Int {{ {use_handle} }} }})\n\
+                 }}\n"
+            ),
+        );
+        assert_eq!(message, expected, "{name}");
+    }
 }
 
 // task-and-channel-capabilities.md, "Checked at run time": a generic function
