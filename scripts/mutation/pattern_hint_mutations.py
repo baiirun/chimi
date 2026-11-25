@@ -25,12 +25,20 @@ MUTATIONS = [
         "                    format!(\"{field}: {}\", self.rewritten_sub_pattern(module_id, argument))",
         "                    format!(\"{field}: {}\", { let r = argument.range(); &self.resolved.semantic.modules[module_id.raw() as usize].source.text()[r.start() as usize..r.end() as usize] })",
     )]),
+    mutant("a nested bare pattern is not rewritten", LITERALS, [(
+        "            if arguments.is_empty() && !written.contains('(') {\n                return format!(\"{written} {{ .. }}\");\n            }\n        }\n        let mut children",
+        "        }\n        let mut children",
+    )]),
+    mutant("the outer fix stops at a non-struct pattern", LITERALS, [(
+        "        let mut children = argument.children();",
+        "        let mut children = Vec::<&Pattern>::new();",
+    )]),
     mutant("a bare pattern gets no fix", LITERALS, [(
         "            Some(format!(\"{written} {{ .. }}\"))",
         "            None",
     )]),
     mutant("a bare pattern keeps its field-count error", TYPING, [(
-        "                    if !rejected.arity_matches {",
+        "                    if arguments.is_empty() && !rejected.arity_matches {",
         "                    if false {",
     )]),
     mutant("a bracketless subject literal is not detected", SYNTAX, [(

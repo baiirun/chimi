@@ -14224,6 +14224,23 @@ fn struct_pattern_and_case_subject_fixes_apply_cleanly() {
         "    Money -> 1\n",
         "  }\n",
         "}\n",
+        "enum Kind {\n",
+        "  Cash(n: Int)\n",
+        "  Card(m: Money)\n",
+        "}\n",
+        "struct Wrap {\n",
+        "  kind: Kind,\n",
+        "  m: Money,\n",
+        "}\n",
+        "fn deeper(w: Wrap, p: Pair) -> Int {\n",
+        "  let x = case w {\n",
+        "    Wrap(Kind.Card(Money(a, _)), _) -> a\n",
+        "    Wrap(_, _) -> 0\n",
+        "  }\n",
+        "  case p {\n",
+        "    Pair(Money, _) -> x\n",
+        "  }\n",
+        "}\n",
         "fn typed(n: Int) -> Int {\n",
         "  case n {\n",
         "    x: Int -> x\n",
@@ -14255,6 +14272,11 @@ fn struct_pattern_and_case_subject_fixes_apply_cleanly() {
             ("T4216".to_owned(), 0),
             ("T4216".to_owned(), 1),
             ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 0),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 1),
+            ("T4216".to_owned(), 0),
         ],
         "{:?}",
         diagnostics.iter().map(|d| d.message()).collect::<Vec<_>>()
@@ -14287,5 +14309,7 @@ fn struct_pattern_and_case_subject_fixes_apply_cleanly() {
         "Pair { left: Money { cents: a, currency: _ }, right: Money { cents: b, currency: \"EUR\" } }"
     ));
     assert!(fixed.contains("    Money { .. } -> 1\n"));
+    assert!(fixed.contains("    Wrap { kind: Kind.Card(Money { cents: a, currency: _ }), m: _ } -> a\n"));
+    assert!(fixed.contains("    Pair { left: Money { .. }, right: _ } -> x\n"));
     assert!(fixed.contains("  case (Money { cents: 1, currency: \"EUR\" }) {\n"));
 }

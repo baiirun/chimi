@@ -183,6 +183,9 @@ impl ProjectTypeChecker {
         )
     }
 
+    /// `argument` as written, with every positional struct pattern in it, at
+    /// any depth, rewritten to the braced form: one sub-pattern per field
+    /// becomes `Name { field: pattern, .. }`, and a bare name `Name { .. }`.
     fn rewritten_sub_pattern(&self, module_id: ModuleId, argument: &Pattern) -> String {
         let source = self.resolved.semantic.modules[module_id.raw() as usize]
             .source
@@ -194,17 +197,27 @@ impl ProjectTypeChecker {
             form: CallForm::Positional,
             ..
         } = argument
-            && self
-                .resolved_pattern_symbol(module_id, argument)
-                .is_some_and(|constructor| {
-                    self.is_struct_constructor(constructor)
-                        && self.struct_field_names(constructor).len() == arguments.len()
-                })
-            && written.ends_with(')')
+            && let Some(constructor) = self.resolved_pattern_symbol(module_id, argument)
+            && self.is_struct_constructor(constructor)
         {
-            return self.braced_struct_pattern(module_id, argument, arguments, range);
+            let fields = self.struct_field_names(constructor).len();
+            if fields == arguments.len() && written.ends_with(')') {
+                return self.braced_struct_pattern(module_id, argument, arguments, range);
+            }
+            if arguments.is_empty() && !written.contains('(') {
+                return format!("{written} {{ .. }}");
+            }
         }
-        written.to_owned()
+        let mut children = argument.children();
+        children.sort_by_key(|child| std::cmp::Reverse(child.range().start()));
+        let mut text = written.to_owned();
+        for child in children {
+            let child_range = child.range();
+            let start = (child_range.start() - range.start()) as usize;
+            let end = (child_range.end() - range.start()) as usize;
+            text.replace_range(start..end, &self.rewritten_sub_pattern(module_id, child));
+        }
+        text
     }
 
     /// Reports field braces in a pattern that lowering could not order: an

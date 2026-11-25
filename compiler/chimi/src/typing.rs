@@ -5535,10 +5535,9 @@ impl ProjectTypeChecker {
                     )
                 {
                     context.rewritten_by_outer_fix |= rejected.fixed;
-                    // A pattern with the wrong field count, such as a bare
-                    // `Money`, covers its whole struct, so the rejection
-                    // causes no field-count or coverage follow-ons.
-                    if !rejected.arity_matches {
+                    // A bare `Money` is `Money { .. }`: it covers its whole
+                    // struct, so the rejection causes no field-count follow-on.
+                    if arguments.is_empty() && !rejected.arity_matches {
                         for argument in arguments {
                             self.normalize_pattern(
                                 module_id,
