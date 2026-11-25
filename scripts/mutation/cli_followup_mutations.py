@@ -57,3 +57,12 @@ MUTATIONS = [
     parsing("an unknown subcommand is missing", [
         ("    None -> Failure(Stop.Wrong(CliError.UnknownCommand(word)))", "    None -> Failure(Stop.Wrong(CliError.MissingCommand))")]),
 ]
+
+MUTATIONS += [
+    parsing("the subcommand is parsed before the parent's values are checked", [
+        ("    Some(sub) -> {\n      check(command, state.values)\n", "    Some(sub) -> {\n")]),
+    parsing("an option's value is searched for help", [
+        ("      (False, True) -> asked_to_show(command, List.drop(rest, 1))\n", "")]),
+    parsing("a cluster's value option does not take the next word", [
+        ("        False -> List.is_empty(more)\n", "        False -> False\n")]),
+]

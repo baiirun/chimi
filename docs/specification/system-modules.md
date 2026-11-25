@@ -561,9 +561,12 @@ Parsing follows getopt and the GNU long-option conventions:
   with `Exit.Help(usage)`. `--version` MUST fail with
   `Exit.Help("name version")` when the command has a version; otherwise it
   is an ordinary option, which the command may declare. Both MUST win over
-  an error in an earlier word. A subcommand's name ends the words the parent
-  searches for help, so `tool add --help` is `add`'s help and
-  `tool --bogus add --help` is the parent's usage error.
+  an error in an earlier word. A word an option takes as its value is not
+  help (`--max --help` is an `InvalidValue`). A subcommand's name ends the
+  words the parent searches for help, so `tool add --help` is `add`'s help
+  and `tool --bogus add --help` is the parent's usage error. Every error in
+  the parent's words, including a value its parser refuses, MUST win over
+  the subcommand's help and errors.
 - Any other wrong arguments MUST fail with `Exit.Usage(error, message)`,
   where `message` is `name: what was wrong`, the synopsis, and a line
   pointing at `--help`.
@@ -684,8 +687,8 @@ its event lines.
 | The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
 | Option forms, clusters, the last repeat, `--`, dash words, positionals and rest, every `CliError`, help and version anywhere, the usage layout, and each declaration defect, on both backends | `std-tests/cli/` (one test per file) |
-| Subcommands: the chosen one is `Some`, nesting, parent and subcommand options, `--` before the name, missing and unknown ones, errors and help named after the parent, the usage layout, and the defects | `std-tests/cli/subcommands.chimi`, `subcommand_errors.chimi`, `subcommand_defects.chimi` |
-| Switches (`--no-`, last wins, default, no value, usage) and repeated options (order, empty, each parsed, usage) | `std-tests/cli/switches.chimi`, `repeated_values.chimi` |
+| Subcommands: the chosen one is `Some`, nesting, parent and subcommand options, `--` before the name, missing and unknown ones, errors and help named after the parent, the parent's errors first, an option's value that looks like a name or help, the usage layout, and the defects | `std-tests/cli/subcommand_*.chimi` |
+| Switches (`--no-`, last wins, default, no value, usage) and repeated options (order, empty, each parsed, usage) | `std-tests/cli/switch_*.chimi`, `repeated_{order,empty,parsed,usage}.chimi` |
 | `Help` to standard output with 0, `Usage` to standard error with 2, `Code(n)`, a code outside 0 to 255 as 70, after `main`'s releases, natively and with `chimi run` | `tests/std_cli.rs` |
 | A status for an exit code or a signal; arguments pass unchanged; a second `wait` answers the same | `tests/std_exec.rs` `a_child_reports_how_it_ended` |
 | `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null`; a relative program with another working directory; `Failed` for a file the kernel cannot run | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |

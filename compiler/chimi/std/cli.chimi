@@ -393,11 +393,39 @@ fn asked_to_show(command: Command, arguments: List<Text>) -> Option<Text> {
       Some(version) -> Some("${command.name} ${version}")
       None -> asked_to_show(command, rest)
     }
-    [word, ..rest] -> case Option.is_some(chosen(command, word)) {
-      True -> None
-      False -> case is_cluster(word) and cluster_asks_help(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word)))) {
+    [word, ..rest] -> case (Option.is_some(chosen(command, word)), takes_next(command, word)) {
+      (True, _) -> None
+      (False, True) -> asked_to_show(command, List.drop(rest, 1))
+      (False, False) -> case is_cluster(word) and cluster_asks_help(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word)))) {
         True -> Some(usage(command))
         False -> asked_to_show(command, rest)
+      }
+    }
+  }
+}
+
+// Whether `word` is an option whose value is the next word, as scanning
+// reads it, so that word is a value and not help or a subcommand's name.
+fn takes_next(command: Command, word: Text) -> Bool {
+  case Text.strip_prefix(word, "--") {
+    Some(long) -> List.any(command.args, fn(each) {
+      is_option(each.spec) and not is_flag(each.spec) and each.spec.name == long
+    })
+    None -> is_cluster(word) and cluster_takes_next(command, Text.graphemes(Text.byte_slice(word, 1..Text.byte_length(word))))
+  }
+}
+
+// Whether the cluster's leading flags end in an option with nothing after it.
+fn cluster_takes_next(command: Command, letters: List<Text>) -> Bool {
+  case letters {
+    [] -> False
+    [letter, ..more] -> case List.find(command.args, fn(each) {
+      is_option(each.spec) and each.spec.short == letter
+    }) {
+      None -> False
+      Some(found) -> case is_flag(found.spec) {
+        True -> cluster_takes_next(command, more)
+        False -> List.is_empty(more)
       }
     }
   }
@@ -448,14 +476,7 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
     }
   }
   let values = place(command, done.values, done.positionals)
-  List.each(command.args, fn(each) {
-    case Result.capture(fn() {
-      each.check(Option.unwrap_or(Map.get(values, display(each.spec)), []))
-    }) {
-      Ok(_) -> Void
-      Err(error) -> Failure(Stop.Wrong(error))
-    }
-  })
+  check(command, values)
   case branches and not List.any(command.args, fn(each) {
     is_subcommand(each.spec) and not List.is_empty(Option.unwrap_or(Map.get(values, display(each.spec)), []))
   }) {
@@ -464,13 +485,28 @@ fn scan(command: Command, arguments: List<Text>) -> Parsed {
   }
 }
 
+// Reads every arg's values, so a value its parser refuses or a missing
+// argument fails here.
+fn check(command: Command, values: Map<Text, List<Text>>) -> Void {
+  List.each(command.args, fn(each) {
+    case Result.capture(fn() {
+      each.check(Option.unwrap_or(Map.get(values, display(each.spec)), []))
+    }) {
+      Ok(_) -> Void
+      Err(error) -> Failure(Stop.Wrong(error))
+    }
+  })
+}
+
 // Hands `rest` to the subcommand `word` names, which parses it as its own
-// command line, named after `command`. Its values keep `word` first, so a
+// command line, named after `command`. The parent's own values are checked
+// first, since its words come first. The values keep `word` first, so a
 // chosen subcommand given no words still differs from one not chosen.
 fn enter(command: Command, state: Scan, word: Text, rest: List<Text>) -> Scan {
   case chosen(command, word) {
     None -> Failure(Stop.Wrong(CliError.UnknownCommand(word)))
     Some(sub) -> {
+      check(command, state.values)
       let named = Command {
         name: "${command.name} ${sub.name}",
         summary: sub.summary,
