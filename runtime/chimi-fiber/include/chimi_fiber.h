@@ -484,9 +484,9 @@ enum {
   CHIMI_CLOCK_TRACE_DEADLOCK_WAITER = 5,
   /* A cancellation scope's deadline passed (boundaries). */
   CHIMI_CLOCK_TRACE_SCOPE_FIRED = 6,
-  /* A Select.first parked (boundaries). */
+  /* A Wait.first parked (boundaries). */
   CHIMI_CLOCK_TRACE_SELECT_PARKED = 7,
-  /* A Select.first committed; `cause` is the event's index (boundaries). */
+  /* A Wait.first committed; `cause` is the event's index (boundaries). */
   CHIMI_CLOCK_TRACE_SELECT_COMMITTED = 8,
   /* SIGINT or SIGTERM cancelled the root; `cause` is the signal number
      (boundaries). */

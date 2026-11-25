@@ -724,7 +724,7 @@ consumed budget.
 | SD10 | U13 | Removal while the handler sleeps 60 s under `shutdown_within = 5s`. The drain lets the sleep run until the deadline, where the body is forced at 5.001s and never reports. The forced path reached from Chimi source | A deadline that waits for the handler, or a handler that runs after forcing |
 | SD11 | U13 | Removal while the handler waits on `Task.result` of a child task that sleeps 1 s. The child keeps running, the handler reports its 7 at 1s, and the body ends `cancelled` | Child tasks cancelled when shutdown begins rather than at the deadline |
 | SD12 | U13 | Removal while the handler sleeps 60 s inside a 1 s `Task.timeout`. The timeout still fires during the drain: the handler reports its timeout at 1s and the body ends `cancelled` | A drain that silences timeout scopes |
-| SD13 | U13 | A ticker waits with `Select.first` on its inbox and a 1 s timer, under a 30 s `shutdown_within`. `stop` at 2.5s makes the inbox event ready at once, so the ticker ends `cancelled` at 2.5s | A select on the inbox left parked during the drain |
+| SD13 | U13 | A ticker waits with `Wait.first` on its inbox and a 1 s timer, under a 30 s `shutdown_within`. `stop` at 2.5s makes the inbox event ready at once, so the ticker ends `cancelled` at 2.5s | A wait on the inbox left parked during the drain |
 
 ### Runtime: signals
 

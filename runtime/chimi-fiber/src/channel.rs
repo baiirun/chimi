@@ -296,7 +296,7 @@ struct Channel {
     /// capability in flight has no owner.
     receiver_parcel: Option<usize>,
     completion_parcel: Option<usize>,
-    /// Receivers' owners waiting in `Select.first` with an event on this
+    /// Receivers' owners waiting in `Wait.first` with an event on this
     /// queue. They are woken, not answered, when the queue turns ready to
     /// receive, and each receives only if it still is when it polls again.
     select_watchers: Vec<TaskId>,
@@ -1610,7 +1610,7 @@ impl ChannelRegistry {
         Ok((transferred, transition))
     }
 
-    /// One receive event of `Select.first`: true when a receive by `task`
+    /// One receive event of `Wait.first`: true when a receive by `task`
     /// would answer at once (a value, a parked rendezvous sender, `Drained`,
     /// or `Aborted`, including an ended receiver). Otherwise `task` becomes
     /// one of the queue's select watchers, woken when that changes.

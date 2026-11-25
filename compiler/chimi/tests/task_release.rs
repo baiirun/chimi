@@ -13,7 +13,7 @@ const IMPORTS: &str = concat!(
     "import std/clock.{Instant, Timestamp}\n",
     "import std/duration as Duration\n",
     "import std/list as List\n",
-    "import std/select as Select\n",
+    "import std/wait as Wait\n",
     "import std/task as Task\n",
 );
 
@@ -164,7 +164,7 @@ fn losing_user_clock_timers_leave_no_records_behind() {
         "  }\n",
         "}\n",
         "fn wait(receiver: Receiver<Int>) -> Int {\n",
-        "  Select.first([Select.receive(receiver, received), Select.after(Duration.seconds(10), 0)])\n",
+        "  Wait.first([Wait.receive(receiver, received), Wait.after(Duration.seconds(10), 0)])\n",
         "}\n",
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
         "  let base = clock\n",

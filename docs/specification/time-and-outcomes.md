@@ -26,9 +26,9 @@ is missing, and [`std/result`](#stdresult) are implemented on both backends
 [Failure context](#failure-context) is implemented on both backends except
 the suppressed-cause producers and the trace fields (CHI-204; see
 [Failure context as implemented](#failure-context-as-implemented-chi-204)).
-[`std/select`](#choosing-among-events) and `T4345` for `Select.first` are
+[`std/wait`](#choosing-among-events) and `T4345` for `Wait.first` are
 implemented on the native backend only (CHI-203; see
-[Select as implemented](#select-as-implemented-chi-203)).
+[Wait as implemented](#wait-as-implemented-chi-203)).
 Nothing else here is implemented yet.
 Source spelling follows the current kernel and remains free to break.
 
@@ -67,7 +67,7 @@ This contract builds on:
   thunks. None of them needs a dedicated Core operation.
 
 Non-goals: calendars, time zones, and date formatting (`std/time`); send arms
-in `Select`; jitter until `Random` and `Float` exist; ticker delivery into
+in `Wait`; jitter until `Random` and `Float` exist; ticker delivery into
 process mailboxes (G27); drain deadlines for services (G22).
 
 ## Modules
@@ -77,7 +77,7 @@ process mailboxes (G27); drain deadlines for services (G22).
 | `std/duration` | `Duration`, `ParseError`, constructors, arithmetic, text form |
 | `std/clock` | `Clock` interface, `Instant`, `Timestamp`, `now`, `since`, `sleep`, `starting_at` |
 | `std/task` | adds `timeout`, `deadline`, `all`, `results`, `race`, `Timeout` |
-| `std/select` | `Event`, `first`, `receive`, `inbox`, `task`, `after`, `at` |
+| `std/wait` | `Event`, `first`, `receive`, `inbox`, `task`, `after`, `at` |
 | `std/result` | `Result`, `capture`, `get` |
 | `std/cause` | `Cause`, `context`, `of`, read functions, `to_text` |
 | `std/schedule` | `Schedule`, `immediate`, `fixed`, `exponential`, `delay` |
@@ -101,7 +101,7 @@ import std/result as Result
 import std/result.{Result}
 import std/retry as Retry
 import std/schedule as Schedule
-import std/select as Select
+import std/wait as Wait
 import std/task as Task
 import std/task.{Timeout}
 
@@ -151,9 +151,9 @@ fn worker(
 ) -> Int needs { payments: Payments, clock: Clock } {
   let period = Duration.seconds(10)
   loop next_beat = Clock.add(Clock.now(), period) {
-    let wake = Select.first([
-      Select.receive(jobs, fn(next) { Wake.Next(next) }),
-      Select.at(next_beat, Wake.Heartbeat),
+    let wake = Wait.first([
+      Wait.receive(jobs, fn(next) { Wake.Next(next) }),
+      Wait.at(next_beat, Wake.Heartbeat),
     ])
     case wake {
       Wake.Next(Receive.Received(job)) -> {
@@ -538,34 +538,34 @@ because the kernel then allowed only unary pipelines.
 
 ### Decision
 
-Waiting on several sources is a std function, `Select.first`, over event
+Waiting on several sources is a std function, `Wait.first`, over event
 values. It is not syntax. A library form keeps the language small (principle
 3), lets programs build the event list from data, and composes with `case`.
 Its cost is one mapping function per event. The first open question asks
 the user to confirm this.
 
-`Select` cannot be built from `Task.race`. A race between two receiving tasks
+`Wait` cannot be built from `Task.race`. A race between two receiving tasks
 can let the losing task receive a value and then be cancelled, which loses
-that value. `Select.first` commits to exactly one event in one atomic step.
+that value. `Wait.first` commits to exactly one event in one atomic step.
 
 ### Events
 
-`Select.Event<A, F>` is an opaque value. It describes one wait that produces
+`Wait.Event<A, F>` is an opaque value. It describes one wait that produces
 an `A` or fails with `F`. Building an event does not park and consumes
 nothing.
 
 ```text
-Select.receive: fn<T, A, F, R>(Receiver<T>, fn(Receive<T>) -> A errors F needs R)
+Wait.receive: fn<T, A, F, R>(Receiver<T>, fn(Receive<T>) -> A errors F needs R)
                   -> Event<A, F | Channel.Aborted> needs R
-Select.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+Wait.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
                   -> Event<A, F | Channel.Aborted> needs R
-Select.inbox:   fn<M, A, F, R>(Inbox<M>, fn(M) -> A errors F needs R)
+Wait.inbox:   fn<M, A, F, R>(Inbox<M>, fn(M) -> A errors F needs R)
                   -> Event<A, F> needs R
-Select.task:    fn<T, E, A, F, R>(Task<T, E>, fn(T) -> A errors F needs R)
+Wait.task:    fn<T, E, A, F, R>(Task<T, E>, fn(T) -> A errors F needs R)
                   -> Event<A, E | F> needs R
-Select.after:   fn<A>(Duration, A) -> Event<A, Never> needs { clock: Clock }
-Select.at:      fn<A>(Instant, A) -> Event<A, Never> needs { clock: Clock }
-Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
+Wait.after:   fn<A>(Duration, A) -> Event<A, Never> needs { clock: Clock }
+Wait.at:      fn<A>(Instant, A) -> Event<A, Never> needs { clock: Clock }
+Wait.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
 ```
 
 `Never` here means an empty failure set. Its spelling waits for L4.
@@ -579,13 +579,13 @@ Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
 - A receive event refers to its receiver and does not consume it. Using the
   event after the receiver was transferred is use-after-transfer (`T4241`),
   with the existing runtime owner-token check as the backstop. A watch event
-  refers to its subscription the same way. `Select.receive` also accepts the
+  refers to its subscription the same way. `Wait.receive` also accepts the
   receivers of a broadcast and those from `Channel.add_receiver`
   ([channel variants](task-and-channel-capabilities.md#channel-variants)).
-- `Select.after(d, value)` measures `d` from the start of the
-  `Select.first` call that waits on it, not from the time the event was built.
+- `Wait.after(d, value)` measures `d` from the start of the
+  `Wait.first` call that waits on it, not from the time the event was built.
 
-### Semantics of `Select.first`
+### Semantics of `Wait.first`
 
 1. The list is evaluated. An empty list literal is rejected (`T4345`). An
    empty list at run time MUST defect.
@@ -597,11 +597,11 @@ Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
    parks the task.
 4. The first event to linearize commits. In the same atomic step, the runtime
    removes every other registration. At most one channel or inbox delivers a
-   value to the selecting task.
+   value to the waiting task.
 5. Cancellation while parked removes every registration and delivers nothing.
    Cancellation and commitment linearize atomically.
 6. After commitment, the committed event's mapping function runs in the
-   selecting task, and its result is the result of `Select.first`.
+   waiting task, and its result is the result of `Wait.first`.
 7. A committed receive on an aborted channel fails with `Channel.Aborted`
    without calling the mapping function. A committed task event whose task
    failed bubbles that failure. A child defect follows task containment as
@@ -616,7 +616,7 @@ each pass.
 The same receiver MAY appear in two events. The earlier one wins.
 
 A timer event on a user-supplied `Clock` behaves as if a child of the
-selecting task ran `clock.sleep_until(deadline)`, and the event becomes ready
+waiting task ran `clock.sleep_until(deadline)`, and the event becomes ready
 when that call returns. The runtime MAY register timers of the execution
 clock provider directly on its timer queue, and SHOULD do so, because a hot
 loop must not start a task for each pass.
@@ -791,7 +791,7 @@ every child it started has terminated. No child outlives the call.
 - `Task.race` returns the outcome of the first child to terminate with
   success or expected failure. It cancels and drains the others. An empty
   list literal is rejected (`T4345`). An empty list at run time MUST defect.
-  Use `Select.first` instead when the racing work receives from channels,
+  Use `Wait.first` instead when the racing work receives from channels,
   because a cancelled loser may already have received a value.
 - A child defect follows task containment in all three combinators. It
   cancels the siblings and unwinds the caller, whatever the combinator was
@@ -1064,7 +1064,7 @@ contracts already name:
 | --- | --- | --- |
 | `T4340` | type | A failure-set type with a member that is not an enum, a variant, a nominal struct, a failure-set generic, or `Never`, such as `Int \| Text`. |
 | `T4341` | type | Two different enum types meet in inference without a failure-set context. The diagnostic suggests `A \| B`. |
-| `T4345` | type | An empty list literal passed to `Select.first` or `Task.race`. |
+| `T4345` | type | An empty list literal passed to `Wait.first` or `Task.race`. |
 | `T4346` | type | A failure-set value flows into a set that lacks some of its members, such as a retry predicate that does not cover the operation's failures. The diagnostic lists the missing variants. |
 | `T4347` | type | A literal attempt count below 1 in a `Schedule` constructor. |
 | `T4348` | type | A `Duration` constructor whose constant argument overflows the range. The compiler SHOULD report it when it folds the constant, and MUST NOT report it for a non-constant argument. |
@@ -1077,7 +1077,7 @@ transferred, and the incompatible-need diagnostic for a `clock` need of a
 different interface.
 
 These are run-time defects, not diagnostics: duration and instant overflow,
-division by zero, an empty list at `Select.first` or `Task.race`, an attempt
+division by zero, an empty list at `Wait.first` or `Task.race`, an attempt
 count below 1, an out-of-range `shutdown_within` or restart window, and
 deadlock under virtual time.
 
@@ -1100,9 +1100,9 @@ deadlock under virtual time.
 | Non-positive timeout | `Task.timeout(op, Duration.zero)` never starts `op`. |
 | Argument order | `op \|> Task.timeout(d)` and `Task.timeout(op, d)` have identical contracts and traces. No std module exports a `with_` twin of a combinator. |
 | Constant parse | `Duration.parse("5x")` reports `T4349`. `Duration.parse("1h30m")` compiles, warns `T4350`, and suggests a constructor expression. `Duration.parse(name)` with a non-constant `name` reports neither. |
-| Select commit | With two ready channels, only the first in list order delivers. The other keeps its value. |
-| Select cancellation | Cancelling a parked `Select.first` leaves every channel unchanged. |
-| Select timer | `Select.after` measures from the `Select.first` call. A user `Clock` timer works through its `sleep_until`. |
+| Wait commit | With two ready channels, only the first in list order delivers. The other keeps its value. |
+| Wait cancellation | Cancelling a parked `Wait.first` leaves every channel unchanged. |
+| Wait timer | `Wait.after` measures from the `Wait.first` call. A user `Clock` timer works through its `sleep_until`. |
 | Event locality | Sending an event or capturing it in `Task.start` is rejected. |
 | Failure-set types | `fn(HttpError \| Timeout) -> Bool` accepts both kinds. `case` without a `Timeout` arm is non-exhaustive. `Int \| Text` reports `T4340`. |
 | Projection | `Result.capture` compiles as written above. `T4203` no longer occurs. |
@@ -1116,7 +1116,7 @@ deadlock under virtual time.
 | Retry | Selected failures retry with the scheduled delays under virtual time. Unselected failures, defects, and cancellation are never retried. Exhaustion returns the final failure. |
 | Retry typing | A predicate over `HttpError` for an operation with `HttpError \| Timeout` reports `T4346`. |
 | Supervisor time | A restart window and a `shutdown_within` deadline elapse under virtual time with no real waiting. |
-| Tracing | Virtual time advance, each parked task of a virtual deadlock, select park and commit with the committed index, timeout scope firing, and terminal causes appear in `boundaries` mode without payloads. Timer set, fire, and cancel are motion events, like a task's park and wake, and appear only in `full` mode. `off` mode constructs no events. |
+| Tracing | Virtual time advance, each parked task of a virtual deadlock, wait park and commit with the committed index, timeout scope firing, and terminal causes appear in `boundaries` mode without payloads. Timer set, fire, and cancel are motion events, like a task's park and wake, and appear only in `full` mode. `off` mode constructs no events. |
 
 ## Implementation notes
 
@@ -1193,14 +1193,22 @@ program.
   variant patterns need a catch-all arm. A constructor with a field of an empty
   failure set (`Err` of `Result.capture` over a call that cannot fail) builds
   no value, so a `case` need not cover it and an arm for it is unreachable.
-- **Not yet.** A constructor expression has its enum's type, so
-  `StartError.NameTaken` written directly does not fit a parameter typed
-  `StartError.NameTaken`; only a narrowed value, such as a `Failure(...)`
-  binding, does (CHI-218). Joining two arguments for one generic parameter by
-  union (spec "Joins", third case) applies to list elements and case arms, not
-  yet to two call arguments that bind the same failure-set parameter. A set
-  written across lines must keep each `|` at the end of a line, not the start
-  of the next. Of the `Result` helpers in the conventions doc, only `capture`
+- **Written variants.** A constructor written where a closed failure set is
+  expected (a call argument, an annotated `let`, a function result) has its
+  variant's one-member type, so `StartError.NameTaken` fits a parameter typed
+  `StartError.NameTaken` (CHI-218). Elsewhere it has its enum's type.
+- **Call arguments.** Two arguments for one generic parameter join by the
+  list-element rule ("Joins") while only covariant uses have bound it. A use
+  under a function input or inside an invariant argument fixes the set, so a
+  later, wider argument is rejected (`T4346`) rather than handed to a callback
+  checked against the narrower set.
+- **Forwarded generics.** A function that hands its own generic to a callee's
+  failure-set parameter makes that generic a failure set, as raising it does,
+  so `wrap<X>(r: Result<Int, X>) { Result.get(r) }` checks (CHI-222). A
+  `T4203` for a value that is not a failure set names the callee's parameter.
+- **Not yet.** A set written across lines must keep each `|` at the end of a
+  line, not the start of the next. Of the `Result` helpers in the conventions
+  doc, only `capture`
   and `get` exist; `map`, `map_error`, `unwrap_or`, `to_option`, `error`,
   `is_ok`, and `is_err` come later.
 - **Variance.** A data type's argument fits a wider one only where its
@@ -1321,7 +1329,7 @@ program.
   the join rules, give `T4303` its `Duration` help message, and emit `T4341`, `T4346`, `T4345`, `T4347`,
   `T4348`, `T4349`, and `T4350`. Check constant `Duration.parse` arguments with
   the same parser the runtime uses, so the two cannot disagree. Extend exhaustiveness to failure-set values.
-- **Capability checking (`capability.rs`).** Classify `Select.Event` as
+- **Capability checking (`capability.rs`).** Classify `Wait.Event` as
   task-local, and track receiver references held by events for `T4241`.
 - **Lowering (`executable.rs`).** Lower `Failure(...)` inside a failure arm
   with the matched outcome as an explicit cause operand. Lower re-raise of the
@@ -1329,10 +1337,10 @@ program.
   timeout scopes as intrinsic calls with standard symbol identity. No new
   control-flow Core operation is needed.
 - **Standard modules (`standard.rs`).** Add `std/duration`, `std/clock`,
-  `std/select`, `std/result`, `std/cause`, `std/schedule`, and `std/retry`,
+  `std/wait`, `std/result`, `std/cause`, `std/schedule`, and `std/retry`,
   and extend `std/task`. `Duration`, `Schedule`, `Result`, and `Retry` are
   ordinary Chimi once G1 exists. Clock reads, sleeping, timeout scopes,
-  `Select`, causes, and the task combinators are primitives.
+  `Wait`, causes, and the task combinators are primitives.
 
 ### Reference interpreter (`execution.rs`)
 
@@ -1363,13 +1371,13 @@ program.
   virtual mode, `drive` advances to the earliest deadline when the runnable
   queue is empty and no host operation is in flight, and reports deadlock
   when nothing is pending.
-- Add a multi-registration waiter for `Select.first`: one waiter record
+- Add a multi-registration waiter for `Wait.first`: one waiter record
   shared by all events, with a committed flag that the first linearizing
   event sets. The channel queue and inbox delivery paths must check that flag
   before they hand over a value.
 - Add cancellation scopes inside a task: a scope identity on cancellation
   requests, and scope-limited draining of children started in the scope.
-- Emit trace events for timers, select park and commit, scope firing, and
+- Emit trace events for timers, wait park and commit, scope firing, and
   virtual advance.
 
 ### Clock slice for supervised processes (ts-6ccbc9)
@@ -1455,8 +1463,8 @@ program.
 - **Timeouts use the execution clock.** `Task.timeout` and `Task.deadline`
   read `now` and arm their timer on the execution time source, not on a
   bound provider. The scope timer is a scheduler timer, and a user `Clock`
-  cannot cancel a task. `Select.after` and `Select.at` do use a bound
-  provider (see [Select as implemented](#select-as-implemented-chi-203)).
+  cannot cancel a task. `Wait.after` and `Wait.at` do use a bound
+  provider (see [Wait as implemented](#wait-as-implemented-chi-203)).
 - **`--clock-start=<RFC 3339>`** sets the virtual clock's starting
   `Timestamp` and is accepted only with `--clock=virtual`; under the real
   clock `timestamp` is the host's wall time, so the flag would be ignored.
@@ -1503,62 +1511,62 @@ program.
   Program data gains `CHIMI_CLOCK_REQUIREMENT_SLOT`, the requirement slot
   that `using { clock: … }` binds for the std time functions.
 
-### Select as implemented (CHI-203)
+### Wait as implemented (CHI-203)
 
-- **Native only.** The interpreter reports every `std/select` function with
-  the defect "Select.<name> requires the native runtime; build the program
+- **Native only.** The interpreter reports every `std/wait` function with
+  the defect "Wait.<name> requires the native runtime; build the program
   with `chimi build`", as it does for the clock.
-- **Event.** `Select.Event<A, F>` is task-local, like `Receive` and
+- **Event.** `Wait.Event<A, F>` is task-local, like `Receive` and
   `Task`: it holds a receiver, an inbox, or a task handle, so it cannot be
   sent or captured by a started task. At run time it is a record the source
   never sees, holding the event's kind, its source, its mapping function or
   timer value, and, for a timer, the `clock` provider bound where it was
   built. Its failure-set argument is covariant, so
-  `[Select.receive(jobs, f), Select.at(next, Wake.Beat)]` joins to
+  `[Wait.receive(jobs, f), Wait.at(next, Wake.Beat)]` joins to
   `List<Event<Wake, ChannelError>>`.
-- **One request, one commit.** `Select.first` issues
+- **One request, one commit.** `Wait.first` issues
   `CHIMI_REQUEST_SELECT` with every event in list order. The scheduler
   answers with the index of the first ready source, or registers the task
   on every source (one watcher per channel and inbox, the child's terminal,
   and one wake timer at the earliest deadline) and parks it. A wake only
   makes the task ask again; each request first withdraws every earlier
-  registration, so a cancelled or interrupted select that has not committed
+  registration, so a cancelled or interrupted wait that has not committed
   leaves every channel and inbox as it was. After a commit the runtime
   performs the source's own operation (receive, process receive, or
   `Task.result`), which answers at once. A committed receive's value was
-  already taken in the select step and kept for that receive, so no other
+  already taken in the wait step and kept for that receive, so no other
   receiver of the same queue can take it first, on any carrier; if the task
   ends before the receive, the kept value is released. An inbox and a task
-  handle have the selecting task as their only consumer.
+  handle have the waiting task as their only consumer.
 - **Commit outcomes.** A committed receive on an aborted channel fails with
   `ChannelError.Aborted` without calling the mapping function. A committed
-  task event's failure is the select's failure. The mapping function runs
+  task event's failure is the wait's failure. The mapping function runs
   with the providers it captured, like any function value.
-- **Timers.** Every `Select.after` on the execution clock in one call
+- **Timers.** Every `Wait.after` on the execution clock in one call
   measures from a single read of `now` at the start of that call. A timer
   whose provider is the execution clock (the root clock or
   `Clock.starting_at` over it) is a scheduler deadline. A timer on a user
   `Clock` provider reads that provider's `now` when the call starts; if its
   deadline has passed it is ready at once, in list order, and otherwise it
-  runs `sleep_until(deadline)` in a child task that the select waits on as a
+  runs `sleep_until(deadline)` in a child task that the wait waits on as a
   task source. Timer children that did not commit are cancelled, but
   only after the committed source's operation has taken its value: a cancel
   reply lets other tasks run, which would break the commit. A cancelled
-  timer child's handle becomes unreachable when the select returns, so its
+  timer child's handle becomes unreachable when the wait returns, so its
   record is freed once the child drains, like any released task.
-- **Abandoned selects.** Any request from a task first withdraws a select it
-  had parked in. A select woken by a source and then refused by a fired scope
+- **Abandoned waits.** Any request from a task first withdraws a wait it
+  had parked in. A wait woken by a source and then refused by a fired scope
   therefore leaves no watcher or wake timer behind.
 - **Use after transfer.** `T4241` is reported at a receive or watch event
   used after its receiver was transferred (CHI-224); the run-time token check
   stays as the backstop.
-- **Errors.** `T4345` rejects an empty list literal at `Select.first`; an
-  empty list built at run time defects with "`Select.first` needs at least
+- **Errors.** `T4345` rejects an empty list literal at `Wait.first`; an
+  empty list built at run time defects with "`Wait.first` needs at least
   one event". A receiver whose token is stale defects the task as a channel
   capability violation, as a plain receive does.
-- **Telemetry.** `clock_select_parked` (clock kind 7) and
-  `clock_select_committed` (clock kind 8, with the committed `index`) are
-  boundary events. A task parked in a select reports `Select.first` as its
+- **Telemetry.** `clock_wait_parked` (clock kind 7) and
+  `clock_wait_committed` (clock kind 8, with the committed `index`) are
+  boundary events. A task parked in a wait reports `Wait.first` as its
   waited operation in a deadlock report.
 - **ABI.** `CHIMI_FIBER_ABI_VERSION` 11 added `CHIMI_REQUEST_SELECT` (kind 32)
   and `ChimiSelectSource`, with native runtime ABI 28. The channel variants
@@ -1583,8 +1591,8 @@ These follow from this contract and are left to the owners of those files:
 
 ## Open questions
 
-1. **Should choice be syntax?** This contract makes `Select.first` a library
-   function. A `select { ... }` form would remove the mapping functions and
+1. **Should choice be syntax?** This contract makes `Wait.first` a library
+   function. A `wait { ... }` form would remove the mapping functions and
    the intermediate enum, but it would add syntax that can only list a fixed
    set of events.
    *Recommendation:* keep the library form, and revisit it if the phase 3

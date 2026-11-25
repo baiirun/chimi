@@ -1,9 +1,9 @@
-"""Mutants of `Select.first` and `std/select` (CHI-203): the scheduler's
+"""Mutants of `Wait.first` and `std/wait` (CHI-203): the scheduler's
 `CHIMI_REQUEST_SELECT`, the channel and inbox watchers, the native runtime's
 event commit and user-clock timers, and the checker's select contracts.
 
 Run: scripts/mutation/mutate.py scripts/mutation/select_mutations.py
-Each mutant must turn a test in tests/select.rs red. The scheduler mutants edit
+Each mutant must turn a test in tests/wait.rs red. The scheduler mutants edit
 runtime/chimi-fiber, which the native build links, so they are judged by what
 a compiled Chimi program does. Results: scripts/mutation/select_results.txt.
 
@@ -24,13 +24,13 @@ SCHEDULER = f"{FIBER}/scheduler.rs"
 PROCESS = f"{FIBER}/scheduler/process.rs"
 SCOPE = f"{FIBER}/scheduler/scope.rs"
 RUNTIME = "runtime/native/runtime.c"
-CONTRACTS = "src/typing/select.rs"
+CONTRACTS = "src/typing/wait.rs"
 TYPING = "src/typing.rs"
 JOINS = "src/typing/failure_sets.rs"
 
 
 def select(name, file, edits):
-    return dict(name=name, file=file, edits=edits, targets=["select"])
+    return dict(name=name, file=file, edits=edits, targets=["wait"])
 
 
 MUTATIONS = [
@@ -90,8 +90,8 @@ MUTATIONS = [
         "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n",
         "    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);\n"
         "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n")]),
-    select("Select.first accepts an empty list at run time", RUNTIME, [(
-        "  if (count == 0) return defect(\"`Select.first` needs at least one event\", call_node);",
+    select("Wait.first accepts an empty list at run time", RUNTIME, [(
+        "  if (count == 0) return defect(\"`Wait.first` needs at least one event\", call_node);",
         "  if (count == 0) return success(void_value());")]),
     # The checker.
     select("an empty list literal is accepted", CONTRACTS, [(

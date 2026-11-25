@@ -53,7 +53,7 @@ pub interface Signals {
 /// Waits until one of `wanted` arrives and returns it. A signal that came
 /// before the call returns at once; when several did, the first in `wanted`
 /// is returned and the others stay for later calls. Other tasks run while it
-/// waits, and inside `Select.task` it can race a timeout or a channel.
+/// waits, and inside `Wait.task` it can race a timeout or a channel.
 ///
 /// Defects when `wanted` is empty.
 /// Cost: no system call while it waits.

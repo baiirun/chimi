@@ -1,0 +1,21 @@
+# mutation run at f0d47634898a0cc33a95f04aa2b990752cb836e5
+# failure_set_polish_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [language -- written_variant] (361s)
+BASELINE ok  [language -- two_call_arguments] (0s)
+BASELINE ok  [lib -- failure_set_value_arguments_must_match_the_bound_failure_row] (115s)
+BASELINE ok  [language -- forwarding_a_generic] (0s)
+BASELINE ok  [language -- a_value_passed_for_a_failure_set_generic] (0s)
+KILLED       written variant: never narrowed [language -- written_variant] (56s)
+KILLED       written variant: block tail not followed [language -- written_variant] (117s)
+KILLED       written variant: call arguments not narrowed [language -- written_variant] (124s)
+KILLED       written variant: let annotation not narrowed [language -- written_variant] (64s)
+SURVIVED     join: a fixing use does not stop widening [language -- two_call_arguments] (69s)
+KILLED       join: value generics never widen [language -- two_call_arguments] (62s)
+KILLED       join: failure-set generics never widen [language -- two_call_arguments] (80s)
+KILLED       join: failure-set generic widens two plain enums [lib -- failure_set_value_arguments_must_match_the_bound_failure_row] (57s)
+KILLED       join: a callback use does not mark the binding fixed [language -- two_call_arguments] (70s)
+KILLED       forwarding: generic not promoted [language -- forwarding_a_generic] (51s)
+SURVIVED     forwarding: promotion does not trigger another pass [language -- forwarding_a_generic] (43s)
+KILLED       note: not appended [language -- a_value_passed_for_a_failure_set_generic] (45s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# After the run: 'join: a fixing use does not stop widening' is killed by the raised-generic case added to two_call_arguments_for_one_generic_join_by_union, and 'forwarding: promotion does not trigger another pass' by the outer/wrap case added to forwarding_a_generic_to_a_failure_set_parameter_makes_it_a_failure_set (both checked by hand). The variance mutant was added after the review fix.

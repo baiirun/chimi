@@ -140,7 +140,7 @@ impl ProjectTypeChecker {
     /// in covariant positions (fields and success types, never a function input),
     /// so two instances whose arguments there are failure sets may join by union
     /// ("Joins"). Inferred from the declaration; `List`, `Option`, `Task`, and
-    /// `Select.Event` only hand their arguments out.
+    /// `Wait.Event` only hand their arguments out.
     pub(crate) fn type_parameter_is_covariant(&self, owner: SymbolId, index: usize) -> bool {
         self.parameter_is_covariant_within(owner, index, 0)
     }
@@ -157,7 +157,7 @@ impl ProjectTypeChecker {
             || matches!(
                 self.resolved.standard_symbol(owner),
                 Some(StandardSymbol::Type(
-                    StandardType::Option | StandardType::Task | StandardType::SelectEvent
+                    StandardType::Option | StandardType::Task | StandardType::WaitEvent
                 ))
             )
         {
@@ -313,8 +313,17 @@ impl ProjectTypeChecker {
             | CanonicalType::PolymorphicFunction { contract, .. } => {
                 // An input of an input is covariant again, but treating every
                 // occurrence under an input as contravariant is the safe reading.
+                // A function's rows sit beside its success: a callback of type
+                // `fn(fn() -> Int errors E)` consumes `E` failures.
                 contract.inputs.iter().any(|input| recurse(*input, true))
                     || recurse(contract.success, inside_input)
+                    || (inside_input
+                        && (self.failure_rows[contract.failures.raw() as usize]
+                            .parameters
+                            .contains(&parameter)
+                            || self.needs_rows[contract.needs.raw() as usize]
+                                .parameters
+                                .contains(&parameter)))
             }
             CanonicalType::Record(fields) => fields
                 .iter()
@@ -529,6 +538,126 @@ impl ProjectTypeChecker {
         ) {
             self.generic_kinds
                 .insert(parameter, GenericKind::FailureSet);
+        }
+    }
+
+    /// Makes a value generic of the function being checked a failure set when a
+    /// call hands it to a callee's failure-set parameter, as
+    /// `wrap<X>(r: Result<Int, X>) { Result.get(r) }` does: forwarding `X` to
+    /// `get`'s `E` raises it as surely as `Failure(...)` would, so it gets both
+    /// projections the same way (CHI-222).
+    pub(super) fn promote_forwarded_generic(&mut self, forwarded: TypeId) {
+        let CanonicalType::Generic(parameter) =
+            self.types[self.resolve_inference_type(forwarded).raw() as usize]
+        else {
+            return;
+        };
+        if self.body_generics.contains(&parameter)
+            && matches!(
+                self.generic_kinds.get(&parameter),
+                None | Some(GenericKind::Unconstrained | GenericKind::Value)
+            )
+        {
+            self.generic_kinds
+                .insert(parameter, GenericKind::FailureSet);
+        }
+    }
+
+    /// Why a call argument cannot bind the callee's failure sets, for a `T4203`
+    /// message (CHI-222): the first failure-set parameter in `expected` (the
+    /// declared parameter type) whose place in `actual` holds a type that is not
+    /// a failure set, as `Text` in `Result<Int, Text>` for `get`'s `E`.
+    pub(super) fn failure_set_binding_note(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        callee: Option<SymbolId>,
+    ) -> Option<String> {
+        let (parameter, found) = self.non_failure_set_binding(actual, expected, 0)?;
+        let parameter = &self.resolved.symbol(parameter).name;
+        let user = callee.map_or_else(
+            || "the callee".to_owned(),
+            |callee| format!("`{}`", self.resolved.symbol(callee).name),
+        );
+        let found = self.formatter().format_type(found);
+        Some(format!(
+            "{user} uses `{parameter}` as a failure set, and `{found}` is not one (a failure \
+             set is an enum, one enum variant, a set written `A | B`, or a failure-set generic)"
+        ))
+    }
+
+    fn non_failure_set_binding(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        depth: usize,
+    ) -> Option<(SymbolId, TypeId)> {
+        const DEPTH_LIMIT: usize = 8;
+        if depth > DEPTH_LIMIT {
+            return None;
+        }
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        match (
+            self.types[actual.raw() as usize].clone(),
+            self.types[expected.raw() as usize].clone(),
+        ) {
+            (CanonicalType::InferenceVariable(_) | CanonicalType::Poison, _) => None,
+            (_, CanonicalType::Generic(parameter))
+                if self.generic_kinds.get(&parameter) == Some(&GenericKind::FailureSet) =>
+            {
+                self.failure_set_of(actual)
+                    .is_none()
+                    .then_some((parameter, actual))
+            }
+            (
+                CanonicalType::Named {
+                    symbol,
+                    arguments: actual_arguments,
+                },
+                CanonicalType::Named {
+                    symbol: expected_symbol,
+                    arguments: expected_arguments,
+                },
+            ) if symbol == expected_symbol => actual_arguments
+                .into_iter()
+                .zip(expected_arguments)
+                .find_map(|(actual, expected)| {
+                    self.non_failure_set_binding(actual, expected, depth + 1)
+                }),
+            (CanonicalType::Function(actual), CanonicalType::Function(expected))
+                if actual.inputs.len() == expected.inputs.len() =>
+            {
+                actual
+                    .inputs
+                    .into_iter()
+                    .zip(expected.inputs)
+                    .chain(std::iter::once((actual.success, expected.success)))
+                    .find_map(|(actual, expected)| {
+                        self.non_failure_set_binding(actual, expected, depth + 1)
+                    })
+            }
+            (CanonicalType::Tuple(actual), CanonicalType::Tuple(expected))
+                if actual.len() == expected.len() =>
+            {
+                actual
+                    .into_iter()
+                    .zip(expected)
+                    .find_map(|(actual, expected)| {
+                        self.non_failure_set_binding(actual, expected, depth + 1)
+                    })
+            }
+            (CanonicalType::Record(actual), CanonicalType::Record(expected))
+                if actual.len() == expected.len() =>
+            {
+                actual
+                    .into_iter()
+                    .zip(expected)
+                    .find_map(|(actual, expected)| {
+                        self.non_failure_set_binding(actual.type_id, expected.type_id, depth + 1)
+                    })
+            }
+            _ => None,
         }
     }
 

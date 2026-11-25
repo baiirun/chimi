@@ -34,7 +34,7 @@ import std/option as Option.{None, Option, Some}
 import std/process as Process.{Address, Inbox}
 import std/resource as Resource
 import std/result as Result.{Ok}
-import std/select as Select
+import std/wait as Wait
 import std/supervisor as Supervisor
 import std/task as Task
 import std/text as Text
@@ -344,7 +344,7 @@ enum Wake {
 
 // The logs process: entries wait in the loop's state, at most `log_buffer`
 // of them, until the interval's deadline or a flush, then go in one push.
-// The inbox comes first in the select, so a flush finds every entry sent
+// The inbox comes first in the wait, so a flush finds every entry sent
 // before it already waiting.
 fn ship_logs(inbox: Inbox<LogRecord>, settings: Settings, flushing: Watch.Publisher<Bool>, flushed: Watch.Publisher<Bool>) -> Void needs {
   network: Network,
@@ -354,15 +354,15 @@ fn ship_logs(inbox: Inbox<LogRecord>, settings: Settings, flushing: Watch.Publis
   let requests = Watch.subscribe(flushing)
   loop state = ([], Clock.add(Clock.now(), settings.interval)) {
     let (waiting, deadline) = state
-    let next = Select.first([
-      Select.inbox(inbox, fn(record) { Wake.Record(record) }),
-      Select.watch(requests, fn(received) {
+    let next = Wait.first([
+      Wait.inbox(inbox, fn(record) { Wake.Record(record) }),
+      Wait.watch(requests, fn(received) {
         case received {
           Receive.Received(True) -> Wake.Flush
           _ -> Wake.Nothing
         }
       }),
-      Select.at(deadline, Wake.Tick),
+      Wait.at(deadline, Wake.Tick),
     ])
     case next {
       Wake.Record(record) -> case List.length(waiting) < settings.log_buffer {
