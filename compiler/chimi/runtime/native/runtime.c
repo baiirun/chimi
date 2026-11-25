@@ -5616,44 +5616,39 @@ static ChimiBindingResult *binding_result(ChimiControl *control) {
    interleave only where a task can park, as they do on one carrier. A
    call that would wait for a handle blocks its carrier's thread, not just
    its task: binding code between parks is meant to be short. */
-typedef struct {
-  const ChimiBindingType *type;
-  void *state;
-  uint32_t generation;
-  /* Binding calls holding the handle now. */
-  uint32_t users;
-  /* The type of a handle closed while held, whose state the last holder
-     releases; the slot is not reused before then. */
-  const ChimiBindingType *closing;
-  /* The call running binding code on the handle, or NULL. It is one of
-     the holders, so a slot is never freed or reused while it has one. */
-  const ChimiBindingCall *runner;
-} BindingHandleSlot;
-
-/* A state to release once the lock is let go. */
+/* The slots live in Rust (runtime/chimi-runtime/src/handles.rs): slots,
+   free list, generations, holders and runners. Every call below is made with
+   binding_handle_lock held, and none makes a system call, a scheduler
+   request or a release: a state the table hands back is released here once
+   the lock is let go. */
 typedef struct {
   const ChimiBindingType *type;
   void *state;
 } BindingRelease;
 
-enum { BINDING_HANDLE_LIMIT = 1u << 20 };
-static BindingHandleSlot *binding_handles;
-static uint32_t binding_handle_count = 1;
-static uint32_t binding_handle_capacity;
-static uint32_t binding_free_slot;
+extern bool chimi_handles_open_v1(const ChimiBindingType *type, void *state, uint32_t *slot,
+                                  uint32_t *generation);
+extern void *chimi_handles_state_v1(uint32_t slot, uint32_t generation, const ChimiBindingType *type);
+extern bool chimi_handles_is_open_v1(uint32_t slot, uint32_t generation);
+enum { HANDLES_CLOSE_NOT_OPEN, HANDLES_CLOSE_HELD, HANDLES_CLOSE_RELEASED };
+extern int32_t chimi_handles_close_v1(uint32_t slot, uint32_t generation, const ChimiBindingType *type,
+                                      BindingRelease *out);
+extern bool chimi_handles_hold_v1(uint32_t slot, uint32_t generation);
+extern bool chimi_handles_let_go_v1(uint32_t slot, BindingRelease *out);
+extern const void *chimi_handles_runner_v1(uint32_t slot);
+extern void chimi_handles_set_runner_v1(uint32_t slot, const void *runner);
+extern uint32_t chimi_handles_count_v1(void);
+extern bool chimi_handles_end_v1(uint32_t slot, BindingRelease *out);
+
 static pthread_mutex_t binding_handle_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Signalled when a call stops running on a handle. */
 static pthread_cond_t binding_handle_free = PTHREAD_COND_INITIALIZER;
 
-/* The open slot `value` names, or NULL. The caller holds binding_handle_lock. */
-static BindingHandleSlot *binding_handle_slot(const ChimiValue *value) {
-  if (value->kind != VALUE_NATIVE_HANDLE) return NULL;
-  uint32_t slot = value->as.handle.slot;
-  if (slot == 0 || slot >= binding_handle_count) return NULL;
-  BindingHandleSlot *entry = &binding_handles[slot];
-  return entry->type != NULL && entry->generation == value->as.handle.generation ? entry : NULL;
+/* True when `value` names an open handle. The caller holds binding_handle_lock. */
+static bool binding_handle_open(const ChimiValue *value) {
+  return value->kind == VALUE_NATIVE_HANDLE &&
+         chimi_handles_is_open_v1(value->as.handle.slot, value->as.handle.generation);
 }
-
 
 /* The scheduler's key for the waits on a handle's descriptors: nonzero,
    since slot 0 is unused, and distinct per generation. The scheduler reads
@@ -5668,21 +5663,6 @@ static void binding_release_run(BindingRelease release) {
   if (release.type && release.type->release) release.type->release(release.state);
 }
 
-/* Puts a slot whose state is released, or about to be, on the free list. A slot
-   whose generation would wrap is retired instead, so a stale copy can never
-   match a later handle. The free list threads through `state`. The caller
-   holds the lock. */
-static void binding_slot_free(BindingHandleSlot *entry, uint32_t slot) {
-  entry->type = NULL;
-  entry->closing = NULL;
-  entry->state = NULL;
-  entry->runner = NULL;
-  if (entry->generation != UINT32_MAX) {
-    entry->state = (void *)(uintptr_t)binding_free_slot;
-    binding_free_slot = slot;
-  }
-}
-
 static ChimiFiberCommand binding_request(const ChimiBindingCall *call, void *request);
 
 /* Closes the handle (slot, generation) of `type` (NULL for any) when it is
@@ -5695,20 +5675,8 @@ static ChimiFiberCommand binding_request(const ChimiBindingCall *call, void *req
 static void binding_handle_close(uint32_t slot, uint32_t generation, const ChimiBindingType *type,
                                  const ChimiBindingCall *call) {
   BindingRelease release = {0};
-  bool closed = false;
   pthread_mutex_lock(&binding_handle_lock);
-  BindingHandleSlot *entry = slot != 0 && slot < binding_handle_count ? &binding_handles[slot] : NULL;
-  if (entry && entry->type != NULL && entry->generation == generation && (!type || entry->type == type)) {
-    closed = true;
-    ++entry->generation;
-    if (entry->users > 0) {
-      entry->closing = entry->type;
-      entry->type = NULL;
-    } else {
-      release = (BindingRelease){entry->type, entry->state};
-      binding_slot_free(entry, slot);
-    }
-  }
+  bool closed = chimi_handles_close_v1(slot, generation, type, &release) != HANDLES_CLOSE_NOT_OPEN;
   pthread_mutex_unlock(&binding_handle_lock);
   /* The answer is always OK: the withdraw never parks. A forced process body
      that gets CANCEL here is abandoned at its next park, so releasing anyway
@@ -5737,17 +5705,11 @@ static void release_binding_handles(void) {
   for (uint32_t slot = 1;; ++slot) {
     BindingRelease release = {0};
     pthread_mutex_lock(&binding_handle_lock);
-    if (slot >= binding_handle_count) {
+    if (slot >= chimi_handles_count_v1()) {
       pthread_mutex_unlock(&binding_handle_lock);
       return;
     }
-    BindingHandleSlot *entry = &binding_handles[slot];
-    if (entry->type != NULL || entry->closing != NULL) {
-      if (entry->type != NULL) ++entry->generation;
-      release = (BindingRelease){entry->type ? entry->type : entry->closing, entry->state};
-      entry->users = 0;
-      binding_slot_free(entry, slot);
-    }
+    chimi_handles_end_v1(slot, &release);
     pthread_mutex_unlock(&binding_handle_lock);
     binding_release_run(release);
   }
@@ -5759,8 +5721,7 @@ static void release_binding_handles(void) {
 static bool binding_run_blocked(const ChimiBindingCall *call) {
   for (uint32_t index = 0; index < call->argument_count; ++index) {
     if (!call->held[index]) continue;
-    const BindingHandleSlot *entry = &binding_handles[call->arguments[index]->as.handle.slot];
-    if (entry->runner != NULL) return true;
+    if (chimi_handles_runner_v1(call->arguments[index]->as.handle.slot) != NULL) return true;
   }
   return false;
 }
@@ -5775,7 +5736,7 @@ static void binding_run_locked(const ChimiBindingCall *call, bool run) {
   bool any = false;
   for (uint32_t index = 0; index < call->argument_count; ++index) {
     if (!call->held[index]) continue;
-    binding_handles[call->arguments[index]->as.handle.slot].runner = run ? call : NULL;
+    chimi_handles_set_runner_v1(call->arguments[index]->as.handle.slot, run ? call : NULL);
     any = true;
   }
   if (any && !run) pthread_cond_broadcast(&binding_handle_free);
@@ -5813,24 +5774,22 @@ static void binding_hold(ChimiBindingCall *call, bool hold) {
   uint32_t release_count = 0;
   pthread_mutex_lock(&binding_handle_lock);
   if (hold) {
-    for (uint32_t index = 0; index < count; ++index) {
-      BindingHandleSlot *entry = binding_handle_slot(arguments[index]);
-      held[index] = entry != NULL;
-      if (entry) ++entry->users;
-    }
+    for (uint32_t index = 0; index < count; ++index)
+      held[index] = arguments[index]->kind == VALUE_NATIVE_HANDLE &&
+                    chimi_handles_hold_v1(arguments[index]->as.handle.slot,
+                                          arguments[index]->as.handle.generation);
     binding_run_locked(call, true);
     pthread_mutex_unlock(&binding_handle_lock);
     return;
   }
   /* Every let-go is taken back before the binding code goes on. */
   for (uint32_t index = 0; index < count; ++index)
-    if (held[index] && binding_handles[arguments[index]->as.handle.slot].runner != call) abort();
+    if (held[index] && chimi_handles_runner_v1(arguments[index]->as.handle.slot) != call) abort();
   binding_run_locked(call, false);
   for (uint32_t index = 0; index < count; ++index) {
     if (!held[index]) continue;
-    uint32_t slot = arguments[index]->as.handle.slot;
-    BindingHandleSlot *entry = &binding_handles[slot];
-    if (--entry->users > 0 || entry->closing == NULL) continue;
+    BindingRelease release;
+    if (!chimi_handles_let_go_v1(arguments[index]->as.handle.slot, &release)) continue;
     if (release_count == 8) {
       /* Rare: more closed handles than the buffer holds; run the batch first. */
       pthread_mutex_unlock(&binding_handle_lock);
@@ -5838,8 +5797,7 @@ static void binding_hold(ChimiBindingCall *call, bool hold) {
       release_count = 0;
       pthread_mutex_lock(&binding_handle_lock);
     }
-    releases[release_count++] = (BindingRelease){entry->closing, entry->state};
-    binding_slot_free(entry, slot);
+    releases[release_count++] = release;
   }
   pthread_mutex_unlock(&binding_handle_lock);
   for (uint32_t index = 0; index < release_count; ++index) binding_release_run(releases[index]);
@@ -5883,9 +5841,9 @@ void *chimi_binding_handle(const ChimiBindingCall *call, uint32_t index,
                            const ChimiBindingType *type) {
   const ChimiValue *value = binding_argument(call, index, VALUE_NATIVE_HANDLE);
   if (value == NULL) return NULL;
+  if (type == NULL) return NULL;
   pthread_mutex_lock(&binding_handle_lock);
-  BindingHandleSlot *entry = binding_handle_slot(value);
-  void *state = entry != NULL && entry->type == type ? entry->state : NULL;
+  void *state = chimi_handles_state_v1(value->as.handle.slot, value->as.handle.generation, type);
   pthread_mutex_unlock(&binding_handle_lock);
   return state;
 }
@@ -5968,35 +5926,14 @@ ChimiBindingValue *chimi_binding_make_list(ChimiBindingCall *call, ChimiBindingV
 ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const ChimiBindingType *type,
                                              void *state) {
   (void)call;
+  uint32_t slot, generation;
   pthread_mutex_lock(&binding_handle_lock);
-  uint32_t slot = binding_free_slot;
-  if (slot != 0) {
-    binding_free_slot = (uint32_t)(uintptr_t)binding_handles[slot].state;
-  } else {
-    bool grown = binding_handle_count < binding_handle_capacity;
-    if (!grown && binding_handle_count < BINDING_HANDLE_LIMIT) {
-      uint32_t capacity = binding_handle_capacity ? binding_handle_capacity * 2 : 64;
-      BindingHandleSlot *larger = realloc(binding_handles, capacity * sizeof(*larger));
-      if (larger != NULL) {
-        memset(larger + binding_handle_capacity, 0,
-               (capacity - binding_handle_capacity) * sizeof(*larger));
-        binding_handles = larger;
-        binding_handle_capacity = capacity;
-        grown = true;
-      }
-    }
-    if (!grown) {
-      pthread_mutex_unlock(&binding_handle_lock);
-      if (type->release) type->release(state);
-      return NULL;
-    }
-    slot = binding_handle_count++;
-  }
-  BindingHandleSlot *entry = &binding_handles[slot];
-  entry->type = type;
-  entry->state = state;
-  uint32_t generation = entry->generation;
+  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);
   pthread_mutex_unlock(&binding_handle_lock);
+  if (!opened) {
+    if (type->release) type->release(state);
+    return NULL;
+  }
   ChimiValue *value = new_value(VALUE_NATIVE_HANDLE);
   value->as.handle.slot = slot;
   value->as.handle.generation = generation;
@@ -6062,7 +5999,7 @@ static bool binding_wait_handle_closed(const ChimiBindingCall *call, uint32_t ha
   const ChimiValue *value = binding_argument(call, handle, VALUE_NATIVE_HANDLE);
   if (value == NULL) return true;
   pthread_mutex_lock(&binding_handle_lock);
-  bool closed = binding_handle_slot(value) == NULL;
+  bool closed = !binding_handle_open(value);
   pthread_mutex_unlock(&binding_handle_lock);
   return closed;
 }

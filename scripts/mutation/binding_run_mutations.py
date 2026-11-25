@@ -17,8 +17,8 @@ def m(name, old, new, targets=("runtime_state",), filter=THREADS):
 
 MUTATIONS = [
     m("two calls run on one handle at once",
-      "    if (entry->runner != NULL) return true;",
-      "    (void)entry;"),
+      "    if (chimi_handles_runner_v1(call->arguments[index]->as.handle.slot) != NULL) return true;",
+      ""),
     m("a call that stops running wakes no waiter",
       "  if (any && !run) pthread_cond_broadcast(&binding_handle_free);",
       "  (void)any;"),
@@ -38,8 +38,8 @@ MUTATIONS = [
       "  int answer = binding_wait_pid(call, handle, pid);\n  binding_run(call, true);",
       "  int answer = binding_wait_pid(call, handle, pid);"),
     m("a call never runs on its handles",
-      "    binding_handles[call->arguments[index]->as.handle.slot].runner = run ? call : NULL;",
-      "    binding_handles[call->arguments[index]->as.handle.slot].runner = NULL;"),
+      "    chimi_handles_set_runner_v1(call->arguments[index]->as.handle.slot, run ? call : NULL);",
+      "    chimi_handles_set_runner_v1(call->arguments[index]->as.handle.slot, NULL);"),
     m("a request keeps the call's handles",
       "  binding_run(call, false);\n  ChimiFiberCommand command = scheduler_request(request);",
       "  ChimiFiberCommand command = scheduler_request(request);",

@@ -12,39 +12,33 @@ CRATE = "compiler/chimi"
 R = "runtime/native/runtime.c"
 
 
-def m(name, edits):
-    return dict(name=name, file=R, edits=edits, targets=["runtime_state"],
+HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
+
+
+def m(name, edits, file=R):
+    return dict(name=name, file=file, edits=edits, targets=["runtime_state"],
                 filter="the_runtime_state_holds_across_carrier_threads")
 
 
 MUTATIONS = [
     m("a binding call holds none of its handles", [(
-        "  binding_hold(arguments, argument_count, held, true);\n",
-        "  for (uint32_t index = 0; index < argument_count; ++index) held[index] = false;\n")]),
+        "      held[index] = arguments[index]->kind == VALUE_NATIVE_HANDLE &&\n",
+        "      held[index] = false && arguments[index]->kind == VALUE_NATIVE_HANDLE &&\n")]),
     m("a close ignores the holders", [(
-        "    ++entry->generation;\n    if (entry->users > 0) {",
-        "    ++entry->generation;\n    if (false) {")]),
+        "        if live.users > 0 {\n            if let Some(entry)",
+        "        if false {\n            if let Some(entry)")], file=HANDLES),
     m("the last holder does not release", [(
-        "    if (--entry->users > 0 || entry->closing == NULL) continue;",
-        "    if (--entry->users > 0 || entry->closing == NULL || true) continue;")]),
+        "                if live.users > 0 {\n                    return None;",
+        "                if live.users > 0 || true {\n                    return None;")], file=HANDLES),
     # Removed as equivalent: "a closed handle reads as open while held" (keeping
     # `type` set beside `closing`). The close bumps the generation, so every
     # lookup already misses the slot, and the last holder still releases once.
     m("handle lookups take no lock", [(
-        "  if (value == NULL) return NULL;\n  pthread_mutex_lock(&binding_handle_lock);\n"
-        "  BindingHandleSlot *entry = binding_handle_slot(value);\n"
-        "  void *state = entry != NULL && entry->type == type ? entry->state : NULL;\n"
-        "  pthread_mutex_unlock(&binding_handle_lock);",
-        "  if (value == NULL) return NULL;\n"
-        "  BindingHandleSlot *entry = binding_handle_slot(value);\n"
-        "  void *state = entry != NULL && entry->type == type ? entry->state : NULL;")]),
+        "  pthread_mutex_lock(&binding_handle_lock);\n  void *state = chimi_handles_state_v1(value->as.handle.slot, value->as.handle.generation, type);\n  pthread_mutex_unlock(&binding_handle_lock);",
+        "  void *state = chimi_handles_state_v1(value->as.handle.slot, value->as.handle.generation, type);")]),
     m("making a handle takes no lock", [(
-        "  (void)call;\n  pthread_mutex_lock(&binding_handle_lock);\n  uint32_t slot = binding_free_slot;",
-        "  (void)call;\n  uint32_t slot = binding_free_slot;"), (
-        "  uint32_t generation = entry->generation;\n  pthread_mutex_unlock(&binding_handle_lock);",
-        "  uint32_t generation = entry->generation;"), (
-        "    if (!grown) {\n      pthread_mutex_unlock(&binding_handle_lock);",
-        "    if (!grown) {")]),
+        "  pthread_mutex_lock(&binding_handle_lock);\n  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);\n  pthread_mutex_unlock(&binding_handle_lock);",
+        "  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);")]),
     m("standard input has no lock", [(
         "static void input_lock(ByteInput *input) {\n  if (input->lock) pthread_mutex_lock(input->lock);\n}",
         "static void input_lock(ByteInput *input) {\n  (void)input;\n}"), (
