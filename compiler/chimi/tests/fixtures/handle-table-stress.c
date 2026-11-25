@@ -123,8 +123,18 @@ static void *consumer(void *unused) {
   return NULL;
 }
 
+static size_t locked_len(void) {
+  pthread_mutex_lock(&handle_count_lock);
+  size_t len = chimi_handle_counts_len_v1();
+  pthread_mutex_unlock(&handle_count_lock);
+  return len;
+}
+
 int main(void) {
+  /* A count left from an earlier execution is forgotten when the next starts. */
+  table_retain(KEYS + 1);
   channel_endpoints_reset();
+  CHECK(locked_len() == 0, "%zu keys outlived the reset", locked_len());
   for (uint64_t key = 1; key <= KEYS; ++key) table_retain(key);
   pthread_t threads[2];
   CHECK(pthread_create(&threads[0], NULL, producer, NULL) == 0, "start producer");
@@ -133,9 +143,9 @@ int main(void) {
   for (uint64_t key = 1; key <= KEYS; ++key)
     CHECK(locked_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
   pthread_mutex_lock(&handle_count_lock);
-  size_t left = chimi_handle_counts_len_v1(), capacity = chimi_handle_counts_capacity_v1();
+  size_t capacity = chimi_handle_counts_capacity_v1();
   pthread_mutex_unlock(&handle_count_lock);
-  CHECK(left == 0, "%zu keys left in the table", left);
+  CHECK(locked_len() == 0, "%zu keys left in the table", locked_len());
   CHECK(capacity >= 8192, "the table grew to only %zu slots", capacity);
   puts("ok");
   return 0;

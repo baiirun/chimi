@@ -234,6 +234,26 @@ mod tests {
     }
 
     #[test]
+    fn a_run_that_wraps_past_the_last_entry_stays_findable() {
+        let mut counts = HandleCounts::new();
+        assert!(counts.retain(1));
+        let last = counts.capacity() - 1;
+        // Two keys whose home is the last entry, so the second wraps to entry
+        // 0, and one whose home is entry 0, pushed on to entry 1.
+        let at_last: Vec<u64> = (2..u64::MAX).filter(|key| counts.home(*key) == last).take(2).collect();
+        let at_first = (2..u64::MAX).find(|key| counts.home(*key) == 0).unwrap_or(0);
+        assert!(counts.drop(1));
+        for key in at_last.iter().chain([&at_first]) {
+            assert!(counts.retain(*key), "key {key} found no entry");
+        }
+        // Removing the first shifts the wrapped run back across the end.
+        for key in at_last.iter().chain([&at_first]) {
+            assert!(counts.drop(*key), "key {key} was lost");
+        }
+        assert!(counts.is_empty());
+    }
+
+    #[test]
     fn a_reset_forgets_every_count_and_keeps_the_room() {
         let mut counts = HandleCounts::new();
         for key in 1..=100 {

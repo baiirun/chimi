@@ -26,4 +26,8 @@ MUTATIONS = [
         "  if (native_handle_release(key)) native_handle_unreferenced(key);\n",
         "  (void)native_handle_release(key);\n",
     )], targets=["net", "std_exec"], filter=""),
+    dict(name="a new execution keeps the last one's native handle counts", file=R, edits=[(
+        "  chimi_handle_counts_reset_v1();\n",
+        "",
+    )], targets=["runtime_state"], filter="the_handle_table_counts_across_threads"),
 ]
