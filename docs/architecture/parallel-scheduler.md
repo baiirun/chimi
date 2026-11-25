@@ -277,7 +277,7 @@ is running tasks at the same moment.
   process of that supervisor running in between. The note's risk list
   already places a supervisor's record on one carrier.
 - **Does not survive, and must change in step 3.**
-  - Select commit (task-and-channel-capabilities.md, "Select commit"). After
+  - Wait commit (task-and-channel-capabilities.md, "Wait commit"). After
     a select answers with a ready receiver, the host's receive is "served
     before any other task runs" by putting the task at the front of the run
     queue. On another carrier, a second receiver of the same queue could take
@@ -920,7 +920,7 @@ four keep one carrier.
        2, 4 and 8 carriers (10 or 20 times each in the suite, two minutes
        at most per run): six processes in a ring passing four tokens 3000
        hops each; eight receivers of one queue fed by three producer
-       processes, half in a two-arm `Select.first` and half in
+       processes, half in a two-arm `Wait.first` and half in
        `Channel.receive`, taking 1 to 6000 with none lost or doubled; four
        registered workers that defect after every second answer, about a
        hundred restarts while main keeps asking; twenty rounds of six

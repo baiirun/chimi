@@ -2,7 +2,7 @@
 //! without blocking the other tasks, and an idle scheduler waits on every
 //! such descriptor, the next timer deadline, and the signal pipe at once.
 //!
-//! The wait is level-triggered and consumes nothing, like `Select.first`:
+//! The wait is level-triggered and consumes nothing, like `Wait.first`:
 //! the request answers OK with the ready conditions when the descriptor is
 //! ready now, and otherwise registers the task and parks it. Readiness only
 //! wakes the task; the host then asks again, and the fresh check answers.

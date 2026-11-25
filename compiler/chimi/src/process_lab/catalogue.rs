@@ -332,7 +332,7 @@ pub static SCENARIOS: [Scenario; 163] = [
     fixture("SD10", "deadline-forces-in-flight-handler", U13),
     fixture("SD11", "draining-handler-awaits-child-task", U13),
     fixture("SD12", "draining-handler-times-out", U13),
-    fixture("SD13", "selecting-ticker-ends-at-stop", U13),
+    fixture("SD13", "waiting-ticker-ends-at-stop", U13),
     fixture("SG01", "terminate-drains-then-exits", U13)
         .signalled(&["--signal=TERM@1500ms"], 143)
         .with_events(&["clock_signal_received"]),

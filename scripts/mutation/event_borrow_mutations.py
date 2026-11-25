@@ -1,4 +1,4 @@
-"""Mutants of a Select event's link to its receiver through calls, breaks and
+"""Mutants of a Wait event's link to its receiver through calls, breaks and
 pattern bindings (CHI-241).
 
 Run: scripts/mutation/mutate.py scripts/mutation/event_borrow_mutations.py

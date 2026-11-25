@@ -667,7 +667,7 @@ impl ProjectResolver {
             (StandardType::Instant, StandardModule::Clock),
             (StandardType::Timestamp, StandardModule::Clock),
             (StandardType::Timeout, StandardModule::Task),
-            (StandardType::SelectEvent, StandardModule::Select),
+            (StandardType::WaitEvent, StandardModule::Wait),
             (StandardType::BroadcastPublisher, StandardModule::Broadcast),
             (StandardType::WatchPublisher, StandardModule::Watch),
             (StandardType::WatchSubscription, StandardModule::Watch),
@@ -944,56 +944,56 @@ impl ProjectResolver {
         }
     }
 
-    /// The generic parameters of each `std/select` function, in contract order.
+    /// The generic parameters of each `std/wait` function, in contract order.
     fn select_callable_parameters(&self) -> Vec<(SymbolId, Vec<StandardGeneric>)> {
         use StandardGeneric as G;
         let function = |function| self.standard_function_symbol(function);
         vec![
             (
-                function(StandardFunction::SelectReceive),
+                function(StandardFunction::WaitReceive),
                 vec![
-                    G::SelectSource,
-                    G::SelectValue,
-                    G::SelectFailures,
-                    G::SelectNeeds,
+                    G::WaitSource,
+                    G::WaitValue,
+                    G::WaitFailures,
+                    G::WaitNeeds,
                 ],
             ),
             (
-                function(StandardFunction::SelectWatch),
+                function(StandardFunction::WaitWatch),
                 vec![
-                    G::SelectSource,
-                    G::SelectValue,
-                    G::SelectFailures,
-                    G::SelectNeeds,
+                    G::WaitSource,
+                    G::WaitValue,
+                    G::WaitFailures,
+                    G::WaitNeeds,
                 ],
             ),
             (
-                function(StandardFunction::SelectInbox),
+                function(StandardFunction::WaitInbox),
                 vec![
-                    G::SelectSource,
-                    G::SelectValue,
-                    G::SelectFailures,
-                    G::SelectNeeds,
+                    G::WaitSource,
+                    G::WaitValue,
+                    G::WaitFailures,
+                    G::WaitNeeds,
                 ],
             ),
             (
-                function(StandardFunction::SelectTask),
+                function(StandardFunction::WaitTask),
                 vec![
-                    G::SelectSource,
-                    G::SelectTaskFailures,
-                    G::SelectValue,
-                    G::SelectFailures,
-                    G::SelectNeeds,
+                    G::WaitSource,
+                    G::WaitTaskFailures,
+                    G::WaitValue,
+                    G::WaitFailures,
+                    G::WaitNeeds,
                 ],
             ),
             (
-                function(StandardFunction::SelectAfter),
-                vec![G::SelectValue],
+                function(StandardFunction::WaitAfter),
+                vec![G::WaitValue],
             ),
-            (function(StandardFunction::SelectAt), vec![G::SelectValue]),
+            (function(StandardFunction::WaitAt), vec![G::WaitValue]),
             (
-                function(StandardFunction::SelectFirst),
-                vec![G::SelectValue, G::SelectFailures],
+                function(StandardFunction::WaitFirst),
+                vec![G::WaitValue, G::WaitFailures],
             ),
         ]
     }

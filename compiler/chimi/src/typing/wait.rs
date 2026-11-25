@@ -1,16 +1,16 @@
-//! The contracts of `std/select` (`docs/specification/time-and-outcomes.md`,
+//! The contracts of `std/wait` (`docs/specification/time-and-outcomes.md`,
 //! "Choosing among events"):
 //!
 //! ```text
-//! Select.receive: fn<T, A, F, R>(Receiver<T>, fn(Receive<T>) -> A errors F needs R)
+//! Wait.receive: fn<T, A, F, R>(Receiver<T>, fn(Receive<T>) -> A errors F needs R)
 //!                   -> Event<A, F | Channel.Aborted> needs R
-//! Select.inbox:   fn<T, A, F, R>(Inbox<T>, fn(T) -> A errors F needs R) -> Event<A, F> needs R
-//! Select.task:    fn<T, E, A, F, R>(Task<T, E>, fn(T) -> A errors F needs R)
+//! Wait.inbox:   fn<T, A, F, R>(Inbox<T>, fn(T) -> A errors F needs R) -> Event<A, F> needs R
+//! Wait.task:    fn<T, E, A, F, R>(Task<T, E>, fn(T) -> A errors F needs R)
 //!                   -> Event<A, E | F> needs R
-//! Select.after:   fn<A>(Duration, A) -> Event<A, Never> needs { clock: Clock }
-//! Select.at:      fn<A>(Instant, A) -> Event<A, Never> needs { clock: Clock }
-//! Select.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
-//! Select.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+//! Wait.after:   fn<A>(Duration, A) -> Event<A, Never> needs { clock: Clock }
+//! Wait.at:      fn<A>(Instant, A) -> Event<A, Never> needs { clock: Clock }
+//! Wait.first:   fn<A, F>(List<Event<A, F>>) -> A errors F
+//! Wait.watch:   fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
 //!                   -> Event<A, F | Channel.Aborted> needs R
 //! ```
 //!
@@ -26,15 +26,15 @@ use crate::standard::{
 };
 
 impl ProjectTypeChecker {
-    pub(super) fn index_select_contracts(&mut self) {
+    pub(super) fn index_wait_contracts(&mut self) {
         use StandardFunction as F;
         use StandardGeneric as G;
         let none = FailureRowId::new(0);
-        let source = self.standard_generic_type(G::SelectSource);
-        let value = self.standard_generic_type(G::SelectValue);
-        let failures = self.resolved.standard_generic(G::SelectFailures);
-        let task_failures = self.resolved.standard_generic(G::SelectTaskFailures);
-        let needs = self.resolved.standard_generic(G::SelectNeeds);
+        let source = self.standard_generic_type(G::WaitSource);
+        let value = self.standard_generic_type(G::WaitValue);
+        let failures = self.resolved.standard_generic(G::WaitFailures);
+        let task_failures = self.resolved.standard_generic(G::WaitTaskFailures);
+        let needs = self.resolved.standard_generic(G::WaitNeeds);
         let needs_row = self.intern_needs_row(NeedsRow {
             entries: Vec::new(),
             parameters: vec![needs],
@@ -50,7 +50,7 @@ impl ProjectTypeChecker {
         };
         let event = |checker: &mut Self, failures: FailureRowId| {
             let failures = checker.failure_set_argument_type(failures);
-            checker.standard_named_type(StandardType::SelectEvent, vec![value, failures])
+            checker.standard_named_type(StandardType::WaitEvent, vec![value, failures])
         };
 
         let receiver = self.standard_named_type(StandardType::ChannelReceiver, vec![source]);
@@ -65,7 +65,7 @@ impl ProjectTypeChecker {
         let source_mapping = mapping(self, source);
         let inbox_event = event(self, map_failures);
 
-        let task_failure_type = self.standard_generic_type(G::SelectTaskFailures);
+        let task_failure_type = self.standard_generic_type(G::WaitTaskFailures);
         let task = self.standard_named_type(StandardType::Task, vec![source, task_failure_type]);
         let task_event_failures =
             self.failure_parameters(vec![task_failures, failures], Vec::new());
@@ -75,49 +75,49 @@ impl ProjectTypeChecker {
         let instant = self.standard_named_type(StandardType::Instant, Vec::new());
         let timer_event = event(self, none);
 
-        let failure_type = self.standard_generic_type(G::SelectFailures);
+        let failure_type = self.standard_generic_type(G::WaitFailures);
         let any_event =
-            self.standard_named_type(StandardType::SelectEvent, vec![value, failure_type]);
+            self.standard_named_type(StandardType::WaitEvent, vec![value, failure_type]);
         let events = self.builtin_type_with_arguments("List", vec![any_event]);
 
         let mut contracts = vec![
             (
-                F::SelectReceive,
+                F::WaitReceive,
                 vec![receiver, receive_mapping],
                 receive_event,
                 none,
                 needs_row,
             ),
             (
-                F::SelectWatch,
+                F::WaitWatch,
                 vec![subscription, receive_mapping],
                 receive_event,
                 none,
                 needs_row,
             ),
             (
-                F::SelectInbox,
+                F::WaitInbox,
                 vec![inbox, source_mapping],
                 inbox_event,
                 none,
                 needs_row,
             ),
             (
-                F::SelectTask,
+                F::WaitTask,
                 vec![task, source_mapping],
                 task_event,
                 none,
                 needs_row,
             ),
             (
-                F::SelectFirst,
+                F::WaitFirst,
                 vec![events],
                 value,
                 map_failures,
                 NeedsRowId::new(0),
             ),
         ];
-        for (function, limit) in [(F::SelectAfter, duration), (F::SelectAt, instant)] {
+        for (function, limit) in [(F::WaitAfter, duration), (F::WaitAt, instant)] {
             let clock = self.clock_need(function, Vec::new());
             contracts.push((function, vec![limit, value], timer_event, none, clock));
         }
@@ -150,7 +150,7 @@ impl ProjectTypeChecker {
         })
     }
 
-    /// `T4345`: `Select.first([])` can never return, so an empty list literal is
+    /// `T4345`: `Wait.first([])` can never return, so an empty list literal is
     /// rejected where it is written. An empty list built at run time defects.
     pub(super) fn reject_empty_event_list(
         &mut self,
@@ -158,11 +158,11 @@ impl ProjectTypeChecker {
         callee_symbol: Option<SymbolId>,
         arguments: &[CallArgument],
     ) {
-        let selects = callee_symbol.is_some_and(|symbol| {
+        let waits_first = callee_symbol.is_some_and(|symbol| {
             self.resolved.standard_symbol(symbol)
-                == Some(StandardSymbol::Function(StandardFunction::SelectFirst))
+                == Some(StandardSymbol::Function(StandardFunction::WaitFirst))
         });
-        if let (true, [argument]) = (selects, arguments)
+        if let (true, [argument]) = (waits_first, arguments)
             && let ModuleExpression::List {
                 elements, range, ..
             } = &argument.value
@@ -172,7 +172,7 @@ impl ProjectTypeChecker {
                 module_id,
                 "T4345",
                 *range,
-                "`Select.first` needs at least one event; an empty list would wait forever"
+                "`Wait.first` needs at least one event; an empty list would wait forever"
                     .to_owned(),
             );
         }

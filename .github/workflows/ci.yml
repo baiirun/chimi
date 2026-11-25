@@ -128,6 +128,29 @@ jobs:
             ${{ runner.temp }}/fuzz/slow-unit-*
           if-no-files-found: ignore
 
+  # The editor grammar is written by hand next to the compiler's parser, so
+  # it falls behind silently when the syntax grows. This fails when any .chimi
+  # file the compiler parses does not parse in the grammar.
+  grammar:
+    name: editor grammar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Pinned: src/parser.c is generated, and the check regenerates it and
+      # compares, so CI must run the version that generated it.
+      - name: Install tree-sitter
+        run: npm install --global tree-sitter-cli@0.25.6
+      - name: Build chimi
+        run: cargo build --quiet -p chimi --bin chimi
+      - name: Check the grammar
+        run: scripts/check-grammar.sh
+
   program-outputs:
     name: program outputs (${{ matrix.os }})
     if: github.event_name == 'pull_request'

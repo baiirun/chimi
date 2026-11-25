@@ -11,7 +11,7 @@ pub(crate) enum StandardModule {
     Process,
     Supervisor,
     Clock,
-    Select,
+    Wait,
     Broadcast,
     Watch,
 }
@@ -29,7 +29,7 @@ impl StandardModule {
         Self::Process,
         Self::Supervisor,
         Self::Clock,
-        Self::Select,
+        Self::Wait,
         Self::Broadcast,
         Self::Watch,
     ];
@@ -47,7 +47,7 @@ impl StandardModule {
             Self::Process => "std/process",
             Self::Supervisor => "std/supervisor",
             Self::Clock => "std/clock",
-            Self::Select => "std/select",
+            Self::Wait => "std/wait",
             Self::Broadcast => "std/broadcast",
             Self::Watch => "std/watch",
         }
@@ -127,9 +127,9 @@ pub(crate) enum StandardType {
     Timestamp,
     /// `std/task.Timeout`: the expected failure of `Task.timeout` and `Task.deadline`.
     Timeout,
-    /// `std/select.Event<A, F>`: one wait that produces an `A` or fails with `F`;
+    /// `std/wait.Event<A, F>`: one wait that produces an `A` or fails with `F`;
     /// task-local.
-    SelectEvent,
+    WaitEvent,
     /// `std/process.Monitor`: a watch one incarnation set on another.
     ProcessMonitor,
     /// `std/process.Down`: how a monitored incarnation ended.
@@ -261,7 +261,7 @@ impl StandardType {
             Self::Instant => "Instant",
             Self::Timestamp => "Timestamp",
             Self::Timeout => "Timeout",
-            Self::SelectEvent => "Event",
+            Self::WaitEvent => "Event",
             Self::ProcessMonitor => "Monitor",
             Self::ProcessDown => "Down",
             Self::ProcessHandoffSpec => "HandoffSpec",
@@ -320,7 +320,7 @@ impl StandardType {
             Self::TestRecorder => StandardProperties::Opaque("a `Test.Recorder`"),
             Self::TestScript => StandardProperties::Opaque("a `Test.Script`"),
             Self::TestMailbox => StandardProperties::Opaque("a `Test.Mailbox`"),
-            Self::SelectEvent => StandardProperties::Opaque("a `Select.Event`"),
+            Self::WaitEvent => StandardProperties::Opaque("a `Wait.Event`"),
             Self::ChannelSender
             | Self::ChannelReceiver
             | Self::ChannelCompletion
@@ -494,15 +494,15 @@ pub(crate) enum StandardFunction {
     TaskResults,
     /// `Task.race(operations)`: the first outcome after the others drain.
     TaskRace,
-    // `std/select`, in `CHIMI_INTRINSIC_SELECT_*` order. Building an event
-    // parks nothing and consumes nothing; `Select.first` waits.
-    SelectReceive,
-    SelectInbox,
-    SelectTask,
-    /// Measures its `Duration` from the start of the `Select.first` call.
-    SelectAfter,
-    SelectAt,
-    SelectFirst,
+    // `std/wait`, in `CHIMI_INTRINSIC_SELECT_*` order. Building an event
+    // parks nothing and consumes nothing; `Wait.first` waits.
+    WaitReceive,
+    WaitInbox,
+    WaitTask,
+    /// Measures its `Duration` from the start of the `Wait.first` call.
+    WaitAfter,
+    WaitAt,
+    WaitFirst,
     // The channel variants (G29), in `CHIMI_INTRINSIC_*` order.
     /// `Channel.add_receiver(receiver)`: another receiver of the same queue.
     ChannelAddReceiver,
@@ -514,7 +514,7 @@ pub(crate) enum StandardFunction {
     WatchPublish,
     WatchSubscribe,
     WatchReceive,
-    SelectWatch,
+    WaitWatch,
     ProcessSpec,
     ProcessRegister,
     ProcessReceive,
@@ -770,12 +770,12 @@ impl StandardFunction {
         Self::TaskAll,
         Self::TaskResults,
         Self::TaskRace,
-        Self::SelectReceive,
-        Self::SelectInbox,
-        Self::SelectTask,
-        Self::SelectAfter,
-        Self::SelectAt,
-        Self::SelectFirst,
+        Self::WaitReceive,
+        Self::WaitInbox,
+        Self::WaitTask,
+        Self::WaitAfter,
+        Self::WaitAt,
+        Self::WaitFirst,
         Self::ChannelAddReceiver,
         Self::BroadcastBounded,
         Self::BroadcastPublish,
@@ -784,7 +784,7 @@ impl StandardFunction {
         Self::WatchPublish,
         Self::WatchSubscribe,
         Self::WatchReceive,
-        Self::SelectWatch,
+        Self::WaitWatch,
     ];
 
     pub(crate) const fn module(self) -> Option<StandardModule> {
@@ -797,7 +797,7 @@ impl StandardFunction {
             | Self::WatchSubscribe
             | Self::WatchReceive => Some(StandardModule::Watch),
             Self::ChannelAddReceiver => Some(StandardModule::Channel),
-            Self::SelectWatch => Some(StandardModule::Select),
+            Self::WaitWatch => Some(StandardModule::Wait),
             Self::ProcessSpec
             | Self::ProcessRegister
             | Self::ProcessReceive
@@ -834,12 +834,12 @@ impl StandardFunction {
             | Self::ClockTimestampBetween
             | Self::ClockStartingAt => Some(StandardModule::Clock),
             Self::IoPath => Some(StandardModule::Io),
-            Self::SelectReceive
-            | Self::SelectInbox
-            | Self::SelectTask
-            | Self::SelectAfter
-            | Self::SelectAt
-            | Self::SelectFirst => Some(StandardModule::Select),
+            Self::WaitReceive
+            | Self::WaitInbox
+            | Self::WaitTask
+            | Self::WaitAfter
+            | Self::WaitAt
+            | Self::WaitFirst => Some(StandardModule::Wait),
             Self::TaskStart
             | Self::TaskResult
             | Self::TaskCancel
@@ -1101,19 +1101,19 @@ impl StandardFunction {
             Self::TaskAll => "all",
             Self::TaskResults => "results",
             Self::TaskRace => "race",
-            Self::SelectReceive => "receive",
-            Self::SelectInbox => "inbox",
-            Self::SelectTask => "task",
-            Self::SelectAfter => "after",
-            Self::SelectAt => "at",
-            Self::SelectFirst => "first",
+            Self::WaitReceive => "receive",
+            Self::WaitInbox => "inbox",
+            Self::WaitTask => "task",
+            Self::WaitAfter => "after",
+            Self::WaitAt => "at",
+            Self::WaitFirst => "first",
             Self::ChannelAddReceiver => "add_receiver",
             Self::BroadcastBounded => "bounded",
             Self::BroadcastPublish | Self::WatchPublish => "publish",
             Self::BroadcastSubscribe | Self::WatchSubscribe => "subscribe",
             Self::WatchStartingWith => "starting_with",
             Self::WatchReceive => "receive",
-            Self::SelectWatch => "watch",
+            Self::WaitWatch => "watch",
             Self::DebugCrash => "crash",
             Self::OptionUnwrapOrFail => "unwrap_or_fail",
             Self::TextConcat => "concat",
@@ -1264,23 +1264,23 @@ impl StandardFunction {
         )
     }
 
-    /// The `std/select` functions. They run only on the native backend, where
+    /// The `std/wait` functions. They run only on the native backend, where
     /// the scheduler can wait on several sources; the interpreter has no task,
     /// channel, or timer runtime and defects at each of them.
-    pub(crate) const fn is_select_operation(self) -> bool {
+    pub(crate) const fn is_wait_operation(self) -> bool {
         matches!(
             self,
-            Self::SelectReceive
-                | Self::SelectInbox
-                | Self::SelectTask
-                | Self::SelectAfter
-                | Self::SelectAt
-                | Self::SelectFirst
-                | Self::SelectWatch
+            Self::WaitReceive
+                | Self::WaitInbox
+                | Self::WaitTask
+                | Self::WaitAfter
+                | Self::WaitAt
+                | Self::WaitFirst
+                | Self::WaitWatch
         )
     }
 
-    /// The channel variants (G29) outside `std/select`. Like the bounded
+    /// The channel variants (G29) outside `std/wait`. Like the bounded
     /// channel, they run only on the native backend.
     pub(crate) const fn is_channel_variant(self) -> bool {
         matches!(
@@ -1321,7 +1321,7 @@ impl StandardFunction {
                 | Self::SignalHostInstall
                 | Self::SignalHostWait
         ) || self.requires_process_runtime()
-            || self.is_select_operation()
+            || self.is_wait_operation()
             || self.is_channel_variant()
     }
 
@@ -1615,7 +1615,7 @@ impl StandardConstructor {
             | StandardType::Metrics
             | StandardType::Instant
             | StandardType::Timestamp
-            | StandardType::SelectEvent
+            | StandardType::WaitEvent
             | StandardType::ProcessMonitor
             | StandardType::ProcessHandoffSpec => None,
             // Written type-qualified, `Timeout.TimedOut`, as the spec does.
@@ -1825,14 +1825,14 @@ pub(crate) enum StandardGeneric {
     /// `std/result.Result<T, E>`'s parameters, which `Ok` and `Err` take.
     ResultValue,
     ResultError,
-    /// The `std/select` functions share these, as the timeouts do: `A`, the
+    /// The `std/wait` functions share these, as the timeouts do: `A`, the
     /// event's value; `F`, its mapping function's failures; `R`, that
     /// function's needs; `T`, what the source delivers; `E`, a task's failures.
-    SelectValue,
-    SelectFailures,
-    SelectNeeds,
-    SelectSource,
-    SelectTaskFailures,
+    WaitValue,
+    WaitFailures,
+    WaitNeeds,
+    WaitSource,
+    WaitTaskFailures,
     ProcessOwnAddressMessage,
     ProcessQueuedMessage,
     ProcessCapacityMessage,
@@ -1882,11 +1882,11 @@ impl StandardGeneric {
         Self::TimeoutNeeds,
         Self::ResultValue,
         Self::ResultError,
-        Self::SelectValue,
-        Self::SelectFailures,
-        Self::SelectNeeds,
-        Self::SelectSource,
-        Self::SelectTaskFailures,
+        Self::WaitValue,
+        Self::WaitFailures,
+        Self::WaitNeeds,
+        Self::WaitSource,
+        Self::WaitTaskFailures,
         Self::ProcessOwnAddressMessage,
         Self::ProcessQueuedMessage,
         Self::ProcessCapacityMessage,
@@ -1946,11 +1946,11 @@ impl StandardGeneric {
             Self::TimeoutNeeds => "R",
             Self::ResultValue => "T",
             Self::ResultError => "E",
-            Self::SelectValue => "A",
-            Self::SelectFailures => "F",
-            Self::SelectNeeds => "R",
-            Self::SelectSource => "T",
-            Self::SelectTaskFailures => "E",
+            Self::WaitValue => "A",
+            Self::WaitFailures => "F",
+            Self::WaitNeeds => "R",
+            Self::WaitSource => "T",
+            Self::WaitTaskFailures => "E",
         }
     }
 
@@ -1962,15 +1962,15 @@ impl StandardGeneric {
             | Self::ProcessRegisterFailures
             | Self::SupervisorProcessFailures
             | Self::SupervisorStartProcessFailures
-            | Self::SelectFailures
-            | Self::SelectTaskFailures
+            | Self::WaitFailures
+            | Self::WaitTaskFailures
             | Self::ProcessHandoffSpecFailures
             | Self::SupervisorStartHandoffFailures => StandardGenericKind::FailureSet,
             Self::FileNeeds
             | Self::ProcessSpecNeeds
             | Self::ProcessHandoffSpecNeeds
             | Self::TimeoutNeeds
-            | Self::SelectNeeds => StandardGenericKind::NeedsRow,
+            | Self::WaitNeeds => StandardGenericKind::NeedsRow,
             _ => StandardGenericKind::Value,
         }
     }
