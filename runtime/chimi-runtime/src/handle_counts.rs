@@ -254,6 +254,24 @@ mod tests {
     }
 
     #[test]
+    fn removal_shifts_a_run_back_across_the_end() {
+        let mut counts = HandleCounts::new();
+        assert!(counts.retain(1));
+        let next_to_last = counts.capacity() - 2;
+        // Three keys whose home is the next-to-last entry, so the third
+        // wraps to entry 0; removing the first shifts the other two back.
+        let run: Vec<u64> = (2..u64::MAX).filter(|key| counts.home(*key) == next_to_last).take(3).collect();
+        assert!(counts.drop(1));
+        for key in &run {
+            assert!(counts.retain(*key));
+        }
+        for key in &run {
+            assert!(counts.drop(*key), "key {key} was lost");
+        }
+        assert!(counts.is_empty());
+    }
+
+    #[test]
     fn a_reset_forgets_every_count_and_keeps_the_room() {
         let mut counts = HandleCounts::new();
         for key in 1..=100 {
