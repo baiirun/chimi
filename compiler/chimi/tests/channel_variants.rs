@@ -701,6 +701,50 @@ fn an_event_cannot_outlive_its_receiver() {
     assert!(rebound.is_empty(), "a receiver rebound in its own task: {rebound:?}");
 }
 
+// An event keeps its link to the receiver when it comes out of a helper
+// function, leaves a loop through `break`, or is taken out of a tuple by a
+// pattern, so each use after the receiver left is `T4241` (CHI-241). Used
+// before the receiver leaves, each form stays valid.
+#[test]
+fn an_event_stays_tied_to_its_receiver_through_calls_breaks_and_patterns() {
+    let escapes = |make: &str, moved: &str, after_move: bool| {
+        let (before, after) = if after_move {
+            ("", "  Select.first([event])\n")
+        } else {
+            ("  let answer = Select.first([event])\n", "  answer\n")
+        };
+        type_codes(&format!(
+            "import std/select.{{Event}}\n\
+             fn event_of(receiver: Receiver<Int>) -> Event<Int, ChannelError> {{\n\
+             \x20 Select.receive(receiver, value)\n\
+             }}\n\
+             pub fn main() -> Int {{\n\
+             \x20 let jobs = Channel.bounded(1)\n\
+             \x20 Channel.send(jobs.sender, 4)\n\
+             \x20 let receiver = jobs.receiver\n\
+             {make}\
+             {before}\
+             \x20 let worker = Task.start(fn() {{ drain({moved}) }})\n\
+             {after}\
+             }}\n"
+        ))
+    };
+    let helper = "  let event = event_of(receiver)\n";
+    let broken = "  let event = loop n = 0 {\n    break Select.receive(receiver, value)\n  }\n";
+    let taken_apart = "  let (event, _) = (Select.receive(receiver, value), 1)\n";
+    let through_a_field = "  let event = event_of(jobs.receiver)\n";
+    for (form, make, moved) in [
+        ("helper", helper, "receiver"),
+        ("break", broken, "receiver"),
+        ("pattern", taken_apart, "receiver"),
+        ("field", through_a_field, "jobs.receiver"),
+    ] {
+        assert_eq!(escapes(make, moved, true), ["T4241"], "{form}, used after the move");
+        let used_first = escapes(make, moved, false);
+        assert!(used_first.is_empty(), "{form}, used before the move: {used_first:?}");
+    }
+}
+
 // ----- Interpreter --------------------------------------------------------------
 
 #[test]

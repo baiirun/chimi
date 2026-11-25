@@ -228,8 +228,15 @@ struct CapabilityChecker<'a> {
     spec_needs: BTreeSet<String>,
     next_summaries: SpecNeedSummaries,
     /// For each enclosing loop of the function being evaluated, innermost last, what
-    /// its `break` values carry: the loop's value carries them.
-    loop_breaks: Vec<BTreeSet<SymbolId>>,
+    /// its `break` values carry and borrow: the loop's value carries and borrows them.
+    loop_breaks: Vec<LoopBreaks>,
+}
+
+/// The bindings the `break` values of one loop carry and borrow.
+#[derive(Default)]
+struct LoopBreaks {
+    carries: BTreeSet<SymbolId>,
+    borrows: BTreeSet<SymbolId>,
 }
 
 impl CapabilityChecker<'_> {
@@ -558,6 +565,19 @@ impl CapabilityChecker<'_> {
                         }
                     }
                 }
+                // A call that may return an event, such as a helper that wraps
+                // `Select.receive`, may read from any receiver it was given.
+                if standard.is_none()
+                    && result_type.is_some_and(|result| self.typed.type_may_hold_select_event(result))
+                {
+                    for (argument, value) in &arguments {
+                        result.borrows.extend(value.carries.iter().copied());
+                        result.borrows.extend(value.borrows.iter().copied());
+                        result
+                            .borrows
+                            .extend(self.field_root_binding(module_id, argument, environment));
+                    }
+                }
                 if let Some(StandardFunction::SelectReceive | StandardFunction::SelectWatch) =
                     standard
                     && let Some((argument, receiver)) = arguments.first()
@@ -711,20 +731,23 @@ impl CapabilityChecker<'_> {
                 ..
             } => {
                 let mut loop_value = self.type_value(module_id, expression);
-                loop_value.carries =
-                    self.evaluate_loop(module_id, *state_id, initial, body, environment);
+                let breaks = self.evaluate_loop(module_id, *state_id, initial, body, environment);
+                loop_value.carries = breaks.carries;
+                loop_value.borrows = breaks.borrows;
                 loop_value
             }
             ModuleExpression::Break { value, .. } => {
                 if let Some(value) = value {
-                    let carries = self.evaluate(module_id, value, environment).carries;
+                    let mut value = self.evaluate(module_id, value, environment);
                     if let Some(breaks) = self.loop_breaks.last_mut() {
-                        breaks.extend(carries);
+                        breaks.carries.append(&mut value.carries);
+                        breaks.borrows.append(&mut value.borrows);
                     }
                 }
                 FlowValue::invalid()
             }
             ModuleExpression::Case { subjects, arms, .. } => {
+                let mut subject_borrows = Vec::new();
                 for subject in subjects {
                     // A subject built here, not read from a binding, is taken apart by
                     // the patterns, as by a destructuring `let`: they take what it
@@ -738,13 +761,20 @@ impl CapabilityChecker<'_> {
                             environment,
                         );
                     }
+                    subject_borrows.push(value.borrows);
                 }
                 let mut values = Vec::new();
                 let mut arm_environments = Vec::new();
                 for arm in arms {
                     let mut arm_environment = environment.clone();
-                    for pattern in &arm.patterns {
-                        self.add_pattern_bindings(module_id, pattern, &mut arm_environment);
+                    for (index, pattern) in arm.patterns.iter().enumerate() {
+                        let borrows = subject_borrows.get(index).cloned().unwrap_or_default();
+                        self.add_pattern_bindings(
+                            module_id,
+                            pattern,
+                            &borrows,
+                            &mut arm_environment,
+                        );
                     }
                     if let Some(guard) = &arm.guard {
                         self.evaluate(module_id, guard, &mut arm_environment);
@@ -1202,10 +1232,14 @@ impl CapabilityChecker<'_> {
         }
     }
 
+    /// Binds each name in `pattern`. A name whose type may hold a `Select`
+    /// event borrows what the subject borrows, since the event may be the one
+    /// the subject held.
     fn add_pattern_bindings(
         &self,
         module_id: ModuleId,
         pattern: &Pattern,
+        subject_borrows: &BTreeSet<SymbolId>,
         environment: &mut FlowEnvironment,
     ) {
         if let Pattern::Binding {
@@ -1230,17 +1264,21 @@ impl CapabilityChecker<'_> {
                 .pattern_binding_types
                 .get(&(module_id, *semantic_id))
         {
+            let mut value = FlowValue::from_type(self.typed, *type_id);
+            if self.typed.type_may_hold_select_event(*type_id) {
+                value.borrows = subject_borrows.clone();
+            }
             environment.insert(
                 symbol,
                 FlowBinding {
-                    value: FlowValue::from_type(self.typed, *type_id),
+                    value,
                     ownership: OwnershipState::Available,
                     requirement: false,
                 },
             );
         }
         for child in pattern.children() {
-            self.add_pattern_bindings(module_id, child, environment);
+            self.add_pattern_bindings(module_id, child, subject_borrows, environment);
         }
     }
 
@@ -1399,7 +1437,7 @@ impl CapabilityChecker<'_> {
         initial: &ModuleExpression,
         body: &ModuleExpression,
         environment: &mut FlowEnvironment,
-    ) -> BTreeSet<SymbolId> {
+    ) -> LoopBreaks {
         let initial_value = self.evaluate(module_id, initial, environment);
         let state = self
             .typed
@@ -1419,7 +1457,7 @@ impl CapabilityChecker<'_> {
         if let Some(state) = state {
             self.bind_owner(state, initial_value, initial.range(), &mut pass);
         }
-        self.loop_breaks.push(BTreeSet::new());
+        self.loop_breaks.push(LoopBreaks::default());
         self.evaluate(module_id, body, &mut pass);
         let breaks = self.loop_breaks.pop().unwrap_or_default();
         let mut reused = environment
