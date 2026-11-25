@@ -96,7 +96,7 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   returns.
 - **Acquire.** While `acquire` runs, cancellation from outside MUST be held
   off except at a request that waits or may wait (a receive, a send, a sleep,
-  an IO wait, waiting on a task, a select): there it MUST still be delivered,
+  an IO wait, waiting on a task, a `Wait.first`): there it MUST still be delivered,
   because nothing is acquired until the wait ends. Once acquire stops waiting,
   the cancellation MUST wait until it returns. If it succeeded, `use` MUST NOT
   run, `release` MUST run, and the cancellation takes effect after it (CHI-268).
@@ -127,7 +127,7 @@ pub native fn scoped<H, T, EA, ER, EU, RA, RR, RU>(
   drains the body before it cancels it
   ([application lifecycle](application-lifecycle.md), G22): `use` and any
   release keep running, and so do the body's children. A `Process.receive`
-  or an inbox select, inside a release or not, returns the accepted messages
+  or an inbox wait, inside a release or not, returns the accepted messages
   and then answers the stop with `Cancelled`. `shutdown_within` still bounds
   all of it: at the deadline the body and every descendant still running end
   at once.

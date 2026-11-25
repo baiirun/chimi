@@ -111,7 +111,7 @@ typedef enum { HOST_PROCESS_UTF8_LINES, HOST_WRITE_LINE, HOST_WRITE_ERROR,
                HOST_RANDOM_NEXT_INT,
                HOST_CLOCK_NOW, HOST_CLOCK_TIMESTAMP, HOST_CLOCK_SLEEP_UNTIL,
                HOST_CLOCK_SHIFTED_TIMESTAMP,
-               /* A Select timer on a user Clock: its `inner` is the provider's
+               /* A Wait timer on a user Clock: its `inner` is the provider's
                   sleep_until, called with the Instant in `shift`. */
                HOST_SELECT_SLEEP } HostFunction;
 /* CONTROL_BREAK carries the target loop's state symbol in `node` and its value in `value`.
@@ -10845,7 +10845,7 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
   return success(list_from_values(values, count));
 }
 
-/* std/select (time-and-outcomes.md, "Choosing among events"). An Event is a record
+/* std/wait (time-and-outcomes.md, "Choosing among events"). An Event is a record
    that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
    receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
    function (the value itself for a timer), and `clock` the provider a timer
@@ -10881,7 +10881,7 @@ static bool on_execution_clock(ChimiValue *provider) {
 }
 
 /* The deadline of a timer event and the `now` it is measured against: the
-   execution clock's (read once per Select.first) or the event's own provider's.
+   execution clock's (read once per Wait.first) or the event's own provider's.
    NULL on success. */
 static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, int64_t *now_io,
                                     int64_t *deadline, uint64_t span, uint32_t call_node,
@@ -10904,7 +10904,7 @@ static ChimiControl *timer_deadline(ChimiRuntime *runtime, ChimiValue *event, in
   }
   if (__builtin_add_overflow(now, source->as.integer, deadline)) {
     char text[32]; duration_text(source->as.integer, text);
-    return defect(numeric_message("`Select.after(%s)` overflows the Instant range", text), call_node);
+    return defect(numeric_message("`Wait.after(%s)` overflows the Instant range", text), call_node);
   }
   return NULL;
 }
@@ -10980,14 +10980,14 @@ static ChimiControl *select_map(ChimiRuntime *runtime, ChimiValue *event, ChimiC
                 new_environment(0));
 }
 
-/* Select.first (time-and-outcomes.md, "Semantics of `Select.first`"): one
+/* Wait.first (time-and-outcomes.md, "Semantics of `Wait.first`"): one
    CHIMI_REQUEST_SELECT over every event in list order, reissued after each wake,
    then the committed event. A user-Clock timer is a child running that clock's
    `sleep_until`, so it is a task source to the scheduler. */
 static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uint64_t span,
                                   uint32_t call_node, ChimiEnvironment *environment) {
   uint32_t count = list_length(events);
-  if (count == 0) return defect("`Select.first` needs at least one event", call_node);
+  if (count == 0) return defect("`Wait.first` needs at least one event", call_node);
   ChimiSelectSource *sources = calloc(count, sizeof(*sources));
   bool *user_timer = calloc(count, sizeof(*user_timer));
   if (!sources || !user_timer) exhausted_memory();
@@ -11034,7 +11034,7 @@ static ChimiControl *select_first(ChimiRuntime *runtime, ChimiValue *events, uin
     if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) { stopped = cancelled(); break; }
     if (request.status == CHIMI_RESPONSE_PENDING) continue;
     if (request.status != CHIMI_RESPONSE_OK || request.value < 0 || request.value >= count) {
-      stopped = defect("Select.first scheduler request failed", call_node);
+      stopped = defect("Wait.first scheduler request failed", call_node);
       break;
     }
     committed = request.value;
@@ -12968,7 +12968,7 @@ static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
   static const char *const clock_names[] = {
     "clock_advanced", "clock_timer_started", "clock_timer_fired",
     "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
-    "clock_select_parked", "clock_select_committed", "clock_signal_received",
+    "clock_wait_parked", "clock_wait_committed", "clock_signal_received",
   };
   if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
       event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
@@ -13091,7 +13091,7 @@ static const char *waited_operation(uint32_t request_kind) {
     case CHIMI_REQUEST_TASK_DRAIN: return "draining a Task combinator's children";
     case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
     case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
-    case CHIMI_REQUEST_SELECT: return "Select.first";
+    case CHIMI_REQUEST_SELECT: return "Wait.first";
     case CHIMI_REQUEST_SIGNAL_WAIT: return "Signal.next";
     default: return "a scheduler request";
   }
