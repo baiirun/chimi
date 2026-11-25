@@ -1,0 +1,11 @@
+# mutation run at 81708bd64b1cbecdb405fe2840d14e7f9aadb72d
+# handle_count_mutations.py: 7 mutants against runtime/chimi-fiber
+BASELINE ok  [lib] (10s)
+KILLED       a drop never reports the last reference [lib] (6s)
+KILLED       a drop reports zero one reference early [lib] (6s)
+KILLED       a queue keeps an earlier run's keys [lib] (8s)
+KILLED       a task key reads as a channel [lib] (7s)
+KILLED       a request does not carry the releases its fiber dropped [lib] (9s)
+KILLED       an idle carrier does not apply its queued releases [lib] (9s)
+KILLED       a run does not start the counts afresh [lib] (8s)
+# result: every mutant killed

@@ -36,9 +36,11 @@ const SHARED: &[&str] = &[
     "static_area",
     "shared_values",
     "constant_values",
-    // Task and channel handle counts, one locked table for every carrier
-    // (each carrier queues its own releases).
+    // Native handle counts, one locked table for every carrier, and whether
+    // this execution counted any handle (an atomic flag, set once and
+    // cleared before the next run).
     "handle_table",
+    "handles_counted",
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handles",
     "binding_handle_count",

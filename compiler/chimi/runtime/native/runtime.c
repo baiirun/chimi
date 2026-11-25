@@ -79,6 +79,9 @@ __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; 
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
 __attribute__((weak)) uint64_t chimi_fiber_current_incarnation(void) { return 0; }
+/* Without the fiber archive no channel or task value exists to count. */
+__attribute__((weak)) void chimi_fiber_handle_retain(uint64_t key) { (void)key; }
+__attribute__((weak)) void chimi_fiber_handle_drop(uint64_t key) { (void)key; }
 /* Without the fiber archive no time passes. */
 __attribute__((weak)) int64_t chimi_fiber_now(void) { return 0; }
 /* Program data from a build defines the trace's module list; C fixtures that
@@ -650,11 +653,6 @@ typedef struct {
   /* fs_read's buffer: read(2) fills it and the bytes are copied out before any
      park. NULL until the first read. */
   char *fs_read_chunk;
-  /* Handle keys whose count reached zero on this carrier, waiting for the next
-     scheduler request of a fiber running here (flush_channel_releases). */
-  uint64_t *released_handles;
-  size_t released_handle_count;
-  size_t released_handle_capacity;
   /* What the outermost reclaiming scopes that ended on this carrier
      allocated and kept (end_measured_allocation_scope), summed in the memory
      report. */
@@ -682,7 +680,7 @@ static Carrier carrier_first = {.fiber = {.heap = &main_heap}};
 #ifdef CHIMI_CARRIER_SIMULATION
 /* A test build (parallel-scheduler.md, "Runtime state by owner"): every fiber
    resumes on the other of two carriers from the one it parked on, each with its
-   own scratch, caches, counters and release queue, the way a fiber migrates
+   own scratch, caches, and counters, the way a fiber migrates
    once N carriers run. It finds a pointer into a carrier kept across a park and
    a field filed as carrier state that must follow the fiber. Since an
    allocation is often freed on the other carrier, it also exercises the
@@ -1163,42 +1161,35 @@ static void allocation_kind(void *value, AllocationKind kind) {
   header->kind = kind;
 }
 
-/* Channel release (docs/architecture/supervised-process-runtime.md, "Channel
-   release"). Each live Sender, Receiver, or Completion value counts as one
-   reference to its channel, in whichever heap or fragment it is allocated, so a
+/* Handle counts (docs/architecture/supervised-process-runtime.md, "Channel
+   release"). Each live Sender, Receiver, Completion or Task value counts as one
+   reference to its channel or task, and each live native handle value as one
+   reference to its handle, in whichever heap or fragment it is allocated, so a
    copy in transit (a message, a task's captures or result) counts while the
-   scheduler holds it. channel_capability_value creates endpoint values,
-   copy_forward is the only thing that copies them, and release_allocation the only
-   thing that frees them; those three keep the counts. At zero no value can name
-   the channel again, so its id waits in the carrier's `released_handles` for the next
-   scheduler request of any task (flush_channel_releases). A count can reach zero
-   inside a collection or a scheduler release hook, where no request may be issued.
-   The table is an open-addressing map keyed by channel id; ids are never 0.
+   scheduler holds it. channel_capability_value, task_value and
+   native_handle_value create these values, copy_forward is the only thing that
+   copies them, and release_allocation the only thing that frees them; those
+   keep the counts (counted_handle_retain, counted_handle_drop).
 
-   One table serves every carrier (parallel-scheduler.md, "Handle counts"). A
-   handle copied on one carrier can be freed on another, so only the total is
-   meaningful, and a retain must be counted before the copy can reach another
-   carrier: retain and drop take the table's lock, and a copy is counted when it
-   is made, before any request can move it. A key that reaches zero is queued on
-   the carrier that dropped it, outside the lock.
-
-   Task handles are counted in the same table, under their task id with
-   TASK_HANDLE_KEY set (channel and task ids stay far below that bit): every live
-   VALUE_TASK value is one reference, task_value creates them, and the same copier
-   and freers keep the counts. At zero the scheduler is told with
-   CHIMI_REQUEST_TASK_RELEASE, and it drops the task's record once the task has
-   ended. A raw task id held without a value (a select's hidden timer, a
+   Channel and task keys are counted by the scheduler (chimi_fiber_handle_retain
+   in chimi_fiber.h): the channel id, or the task id with CHIMI_TASK_HANDLE_KEY
+   set. At zero no value can name the channel or task again, and the scheduler
+   releases it itself at its next chance on the dropping thread, so a count may
+   reach zero anywhere, inside a collection or a scheduler release hook
+   included. A raw task id held without a value (a select's hidden timer, a
    combinator's children) is safe because no collection runs inside one
    intrinsic, so the value it came from is still live.
 
    Native handles (sockets, listeners, TLS sessions, exec children and pipes)
-   are counted too, under NATIVE_HANDLE_KEY with their slot and generation, so
+   are counted here, under NATIVE_HANDLE_KEY with their slot and generation, so
    a handle that no value names any more is closed then, whichever end freed
    its last copy: a forced or discarded process, a task cancelled before it
    ran, or a collection (native_handle_unreferenced). An explicit close leaves
    the count alone, and the later zero finds a newer generation and does
-   nothing. */
-#define TASK_HANDLE_KEY (UINT64_C(1) << 63)
+   nothing. One table serves every carrier (parallel-scheduler.md, "Handle
+   counts"): a handle copied on one carrier can be freed on another, so only
+   the total is meaningful, and retain and drop take the table's lock. The
+   table is an open-addressing map keyed by handle key; keys are never 0. */
 #define NATIVE_HANDLE_KEY (UINT64_C(1) << 62)
 
 static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
@@ -1211,14 +1202,28 @@ typedef struct {
   pthread_mutex_t lock;
   ChannelEndpoints *slots;
   size_t capacity;
-  /* Written under `lock`; read without it only as the "any handle at all"
-     shortcut of the freers, whose own handle's retain happened before. */
+  /* Written under `lock`. */
   _Atomic size_t count;
 } HandleTable;
 static HandleTable handle_table = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
+/* Set at an execution's first retain of any counted handle, and kept until
+   the next execution starts (channel_endpoints_reset). It is one flag for
+   both tables, so the freers' shortcut below costs one load: every freed
+   allocation pays it. */
+static _Atomic bool handles_counted;
+
+/* False only while no value this execution made can be a counted handle, so
+   a freer may skip looking. A freer's own value was retained before it, so
+   that retain's store is visible here. */
 static bool handles_live(void) {
-  return atomic_load_explicit(&handle_table.count, memory_order_relaxed) != 0;
+  return atomic_load_explicit(&handles_counted, memory_order_relaxed);
+}
+
+static void note_handle_counted(void) {
+  /* A load first, so retains after the first do not write the shared line. */
+  if (!atomic_load_explicit(&handles_counted, memory_order_relaxed))
+    atomic_store_explicit(&handles_counted, true, memory_order_relaxed);
 }
 
 static bool is_channel_endpoint(const ChimiValue *value) {
@@ -1229,7 +1234,7 @@ static bool is_channel_endpoint(const ChimiValue *value) {
 /* The table key a counted value holds, or 0 for a value that is not counted. */
 static uint64_t counted_handle_key(const ChimiValue *value) {
   if (is_channel_endpoint(value)) return value->as.capability.channel;
-  if (value->kind == VALUE_TASK) return value->as.task | TASK_HANDLE_KEY;
+  if (value->kind == VALUE_TASK) return value->as.task | CHIMI_TASK_HANDLE_KEY;
   if (value->kind == VALUE_NATIVE_HANDLE)
     return native_handle_key(value->as.handle.slot, value->as.handle.generation);
   return 0;
@@ -1261,7 +1266,7 @@ static void handle_table_set_count(size_t count) {
   atomic_store_explicit(&handle_table.count, count, memory_order_relaxed);
 }
 
-static void channel_endpoint_retain(uint64_t channel) {
+static void native_handle_retain(uint64_t channel) {
   pthread_mutex_lock(&handle_table.lock);
   size_t count = atomic_load_explicit(&handle_table.count, memory_order_relaxed);
   if (2 * (count + 1) > handle_table.capacity) handle_table_grow();
@@ -1306,19 +1311,6 @@ static bool handle_table_drop(uint64_t channel) {
   return true;
 }
 
-/* Queues `key` for release on the carrier running now. */
-static void release_queue_push(uint64_t key) {
-  Carrier *here = carrier;
-  if (here->released_handle_count == here->released_handle_capacity) {
-    size_t capacity = here->released_handle_capacity ? here->released_handle_capacity * 2 : 16;
-    uint64_t *released = realloc(here->released_handles, capacity * sizeof(*released));
-    if (!released) exhausted_memory();
-    here->released_handles = released;
-    here->released_handle_capacity = capacity;
-  }
-  here->released_handles[here->released_handle_count++] = key;
-}
-
 /* handle_table_drop under the table's lock. */
 static bool handle_table_release(uint64_t channel) {
   pthread_mutex_lock(&handle_table.lock);
@@ -1327,33 +1319,44 @@ static bool handle_table_release(uint64_t channel) {
   return last;
 }
 
-/* A channel or task key at zero waits for the next scheduler request; a native
-   handle closes at once, since its release issues no request. */
-static void channel_endpoint_drop(uint64_t channel) {
-  if (!handle_table_release(channel)) return;
-  if ((channel & (TASK_HANDLE_KEY | NATIVE_HANDLE_KEY)) == NATIVE_HANDLE_KEY)
-    native_handle_unreferenced(channel);
-  else
-    release_queue_push(channel);
+static bool is_native_handle_key(uint64_t key) {
+  return (key & (CHIMI_TASK_HANDLE_KEY | NATIVE_HANDLE_KEY)) == NATIVE_HANDLE_KEY;
 }
 
-/* Each execution starts a new scheduler, whose channel ids start over. Runs
-   before the scheduler starts, so no fiber holds a handle on any carrier. */
+/* Counts one more live value naming `key`. */
+static void counted_handle_retain(uint64_t key) {
+  note_handle_counted();
+  if (is_native_handle_key(key)) native_handle_retain(key);
+  else chimi_fiber_handle_retain(key);
+}
+
+/* Counts one live value naming `key` fewer. A native handle no value names
+   any more closes at once; the scheduler releases a channel or task itself. */
+static void counted_handle_drop(uint64_t key) {
+  if (!is_native_handle_key(key)) {
+    chimi_fiber_handle_drop(key);
+    return;
+  }
+  if (handle_table_release(key)) native_handle_unreferenced(key);
+}
+
+/* Each execution starts a new scheduler, whose channel and task ids start over
+   (the scheduler clears its own counts). Runs before the scheduler starts, so
+   no fiber holds a handle on any carrier. */
 static void channel_endpoints_reset(void) {
   pthread_mutex_lock(&handle_table.lock);
   if (handle_table.slots)
     memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
   handle_table_set_count(0);
   pthread_mutex_unlock(&handle_table.lock);
-  for (size_t index = 0; index < carrier_count; ++index)
-    carrier_at(index)->released_handle_count = 0;
+  atomic_store_explicit(&handles_counted, false, memory_order_relaxed);
 }
 
 /* Frees one allocation that its area has already unlinked. */
 static void release_allocation(AllocationHeader *header) {
   if (handles_live() && header->kind == ALLOCATION_VALUE) {
     uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
-    if (key) channel_endpoint_drop(key);
+    if (key) counted_handle_drop(key);
   }
   if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
   if (header->area->role != AREA_STATIC) {
@@ -2168,7 +2171,7 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
       ++dead_count;
       if (handles_live() && header->kind == ALLOCATION_VALUE) {
         uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
-        if (key) channel_endpoint_drop(key);
+        if (key) counted_handle_drop(key);
       }
     }
   }
@@ -2437,7 +2440,7 @@ static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind
   }
   if (kind == ALLOCATION_VALUE) {
     uint64_t key = counted_handle_key(duplicate);
-    if (key) channel_endpoint_retain(key);
+    if (key) counted_handle_retain(key);
   }
   copy_table_insert(copy, pointer, duplicate);
   pointer_stack_push(&here->copy_pending, duplicate);
@@ -3178,14 +3181,14 @@ static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_valu
 static ChimiValue *task_value(uint64_t raw) {
   ChimiValue *v = new_value(VALUE_TASK);
   v->as.task = raw;
-  channel_endpoint_retain(raw | TASK_HANDLE_KEY);
+  counted_handle_retain(raw | CHIMI_TASK_HANDLE_KEY);
   return v;
 }
 static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
                                             uint64_t owner, uint64_t token) {
   ChimiValue *value = new_value(kind);
   value->as.capability = (RuntimeCapability){channel, owner, token};
-  channel_endpoint_retain(channel);
+  counted_handle_retain(channel);
   return value;
 }
 static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
@@ -3230,72 +3233,16 @@ static ChimiFiberCommand carrier_request(void *request) {
   return command;
 }
 
-/* Pops the last key `queue` holds as the release request that ends it; false
-   when the queue is empty. Only the queue's own carrier calls this, except in
-   the single-threaded simulation (carrier_release_take). */
-static bool release_queue_take(Carrier *queue, uint32_t *kind, uint64_t *id) {
-  if (!queue->released_handle_count) return false;
-  uint64_t key = queue->released_handles[--queue->released_handle_count];
-  *kind = key & TASK_HANDLE_KEY ? CHIMI_REQUEST_TASK_RELEASE : CHIMI_REQUEST_CHANNEL_RELEASE;
-  *id = key & ~TASK_HANDLE_KEY;
-  return true;
-}
-
-/* The next release the running carrier should issue: its own queue's. The
-   simulation runs both carriers' loops as one, on one thread, and that loop
-   is never idle while any fiber runs, so the carrier a fiber just left
-   could not drain its queue as a real idle carrier does. A fiber there also
-   takes the other carrier's queue, standing for that carrier's idle loop. */
-static bool carrier_release_take(uint32_t *kind, uint64_t *id) {
-  if (release_queue_take(carrier, kind, id)) return true;
-#ifdef CHIMI_CARRIER_SIMULATION
-  for (size_t index = 0; index < carrier_count; ++index)
-    if (release_queue_take(carrier_at(index), kind, id)) return true;
-#endif
-  return false;
-}
-
-/* Issues CHIMI_REQUEST_CHANNEL_RELEASE once for each channel whose last endpoint
-   value was freed, and CHIMI_REQUEST_TASK_RELEASE for each task whose last handle
-   was. The scheduler serves a request as soon as the task parks, so a release is
-   done even when the task resumes with CHIMI_FIBER_CANCEL. Only the running
-   carrier's queue is drained; a key left on another carrier is that carrier's
-   to drain, when one of its fibers requests or its loop idles
-   (take_carrier_release). */
-static ChimiFiberCommand flush_channel_releases(void) {
-  /* `carrier` is read again on every pass: the request below parks, and the
-     fiber may resume on another carrier. */
-  uint32_t kind;
-  uint64_t id;
-  while (carrier_release_take(&kind, &id)) {
-    ChimiSchedulerRequest request = {.kind = kind};
-    if (kind == CHIMI_REQUEST_TASK_RELEASE) request.task = id;
-    else request.channel = id;
-    if (carrier_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_FIBER_CANCEL;
-  }
-  return CHIMI_FIBER_RESUME;
-}
-
-/* The scheduler's take_release hook: it calls this on the host stack whenever
-   the carrier has no ready task, for the releases no fiber's request carried
-   (a count that reached zero inside a release hook, or one queued by a fiber
-   that then ended). */
-static bool take_carrier_release(void *context, uint32_t *kind, uint64_t *id) {
-  (void)context;
-  return carrier_release_take(kind, id);
-}
-
 /* Every scheduler request goes through here. A fiber resumes only by returning from
    its request, so restoring the caller's heap and allocation target here switches
    both on every resume: another fiber that ran meanwhile may have changed them, or
    overflowed its stack while a copy had the target set, leaving it pointing into an
    area that fiber's end destroyed. Each fiber entry starts with no target.
-   Pending channel releases go first; if the task is cancelled meanwhile, `request`
-   is not issued and keeps status CHIMI_RESPONSE_UNSET. */
+   The scheduler applies the channel and task releases this thread queued
+   before it serves `request` (chimi_fiber_handle_drop). */
 static ChimiFiberCommand scheduler_request(void *request) {
   FiberContext fiber = carrier->fiber;
-  ChimiFiberCommand command = flush_channel_releases();
-  if (command != CHIMI_FIBER_CANCEL) command = carrier_request(request);
+  ChimiFiberCommand command = carrier_request(request);
   carrier->fiber = fiber;
   return command;
 }
@@ -7811,7 +7758,7 @@ ChimiBindingValue *chimi_binding_make_handle(ChimiBindingCall *call, const Chimi
   value->as.handle.slot = slot;
   value->as.handle.generation = generation;
   value->as.handle.name = type->name;
-  channel_endpoint_retain(native_handle_key(slot, generation));
+  counted_handle_retain(native_handle_key(slot, generation));
   return binding_value(value);
 }
 
@@ -13339,7 +13286,6 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_channel_value = release_channel_word,
     .copy_channel_value = copy_channel_word,
     .release_task_context = release_task_context,
-    .take_release = take_carrier_release,
 #if CHIMI_PROCESS_KERNEL
     .release_message = release_message_word,
     .release_spec_context = release_spec_context_word,

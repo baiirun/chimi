@@ -114,8 +114,9 @@ function-local static, so new state gets an owner when it is added.
     A carrier takes 4,096 epochs from it at once (`take_mark_epoch`, step 3
     PR 6a): a loop pass collects, and one fetch-add per pass bounced the
     counter's cache line between carriers on every pass.
-  - The handle-count table (`handle_table`, "Handle counts" below). Its
-    release queue is carrier state (`released_handles`).
+  - The native handle-count table (`handle_table`, "Handle counts" below).
+    Channel and task counts, and their release queues, are the scheduler's
+    since CHI-308.
   - Tables whose ids travel inside values, each behind its own lock: open
     files (`fs_file_lock`), test logs (`test_log_lock`), process defects
     (`process_defect_lock`), and binding handles (`binding_handle_lock`). A
@@ -155,8 +156,7 @@ Rules for the steps that run more than one carrier:
   anything that can park, never after one from an address taken before.
 - No code keeps a pointer into the carrier across a scheduler request.
   `scheduler_request` reads the carrier again after it resumes and writes the
-  saved fiber context into whichever carrier that is. `flush_channel_releases`
-  parks in a loop, so it reads the shared queue again on every pass.
+  saved fiber context into whichever carrier that is.
 - Leaf code that never parks (the allocator, the collector, the copier) may
   read `carrier` once per call.
 - The memory counters cannot simply become per-carrier fields. An allocation
@@ -177,6 +177,20 @@ Rules for the steps that run more than one carrier:
   appends to the static area once carriers run.
 
 ## Handle counts
+
+Since CHI-308 the channel and task counts live in the scheduler
+(`runtime/chimi-fiber/src/handles.rs`, "Handle counts" in `chimi_fiber.h`).
+The host calls `chimi_fiber_handle_retain` and `chimi_fiber_handle_drop`
+where it used to call `channel_endpoint_retain` and `channel_endpoint_drop`. A
+key that reaches zero waits in a queue of the thread that dropped it, and the
+scheduler applies it before it serves the next request of a fiber on that
+thread, attributed to that fiber's task, or when the carrier has nothing
+ready. That replaces the release requests the C runtime issued itself before
+each request (`flush_channel_releases`) and the `take_release` hook (fiber
+ABI 32). Only native handle keys are still counted in `runtime.c`'s
+`handle_table`, until handles move (CHI-309). The rest of this section is the
+design as step 2 landed it; the rules about when a retain is counted, and why
+one table rather than per-carrier counts, still hold.
 
 Every live Sender, Receiver, Completion and Task value counts as one reference
 to its channel or task (`runtime.c`, "Channel release"). A handle copied on

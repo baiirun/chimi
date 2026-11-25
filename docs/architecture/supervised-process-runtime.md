@@ -676,17 +676,18 @@ list names the test that fails when it is broken.
   one reference to its channel, wherever it is allocated: in any owner heap,
   or in a fragment in transit (a queued or parked message, a task's
   captures, a task's result), because endpoints move between tasks.
-  `runtime.c` keeps a count per channel id. Creating an endpoint value and
-  copying one (`copy_forward`, the only copier) add one; freeing one in
-  `release_allocation` (a collection pass, a heap teardown, or a freed
-  fragment) takes one away. When the count reaches zero, no value can name
-  the channel again. The runtime then issues
-  `CHIMI_REQUEST_CHANNEL_RELEASE` once for that id, and the scheduler frees
-  the queued messages through `release_channel_value`. A count often reaches
-  zero inside a pass or a scheduler release hook, where no request may be
-  issued, so the id waits until the next scheduler request of any task,
-  which `scheduler_request` sends first. If that task is cancelled
-  meanwhile, its own request is not sent and its status stays `UNSET`.
+  The scheduler keeps a count per channel id (`chimi_fiber_handle_retain`
+  and `chimi_fiber_handle_drop`, "Handle counts" in `chimi_fiber.h`).
+  Creating an endpoint value and copying one (`copy_forward`, the only
+  copier) add one; freeing one in `release_allocation` (a collection pass, a
+  heap teardown, or a freed fragment) takes one away. When the count reaches
+  zero, no value can name the channel again, and the scheduler releases the
+  channel once, freeing its queued messages through `release_channel_value`.
+  A count often reaches zero inside a pass or a scheduler release hook,
+  where the scheduler cannot act, so the id waits in a queue of the thread
+  that dropped it: the scheduler applies it before it serves the next
+  request of a fiber on that thread, on behalf of that task, or when that
+  carrier has nothing ready.
   The rule is conservative. A message that holds an endpoint of its own
   channel keeps that channel alive, so the channel is freed when the
   execution ends. The same holds for endpoints in the main heap's base area,

@@ -6,7 +6,7 @@ use super::process::{
     ProcessSpec, Receipt, Restart, Restarts, StartError, SupervisorId, SupervisorState, Waiter,
 };
 use super::{
-    CapabilityViolationReport, MessageRelease, ProcessDefectReport, ReleaseTake, SendFailure,
+    CapabilityViolationReport, MessageRelease, ProcessDefectReport, SendFailure,
     SpecContextRelease, TaskContextRelease, ValueCopy, ValueRelease,
 };
 use super::{
@@ -162,9 +162,6 @@ pub struct ChimiSchedulerConfig {
     /// or null and 0.
     pub injected_user_signals: *const ChimiInjectedSignal,
     pub injected_user_signal_count: usize,
-    /// Hands over the releases the carrier queued with no task running, with
-    /// `release_context`; see `SchedulerOptions::take_release`. May be null.
-    pub take_release: Option<ReleaseTake>,
     /// How many carriers run the program: 0 or 1 runs one on the calling
     /// thread, n above 1 runs carriers 1 to n-1 on threads of their own.
     /// Above 1 with the virtual clock is a defect.
@@ -1068,6 +1065,7 @@ pub unsafe extern "C" fn chimi_scheduler_run(
     if carriers > 1 && clock == ClockMode::Virtual {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
     }
+    crate::handles::begin_run();
     let options = SchedulerOptions {
         stack_bytes: config.stack_bytes,
         trace_mode,
@@ -1081,7 +1079,6 @@ pub unsafe extern "C" fn chimi_scheduler_run(
         release_context: config.release_context,
         capability_violation_report: config.capability_violation_report,
         violation_context: config.capability_violation_context,
-        take_release: config.take_release,
     };
     let Ok(mut scheduler) = Scheduler::with_options_carriers(options, carriers) else {
         return defect_outcome(SCHEDULER_DEFECT_CODE);
