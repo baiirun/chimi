@@ -47,12 +47,13 @@ impl<const N: usize> TextBuffer<N> {
         }
     }
 
-    /// Writes `value` in decimal with at least `width` digits, zero-padded.
+    /// Writes `value` in decimal with at least `width` digits, zero-padded;
+    /// zero has no digits of its own, so it needs a `width` of at least 1.
     pub(crate) fn push_digits(&mut self, mut value: u128, width: usize) {
         // u128::MAX has 39 digits.
         let mut digits = [0u8; 39];
         let mut count = 0;
-        while count < digits.len() && (value != 0 || count == 0) {
+        while value != 0 {
             digits[count] = b'0' + (value % 10) as u8;
             value /= 10;
             count += 1;

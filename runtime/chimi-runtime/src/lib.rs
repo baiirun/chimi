@@ -5,8 +5,8 @@
 //! the allocator and panic handler, one with the scheduler links it inside
 //! `chimi-fiber`, and the compiler links it as an ordinary crate.
 //!
-//! Code here does not panic on any input; the exported functions are the
-//! only `unsafe` boundary.
+//! Nothing the C ABI reaches panics on a value the runtime built; the
+//! exported functions are the only `unsafe` boundary.
 
 #![cfg_attr(not(test), no_std)]
 
