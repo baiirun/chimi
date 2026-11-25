@@ -276,13 +276,10 @@ which `chimi build` also uses to link executables.
 ```sh
 git clone https://github.com/baiirun/chimi
 cd chimi
-cargo build --release -p chimi
-export PATH="$PWD/target/release:$PATH"
+cargo install --path compiler/chimi --bin chimi
 ```
 
-That builds `chimi`, with the standard library built in. Run it from
-`target/release` rather than copying it elsewhere: `chimi build` links
-programs against a runtime archive Cargo builds beside it.
+That installs `chimi` with the standard library and runtime built in.
 
 Save this as `hello.chimi`:
 
@@ -301,11 +298,15 @@ pub fn main() -> Void needs {
 `main`, and a test can supply a fake. Then:
 
 ```sh
-chimi build hello.chimi -o hello   # compile to a native executable
-./hello                            # Hello, world!
+chimi run hello.chimi              # run it on the reference interpreter
+chimi build hello.chimi -o hello   # compile it to a native executable
+./hello
 chimi test .                       # run the tests in a directory
 chimi format hello.chimi           # print the canonical formatting
 ```
+
+`chimi run` is quick for trying things out, but the interpreter does not run
+processes or C-backed modules such as `std/http`; build those.
 
 The [editor guide](editors/README.md) covers the language server
 (`compiler/chimi-lsp`) and the Zed extension.
@@ -317,7 +318,7 @@ The [editor guide](editors/README.md) covers the language server
 | `chimi build` | Compiles a program and its runtime into one native executable. |
 | `chimi test` | Runs `test` blocks and the examples in doc comments. |
 | `chimi check` | Type-checks without building; `--json` gives machine-readable diagnostics. |
-| `chimi run` | Runs a program on the reference interpreter and prints its trace and outcome. |
+| `chimi run` | Runs a program on the reference interpreter; `--telemetry-file` and `--outcome-file` record its trace and outcome. |
 | `chimi format` | Prints the canonical formatting of a file. |
 | `chimi lint` | Reports unused imports, bindings, private code and needs, and missing doc comments. |
 | `chimi doc` | Shows a module's public API, with inferred failures and needs; `--html` writes a site. |

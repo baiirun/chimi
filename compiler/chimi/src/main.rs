@@ -1,9 +1,10 @@
 use chimi::backend::native::{build_application, check_build_target};
-use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit};
+use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit, TraceMode};
 use chimi::project::{FileSystemReader, GitCache, LoadedProject, Network, StandardTree};
 use chimi::{Compiler, ModuleOrigin};
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
@@ -18,10 +19,10 @@ const USAGE: &str = concat!(
     "chimi metrics export --otlp [--service-name <name>] (<metrics-file> | -) | ",
     "chimi lint [--json] (<path> | <directory> | --root <project-dir> <module>) | chimi inspect <path> <byte-offset> | ",
     "chimi inspect --root <project-dir> <entry-module> <module> <byte-offset> | ",
-    "chimi check [--json] <path> | chimi run <path> [-- <argument>...] | ",
+    "chimi check [--json] <path> | chimi run <path> [--trace=off|boundaries|full] [--telemetry-file=<path>] [--outcome-file=<path>] [-- <argument>...] | ",
     "chimi build <path> [-o <executable>] [--target <triple>] | ",
     "chimi check [--json] --root <project-dir> <entry-module> | chimi run --root ",
-    "<project-dir> <entry-module> [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
+    "<project-dir> <entry-module> [<runner option>...] [-- <argument>...] | chimi build --root <project-dir> <entry-module> ",
     "[-o <executable>] [--target <triple>] | chimi test [<path> | <directory> | --root <project-dir> <module>] [--filter=<text>] ",
     "[--backend=native|interpreter] [--clock=virtual|real] [--clock-start=<timestamp>] ",
     "[--seed=<n>] [--time-limit=<duration>] [--jobs=<n>] [--show-output] [--json] ",
@@ -99,6 +100,8 @@ enum Command {
     },
     Run {
         input: Input,
+        /// The runner options between the input and `--`.
+        runner: RunnerOptions,
         /// Everything after `--`: the `List<Text>` passed to `main`.
         arguments: Vec<String>,
     },
@@ -617,10 +620,12 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
             });
         }
         if command == "run" {
-            let application_arguments = match arguments.next() {
-                None => Vec::new(),
-                Some(separator) if separator == "--" => {
+            let mut runner = RunnerOptions::default();
+            let mut application_arguments = Vec::new();
+            while let Some(argument) = arguments.next() {
+                if argument == "--" {
                     let Ok(values) = arguments
+                        .by_ref()
                         .map(OsString::into_string)
                         .collect::<Result<Vec<_>, _>>()
                     else {
@@ -628,16 +633,14 @@ fn parse_command(arguments: impl IntoIterator<Item = OsString>) -> Result<Comman
                             message: "application arguments must be valid UTF-8",
                         });
                     };
-                    values
+                    application_arguments = values;
+                    break;
                 }
-                Some(_) => {
-                    return Err(UsageError {
-                        message: "run received unexpected arguments; pass application arguments after --",
-                    });
-                }
-            };
+                runner.parse(&argument)?;
+            }
             return Ok(Command::Run {
                 input,
+                runner,
                 arguments: application_arguments,
             });
         }
@@ -983,7 +986,11 @@ fn execute(
             offset,
         } => inspect(input, &standard, &module_path, offset),
         Command::Check { input, output } => check(input, &standard, output),
-        Command::Run { input, arguments } => run(input, &standard, arguments),
+        Command::Run {
+            input,
+            runner,
+            arguments,
+        } => run(input, &standard, &runner, arguments),
         Command::Build {
             input,
             output,
@@ -1390,7 +1397,110 @@ fn check(input: Input, standard: &StandardTree, output: DiagnosticOutput) -> Exi
     }
 }
 
-fn run(input: Input, standard: &StandardTree, arguments: Vec<String>) -> ExitCode {
+/// `chimi run`'s runner options, the ones a native executable takes after
+/// `--chimi-runner` for the same sinks (runtime-output-channels.md).
+#[derive(Debug, Default, Eq, PartialEq)]
+struct RunnerOptions {
+    trace: Option<TraceMode>,
+    telemetry_file: Option<PathBuf>,
+    outcome_file: Option<PathBuf>,
+}
+
+impl RunnerOptions {
+    /// Takes one option, or rejects anything else, including a repeat.
+    fn parse(&mut self, argument: &OsStr) -> Result<(), UsageError> {
+        let unexpected = UsageError {
+            message: "run received unexpected arguments; pass application arguments after --",
+        };
+        let Some(argument) = argument.to_str() else {
+            return Err(unexpected);
+        };
+        if let Some(mode) = argument.strip_prefix("--trace=") {
+            let mode = match mode {
+                "off" => TraceMode::Off,
+                "boundaries" => TraceMode::Boundaries,
+                "full" => TraceMode::Full,
+                _ => {
+                    return Err(UsageError {
+                        message: "--trace must be off, boundaries, or full",
+                    });
+                }
+            };
+            return set_once(&mut self.trace, mode, unexpected);
+        }
+        let (slot, path) = if let Some(path) = argument.strip_prefix("--telemetry-file=") {
+            (&mut self.telemetry_file, path)
+        } else if let Some(path) = argument.strip_prefix("--outcome-file=") {
+            (&mut self.outcome_file, path)
+        } else {
+            return Err(unexpected);
+        };
+        if path.is_empty() {
+            return Err(UsageError {
+                message: "--telemetry-file and --outcome-file require a path",
+            });
+        }
+        set_once(slot, PathBuf::from(path), unexpected)
+    }
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, repeated: UsageError) -> Result<(), UsageError> {
+    if slot.is_some() {
+        return Err(repeated);
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+/// The runner configuration `options` names, or why it is invalid: tracing
+/// needs a telemetry sink, and the two sinks must be distinct.
+fn runner_trace_mode(options: &RunnerOptions) -> Result<TraceMode, &'static str> {
+    let trace = options.trace.unwrap_or(TraceMode::Off);
+    if trace != TraceMode::Off && options.telemetry_file.is_none() {
+        return Err("--trace=boundaries and --trace=full require --telemetry-file");
+    }
+    if options.telemetry_file.is_some() && options.telemetry_file == options.outcome_file {
+        return Err("--telemetry-file and --outcome-file must name different files");
+    }
+    Ok(trace)
+}
+
+/// Creates the sink at `path`, never overwriting an earlier export, before
+/// the program runs, so a sink that cannot be written stops the run before
+/// it has any effect.
+fn create_sink(path: Option<&PathBuf>) -> Result<Option<(&PathBuf, std::fs::File)>, ExitCode> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => Ok(Some((path, file))),
+        Err(error) => {
+            eprintln!("chimi: create {}: {error}", path.display());
+            Err(ExitCode::from(74))
+        }
+    }
+}
+
+/// `chimi run`: runs the program on the reference interpreter as a native
+/// runner would. The program's console output goes to stdout and stderr;
+/// the trace and the outcome record go only to the files the options name.
+fn run(
+    input: Input,
+    standard: &StandardTree,
+    options: &RunnerOptions,
+    arguments: Vec<String>,
+) -> ExitCode {
+    let trace = match runner_trace_mode(options) {
+        Ok(trace) => trace,
+        Err(message) => {
+            eprintln!("chimi: {message}");
+            return ExitCode::from(64);
+        }
+    };
     let Some(project) = load_project(input, standard) else {
         return ExitCode::FAILURE;
     };
@@ -1411,10 +1521,50 @@ fn run(input: Input, standard: &StandardTree, arguments: Vec<String>) -> ExitCod
         eprintln!("chimi: program entry does not accept application arguments");
         return ExitCode::from(64);
     }
-    let config = ExecutionConfig::for_process().with_application_arguments(arguments);
+    let telemetry_sink = match create_sink(options.telemetry_file.as_ref()) {
+        Ok(sink) => sink,
+        Err(status) => return status,
+    };
+    let outcome_sink = match create_sink(options.outcome_file.as_ref()) {
+        Ok(sink) => sink,
+        Err(status) => return status,
+    };
+    let config = ExecutionConfig::for_process()
+        .with_trace_mode(trace)
+        .with_application_arguments(arguments);
     let report = program.execute_oracle(config);
-    print!("{}", report.render_json_lines());
+    let written = write_console(&mut std::io::stdout(), &report.application_stdout)
+        .and_then(|()| write_console(&mut std::io::stderr(), &report.application_stderr));
+    let sinks = [
+        (telemetry_sink, report.render_telemetry_json_lines()),
+        (outcome_sink, report.render_outcome_json_line()),
+    ];
+    for (sink, contents) in sinks {
+        if let Some((path, mut file)) = sink
+            && let Err(error) = file
+                .write_all(contents.as_bytes())
+                .and_then(|()| file.flush())
+        {
+            eprintln!("chimi: write {}: {error}", path.display());
+            return ExitCode::from(74);
+        }
+    }
+    if written.is_err() {
+        return ExitCode::from(74);
+    }
+    // A defect ends the run with status 70 and nothing else to read when no
+    // outcome file was asked for, so say what it was, as a panic would.
+    if options.outcome_file.is_none()
+        && let ExecutionOutcome::Defect(defect) = &report.outcome
+    {
+        eprintln!("chimi: the program ended with a defect: {}", defect.message);
+    }
     exit_code(&report)
+}
+
+fn write_console(stream: &mut dyn std::io::Write, text: &str) -> std::io::Result<()> {
+    stream.write_all(text.as_bytes())?;
+    stream.flush()
 }
 
 /// The status of `report`: its `std/cli.Exit`, applied after the outcome as
@@ -1709,13 +1859,35 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DiagnosticOutput, DocOutput, DocTarget, Input, UsageError, parse_command,
+        Command, DiagnosticOutput, DocOutput, DocTarget, Input, RunnerOptions, UsageError,
+        parse_command, runner_trace_mode,
     };
+    use chimi::execution::TraceMode;
     use std::ffi::OsString;
     use std::path::PathBuf;
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn checks_run_sinks() {
+        let options = |trace, telemetry: Option<&str>, outcome: Option<&str>| RunnerOptions {
+            trace,
+            telemetry_file: telemetry.map(PathBuf::from),
+            outcome_file: outcome.map(PathBuf::from),
+        };
+        assert_eq!(runner_trace_mode(&options(None, None, None)), Ok(TraceMode::Off));
+        assert_eq!(
+            runner_trace_mode(&options(Some(TraceMode::Boundaries), Some("t"), None)),
+            Ok(TraceMode::Boundaries)
+        );
+        assert_eq!(
+            runner_trace_mode(&options(None, Some("t"), Some("o"))),
+            Ok(TraceMode::Off)
+        );
+        assert!(runner_trace_mode(&options(Some(TraceMode::Full), None, Some("o"))).is_err());
+        assert!(runner_trace_mode(&options(None, Some("same"), Some("same"))).is_err());
     }
 
     #[test]
@@ -2063,6 +2235,7 @@ mod tests {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
                 },
+                runner: RunnerOptions::default(),
                 arguments: Vec::new(),
             })
         );
@@ -2072,9 +2245,51 @@ mod tests {
                 input: Input::File {
                     path: PathBuf::from("program.chimi")
                 },
+                runner: RunnerOptions::default(),
                 arguments: vec!["a".to_owned(), "--".to_owned(), "-o".to_owned()],
             })
         );
+        assert_eq!(
+            parse_command(arguments(&[
+                "run",
+                "program.chimi",
+                "--outcome-file=o.jsonl",
+                "--trace=full",
+                "--telemetry-file=t.jsonl",
+                "--",
+                "--trace=off",
+            ])),
+            Ok(Command::Run {
+                input: Input::File {
+                    path: PathBuf::from("program.chimi")
+                },
+                runner: RunnerOptions {
+                    trace: Some(TraceMode::Full),
+                    telemetry_file: Some(PathBuf::from("t.jsonl")),
+                    outcome_file: Some(PathBuf::from("o.jsonl")),
+                },
+                arguments: vec!["--trace=off".to_owned()],
+            })
+        );
+        for (rejected, message) in [
+            (
+                &["--trace=off", "--trace=full"][..],
+                "run received unexpected arguments; pass application arguments after --",
+            ),
+            (&["--trace=some"][..], "--trace must be off, boundaries, or full"),
+            (
+                &["--outcome-file="][..],
+                "--telemetry-file and --outcome-file require a path",
+            ),
+        ] {
+            let mut command = vec!["run", "program.chimi"];
+            command.extend_from_slice(rejected);
+            assert_eq!(
+                parse_command(arguments(&command)),
+                Err(UsageError { message }),
+                "{rejected:?}"
+            );
+        }
         assert_eq!(
             parse_command(arguments(&["run", "program.chimi", "a"])),
             Err(UsageError {
@@ -2177,6 +2392,7 @@ mod tests {
                     root: PathBuf::from("project"),
                     entry: "app/main".to_owned()
                 },
+                runner: RunnerOptions::default(),
                 arguments: Vec::new(),
             })
         );
@@ -2187,6 +2403,7 @@ mod tests {
                     root: PathBuf::from("project"),
                     entry: "app/main".to_owned()
                 },
+                runner: RunnerOptions::default(),
                 arguments: Vec::new(),
             })
         );

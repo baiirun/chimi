@@ -98,10 +98,21 @@ by that signal (a shell shows 130 or 143), and `--signal=INT@<duration>` or
 `--signal=TERM@<duration>` under `--clock=virtual` injects one at a virtual
 instant and exits `128 + signal`. [Application lifecycle](application-lifecycle.md)
 gives the rules.
-`chimi run` on the reference interpreter writes its outcome record to stdout
-and exits with the same status for the same outcome (0, 1, 70, or 130), so a
-script sees one contract on both backends. A program that does not compile
-exits 1 with diagnostics on stderr and no outcome record.
+`chimi run` on the reference interpreter is a runner with the same contract
+(CHI-315): the program's console writes go to stdout and stderr, and nothing
+else does. It takes the native runner's sink options after its input and
+before `--`: `--trace=off|boundaries|full` (default `off`),
+`--telemetry-file=<path>` and `--outcome-file=<path>`, with the same rules:
+tracing needs a telemetry file, the two files must differ (otherwise exit 64
+before the program runs), and each file is created exclusively (an existing
+one exits 74 before the program runs). It exits with the same status for the same outcome (0, 1, 70,
+or 130), so a script sees one contract on both backends. The interpreter holds
+the program's output until it finishes, then writes stdout and then stderr, so
+the two are not interleaved as they were written. When the program ends with
+a defect and no outcome file was given, `chimi run` adds one line to stderr,
+`chimi: the program ended with a defect: <message>`, so a status of 70 is not
+all there is to read. A program that does not
+compile exits 1 with diagnostics on stderr and no outcome record.
 `chimi run <path> -- <arguments>` (or `chimi run --root <dir> <entry> --
 <arguments>`) passes every argument after the first `--` to `main` exactly as
 a native runner does: later `--` and option-shaped words are application data,

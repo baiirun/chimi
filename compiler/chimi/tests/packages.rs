@@ -13,10 +13,34 @@ fn fixture(package: &str) -> PathBuf {
 }
 
 fn chimi(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .args(arguments)
-        .output()
-        .expect("run chimi")
+    with_run_outcome(Command::new(env!("CARGO_BIN_EXE_chimi")), arguments)
+}
+
+/// Runs `command` with `arguments`. For `chimi run`, which writes its outcome
+/// record only to a file it is given, it adds `--outcome-file` and appends the
+/// record to the returned `stdout`, after what the program wrote.
+fn with_run_outcome(mut command: Command, arguments: &[&str]) -> Output {
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    command.args(arguments);
+    let outcome = arguments.contains(&"run").then(|| {
+        std::env::temp_dir().join(format!(
+            "chimi-packages-outcome-{}-{}.jsonl",
+            std::process::id(),
+            RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    });
+    if let Some(path) = &outcome {
+        let _ = std::fs::remove_file(path);
+        command.arg(format!("--outcome-file={}", path.display()));
+    }
+    let mut output = command.output().expect("run chimi");
+    if let Some(path) = outcome {
+        output
+            .stdout
+            .extend(std::fs::read(&path).unwrap_or_default());
+        let _ = std::fs::remove_file(path);
+    }
+    output
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -259,11 +283,9 @@ fn git(directory: &Path, arguments: &[&str]) {
 
 /// `chimi` with its dependency cache at `cache`.
 fn chimi_with_cache(cache: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .env("CHIMI_CACHE", cache)
-        .args(arguments)
-        .output()
-        .expect("run chimi")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_chimi"));
+    command.env("CHIMI_CACHE", cache);
+    with_run_outcome(command, arguments)
 }
 
 /// A repository at `repo/` holding the package `json_tools` in `pkg/`,
