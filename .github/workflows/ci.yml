@@ -93,14 +93,16 @@ jobs:
             exit 1
           fi
 
-  # libFuzzer on the runtime's parsers and text code, two minutes a target,
-  # from the committed corpus (compiler/chimi/tests/fuzz/).
+  # libFuzzer on the runtime's parsers and text code and on the binding
+  # packages' shims, two minutes a target, from the committed corpus
+  # (compiler/chimi/tests/fuzz/).
   fuzz:
     name: fuzz (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
-        target: [json, text, decimal, duration]
+        target:
+          [json, text, decimal, duration, tls-client, tls-server, tls-records, tls-roots, scram, sqlite]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

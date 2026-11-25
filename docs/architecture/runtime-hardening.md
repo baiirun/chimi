@@ -13,9 +13,9 @@ keep. It came in with CHI-304.
 | --- | --- | --- |
 | `sanitizers (<shard>)` CI jobs | `.github/workflows/ci.yml`, `scripts/sanitizer-shard.sh` | The whole test suite, in six shards since it takes about an hour and a half under the sanitizers, with every native program the tests build compiled with AddressSanitizer and UndefinedBehaviorSanitizer. A report stops the program, so the test fails; the job also fails on any report in its log files. |
 | ThreadSanitizer fixtures | `compiler/chimi/tests/runtime_state.rs` | Shared runtime state touched outside its lock, from two to four real threads. |
-| Sanitized C fixtures | `tests/native_list_fuzz.rs`, the native heap test in `tests/cli.rs`, `tests/runtime_fuzz.rs` | ASan and UBSan over the heap, the persistent list and the fuzz corpus. |
-| `fuzz (<target>)` CI jobs | `scripts/fuzz-runtime.sh` | libFuzzer for two minutes on each of `json`, `text`, `decimal` and `duration`, from the committed corpus. |
-| Corpus replay | `tests/runtime_fuzz.rs` | Every corpus input still gives its recorded output, on macOS and Linux. |
+| Sanitized C fixtures | `tests/native_list_fuzz.rs`, the native heap test in `tests/cli.rs`, `tests/runtime_fuzz.rs` | ASan and UBSan over the heap, the persistent list and the fuzz corpora. |
+| `fuzz (<target>)` CI jobs | `scripts/fuzz-runtime.sh` | libFuzzer for two minutes on each runtime and binding target, from the committed corpus. |
+| Corpus replay | `tests/runtime_fuzz.rs` | Every corpus input still gives its recorded output, on macOS and Linux. The binding harness's objects are cached under `target/`, since SQLite alone takes over a minute to compile under ASan. |
 
 ## Rules
 
@@ -94,5 +94,34 @@ CHIMI_FUZZ_BLESS=1 cargo test -p chimi --test runtime_fuzz
 
 `fuzz-runtime.sh` needs clang with libFuzzer (Ubuntu: `libclang-rt-<version>-dev`).
 
-The binding shims (TLS session input, certificate parsing, SCRAM) are not
-fuzzed yet; that is the next part of CHI-304.
+### The binding shims
+
+`compiler/chimi/tests/fuzz/binding-fuzz.c` is a small binding host: it
+implements the binding API (`chimi_binding.h`) over plain memory and calls
+the shims' own entry points, linked with the `tls` and `sqlite` packages'
+code. It shares the replay driver and corpus format with `runtime-fuzz.c`
+(`fuzz-main.h`, `fuzz-output.h`).
+
+| Target | Input | Output and invariants |
+| --- | --- | --- |
+| `tls-client` | a server's reply to the client's ClientHello; the first byte also splits it into two feeds | Where the handshake stopped: `needs input`, `complete`, or the failure code and message. A failure always records its code. |
+| `tls-server` | a client's first flight, split the same way | The same, for a server with the fixture certificate. |
+| `tls-records` | a script, one operation a byte, over a real handshake: send the next bytes, move ciphertext in pieces of a size, read into a buffer of a size, close | How many bytes the client read and whether it saw the close. It must read exactly the bytes sent, in order, and see the close exactly when one was sent. |
+| `tls-roots` | a PEM file | `tls_check_roots`'s count, or its message. |
+| `scram` | lengths, then a password, a salt, an iteration count and an auth message | The client proof and server signature in hex, or the failure. The corpus holds the RFC 7677 vector. |
+| `sqlite` | a statement (its valid UTF-8 prefix) | `prepare`'s failure, `none`, or the statement's parameter count. The shim refuses a second statement exactly when SQLite finds a statement, an error or a NUL after the first. |
+
+The TLS targets read `ca.pem`, `server.pem` and `server.key` from
+`tests/fixtures/tls` (`CHIMI_FUZZ_TLS_FIXTURES`). Their outputs do not
+depend on the handshake's random values, so the replay is deterministic.
+
+The other shims parse nothing a peer controls: `net` and `exec` hand their
+arguments to the operating system, `terminal` reads no input, and the
+postgres gate only stores bytes. SQLite and mbedTLS themselves are fuzzed
+upstream (OSS-Fuzz); these targets cover the shims and how they call them.
+
+The `sqlite` target's first runs found that std/sqlite's own reading of the
+text after a statement disagreed with SQLite's: a `/*` at the very end, and
+a vertical tab after a space. The shim now asks SQLite whether the rest
+holds anything (`only_blank` in `sqlite.c`), and both inputs are in the
+corpus.

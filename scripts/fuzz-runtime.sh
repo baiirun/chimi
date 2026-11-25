@@ -1,11 +1,13 @@
 #!/bin/sh
 # Runs libFuzzer on one fuzz target of the native runtime
-# (compiler/chimi/tests/fuzz/runtime-fuzz.c), starting from its committed
-# corpus, under AddressSanitizer and UndefinedBehaviorSanitizer.
+# (compiler/chimi/tests/fuzz/runtime-fuzz.c) or of the binding packages
+# (binding-fuzz.c), starting from its committed corpus, under
+# AddressSanitizer and UndefinedBehaviorSanitizer.
 #
 # Usage, from anywhere inside the repository:
 #   scripts/fuzz-runtime.sh TARGET SECONDS [WORK_DIR]
-#     TARGET    json, text, decimal or duration
+#     TARGET    json, text, decimal, duration (the runtime), or
+#               tls-client, tls-server, tls-records, tls-roots, scram, sqlite
 #     SECONDS   how long to fuzz
 #     WORK_DIR  where the run keeps its corpus and any crash input
 #               (default: a new temporary directory, kept when the run fails)
@@ -17,35 +19,80 @@
 #
 # To keep a finding as a regression input once it is fixed, append its corpus
 # line and rebless:
-#   WORK_DIR/runtime-fuzz TARGET --files WORK_DIR/crash-... >> compiler/chimi/tests/fuzz/corpus/TARGET.txt
+#   WORK_DIR/HARNESS TARGET --files WORK_DIR/crash-... >> compiler/chimi/tests/fuzz/corpus/TARGET.txt
 #   CHIMI_FUZZ_BLESS=1 cargo test -p chimi --test runtime_fuzz
+# where HARNESS is runtime-fuzz or binding-fuzz.
 set -u
 
-usage() { sed -n '6,11p' "$0" | sed 's/^# *//' >&2; exit 2; }
+usage() { sed -n '7,13p' "$0" | sed 's/^# *//' >&2; exit 2; }
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 target=$1
 seconds=$2
-case "$target" in json | text | decimal | duration) ;; *) usage ;; esac
+case "$target" in
+  json | text | decimal | duration) harness=runtime-fuzz ;;
+  tls-client | tls-server | tls-records | tls-roots | scram | sqlite) harness=binding-fuzz ;;
+  *) usage ;;
+esac
 case "$seconds" in '' | *[!0-9]*) usage ;; esac
 
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel) || exit 2
 crate="$repo/compiler/chimi"
+bindings="$crate/runtime/native/bindings"
 work=${3:-$(mktemp -d "${TMPDIR:-/tmp}/chimi-fuzz-$target.XXXXXX")} || exit 2
 mkdir -p "$work/corpus" || exit 2
 
-includes="-I $crate/runtime/native -I $repo/runtime/chimi-fiber/include"
 sanitizers="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+if [ "$harness" = runtime-fuzz ]; then
+  includes="-I $crate/runtime/native -I $repo/runtime/chimi-fiber/include"
+  archives=""
+else
+  # Each package's own flags, as BINDING_PACKAGE_FLAGS in
+  # compiler/chimi/src/backend/runtime_archive_key.rs gives them (a test
+  # checks this list holds them), with its -I directories made absolute.
+  tls_flags="-I$bindings/tls/mbedtls/include -I$bindings/tls/mbedtls/library
+    -I$bindings/tls/mbedtls/tf-psa-crypto/include
+    -I$bindings/tls/mbedtls/tf-psa-crypto/drivers/builtin/include
+    -I$bindings/tls/mbedtls/tf-psa-crypto/drivers/builtin/src
+    -I$bindings/tls/mbedtls/tf-psa-crypto/core -I$bindings/tls/mbedtls/tf-psa-crypto/dispatch
+    -I$bindings/tls/mbedtls/tf-psa-crypto/utilities
+    -I$bindings/tls/mbedtls/tf-psa-crypto/platform -I$bindings/tls/mbedtls/tf-psa-crypto/extras"
+  sqlite_flags="-D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE -DSQLITE_THREADSAFE=1 -DSQLITE_DQS=0
+    -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_OMIT_DEPRECATED
+    -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_USE_ALLOCA"
+  includes="-I $crate/runtime/native -I $bindings/tls -I $bindings/sqlite -I $bindings/sqlite/sqlite
+    $tls_flags $sqlite_flags"
+  # The packages' code, with libFuzzer's coverage, compiled several files
+  # at once; the replay build gets the same objects.
+  for package in tls sqlite; do
+    mkdir -p "$work/objects/$package" || exit 2
+    eval "flags=\$${package}_flags"
+    # shellcheck disable=SC2154 # flags is set by the eval
+    (cd "$bindings/$package" && find . -name '*.c' | sort) |
+      while read -r source; do
+        object="$work/objects/$package/$(printf '%s' "$source" | tr '/' '_').o"
+        printf '%s %s\n' "$bindings/$package/$source" "$object"
+      done |
+      xargs -P "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" -n 2 sh -c '
+        # shellcheck disable=SC2086
+        clang -std=c11 -O1 -g -w $0 -I "$1" -I "$2" $3 -c "$4" -o "$5"
+      ' "$sanitizers -fsanitize=fuzzer-no-link" "$bindings/$package" "$crate/runtime/native" "$flags" ||
+      { echo "fuzz-runtime: building the $package package failed" >&2; exit 2; }
+  done
+  archives=$(find "$work/objects" -name '*.o' | sort | tr '\n' ' ')
+  export CHIMI_FUZZ_TLS_FIXTURES="$crate/tests/fixtures/tls"
+fi
+
 # shellcheck disable=SC2086 # the flag lists split on purpose
-clang -std=c11 -O1 -g -w $sanitizers $includes "$crate/tests/fuzz/runtime-fuzz.c" \
-  -o "$work/runtime-fuzz" -lm || { echo "fuzz-runtime: replay driver build failed" >&2; exit 2; }
+clang -std=c11 -O1 -g -w $sanitizers $includes "$crate/tests/fuzz/$harness.c" $archives \
+  -o "$work/$harness" -lpthread -lm || { echo "fuzz-runtime: replay driver build failed" >&2; exit 2; }
 # shellcheck disable=SC2086
 clang -std=c11 -O1 -g -w -fsanitize=fuzzer $sanitizers -DCHIMI_FUZZ_LIBFUZZER $includes \
-  "$crate/tests/fuzz/runtime-fuzz.c" -o "$work/runtime-fuzz-libfuzzer" -lm ||
+  "$crate/tests/fuzz/$harness.c" $archives -o "$work/$harness-libfuzzer" -lpthread -lm ||
   { echo "fuzz-runtime: libFuzzer build failed (is libFuzzer installed?)" >&2; exit 2; }
 
 export ASAN_OPTIONS=detect_leaks=0
-"$work/runtime-fuzz" --unpack "$crate/tests/fuzz/corpus/$target.txt" "$work/corpus" || exit 2
-CHIMI_FUZZ_TARGET=$target "$work/runtime-fuzz-libfuzzer" \
+"$work/$harness" --unpack "$crate/tests/fuzz/corpus/$target.txt" "$work/corpus" || exit 2
+CHIMI_FUZZ_TARGET=$target "$work/$harness-libfuzzer" \
   -max_total_time="$seconds" -max_len=4096 -timeout=10 -print_final_stats=1 \
   -artifact_prefix="$work/" "$work/corpus"
 status=$?
