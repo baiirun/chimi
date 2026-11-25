@@ -315,15 +315,38 @@ fn run_writes_console_output_and_only_the_sinks_it_is_given() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// A copy of the compiler in `scratch/bin`, as `cargo install` leaves it.
+fn relocated_compiler(scratch: &Path) -> PathBuf {
+    let compiler = scratch.join("bin").join("chimi");
+    std::fs::create_dir_all(compiler.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_chimi"), &compiler).unwrap();
+    compiler
+}
+
+/// Runs a program this test process just wrote. Another test thread that
+/// forks while the copy is open for writing holds the descriptor until its
+/// child execs, and Linux refuses to run a file open for writing ("Text file
+/// busy"), so that error is retried for a while.
+fn output_retrying_busy(command: &mut Command) -> std::io::Result<Output> {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// CHI-314: a copy of the compiler away from its Cargo target directory, as
 /// `cargo install` leaves it, still links a program that needs the fiber
 /// runtime, because the compiler carries that archive itself.
 #[test]
 fn a_relocated_compiler_builds_a_program_that_starts_tasks() {
     let scratch = scratch_directory("relocated-compiler");
-    let compiler = scratch.join("bin").join("chimi");
-    std::fs::create_dir_all(compiler.parent().unwrap()).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_chimi"), &compiler).unwrap();
+    let compiler = relocated_compiler(&scratch);
     std::fs::write(
         scratch.join("tasks.chimi"),
         concat!(
@@ -335,12 +358,13 @@ fn a_relocated_compiler_builds_a_program_that_starts_tasks() {
         ),
     )
     .unwrap();
-    let build = Command::new(&compiler)
-        .current_dir(&scratch)
-        .env_remove("CHIMI_FIBER_RUNTIME_ARCHIVE")
-        .args(["build", "tasks.chimi", "-o", "tasks"])
-        .output()
-        .expect("build with the relocated compiler");
+    let build = output_retrying_busy(
+        Command::new(&compiler)
+            .current_dir(&scratch)
+            .env_remove("CHIMI_FIBER_RUNTIME_ARCHIVE")
+            .args(["build", "tasks.chimi", "-o", "tasks"]),
+    )
+    .expect("build with the relocated compiler");
     assert!(
         build.status.success(),
         "{}",
@@ -372,9 +396,7 @@ fn a_relocated_compiler_builds_a_program_that_starts_tasks() {
 #[test]
 fn a_relocated_compiler_builds_a_program_that_decodes_json_without_tasks() {
     let scratch = scratch_directory("relocated-compiler-json");
-    let compiler = scratch.join("bin").join("chimi");
-    std::fs::create_dir_all(compiler.parent().unwrap()).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_chimi"), &compiler).unwrap();
+    let compiler = relocated_compiler(&scratch);
     std::fs::write(
         scratch.join("decode.chimi"),
         concat!(
@@ -392,12 +414,13 @@ fn a_relocated_compiler_builds_a_program_that_decodes_json_without_tasks() {
         ),
     )
     .unwrap();
-    let build = Command::new(&compiler)
-        .current_dir(&scratch)
-        .env_remove("CHIMI_STANDALONE_RUNTIME_ARCHIVE")
-        .args(["build", "decode.chimi", "-o", "decode"])
-        .output()
-        .expect("build with the relocated compiler");
+    let build = output_retrying_busy(
+        Command::new(&compiler)
+            .current_dir(&scratch)
+            .env_remove("CHIMI_STANDALONE_RUNTIME_ARCHIVE")
+            .args(["build", "decode.chimi", "-o", "decode"]),
+    )
+    .expect("build with the relocated compiler");
     assert!(
         build.status.success(),
         "{}",

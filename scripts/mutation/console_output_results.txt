@@ -1,30 +1,26 @@
-# mutation run at 644f48794a41d4e0ad1b579b40d6bede2b988b32
-# console_output_mutations.py: 8 mutants against compiler/chimi
-BASELINE ok  [console_output] (14s)
-BASELINE ok  [runtime_state] (8s)
-KILLED       every stream writes directly, blocking the scheduler [console_output] (72s)
-KILLED       a write after poll takes the whole queue, not PIPE_BUF [console_output] (73s)
-KILLED       a writer returns once its line is queued [console_output] (73s)
-KILLED       the end of the program drops lines still queued [console_output] (14s)
-TIMEOUT      a writer waits for readable instead of writable [console_output] (600s)
-SURVIVED     standard error keeps its own queue when it names standard output's file [console_output] (20s)
-SURVIVED     a failure also fails lines already written [console_output] (15s)
-KILLED       the queue is not listed as shared runtime state [runtime_state] (16s)
+# mutation run at 2642710f1ce8d602c96143d58e5a931d012ddf8e
+# console_output_mutations.py: 10 mutants against compiler/chimi
+BASELINE ok  [console_output] (158s)
+BASELINE ok  [runtime_state] (11s)
+KILLED       every stream writes directly, blocking the scheduler [console_output] (118s)
+KILLED       a write after poll takes the whole queue, not PIPE_BUF [console_output] (112s)
+KILLED       a writer returns once its line is queued [console_output] (116s)
+KILLED       a writer does not wait for its line [console_output] (115s)
+KILLED       a written count does not advance the queue [console_output] (269s)
+KILLED       the end of the program drops lines still queued [console_output] (54s)
+TIMEOUT      a writer waits for readable instead of writable [console_output] (649s)
+SURVIVED     standard error keeps its own queue when it names standard output's file [console_output] (60s)
+SURVIVED     a failure also fails lines already written [console_output] (57s)
+KILLED       the streams are not listed as shared runtime state [runtime_state] (57s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
-# Reruns of the two survivors at the final head (closed-reader test added): both still survive.
 #
-# 6 of 8 killed (the readable-interest mutant hangs the flood test, which the
-# runner reports as TIMEOUT: a kill).
-#
-# Survivors, explained:
-# - "standard error keeps its own queue when it names standard output's file":
-#   the split needs a race (the long stdout line parked mid-line, then the
-#   stderr writer waking first). stdout_and_stderr_on_one_pipe_keep_their_lines_whole
-#   repeats its run 4 times and caught the mutant in about a third of local
-#   debug-build runs, never in the runner's build. Not deterministic without a
-#   way to order reactor wakes from a test.
-# - "a failure also fails lines already written": the mutant matters only when
-#   a line is fully written by another task's chunk and its own writer has not
-#   resumed when a later write fails. A writer keeps writing until its own line
-#   is done, so the closed-reader test (one line written, the next failed) cannot
-#   reach that order. The verifier checked the real code by hand-built runs.
+# 8 of 10 killed (the readable-interest mutant hangs the flood test, which the
+# runner reports as TIMEOUT: a kill). The same two survive as before the move
+# to Rust, for the reasons recorded in the earlier run:
+# - "standard error keeps its own queue when it names standard output's file"
+#   needs the long stdout line parked mid-line and the stderr writer woken
+#   first; no test can order reactor wakes.
+# - "a failure also fails lines already written" cannot be reached end to end,
+#   since a writer keeps writing until its own line is done. The Rust unit test
+#   a_failure_fails_only_the_lines_not_yet_written kills it
+#   (rust_console_results.txt).

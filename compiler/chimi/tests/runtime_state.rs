@@ -68,9 +68,9 @@ const SHARED: &[&str] = &[
     "standard_input",
     "standard_input_bytes",
     "standard_input_lock",
-    // Console output queues (CHI-266), behind one lock, and whether this
-    // thread holds it (a thread-local).
-    "console_queues",
+    // Console output streams (CHI-266; their queues are in the Rust
+    // runtime), behind one lock, and whether this thread holds it (a
+    // thread-local).
     "console_streams",
     "console_lock",
     "console_lock_held",

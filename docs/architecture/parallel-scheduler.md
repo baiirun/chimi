@@ -138,8 +138,9 @@ function-local static, so new state gets an owner when it is added.
   - Telemetry: `trace_lock` is held for each whole event, so sequence numbers
     follow file order; span ids come from one atomic counter.
   - Standard input (`standard_input_lock`, held while a reader takes one
-    line's bytes) and the console queues (`console_lock`, held by a writer
-    except while it parks). Every signal field: signal handlers write these,
+    line's bytes) and the console queues (in the Rust runtime's
+    `console.rs` since CHI-308; `console_lock`, held by a writer except while
+    it parks, guards every call into them). Every signal field: signal handlers write these,
     so they must never sit behind a carrier or thread-local pointer, and the
     handler installers run once through `pthread_once`.
 
