@@ -7459,7 +7459,8 @@ static void release_message_word(void *context, uint64_t message) {
 }
 
 /* The C structs one Supervisor.start or start_process request reads. The arrays are
-   freed after the request; the contexts belong to the scheduler once it is sent. */
+   freed after the request. The contexts belong to the scheduler once the request is
+   issued, served or not, so the host never frees one it has sent. */
 typedef struct {
   void **arrays;
   size_t array_count;
@@ -7475,7 +7476,7 @@ static void *marshal_keep(void ***items, size_t *count, void *item) {
   return item;
 }
 
-/* Frees the arrays, and the contexts too unless the request reached the scheduler. */
+/* Frees the arrays, and the contexts too unless the request was issued. */
 static void marshal_finish(ProcessMarshal *marshal, bool handed_over) {
   for (size_t index = 0; index < marshal->array_count; ++index) free(marshal->arrays[index]);
   if (!handed_over)
@@ -7761,7 +7762,7 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
         .policy = &policy,
       };
       ChimiFiberCommand command = scheduler_request(&request);
-      marshal_finish(&marshal, request.status != CHIMI_RESPONSE_UNSET);
+      marshal_finish(&marshal, true);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       if (request.status == CHIMI_RESPONSE_OK)
         return success(nested ? managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,
@@ -7787,7 +7788,7 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
         .spec = &spec,
       };
       ChimiFiberCommand command = scheduler_request(&request);
-      marshal_finish(&marshal, request.status != CHIMI_RESPONSE_UNSET);
+      marshal_finish(&marshal, true);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();
       if (request.status == CHIMI_RESPONSE_OK)
         return success(managed_value(VALUE_MANAGED_PROCESS, arguments[0]->as.managed.supervisor,
@@ -7828,7 +7829,7 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       };
       ChimiFiberCommand command = scheduler_request(&request);
       free(carried.carried);
-      marshal_finish(&marshal, request.status != CHIMI_RESPONSE_UNSET);
+      marshal_finish(&marshal, true);
       /* Only an accepted start keeps the argument; a refused one hands it back. */
       if (request.status != CHIMI_RESPONSE_OK) fragment_free(argument);
       if (command == CHIMI_FIBER_CANCEL) return cancelled();

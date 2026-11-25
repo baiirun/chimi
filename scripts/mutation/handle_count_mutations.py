@@ -34,7 +34,7 @@ MUTATIONS = [
         "        if key & TASK_HANDLE_KEY == 0 {",
     )]),
     unit("a request does not carry the releases its fiber dropped", S, [(
-        "        if !self.apply_task_releases(owner) {\n            return;\n        }\n",
+        "        if !self.apply_task_releases(owner) {\n            self.release_spec_contexts(unserved_start);\n            return;\n        }\n",
         "",
     )]),
     unit("an idle carrier does not apply its queued releases", S, [(

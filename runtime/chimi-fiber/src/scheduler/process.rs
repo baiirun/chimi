@@ -1634,6 +1634,13 @@ impl Scheduler {
         }
     }
 
+    /// Releases the contexts of a start request that was not served.
+    pub(super) fn release_spec_contexts(&self, contexts: Option<Vec<*mut c_void>>) {
+        for context in contexts.into_iter().flatten() {
+            self.release_spec_context(context);
+        }
+    }
+
     /// Releases an accepted message that no receive will read, ending the
     /// capabilities it carries as their owner's exit would.
     pub(super) fn discard_message(&mut self, message: u64) {

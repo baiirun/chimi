@@ -66,6 +66,9 @@ enum OnCancel {
     SendToSelf(u64),
     /// Cleanup parks with no request, so nothing but a force ends it.
     Parks,
+    /// Cleanup sleeps until forced, then issues a start handing over the
+    /// context `FORCED_START_CONTEXT`.
+    StartsAfterForce,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -87,6 +90,11 @@ static PARKS: Behavior = Behavior {
     on_cancel: OnCancel::Parks,
     greet: None,
 };
+static STARTS_AFTER_FORCE: Behavior = Behavior {
+    on_cancel: OnCancel::StartsAfterForce,
+    greet: None,
+};
+const FORCED_START_CONTEXT: usize = 0x41;
 
 #[derive(Default)]
 struct Log {
@@ -379,6 +387,23 @@ fn cleanup(behavior: Behavior, me: u64) -> ChimiFiberResult {
         OnCancel::Parks => loop {
             unsafe { chimi_fiber_park(ptr::null()) };
         },
+        // Abandoned at the start's park, so this never returns either.
+        OnCancel::StartsAfterForce => {
+            while sleep_until(i64::MAX) != RESPONSE_FORCED {}
+            let spec = ChimiProcessSpec {
+                entry: Some(worker),
+                context: FORCED_START_CONTEXT as *mut c_void,
+                mailbox_capacity: 4,
+                shutdown_within: 0,
+                name: 0,
+            };
+            let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_PROCESS);
+            request.supervisor = 999;
+            request.restart = RESTART_NEVER;
+            request.spec = &spec;
+            let _ = supervisor_call(request);
+            unreachable!("a forced body is abandoned at its next park");
+        }
         OnCancel::SendToSelf(label) => {
             let direct = send(
                 Address::Direct(IncarnationId::from_raw(me)),
@@ -2888,7 +2913,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         VIOLATION_UNKNOWN_TASK as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 33);
+    assert_eq!(crate::chimi_fiber_abi_version(), 34);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------
@@ -3411,6 +3436,309 @@ fn every_error_reply_releases_each_context_it_was_handed_once() {
     released.sort_unstable();
     assert_eq!(released, [0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
     assert!(lab.started().is_empty());
+}
+
+/// Queues the release of a channel that never existed, so the fiber's
+/// next request defects it before that request is served.
+fn queue_unknown_channel_release() {
+    crate::handles::chimi_fiber_handle_retain(0x7777);
+    crate::handles::chimi_fiber_handle_drop(0x7777);
+}
+
+/// Starts a process with context 0x31 after queueing a release that
+/// defects the caller first. The context is a running supervisor.
+unsafe extern "C" fn start_process_after_bad_release(context: *mut c_void) -> ChimiFiberResult {
+    queue_unknown_channel_release();
+    let spec = ChimiProcessSpec {
+        entry: Some(worker),
+        context: 0x31 as *mut c_void,
+        mailbox_capacity: 4,
+        shutdown_within: 0,
+        name: 0,
+    };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_PROCESS);
+    request.supervisor = context as u64;
+    request.restart = RESTART_NEVER;
+    request.spec = &spec;
+    // The caller is told to unwind, as a host's start call would be.
+    assert!(supervisor_call(request).is_none(), "the queued release defects the caller");
+    ended(0)
+}
+
+/// Issues `kind`, a root or nested supervisor start under `supervisor`,
+/// whose policy hands over contexts 0x32 and 0x33 (the second nested),
+/// after queueing a release that defects the caller first.
+fn start_policy_after_bad_release(kind: u32, supervisor: u64) -> ChimiFiberResult {
+    queue_unknown_channel_release();
+    let spec = |tag: usize| ChimiProcessSpec {
+        entry: Some(worker),
+        context: tag as *mut c_void,
+        mailbox_capacity: 4,
+        shutdown_within: 0,
+        name: 0,
+    };
+    let process = |tag: usize| ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_ON_DEFECT,
+        process: spec(tag),
+        supervisor: ptr::null(),
+    };
+    let inner_members = [process(0x33)];
+    let inner = ChimiSupervisorPolicy {
+        members: inner_members.as_ptr(),
+        member_count: 1,
+        capacity: 1,
+        restart_limit: 1,
+        restart_within: 1,
+    };
+    let members = [
+        process(0x32),
+        ChimiSupervisorMember {
+            kind: MEMBER_SUPERVISOR,
+            restart: RESTART_ON_DEFECT,
+            process: spec(0),
+            supervisor: &inner,
+        },
+    ];
+    let policy = ChimiSupervisorPolicy {
+        members: members.as_ptr(),
+        member_count: 2,
+        capacity: 4,
+        restart_limit: 1,
+        restart_within: 1,
+    };
+    let mut request = ChimiProcessRequest::new(kind);
+    request.supervisor = supervisor;
+    request.restart = RESTART_NEVER;
+    request.policy = &policy;
+    // The caller is told to unwind, as a host's start call would be.
+    assert!(supervisor_call(request).is_none(), "the queued release defects the caller");
+    ended(0)
+}
+
+unsafe extern "C" fn start_supervisor_after_bad_release(_context: *mut c_void) -> ChimiFiberResult {
+    start_policy_after_bad_release(REQUEST_SUPERVISOR_START, 0)
+}
+
+/// The context is the running supervisor to nest under.
+unsafe extern "C" fn start_nested_supervisor_after_bad_release(
+    context: *mut c_void,
+) -> ChimiFiberResult {
+    start_policy_after_bad_release(REQUEST_SUPERVISOR_START_SUPERVISOR, context as u64)
+}
+
+/// Starts a handoff process with context 0x34 whose argument claims a
+/// Receiver the caller does not hold. The context is a running supervisor.
+unsafe extern "C" fn start_handoff_with_foreign_capability(context: *mut c_void) -> ChimiFiberResult {
+    let spec = ChimiProcessSpec {
+        entry: Some(worker),
+        context: 0x34 as *mut c_void,
+        mailbox_capacity: 4,
+        shutdown_within: 0,
+        name: 0,
+    };
+    let foreign = [ChimiCarriedCapability {
+        channel: 0x7777,
+        token: 1,
+        capability: CAPABILITY_RECEIVER,
+    }];
+    let carried = ChimiMessageCapabilities {
+        items: foreign.as_ptr(),
+        count: foreign.len(),
+    };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_PROCESS);
+    request.supervisor = context as u64;
+    request.restart = RESTART_NEVER;
+    request.spec = &spec;
+    request.message = message(Msg::Return);
+    request.carried = &carried;
+    // The caller is told to unwind, as a host's start call would be.
+    assert!(supervisor_call(request).is_none(), "the capability violation defects the caller");
+    ended(0)
+}
+
+/// Runs `entry` as a root whose context is a running supervisor and
+/// returns the contexts released, sorted.
+fn released_by_unserved_start(entry: ChimiFiberEntry) -> Vec<usize> {
+    let mut lab = Lab::new();
+    let supervisor = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    let main = lab
+        .scheduler
+        .start_root_with_context(entry, supervisor.get() as usize as *mut c_void)
+        .expect("main");
+    lab.scheduler.drive();
+    assert!(
+        matches!(lab.scheduler.result(None, main), Ok(TaskResult::Ready(TaskOutcome::Defected { .. }))),
+        "the caller defects before its start is served"
+    );
+    assert!(lab.started().is_empty(), "nothing started");
+    let mut released = log(|log| log.released_specs.clone());
+    released.sort_unstable();
+    released
+}
+
+#[test]
+fn a_start_process_its_callers_releases_defect_still_releases_its_context() {
+    assert_eq!(released_by_unserved_start(start_process_after_bad_release), [0x31]);
+}
+
+#[test]
+fn a_supervisor_start_its_callers_releases_defect_still_releases_every_context() {
+    assert_eq!(
+        released_by_unserved_start(start_supervisor_after_bad_release),
+        [0x32, 0x33]
+    );
+}
+
+#[test]
+fn a_nested_supervisor_start_its_callers_releases_defect_still_releases_every_context() {
+    assert_eq!(
+        released_by_unserved_start(start_nested_supervisor_after_bad_release),
+        [0x32, 0x33]
+    );
+}
+
+#[test]
+fn a_handoff_start_refused_for_a_capability_violation_releases_its_context() {
+    assert_eq!(
+        released_by_unserved_start(start_handoff_with_foreign_capability),
+        [0x34]
+    );
+}
+
+/// Sleeps until cancelled, then, in its cancellation unwind, starts a
+/// process with context 0x51 under the supervisor in its context.
+unsafe extern "C" fn starts_while_unwinding(context: *mut c_void) -> ChimiFiberResult {
+    let _ = sleep_until(i64::MAX);
+    let spec = ChimiProcessSpec {
+        entry: Some(worker),
+        context: 0x51 as *mut c_void,
+        mailbox_capacity: 4,
+        shutdown_within: 0,
+        name: 0,
+    };
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START_PROCESS);
+    request.supervisor = context as u64;
+    request.restart = RESTART_NEVER;
+    request.spec = &spec;
+    let _ = supervisor_call(request);
+    unreachable!("an unwind that parks again is abandoned");
+}
+
+#[test]
+fn a_start_issued_in_a_cancellation_unwind_still_releases_its_context() {
+    let mut lab = Lab::new();
+    let supervisor = lab
+        .scheduler
+        .start_supervisor(policy(vec![], 3))
+        .expect("root");
+    let task = lab
+        .scheduler
+        .start_root_with_context(starts_while_unwinding, supervisor.get() as usize as *mut c_void)
+        .expect("task");
+    lab.scheduler.drive();
+    lab.scheduler.cancel(None, task).expect("cancel");
+    lab.scheduler.drive();
+    assert!(
+        matches!(lab.scheduler.result(None, task), Ok(TaskResult::Ready(_))),
+        "the task ended"
+    );
+    assert!(lab.started().is_empty(), "the start was not served");
+    assert_eq!(log(|log| log.released_specs.clone()), [0x51]);
+}
+
+/// Starts a supervisor whose policy nests past the depth limit, with
+/// context 0x61 in the innermost policy, and records the status.
+unsafe extern "C" fn starts_a_too_deep_policy(_context: *mut c_void) -> ChimiFiberResult {
+    const LEVELS: usize = 80;
+    let leaf = [ChimiSupervisorMember {
+        kind: MEMBER_PROCESS,
+        restart: RESTART_NEVER,
+        process: ChimiProcessSpec {
+            entry: Some(worker),
+            context: 0x61 as *mut c_void,
+            mailbox_capacity: 4,
+            shutdown_within: 0,
+            name: 0,
+        },
+        supervisor: ptr::null(),
+    }];
+    let empty = ChimiProcessSpec {
+        entry: None,
+        context: ptr::null_mut(),
+        mailbox_capacity: 0,
+        shutdown_within: 0,
+        name: 0,
+    };
+    // Each level's policy holds one member nesting the level below it.
+    let mut policies: Vec<Box<ChimiSupervisorPolicy>> = Vec::with_capacity(LEVELS);
+    let mut members: Vec<Box<[ChimiSupervisorMember; 1]>> = Vec::with_capacity(LEVELS);
+    let mut below: *const ChimiSupervisorMember = leaf.as_ptr();
+    for _ in 0..LEVELS {
+        let policy = Box::new(ChimiSupervisorPolicy {
+            members: below,
+            member_count: 1,
+            capacity: 1,
+            restart_limit: 1,
+            restart_within: 1,
+        });
+        let member = Box::new([ChimiSupervisorMember {
+            kind: MEMBER_SUPERVISOR,
+            restart: RESTART_NEVER,
+            process: empty,
+            supervisor: &*policy,
+        }]);
+        below = member.as_ptr();
+        policies.push(policy);
+        members.push(member);
+    }
+    let mut request = ChimiProcessRequest::new(REQUEST_SUPERVISOR_START);
+    request.policy = &**policies.last().expect("levels");
+    let status = supervisor_call(request).expect("not cancelled").status;
+    log(|log| log.outcomes.push(status));
+    ended(0)
+}
+
+#[test]
+fn a_policy_refused_for_its_depth_releases_its_deepest_context() {
+    let mut lab = Lab::new();
+    let main = lab
+        .scheduler
+        .start_root_with_context(starts_a_too_deep_policy, ptr::null_mut())
+        .expect("main");
+    lab.scheduler.drive();
+    assert!(matches!(lab.scheduler.result(None, main), Ok(TaskResult::Ready(_))));
+    assert_eq!(log(|log| log.outcomes.clone()), [RESPONSE_ERROR]);
+    assert_eq!(log(|log| log.released_specs.clone()), [0x61]);
+}
+
+#[test]
+fn a_forced_body_abandoned_at_a_start_still_releases_its_context() {
+    let mut lab = Lab::new();
+    let behavior = behavior_context(&STARTS_AFTER_FORCE) as usize;
+    let root = lab
+        .scheduler
+        .start_supervisor(policy(
+            vec![Member::Process(
+                spec_with(&STARTS_AFTER_FORCE, Some(COUNTER), 8),
+                Restart::Never,
+            )],
+            1,
+        ))
+        .unwrap();
+    lab.settle();
+    let _ = lab.scheduler.stop_supervisor(root);
+    let _ = lab.scheduler.run_until_idle();
+    assert_eq!(
+        lab.terminations().last().map(|termination| termination.1),
+        Some(TerminalCause::Forced)
+    );
+    let mut released = log(|log| log.released_specs.clone());
+    released.sort_unstable();
+    assert_eq!(released, [FORCED_START_CONTEXT, behavior]);
 }
 
 #[test]

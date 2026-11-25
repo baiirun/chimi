@@ -842,9 +842,13 @@ symbols of the three tiers.
   the same. `Supervisor.start` and `start_process` marshal them into
   `ChimiSupervisorPolicy` and `ChimiProcessSpec`. Each spec's context holds a
   detached fragment with a copy of the body callable, which carries the
-  providers it captured. The scheduler owns the context from the request on;
-  a request that is never issued (its task is cancelled first) frees its
-  contexts in the runtime.
+  providers it captured. The scheduler owns every context a start request
+  names from the moment the request is issued, served or not: a start that
+  is refused, or whose caller ends while parked on it (a capability
+  violation, a forced stop, a cancellation unwind that parks again), has its
+  contexts released by the scheduler, so the runtime frees only the contexts
+  of a start it never issued (its specs failed to marshal, or a handoff's
+  argument could not be copied). Since fiber ABI 34.
 - Every incarnation runs `chimi_rt_process_entry`: a new heap, a copy of the
   body from the context's fragment (`fragment_copy_into_current`, which leaves
   the fragment for the next incarnation), and the body called with an inbox

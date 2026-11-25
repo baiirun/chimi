@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 33u
+#define CHIMI_FIBER_ABI_VERSION 34u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -360,8 +360,12 @@ typedef struct {
 } ChimiInjectedSignal;
 
 /* A process specification. `context` is passed to every incarnation's entry.
-   The scheduler owns the context from the request that hands it over and
-   releases it once through `release_spec_context` when no record needs it. */
+   The scheduler owns the context from the moment a fiber issues the
+   SUPERVISOR_START, START_PROCESS or START_SUPERVISOR request that names it,
+   whether that request is answered, refused, or never answered because the
+   caller ended while parked on it. It releases the context once through
+   `release_spec_context` when no record needs it; the host never frees a
+   context it has sent. */
 typedef struct {
   ChimiFiberEntry entry;
   void *context;
