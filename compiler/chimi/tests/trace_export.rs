@@ -501,6 +501,7 @@ fn a_process_body_is_a_span_tagged_with_its_incarnation() {
         "{}",
         body.text
     );
+    assert!(!body.text.contains("chimi.file_id"), "{}", body.text);
     let call = spans.iter().find(|span| span.name == "call").unwrap();
     assert_eq!(call.parent.as_deref(), Some(body.id.as_str()));
     std::fs::remove_dir_all(directory).unwrap();

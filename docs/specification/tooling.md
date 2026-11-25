@@ -395,7 +395,9 @@ Rules:
 - A process body is a span named as in `chimi trace show`
   (`process app/main.worker incarnation 2`), from its `process_body_started`
   to its `process_body_completed`, with the body's operations as children.
-  It also carries `chimi.incarnation_id`.
+  It carries `chimi.operation` (`process_body`), `chimi.incarnation_id` and
+  `chimi.outcome`, and no node ids or source, since it is no node of the
+  program.
 - Other scheduler, task, channel, clock and process events are not exported.
 
 Implementation: `compiler/chimi/src/trace_export.rs` (`export_trace_otlp`).

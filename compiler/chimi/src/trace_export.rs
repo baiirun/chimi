@@ -275,21 +275,24 @@ impl Execution {
             unix_nanos(self.start_unix_ns, end),
         );
         string_attribute(output, "chimi.operation", &span.operation);
-        for (key, value) in [
-            ("chimi.core_node_id", span.core_node_id),
-            ("chimi.file_id", span.file_id),
-            ("chimi.source_start", span.source.0),
-            ("chimi.source_end", span.source.1),
-        ] {
-            output.push(',');
-            int_attribute(output, key, value);
-        }
-        let place = self
-            .modules
-            .place(span.file_id as u32, span.source.0 as u32);
-        if let Some(place) = locate(place) {
-            output.push(',');
-            string_attribute(output, "chimi.source", &place);
+        // A process body is no node of the program, so it has no place.
+        if span.incarnation.is_none() {
+            for (key, value) in [
+                ("chimi.core_node_id", span.core_node_id),
+                ("chimi.file_id", span.file_id),
+                ("chimi.source_start", span.source.0),
+                ("chimi.source_end", span.source.1),
+            ] {
+                output.push(',');
+                int_attribute(output, key, value);
+            }
+            let place = self
+                .modules
+                .place(span.file_id as u32, span.source.0 as u32);
+            if let Some(place) = locate(place) {
+                output.push(',');
+                string_attribute(output, "chimi.source", &place);
+            }
         }
         if let Some((requirement, method)) = &span.dependency {
             output.push(',');

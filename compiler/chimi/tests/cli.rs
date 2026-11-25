@@ -5586,11 +5586,17 @@ fn native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader
             "{\n    Task.cancel(task)\n    0\n  }",
             "task capability violation: task 3 cannot cancel task 2: task 1 owns it",
         ),
+        (
+            "interface-hides-task-wait",
+            "Wait.first([Wait.task(task, fn(value: Int) -> Int { value })])",
+            "task capability violation: task 3 cannot wait for task 2: task 1 owns it",
+        ),
     ] {
         let message = native_capability_defect(
             name,
             &format!(
-                "interface Peek {{\n\
+                "import std/wait as Wait\n\
+                 interface Peek {{\n\
                  \x20 read: fn() -> Int\n\
                  }}\n\
                  fn run(peek: Peek) -> Int {{\n\
