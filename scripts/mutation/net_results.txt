@@ -1,5 +1,5 @@
 # mutation run at 3c8910e77dfdd2bcc272c91d72c5fdd61768cd13
-# net_mutations.py: 27 mutants against compiler/chimi
+# net_mutations.py: 28 mutants against compiler/chimi (one line removed below, see the end)
 BASELINE ok  [net] (161s)
 KILLED       finishing closes both directions [net] (67s)
 KILLED       refused reads as unreachable [net] (65s)
@@ -35,5 +35,6 @@ KILLED       the runner does not close network [net] (23s)
 #   the lookup still answers. The fiber tests cover the reactor's side. It
 #   survived the C binding's run too.
 # - Dropped after this run, as equivalent: "a lookup's failure names the wrong
-#   host" (std/net.chimi's `named` replaces the name). A TIMEOUT counts as
+#   host" SURVIVED, because std/net.chimi's `named` replaces the name. Its line
+#   is removed above. The Apple-only send flag changed after this run. A TIMEOUT counts as
 #   caught.

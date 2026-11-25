@@ -284,7 +284,8 @@ fn resolve_failure<'call>(
     error: c_int,
 ) -> Outcome<'call> {
     // glibc declares EAI_NODATA only for _GNU_SOURCE, which the C binding
-    // never set, so only Apple's counts.
+    // never set, so only Apple's counts (musl and Android, not targets yet,
+    // declared it to the C).
     #[cfg(target_vendor = "apple")]
     let no_data = status == libc::EAI_NODATA;
     #[cfg(not(target_vendor = "apple"))]
