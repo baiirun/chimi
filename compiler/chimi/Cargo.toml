@@ -25,6 +25,7 @@ native-backend = [
 
 [dependencies]
 chimi-fiber = { path = "../../runtime/chimi-fiber", optional = true }
+chimi-runtime = { path = "../../runtime/chimi-runtime" }
 blake3 = { version = "=1.8.6", optional = true }
 cranelift-codegen = { version = "=0.131.3", optional = true }
 cranelift-frontend = { version = "=0.131.3", optional = true }
