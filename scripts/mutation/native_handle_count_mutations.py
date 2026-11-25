@@ -25,12 +25,11 @@ MUTATIONS = [
         "  if (value->kind == VALUE_NATIVE_HANDLE)\n"
         "    return native_handle_key(value->as.handle.slot, value->as.handle.generation);\n", "")]),
     m("an unreferenced handle is not closed", [(
-        "  if (entry->type != NULL && entry->generation == generation)\n"
-        "    release_binding_slot(entry, slot, false);",
-        "  (void)entry; (void)generation;")]),
+        "  binding_handle_close((uint32_t)((key & ~NATIVE_HANDLE_KEY) >> 32), (uint32_t)key, NULL, NULL);",
+        "  (void)key;")]),
     m("an unreferenced key ignores the generation", [(
-        "  if (entry->type != NULL && entry->generation == generation)",
-        "  if (entry->type != NULL)")]),
+        "  if (entry && entry->type != NULL && entry->generation == generation && (!type || entry->type == type)) {",
+        "  if (entry && entry->type != NULL && (!type || entry->type == type)) {")]),
     m("a native key is counted like a channel", [(
         "static void counted_handle_drop(uint64_t key) {\n  if (!is_native_handle_key(key)) {",
         "static void counted_handle_drop(uint64_t key) {\n  if (true) {")]),
