@@ -234,3 +234,152 @@ fn an_alias_qualified_type_does_not_use_a_member_of_the_same_name() {
         )
     );
 }
+
+fn lint_stderr(name: &str, text: &str) -> (Option<i32>, String, String) {
+    let path = scratch_file(name, text);
+    let output = chimi(&["lint", &path]);
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).replace(&path, "{path}"),
+        path,
+    )
+}
+
+// A use counts only when a root reaches it: two private functions that call
+// each other, one that calls only itself, and a constant only dead code reads
+// are all reported, while a chain a public function starts, and what a `_`
+// item uses, are not.
+#[test]
+fn a_private_item_only_dead_code_uses_is_reported() {
+    let (code, stderr, _) = lint_stderr(
+        "reachability",
+        "const step: Int = 1\n\n\
+         fn ping(count: Int) -> Int {\n  pong(count - step)\n}\n\n\
+         fn pong(count: Int) -> Int {\n  ping(count)\n}\n\n\
+         fn spin(count: Int) -> Int {\n  spin(count)\n}\n\n\
+         fn inner() -> Int {\n  2\n}\n\n\
+         fn outer() -> Int {\n  inner()\n}\n\n\
+         fn kept() -> Int {\n  3\n}\n\n\
+         fn _spare() -> Int {\n  kept()\n}\n\n\
+         /// Doc.\npub fn value() -> Int {\n  outer()\n}\n",
+    );
+
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        concat!(
+            "{path}:1:7: warning[unused-private] lint: the private constant step is used only by code that is never used; remove it or make it `pub`\n",
+            "{path}:3:4: warning[unused-private] lint: the private function ping is used only by code that is never used; remove it or make it `pub`\n",
+            "{path}:7:4: warning[unused-private] lint: the private function pong is used only by code that is never used; remove it or make it `pub`\n",
+            "{path}:11:4: warning[unused-private] lint: the private function spin is never used; remove it or make it `pub`\n",
+        )
+    );
+}
+
+#[test]
+fn unused_private_types_and_names_are_reported() {
+    let (code, stderr, _) = lint_stderr(
+        "private-types",
+        "struct Point {\n  x: Int,\n}\n\n\
+         enum Mode {\n  Fast,\n  Slow,\n}\n\n\
+         interface Greeter {\n  greet: fn() -> Int\n}\n\n\
+         type Count = Int\n\n\
+         process name worker: Int\n\n\
+         needs Shop {\n  greeter: Greeter,\n}\n\n\
+         struct Used {\n  y: Int,\n}\n\n\
+         enum Matched {\n  One,\n  Two,\n}\n\n\
+         type Total = Int\n\n\
+         /// Doc.\npub fn make(total: Total) -> Int {\n  let used = Used { y: total }\n  used.y\n}\n\n\
+         /// Doc.\npub fn which(value: Matched) -> Int {\n  case value {\n    One -> 1\n    _ -> 2\n  }\n}\n",
+    );
+
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        concat!(
+            "{path}:1:8: warning[unused-private] lint: the private struct Point is never used; remove it or make it `pub`\n",
+            "{path}:5:6: warning[unused-private] lint: the private enum Mode is never used; remove it or make it `pub`\n",
+            "{path}:10:11: warning[unused-private] lint: the private interface Greeter is used only by code that is never used; remove it or make it `pub`\n",
+            "{path}:14:6: warning[unused-private] lint: the private type alias Count is never used; remove it or make it `pub`\n",
+            "{path}:16:14: warning[unused-private] lint: the private process name worker is never used; remove it or make it `pub`\n",
+            "{path}:18:7: warning[unused-private] lint: the private needs group Shop is never used; remove it or make it `pub`\n",
+        )
+    );
+}
+
+// A written needs entry the body never reaches, directly or through a call, is
+// reported on a private function and on `main`; a public function's entries
+// are its contract, so they stay.
+#[test]
+fn a_written_need_the_body_never_reaches_is_reported() {
+    let (code, stderr, _) = lint_stderr(
+        "needs",
+        "import std/clock as Clock.{Clock}\n\n\
+         fn idle() -> Int needs {\n  clock: Clock,\n} {\n  1\n}\n\n\
+         fn ticks() -> Int needs {\n  clock: Clock,\n} {\n  let _at = Clock.now()\n  2\n}\n\n\
+         fn through() -> Int needs {\n  clock: Clock,\n} {\n  ticks()\n}\n\n\
+         /// Doc.\npub fn contract() -> Int needs {\n  clock: Clock,\n} {\n  3\n}\n\n\
+         /// Doc.\npub fn total() -> Int needs {\n  clock: Clock,\n} {\n  idle() + through()\n}\n",
+    );
+
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        "{path}:4:3: warning[unused-need] lint: idle never reaches the need clock; remove it from the needs clause\n"
+    );
+}
+
+// Each fix, applied alone, leaves a module that still type-checks and no
+// longer has that finding: an import line loses only the unused part, or goes
+// when nothing is left, and a binding gets a leading `_`.
+#[test]
+fn each_fix_removes_its_finding_and_keeps_the_module_valid() {
+    let text = "import std/map as Map.{Map}\nimport std/list as List\n\
+                import std/clock.{Clock, Instant}\nimport std/order.{Ordering}\n\n\
+                /// Doc.\npub fn sized(map: Map<Int, Int>, at: Instant) -> Int {\n  let unused = 1\n  0\n}\n";
+    let lint = |text: &str| {
+        let module = chimi::ProjectSource::new(
+            "main",
+            chimi::source::SourceSnapshot::from_text("main.chimi", text.to_owned()),
+        )
+        .unwrap();
+        let report = Compiler::type_project(vec![module]);
+        assert!(report.is_success(), "{text}");
+        report.lint(false)
+    };
+    let findings = lint(text);
+    let mut fixed = Vec::new();
+    for finding in &findings {
+        let [fix] = finding.fixes() else {
+            panic!("{} has {} fixes", finding.message(), finding.fixes().len());
+        };
+        let (start, end) = (fix.range().start() as usize, fix.range().end() as usize);
+        let after = format!("{}{}{}", &text[..start], fix.replacement(), &text[end..]);
+        let remaining = lint(&after);
+        assert_eq!(remaining.len(), findings.len() - 1, "{after}");
+        fixed.push(after.lines().take(4).collect::<Vec<_>>().join("|"));
+    }
+    assert_eq!(
+        fixed,
+        [
+            "import std/map.{Map}|import std/list as List|import std/clock.{Clock, Instant}|import std/order.{Ordering}",
+            "import std/map as Map.{Map}|import std/clock.{Clock, Instant}|import std/order.{Ordering}|",
+            "import std/map as Map.{Map}|import std/list as List|import std/clock.{Instant}|import std/order.{Ordering}",
+            "import std/map as Map.{Map}|import std/list as List|import std/clock.{Clock, Instant}|",
+            "import std/map as Map.{Map}|import std/list as List|import std/clock.{Clock, Instant}|import std/order.{Ordering}",
+        ]
+    );
+}
+
+#[test]
+fn an_import_line_not_in_one_line_form_gets_no_fix() {
+    let text = "import std/clock.{\n  Clock,\n  Instant,\n}\n\n/// Doc.\npub fn same(at: Instant) -> Instant {\n  at\n}\n";
+    let module = chimi::ProjectSource::new(
+        "main",
+        chimi::source::SourceSnapshot::from_text("main.chimi", text.to_owned()),
+    )
+    .unwrap();
+    let findings = Compiler::type_project(vec![module]).lint(false);
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].fixes().is_empty());
+}

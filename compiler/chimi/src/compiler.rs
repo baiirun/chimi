@@ -395,7 +395,7 @@ impl TypeReport {
     /// `include_standard` for the `std/` modules as well. Each is a warning
     /// whose code names its rule.
     pub fn lint(&self, include_standard: bool) -> Vec<Diagnostic> {
-        crate::lint::lint(&self.typed.resolved, |origin| {
+        crate::lint::lint(&self.typed, |origin| {
             origin == ModuleOrigin::Own || (include_standard && origin == ModuleOrigin::Standard)
         })
     }
