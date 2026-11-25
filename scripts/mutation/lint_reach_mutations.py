@@ -41,8 +41,8 @@ MUTATIONS = [
         "    declaration.kind != ModuleDeclarationKind::NativeType",
     )]),
     mutant("enum variants do not use their enum", L, [(
-        "            .chain(declaration.variants.iter().map(|variant| variant.semantic_id));",
-        "            .chain(std::iter::empty());",
+        "                .map(|variant| variant.semantic_id),",
+        "                .map(|variant| variant.semantic_id).take(0),",
     )]),
     mutant("used-by-dead-code message is never chosen", L, [(
         "        referenced[target] = true;",
@@ -61,8 +61,8 @@ MUTATIONS = [
         "                inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);\n                self.reached_needs.insert(function_symbol, inferred.needs);",
     )]),
     mutant("an emptied import line keeps its newline", L, [(
-        "                    end + 1\n                } else {",
-        "                    end\n                } else {",
+        " + line_end + usize::from(line_end < rest.len());",
+        " + line_end;",
     )]),
     mutant("a wrapped import line gets a fix", L, [(
         "        if self.render().as_deref() != Some(written) {",
@@ -73,7 +73,15 @@ MUTATIONS = [
         "                            line.members.clear();",
     )]),
     mutant("the binding fix replaces the name", L, [(
-        "                .with_fix(TextRange::empty(range.start() as usize), \"_\"),",
-        "                .with_fix(range, \"_\"),",
+        "                unused.with_fix(TextRange::empty(range.start() as usize), \"_\")",
+        "                unused.with_fix(range, \"_\")",
+    )]),
+    mutant("a taken underscore name still gets a fix", L, [(
+        "            Some(if bound.contains(format!(\"_{}\", symbol.name).as_str()) {",
+        "            Some(if false {",
+    )]),
+    mutant("a trailing comment does not block the fix", L, [(
+        " || !rest[..line_end].trim().is_empty() {",
+        " {",
     )]),
 ]

@@ -223,7 +223,11 @@ impl ImportLine {
         let range = self.range;
         let text = module.source.text();
         let written = &text[range.start() as usize..range.end() as usize];
-        if self.render().as_deref() != Some(written) {
+        let rest = &text[range.end() as usize..];
+        let line_end = rest.find('\n').unwrap_or(rest.len());
+        // Anything after the import on its line, a comment included, would be
+        // left behind or lost, so such a line gets no edit either.
+        if self.render().as_deref() != Some(written) || !rest[..line_end].trim().is_empty() {
             return finding;
         }
         let mut kept = self.clone();
@@ -231,12 +235,7 @@ impl ImportLine {
         match kept.render() {
             Some(replacement) => finding.with_fix(range, replacement),
             None => {
-                let end = range.end() as usize;
-                let end = if text[end..].starts_with('\n') {
-                    end + 1
-                } else {
-                    end
-                };
+                let end = range.end() as usize + line_end + usize::from(line_end < rest.len());
                 finding.with_fix(TextRange::new(range.start() as usize, end), "")
             }
         }
@@ -378,6 +377,15 @@ fn unused_bindings(
     module: &SemanticModule,
     used: &HashSet<SymbolId>,
 ) -> Vec<Diagnostic> {
+    // The `_` name the fix would give a binding may already be taken, and two
+    // locals of one name in one scope are an error. Scopes are not tracked
+    // here, so a name bound anywhere in the module gets no fix.
+    let bound: HashSet<&str> = resolved
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.module_id == Some(module.id) && is_local(symbol.kind))
+        .map(|symbol| symbol.name.as_str())
+        .collect();
     resolved
         .symbols
         .iter()
@@ -392,20 +400,31 @@ fn unused_bindings(
         })
         .filter_map(|symbol| {
             let range = symbol.name_range?;
-            Some(
-                finding(
-                    module,
-                    UNUSED_BINDING,
-                    range,
-                    format!(
-                        "{} is never used; remove it, or name it _{} to keep it",
-                        symbol.name, symbol.name
-                    ),
-                )
-                .with_fix(TextRange::empty(range.start() as usize), "_"),
-            )
+            let unused = finding(
+                module,
+                UNUSED_BINDING,
+                range,
+                format!(
+                    "{} is never used; remove it, or name it _{} to keep it",
+                    symbol.name, symbol.name
+                ),
+            );
+            Some(if bound.contains(format!("_{}", symbol.name).as_str()) {
+                unused
+            } else {
+                unused.with_fix(TextRange::empty(range.start() as usize), "_")
+            })
         })
         .collect()
+}
+
+fn is_local(kind: ProjectSymbolKind) -> bool {
+    matches!(
+        kind,
+        ProjectSymbolKind::LocalBinding
+            | ProjectSymbolKind::PatternBinding
+            | ProjectSymbolKind::Parameter
+    )
 }
 
 /// A private function, or `main`, that writes a needs entry its body never

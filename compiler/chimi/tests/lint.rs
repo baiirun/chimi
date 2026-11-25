@@ -383,3 +383,29 @@ fn an_import_line_not_in_one_line_form_gets_no_fix() {
     assert_eq!(findings.len(), 1);
     assert!(findings[0].fixes().is_empty());
 }
+
+// A fix must not make the module invalid or leave part of the line behind.
+#[test]
+fn a_fix_that_would_break_the_module_is_not_offered() {
+    let findings = |text: &str| {
+        let module = chimi::ProjectSource::new(
+            "main",
+            chimi::source::SourceSnapshot::from_text("main.chimi", text.to_owned()),
+        )
+        .unwrap();
+        Compiler::type_project(vec![module]).lint(false)
+    };
+    // `_x` is taken, so naming `x` `_x` would be a duplicate local.
+    let taken = findings("/// Doc.\npub fn f() -> Int {\n  let x = 1\n  let _x = 2\n  _x\n}\n");
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].fixes().is_empty());
+    // A trailing comment would be left on its own.
+    let commented = findings("import std/list as List // keep\n\n/// Doc.\npub fn f() -> Int {\n  1\n}\n");
+    assert_eq!(commented.len(), 1);
+    assert!(commented[0].fixes().is_empty());
+    // A CRLF line goes with its whole terminator.
+    let text = "import std/list as List\r\n\r\n/// Doc.\r\npub fn f() -> Int {\r\n  1\r\n}\r\n";
+    let crlf = findings(text);
+    let fix = &crlf[0].fixes()[0];
+    assert_eq!((fix.range().start(), fix.range().end()), (0, 25));
+}
