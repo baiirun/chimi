@@ -28,6 +28,10 @@ import std/text as Text
 
 /// The capability to read and change the file system. The runner's provider
 /// uses the operating system's; a fake is a record of these functions.
+///
+/// The runner supplies it to `main` as the need `files`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Files {
   /// A reader of the file's bytes from the start.
   open: fn(Path) -> Reader<FsError> errors FsError

@@ -35,6 +35,10 @@ pub enum Standard {
 
 /// The capability to ask about the terminal. The runner's provider asks the
 /// operating system; a test's fake is a record of these two functions.
+///
+/// The runner supplies it to `main` as the need `terminal`. A test must
+/// supply it with `using`; docs/runner-supplied-needs.md lists every need
+/// the runner supplies.
 pub interface Terminal {
   /// Whether the stream is attached to a terminal.
   is_terminal: fn(Standard) -> Bool

@@ -60,8 +60,9 @@ pub use trace_view::{
 pub use formatter::FormatReport;
 pub use hints::TypeHint;
 pub use inspection::{
-    CallableInspection, ClausePosition, InspectedToken, InspectionError, InspectionReport,
-    NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame, ValuePropertyInspection,
+    CallableInspection, ClausePosition, HostSupply, InspectedToken, InspectionError,
+    InspectionReport, NeedInspection, ReferenceInspection, SymbolInspection, SyntaxFrame,
+    ValuePropertyInspection,
 };
 pub use occurrences::{Occurrence, SymbolOccurrences};
 pub use operations::StandardTreeVerification;
