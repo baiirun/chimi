@@ -477,8 +477,11 @@ fn metrics_are_pushed_every_interval_and_when_the_body_ends() {
 // while a connect or send is in flight, so the 20 ms timeout cannot cut a
 // push short on a slow machine, and the 503 collector receives exactly the
 // two pushes. The collector that never answers needs the real clock, since
-// only real time ends its wait; there, whether a push's bytes arrive before
-// the 20 ms timeout depends on the machine, so its pushes are not counted.
+// only real time ends its wait. There a fixed sleep could end the body while
+// a stalled periodic push is still waiting, and a cancelled push is not
+// counted, so that body waits until the first failure is counted instead.
+// Whether a push's bytes reach that collector before the 20 ms timeout also
+// depends on the machine, so its pushes are not counted.
 #[test]
 fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -492,12 +495,24 @@ fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     Clock.sleep(Duration.milliseconds(300))
     "done""#;
     let settings = ", interval: Duration.milliseconds(200), timeout: Duration.milliseconds(20), flush_within: Duration.milliseconds(20)";
-    for (port, name, clock) in [
-        (refused_port, "refused", "virtual"),
-        (failing.port, "failing", "virtual"),
-        (slow.port, "slow", "real"),
+    let until_one_failure = r#"    Metrics.count("orders", 1, [])
+    loop _waiting = Void {
+      case Text.contains(Metrics.runner_document(), "\"chimi.otel.failed_exports\"") {
+        True -> break "done"
+        False -> Clock.sleep(Duration.milliseconds(5))
+      }
+    }"#;
+    for (port, name, clock, body) in [
+        (refused_port, "refused", "virtual", body),
+        (failing.port, "failing", "virtual", body),
+        (slow.port, "slow", "real", until_one_failure),
     ] {
-        let (output, metrics) = scratch.run_native_on(&exporting(port, settings, body), clock);
+        let program = exporting(port, settings, body).replacen(
+            "import std/otel as Otel\n",
+            "import std/otel as Otel\nimport std/text as Text\n",
+            1,
+        );
+        let (output, metrics) = scratch.run_native_on(&program, clock);
         assert!(output.status.success(), "{name}: {output:?}");
         assert!(
             metrics.contains(
