@@ -8,6 +8,11 @@ publish = false
 [lib]
 crate-type = ["rlib", "staticlib"]
 
+[features]
+# The Rust binding packages; only compiler/chimi/build.rs's nested archive
+# build turns this on (see chimi-runtime's `bindings`).
+bindings = ["chimi-runtime/bindings"]
+
 [dependencies]
 chimi-runtime = { path = "../chimi-runtime" }
 backtrace = "=0.3.76"

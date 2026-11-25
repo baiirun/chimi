@@ -1,0 +1,28 @@
+//! Binding packages written in Rust (G20): the standard packages with no C
+//! library under them. Each exports the same `ChimiBindingFunction` symbols
+//! its C file did and reaches the runtime only through `chimi_binding.h`,
+//! which [`api`] wraps.
+//!
+//! The module is built only into the runtime archives (the `bindings`
+//! feature), because it imports the binding API from `runtime.c`. A program
+//! links only the functions it reaches: the link drops unreferenced sections.
+//!
+//! Two rules C did not need:
+//!
+//! - Nothing here may panic. A panic aborts the whole program (the standalone
+//!   archive aborts on panic, and a panic cannot unwind out of an `extern
+//!   "C"` function), so the lints below refuse the usual sources.
+//! - Hold no owning value across a wait. A task stopped while it waits is
+//!   abandoned at the park and its frames never run their destructors, so
+//!   state that must be released lives in a handle, whose `release` the
+//!   runtime runs exactly once.
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
+mod api;
+mod terminal;
