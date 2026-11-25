@@ -107,6 +107,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # The parsers that moved to Rust are fuzzed in the runtime's Rust archive.
+      - uses: dtolnay/rust-toolchain@1.97.0
       # The runner's clang may come without its libFuzzer runtime.
       - name: Install libFuzzer
         run: |

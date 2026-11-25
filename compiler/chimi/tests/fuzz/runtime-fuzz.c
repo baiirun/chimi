@@ -8,13 +8,18 @@
    `corpus/<target>.txt`, against the outputs recorded in it, and
    `scripts/fuzz-runtime.sh` runs libFuzzer.
 
-   The replay driver and libFuzzer entry points are fuzz-main.h's.
+   The replay driver and libFuzzer entry points are fuzz-main.h's. Both builds
+   link the Rust runtime archive (libchimi_runtime_standalone.a; see
+   scripts/fuzz-runtime.sh and tests/runtime_fuzz.rs).
 
    Targets call the runtime's intrinsic entry points, as compiled programs do,
-   so the checks hold for whatever implements those intrinsics. The runtime is
+   so the checks hold for whatever implements those intrinsics. The json
+   target also decodes each input with the C decoder the Rust one replaced
+   (json-c-reference.c) and checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
+#include "json-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
 enum {
@@ -201,9 +206,30 @@ static ChimiValue *fz_json_encode(ChimiValue *json) {
   fz_check_valid_text(encoded, "encoded JSON");
   return encoded;
 }
+/* The Rust decoder agrees with the C decoder it replaced: the same error, or
+   values with the same canonical encoding (which keeps numbers as written
+   and lists object members once, in key order). */
+static void fz_check_against_reference(ChimiValue *text, ChimiControl *decoded) {
+  ChimiControl *reference = reference_json_decode(text);
+  FUZZ_CHECK(reference->kind == decoded->kind, "the C reference %s where the decoder %s",
+             reference->kind == CONTROL_SUCCESS ? "decodes" : "fails",
+             decoded->kind == CONTROL_SUCCESS ? "decodes" : "fails");
+  if (decoded->kind == CONTROL_FAILURE) {
+    ChimiValue *message = fz_field(decoded->value, 0), *offset = fz_field(decoded->value, 1);
+    ChimiValue *expected_message = fz_field(reference->value, 0), *expected_offset = fz_field(reference->value, 1);
+    FUZZ_CHECK(fz_texts_equal(message, expected_message) && offset->as.integer == expected_offset->as.integer,
+               "error `%s` at %" PRId64 ", the C reference `%s` at %" PRId64, message->as.text.bytes,
+               offset->as.integer, expected_message->as.text.bytes, expected_offset->as.integer);
+    return;
+  }
+  ChimiValue *encoded = fz_json_encode(decoded->value), *expected = fz_json_encode(reference->value);
+  FUZZ_CHECK(fz_texts_equal(encoded, expected), "decoded %s, the C reference %s", encoded->as.text.bytes,
+             expected->as.text.bytes);
+}
 static void fuzz_json(const uint8_t *data, size_t size, FuzzOutput *out) {
   ChimiValue *text = fz_input_text(data, size);
   ChimiControl *decoded = fz_json_decode(text);
+  fz_check_against_reference(text, decoded);
   if (decoded->kind == CONTROL_FAILURE) {
     ChimiValue *error = decoded->value;
     FUZZ_CHECK(fz_standard_of(error) == CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, "decode failed with constructor %u",

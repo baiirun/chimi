@@ -55,6 +55,7 @@ fn compile(executable: &Path, extra_flags: &[&str]) -> std::process::Output {
             "{}/tests/fixtures/native-list-fuzz.c",
             env!("CARGO_MANIFEST_DIR")
         ))
+        .arg(env!("CHIMI_BUILT_STANDALONE_RUNTIME_ARCHIVE"))
         .arg("-o")
         .arg(executable)
         // glibc keeps floor, fmod, and the rest of libm out of libc.

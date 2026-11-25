@@ -156,8 +156,11 @@ pub(super) fn kernel_harness(scenario: &Scenario, file: &str) -> Result<Option<S
     run_harness(scenario, file, &libraries)
 }
 
+/// A harness that includes `runtime.c` without the scheduler links the Rust
+/// runtime archive a program without the fiber runtime links.
 fn harness(scenario: &Scenario, file: &str) -> Result<Option<String>, String> {
-    run_harness(scenario, file, &[])
+    let archive = crate::backend::native::bundled_standalone_runtime_archive()?;
+    run_harness(scenario, file, &[archive.into_os_string()])
 }
 
 /// Compiles the harness `file` (with AddressSanitizer when the compiler
