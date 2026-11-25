@@ -1,0 +1,15 @@
+# mutation run at e7ea2336402ca1ef68d52c6b07f6cb3d2efa94f3
+# rust_metrics_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [runtime_fuzz] (193s)
+KILLED       kind conflicts are recorded [runtime_fuzz] (54s)
+KILLED       kind conflicts are not counted [runtime_fuzz] (56s)
+KILLED       a gauge adds [runtime_fuzz] (54s)
+KILLED       counts wrap [runtime_fuzz] (53s)
+KILLED       sums are not clamped [runtime_fuzz] (54s)
+KILLED       buckets are exclusive [runtime_fuzz] (54s)
+KILLED       kind 3 is a gauge [runtime_fuzz] (54s)
+KILLED       observe count not kept [runtime_fuzz] (56s)
+KILLED       the last bucket count is dropped [runtime_fuzz] (56s)
+KILLED       the start time is the end time [runtime_fuzz] (56s)
+KILLED       negative times lose their sign [runtime_fuzz] (57s)
+# result: every mutant killed

@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 ///
 /// `bytes` must point to `length` readable bytes (it may be null when
 /// `length` is 0) that outlive the returned reference.
-unsafe fn utf8<'a>(bytes: *const u8, length: usize) -> &'a str {
+pub(crate) unsafe fn utf8<'a>(bytes: *const u8, length: usize) -> &'a str {
     let bytes: &[u8] = if length == 0 {
         &[]
     } else {
@@ -66,21 +66,26 @@ pub struct ChimiOwnedText {
 pub unsafe extern "C" fn chimi_text_case_map_v1(bytes: *const u8, length: usize, upper: bool) -> ChimiOwnedText {
     // SAFETY: forwarded from the caller.
     let source = unsafe { utf8(bytes, length) };
-    let mapped = Box::new(if upper { text::uppercase(source) } else { text::lowercase(source) });
+    owned_text(if upper { text::uppercase(source) } else { text::lowercase(source) })
+}
+
+/// Hands `text` to C until [`chimi_text_release_v1`].
+pub(crate) fn owned_text(text: String) -> ChimiOwnedText {
+    let text = Box::new(text);
     ChimiOwnedText {
-        bytes: mapped.as_ptr(),
-        length: mapped.len(),
-        owned: Box::into_raw(mapped),
+        bytes: text.as_ptr(),
+        length: text.len(),
+        owned: Box::into_raw(text),
     }
 }
 
 /// # Safety
 ///
-/// `owned` must come from [`chimi_text_case_map_v1`] and not have been
-/// released already.
+/// `owned` must come from [`chimi_text_case_map_v1`] or
+/// `chimi_metrics_document_v1` and not have been released already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn chimi_text_release_v1(owned: ChimiOwnedText) {
-    // SAFETY: the caller passes back the box `chimi_text_case_map_v1` made.
+    // SAFETY: the caller passes back the box `owned_text` made.
     drop(unsafe { Box::from_raw(owned.owned) });
 }
 
