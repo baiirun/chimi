@@ -51,6 +51,9 @@ per mutant: KILLED (a test failed), KILLED-BUILD (the mutant did not compile,
 which proves nothing about the tests), KILLED-OTHER (a command mutant failed,
 but not with any `expect` text), SURVIVED, NO-TESTS (the targets and filter
 selected no test, so passing proves nothing), STALE, or TIMEOUT.
+A test mutant's build is checked on its own first (`cargo test --no-run` with
+the same targets), and only that step's exit status makes it KILLED-BUILD: test
+output can quote compiler errors on purpose, so it is never searched for them.
 Exit status is 0 only when the baseline passes and every mutant is KILLED or
 TIMEOUT.
 """
@@ -101,13 +104,26 @@ def export_tree(root: Path, revision: str, destination: Path) -> str:
     return commit
 
 
-def cargo_test(crate: Path, args, targets, test_filter, target_dir: Path, timeout):
+def cargo_test_command(args, targets):
     command = ["cargo", "test", "--quiet", *args]
     for target in targets:
         command += ["--lib"] if target == "lib" else ["--test", target]
+    return command
+
+
+def cargo_test(crate: Path, args, targets, test_filter, target_dir: Path, timeout):
+    command = cargo_test_command(args, targets)
     if test_filter:
         command += ["--", test_filter]
     return run_command(crate, command, target_dir, timeout)
+
+
+def cargo_build_tests(crate: Path, args, targets, target_dir: Path, timeout):
+    """Builds the selected test binaries without running them. Its exit status
+    alone says whether the mutated source built: test output can quote compiler
+    errors on purpose, so it is never searched for them."""
+    return run_command(crate, cargo_test_command(args, targets) + ["--no-run"], target_dir,
+                       timeout)
 
 
 def run_command(crate: Path, command, target_dir: Path, timeout):
@@ -136,7 +152,8 @@ def tests_run(output: str) -> int:
 
 
 def build_failed(output: str) -> bool:
-    # Rust's own codes are E0xxx; a test's output can quote Chimi diagnostics
+    # Only for command mutants, whose argv has no separate build step to ask.
+    # Rust's own codes are E0xxx; a command's output can quote Chimi diagnostics
     # such as error[E5005], which say nothing about the build.
     return (
         re.search(r"error\[E0\d{3}\]", output) is not None
@@ -241,12 +258,19 @@ def run_list(path: Path, tree: Path, target_dir: Path, records: Path, commit: st
         source.write_text(mutated)
         started = time.monotonic()
         try:
+            built = True
             if command:
                 result = run_command(crate, command, target_dir, timeout)
             else:
-                result = cargo_test(crate, args, targets, test_filter, target_dir, timeout)
+                result = cargo_build_tests(crate, args, targets, target_dir, timeout)
+                built = result.returncode == 0
+                if built:
+                    result = cargo_test(crate, args, targets, test_filter, target_dir, timeout)
             output = result.stdout + result.stderr
-            if command and result.returncode == 0:
+            if not built:
+                status = "KILLED-BUILD"
+                ok = False
+            elif command and result.returncode == 0:
                 status = "SURVIVED"
                 ok = False
             elif command:
@@ -259,9 +283,6 @@ def run_list(path: Path, tree: Path, target_dir: Path, records: Path, commit: st
                 ok = False
             elif result.returncode == 0:
                 status = "SURVIVED"
-                ok = False
-            elif build_failed(output):
-                status = "KILLED-BUILD"
                 ok = False
             else:
                 status = "KILLED"
