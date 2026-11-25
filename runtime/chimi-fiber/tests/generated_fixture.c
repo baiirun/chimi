@@ -431,7 +431,6 @@ size_t chimi_fixture_process_layouts(size_t *out) {
       LAYOUT(ChimiSchedulerConfig, user_signals),
       LAYOUT(ChimiSchedulerConfig, injected_user_signals),
       LAYOUT(ChimiSchedulerConfig, injected_user_signal_count),
-      LAYOUT(ChimiSchedulerConfig, take_release),
       LAYOUT(ChimiSchedulerConfig, carriers),
       LAYOUT(ChimiSchedulerConfig, carrier_enter),
       LAYOUT(ChimiSchedulerConfig, carrier_context),

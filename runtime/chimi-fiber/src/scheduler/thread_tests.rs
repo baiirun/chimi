@@ -426,7 +426,6 @@ fn abi_run(
         user_signals: ptr::null_mut(),
         injected_user_signals: ptr::null(),
         injected_user_signal_count: 0,
-        take_release: None,
         carriers,
         carrier_enter: Some(record_enter),
         carrier_context: ptr::without_provenance_mut(0xC0),

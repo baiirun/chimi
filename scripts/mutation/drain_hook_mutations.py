@@ -1,28 +1,35 @@
-"""Mutants of R4 step 3 PR 3b, runtime side: the carrier's take_release hook.
+"""Mutants of the idle drain, seen from a compiled program: releases no
+fiber's request carried are applied before the carrier idles.
+
+Until CHI-308 step 1 the runtime handed these over through a take_release
+hook; the scheduler now keeps the counts and the queue itself
+(runtime/chimi-fiber/src/handles.rs), so the mutants sit there and the
+program test in cli.rs must still turn red.
 
 Run: scripts/mutation/mutate.py scripts/mutation/drain_hook_mutations.py
-Each mutant must turn the idle-drain test in cli.rs red.
 Results: scripts/mutation/drain_hook_results.txt.
 """
 
 CRATE = "compiler/chimi"
 
-R = "runtime/native/runtime.c"
+S = "../../runtime/chimi-fiber/src/scheduler.rs"
+H = "../../runtime/chimi-fiber/src/handles.rs"
 
 
-def m(name, edits):
-    return dict(name=name, file=R, edits=edits, targets=["cli"],
+def m(name, file, edits):
+    return dict(name=name, file=file, edits=edits, targets=["cli"],
                 filter="native_releases_no_request_carries_are_done_before_the_carrier_idles")
 
 
 MUTATIONS = [
-    m("the runtime passes no hook", [(
-        "    .take_release = take_carrier_release,\n", "")]),
-    m("the hook hands over nothing", [(
-        "  return carrier_release_take(kind, id);",
-        "  (void)kind; (void)id;\n  return false;")]),
-    dict(name="a task key is handed over as a channel", file=R, edits=[(
-        "  *kind = key & TASK_HANDLE_KEY ? CHIMI_REQUEST_TASK_RELEASE : CHIMI_REQUEST_CHANNEL_RELEASE;",
-        "  *kind = CHIMI_REQUEST_CHANNEL_RELEASE;")], targets=["task_release"],
+    m("the idle carrier takes nothing", S, [(
+        "        let mut drained = false;\n        while let Some(released) = crate::handles::take() {",
+        "        let mut drained = false;\n        while let Some(released) = None::<Released> {")]),
+    m("a dropped key is never queued", H, [(
+        "    if with_counts(|counts| counts.drop_one(key)) {\n        queue(key);\n    }",
+        "    let _ = with_counts(|counts| counts.drop_one(key));")]),
+    dict(name="a task key is released as a channel", file=H, edits=[(
+        "        if key & TASK_HANDLE_KEY != 0 {",
+        "        if false {")], targets=["task_release"],
         filter="a_loop_of_finished_tasks_holds_a_bounded_number_of_records"),
 ]

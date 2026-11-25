@@ -1,14 +1,8 @@
-# mutation run at ec011b9bdcb109eda999701410e5e1a34811d2b7
-# handle_table_mutations.py: 6 mutants against compiler/chimi
-KILLED       retain does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (14s)
-KILLED       drop does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (14s)
-KILLED       a drop reports the last reference one early [runtime_state task_release] (18s)
-KILLED       a key at zero is never queued [task_release cli -- release] (11s)
-KILLED       a carrier's queue is drained only by a fiber that requests there [env CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION cargo test -q --test task_release --test cli -- release channel handle forced] (26s)
-KILLED       a park keeps the caller's fiber context on the old carrier [env CHIMI_TEST_RUNTIME_DEFINES=-DCHIMI_CARRIER_SIMULATION cargo test -q --test task_release --test cli -- release channel handle forced] (24s)
+# mutation run at ed731acff28654777fda61763de58a4a97ef6c51
+# handle_table_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_handle_table_counts_across_threads] (60s)
+BASELINE ok  [runtime_state net] (12s)
+KILLED       retain does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (61s)
+KILLED       drop does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (58s)
+KILLED       a drop reports the last reference one early [runtime_state net] (53s)
 # result: every mutant killed
-
-# The two simulation mutants run under CHIMI_CARRIER_SIMULATION, where every
-# fiber resumes on the other carrier; with one carrier they cannot fail. The
-# carrier-state list was rerun on the same commit: its one survivor is the
-# allocation-target restore explained in carrier_state_results.txt.

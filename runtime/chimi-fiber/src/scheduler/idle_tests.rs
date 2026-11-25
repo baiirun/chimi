@@ -622,26 +622,6 @@ fn a_root_still_running_leaves_the_carriers_running() {
     assert_eq!(round_robin(&mut scheduler), Idle::Quiescent);
 }
 
-thread_local! {
-    /// Releases the test host hands over, as (kind, id).
-    static HOST_RELEASES: std::cell::RefCell<Vec<(u32, u64)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-unsafe extern "C" fn take_test_release(_context: *mut std::ffi::c_void, kind: *mut u32, id: *mut u64) -> bool {
-    HOST_RELEASES.with(|queue| match queue.borrow_mut().pop() {
-        Some((taken_kind, taken_id)) => {
-            // SAFETY: the scheduler passes two writable outputs.
-            unsafe {
-                *kind = taken_kind;
-                *id = taken_id;
-            }
-            true
-        }
-        None => false,
-    })
-}
-
 /// A carrier about to wait drains the host releases queued for it first
 /// (here, one a release hook queued after its last drive), and looks again
 /// instead of waiting with what they woke: carrier 0 waiting for the
@@ -650,15 +630,15 @@ unsafe extern "C" fn take_test_release(_context: *mut std::ffi::c_void, kind: *m
 fn a_carrier_drains_its_host_releases_before_it_waits() {
     let _fixture = FIXTURE_LOCK.lock().expect("fixture lock");
     let mut scheduler = virtual_kernel(2);
-    scheduler.config.take_release = Some((take_test_release, ptr::null_mut()));
+    crate::handles::begin_run();
     let _busy = start_sleeper(&mut scheduler, 1, 0);
     for carrier in [0, 1] {
         let done = start_sleeper(&mut scheduler, carrier, 0);
         scheduler.drive();
         assert!(succeeded(&scheduler, done));
-        HOST_RELEASES.with(|queue| queue.borrow_mut().push((REQUEST_TASK_RELEASE, done.0)));
+        crate::handles::queue(done.0 | crate::handles::TASK_HANDLE_KEY);
         assert!(matches!(scheduler.idle_step(), IdleStep::Continue), "carrier {carrier}");
-        assert!(HOST_RELEASES.with(|queue| queue.borrow().is_empty()));
+        assert_eq!(crate::handles::take(), None);
         assert!(!scheduler.tasks.contains_key(&done), "the release removed the ended task");
     }
 }

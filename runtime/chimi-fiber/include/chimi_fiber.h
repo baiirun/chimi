@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 31u
+#define CHIMI_FIBER_ABI_VERSION 32u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -97,7 +97,9 @@ enum {
      OK. See ChimiValueRelease for what happens to the values the channel
      holds; a task parked on it is answered as if the channel were aborted.
      The id is invalid afterwards: any channel request naming it, a second
-     release included, is a contract violation that defects the caller. */
+     release included, is a contract violation that defects the caller. A
+     host that counts its handles with chimi_fiber_handle_retain and
+     chimi_fiber_handle_drop never issues it: the scheduler does. */
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
   /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
      whose deadline Instant is `value`; the reply's `token` is the scope id.
@@ -248,7 +250,8 @@ enum {
      defect code stays until the scheduler ends. Any task may issue it, since
      the last copy of a handle can die in any heap. OK, or ERROR for an
      unknown task, a process body, a live root, or a second release. Never
-     parks, and not a cancellation point. */
+     parks, and not a cancellation point. A host that counts its handles
+     (chimi_fiber_handle_retain) never issues it: the scheduler does. */
   CHIMI_REQUEST_TASK_RELEASE = 46,
   /* ChimiSchedulerRequest: see CHIMI_REQUEST_RESOURCE_ENTER. */
   CHIMI_REQUEST_RESOURCE_USE = 49,
@@ -704,10 +707,6 @@ typedef int64_t (*ChimiValueCopy)(void *context, int64_t value);
    runs under the same conditions as ChimiValueRelease. */
 typedef void (*ChimiTaskContextRelease)(void *context, void *task_context);
 
-/* Takes one release the host queued while no task was running; see
-   ChimiSchedulerConfig.take_release. Returns false when there is none. */
-typedef bool (*ChimiReleaseTake)(void *context, uint32_t *kind, uint64_t *id);
-
 /* Called on a carrier thread other than the caller's, with `carrier_context`
    and the carrier's index (1 and up), before that carrier runs any fiber or
    any other hook; see ChimiSchedulerConfig.carriers. It runs outside the
@@ -720,12 +719,11 @@ typedef void (*ChimiCarrierEnter)(void *context, uint32_t carrier);
 
    Threads: the entry and every task run on their carrier's thread, without
    the scheduler's lock, and carrier_enter as it says. Every other hook (the
-   trace sink, the release, copy and take hooks, and the violation and
+   trace sink, the release and copy hooks, and the violation and
    defect reports) runs one call at a time: during the run on whichever
    carrier thread holds the lock, so with several carriers it may run on a
    thread the host did not start, and before and after the run (starting
-   the entry, tearing the scheduler down) on the calling thread;
-   take_release runs on the carrier whose queue it drains. The deadlock
+   the entry, tearing the scheduler down) on the calling thread. The deadlock
    report runs on the calling thread before chimi_scheduler_run returns.
    With one carrier, everything runs on the calling thread. */
 typedef struct {
@@ -784,14 +782,6 @@ typedef struct {
      --signal=HUP@... option); `count` entries, or null and 0. */
   const ChimiInjectedSignal *injected_user_signals;
   size_t injected_user_signal_count;
-  /* Called with `release_context` whenever the carrier running the loop has
-     no ready task, until it returns false. Each true return hands over one
-     release the host queued while no task was running (a count that reached
-     zero inside a release hook, or one a fiber freed and ended without
-     another request): `*kind` is CHIMI_REQUEST_CHANNEL_RELEASE or
-     CHIMI_REQUEST_TASK_RELEASE, and `*id` its channel or task. The scheduler
-     applies it with no task attributed. May be null. */
-  ChimiReleaseTake take_release;
   /* How many carriers run the program: 0 or 1 runs one, on the calling
      thread; n above 1 runs carrier 0 there and carriers 1 to n-1 on threads
      the scheduler starts and joins before it returns. A root other than the
@@ -843,6 +833,35 @@ uint32_t chimi_fiber_cancel_is_terminal(void);
 /* The process incarnation the running fiber's task runs, or 0 when it is not
    a process body. It reads only the fiber's resume state and cannot park. */
 uint64_t chimi_fiber_current_incarnation(void);
+
+/* Handle counts. Every live Sender, Receiver or Completion value the host
+   holds is one reference to its channel, and every live Task value one
+   reference to its task, wherever the value is allocated, so a copy in
+   transit (a message, a task's captures or result) counts while the
+   scheduler holds it. The host calls chimi_fiber_handle_retain when it makes
+   or copies such a value and chimi_fiber_handle_drop when it frees one; the
+   key is the channel id, or the task id with CHIMI_TASK_HANDLE_KEY set. Both
+   may be called from any thread, with or without a fiber, inside any hook
+   of the scheduler's, and never park. A retain must be counted before the
+   copy it counts can reach another carrier.
+
+   When a key's count reaches zero no value can name it again, and the
+   scheduler releases it as if CHIMI_REQUEST_CHANNEL_RELEASE or
+   CHIMI_REQUEST_TASK_RELEASE had been issued: at the next request of a fiber
+   on the thread that dropped it, on behalf of that fiber's task, or once
+   that thread's carrier has no ready task, on behalf of none. A key dropped
+   on a thread that runs no carrier, or after chimi_scheduler_run returned,
+   is not released: teardown releases every value the scheduler holds.
+
+   The counts belong to the process, so runs must not overlap: each
+   chimi_scheduler_run or chimi_scheduler_execute starts with no handle
+   counted, and keys an earlier run queued are never released. A value an
+   earlier run counted must not be freed during a later run, since its key
+   may name one of the later run's channels or tasks; a drop of a key the
+   current run has not counted does nothing. */
+#define CHIMI_TASK_HANDLE_KEY (UINT64_C(1) << 63)
+void chimi_fiber_handle_retain(uint64_t key);
+void chimi_fiber_handle_drop(uint64_t key);
 /* 1 when a fired cancellation scope of the running task waits for its next
    cancellation point; a loop pass then issues CHIMI_REQUEST_SCOPE_CHECK. */
 uint32_t chimi_fiber_scope_cancel_pending(void);
