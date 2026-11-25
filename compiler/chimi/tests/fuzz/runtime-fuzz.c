@@ -1,5 +1,5 @@
 /* Fuzz targets for the native runtime's parsers and text code: JSON, decimal,
-   duration and text. Each target turns one input into a canonical output line
+   duration, float text and text. Each target turns one input into a canonical output line
    and checks the target's invariants, aborting on a broken one.
 
    The output is the contract a replacement must keep: when a subsystem moves
@@ -18,12 +18,14 @@
    (json-c-reference.c), and the decimal and duration targets compute with
    the C code their Rust replaced (decimal-duration-c-reference.c), as the
    text target does with its case mapping, trimming and graphemes
-   (text-c-reference.c); each checks that the two agree. The runtime is
+   (text-c-reference.c) and the float target with its Float text
+   (float-c-reference.c); each checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
 #include "json-c-reference.c"
 #include "decimal-duration-c-reference.c"
+#include "float-c-reference.c"
 #include "text-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
@@ -426,8 +428,41 @@ static void fuzz_duration(const uint8_t *data, size_t size, FuzzOutput *out) {
   out_word(out, " text="); out_text(out, printed);
 }
 
+/* --- float: print ---------------------------------------------------------- */
+/* Checks one finite value's text against the C reference's and that it parses
+   back to the value, and writes it. */
+static void fz_check_float(double value, FuzzOutput *out) {
+  if (!isfinite(value)) return;
+  char want[40], printed[40];
+  reference_float_text(value, want);
+  float_text(value, printed);
+  FUZZ_CHECK(strcmp(want, printed) == 0, "text of %a: %s, the C reference %s", value, printed, want);
+  double back = strtod(printed, NULL);
+  FUZZ_CHECK(back == value && signbit(back) == signbit(value), "%s does not parse back to %a", printed, value);
+  out_word(out, printed);
+  out_word(out, " ");
+}
+/* Each eight bytes of the input as a double, and the input as decimal text. */
+static void fuzz_float(const uint8_t *data, size_t size, FuzzOutput *out) {
+  for (size_t offset = 0; offset + 8 <= size; offset += 8) {
+    double value; memcpy(&value, data + offset, sizeof(value));
+    fz_check_float(value, out);
+  }
+  char text[64];
+  size_t length = size < sizeof(text) - 1 ? size : sizeof(text) - 1;
+  memcpy(text, data, length);
+  text[length] = '\0';
+  char *end = NULL;
+  double parsed = strtod(text, &end);
+  if (end != text) {
+    out_word(out, "parsed ");
+    fz_check_float(parsed, out);
+  }
+}
+
 static const FuzzTargetEntry FUZZ_TARGETS[] = {
   {"text", fuzz_text}, {"json", fuzz_json}, {"decimal", fuzz_decimal}, {"duration", fuzz_duration},
+  {"float", fuzz_float},
 };
 
 /* Runs `target` on one input inside its own allocation scope, which frees
