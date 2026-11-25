@@ -16,10 +16,16 @@ pub(super) const BINDING_HEADER: &str = include_str!("../../runtime/native/chimi
 
 /// The packages written in Rust, in `runtime/chimi-runtime/src/binding/`,
 /// with their source, which the registry test reads.
-pub(super) const RUST_PACKAGES: &[(&str, &str)] = &[(
-    "terminal",
-    include_str!("../../../../runtime/chimi-runtime/src/binding/terminal.rs"),
-)];
+pub(super) const RUST_PACKAGES: &[(&str, &str)] = &[
+    (
+        "net",
+        include_str!("../../../../runtime/chimi-runtime/src/binding/net.rs"),
+    ),
+    (
+        "terminal",
+        include_str!("../../../../runtime/chimi-runtime/src/binding/terminal.rs"),
+    ),
+];
 
 /// Operating-system libraries a package links, which the build report lists
 /// (Principle 15). Every package not named here links none.
