@@ -94,4 +94,7 @@ MUTATIONS = [
         ("fn(child) { child.release() }", "fn(_child) { Void }")]),
     exec_test("stdout and stderr swap", MODULE, [
         ("stdio_code(command.stdout), stdio_code(command.stderr)", "stdio_code(command.stderr), stdio_code(command.stdout)")]),
+    exec_test("the working directory buffer never grows", EXEC, [
+        ('let wanted = directory.capacity().saturating_mul(2);',
+         'let wanted = directory.capacity();')]),
 ]

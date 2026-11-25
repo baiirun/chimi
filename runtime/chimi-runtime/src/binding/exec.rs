@@ -349,7 +349,12 @@ fn absolute(path: &[u8]) -> Result<Owned, c_int> {
         if error != libc::ERANGE {
             return Err(error);
         }
-        directory.reserve(directory.capacity());
+        // `reserve` counts from the length, which is zero here: ask for
+        // twice the capacity, or getcwd sees the same size again.
+        let wanted = directory.capacity().saturating_mul(2);
+        if directory.try_reserve_exact(wanted).is_err() {
+            return Err(libc::ENOMEM);
+        }
     }
     directory.push(b'/');
     directory.extend_from_slice(path);
@@ -521,7 +526,9 @@ fn open_pipe(target: c_int) -> Result<PipeEnds, c_int> {
 /// marked close-on-exec, where that takes a second call (sockets and pipes
 /// off Linux). macOS closes every descriptor the file actions do not name
 /// (POSIX_SPAWN_CLOEXEC_DEFAULT), so an inherited stream is named; glibc
-/// closes those above standard error as the last action. Elsewhere (musl)
+/// closes those above standard error as the last action (addclosefrom_np,
+/// glibc 2.34, which a glibc build therefore needs: the C checked the
+/// version and went without it before 2.34). Elsewhere (musl)
 /// only close-on-exec protects them.
 #[cfg(target_vendor = "apple")]
 const SPAWN_FLAGS: c_int = libc::POSIX_SPAWN_SETSIGMASK | libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
