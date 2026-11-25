@@ -259,6 +259,14 @@ impl PropertyDerivation {
     }
 }
 
+/// What `type_may_hold` looks for inside a container type.
+#[derive(Clone, Copy)]
+enum HeldPart {
+    Type(TypeId),
+    /// A `Select.Event`, whatever its arguments.
+    SelectEvent,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CapabilityClass {
     Ordinary,
@@ -1308,13 +1316,18 @@ impl TypedProject {
     /// anything, since a closure or provider can capture any value. Conservative past
     /// a nesting depth, so a recursive type cannot loop.
     pub(crate) fn type_may_hold(&self, container: TypeId, part: TypeId) -> bool {
-        self.type_may_hold_with(container, part, &HashMap::new(), 0)
+        self.type_may_hold_with(container, HeldPart::Type(part), &HashMap::new(), 0)
+    }
+
+    /// Whether a value of `container` may hold a `Select.Event` of any type.
+    pub(crate) fn type_may_hold_select_event(&self, container: TypeId) -> bool {
+        self.type_may_hold_with(container, HeldPart::SelectEvent, &HashMap::new(), 0)
     }
 
     fn type_may_hold_with(
         &self,
         container: TypeId,
-        part: TypeId,
+        part: HeldPart,
         generics: &HashMap<SymbolId, TypeId>,
         depth: usize,
     ) -> bool {
@@ -1328,7 +1341,16 @@ impl TypedProject {
         {
             return self.type_may_hold_with(*bound, part, generics, depth + 1);
         }
-        if self.same_type_with(container, part, generics, depth) {
+        let is_part = match part {
+            HeldPart::Type(part) => self.same_type_with(container, part, generics, depth),
+            HeldPart::SelectEvent => matches!(
+                &self.types[container.raw() as usize],
+                CanonicalType::Named { symbol, .. }
+                    if self.resolved.standard_symbol(*symbol)
+                        == Some(StandardSymbol::Type(StandardType::SelectEvent))
+            ),
+        };
+        if is_part {
             return true;
         }
         let holds = |id: TypeId, generics: &HashMap<SymbolId, TypeId>| {
