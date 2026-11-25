@@ -4,8 +4,8 @@
 
    The output is the contract a replacement must keep: when a subsystem moves
    to Rust (CHI-305), the same inputs run through both versions must print the
-   same lines. `tests/runtime_fuzz.rs` replays the committed corpus against
-   `corpus/<target>.expected`, and `scripts/fuzz-runtime.sh` runs libFuzzer.
+   same lines. `tests/runtime_fuzz.rs` replays the committed corpus,
+   `corpus/<target>.txt`, against the outputs recorded in it, and `scripts/fuzz-runtime.sh` runs libFuzzer.
 
    A corpus file, `corpus/<target>.txt`, holds one input per line: the input
    quoted as outputs are (see out_quoted), a tab, and the output the target

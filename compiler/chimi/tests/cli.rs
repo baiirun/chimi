@@ -12,7 +12,7 @@ fn fixture(name: &str) -> String {
 /// instead of the prebuilt one and links the sanitizer libraries, so checks of
 /// the prebuilt archive and of executable size do not apply.
 fn sanitized_runtime() -> bool {
-    std::env::var_os("CHIMI_TEST_RUNTIME_SANITIZE").is_some()
+    std::env::var("CHIMI_TEST_RUNTIME_SANITIZE").is_ok_and(|value| !value.trim().is_empty())
 }
 
 fn repository_path(relative: impl AsRef<Path>) -> PathBuf {

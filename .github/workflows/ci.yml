@@ -115,7 +115,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-${{ matrix.target }}
-          path: ${{ runner.temp }}/fuzz/crash-*
+          path: |
+            ${{ runner.temp }}/fuzz/crash-*
+            ${{ runner.temp }}/fuzz/oom-*
+            ${{ runner.temp }}/fuzz/timeout-*
+            ${{ runner.temp }}/fuzz/slow-unit-*
           if-no-files-found: ignore
 
   program-outputs:

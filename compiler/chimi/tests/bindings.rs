@@ -305,7 +305,7 @@ fn a_sanitized_build_compiles_its_binding_packages() {
 fn a_program_links_a_binding_package_only_when_it_reaches_it() {
     // A sanitized build (CHIMI_TEST_RUNTIME_SANITIZE) compiles every binding
     // package itself rather than use the prebuilt archives this test checks.
-    if std::env::var_os("CHIMI_TEST_RUNTIME_SANITIZE").is_some() {
+    if std::env::var("CHIMI_TEST_RUNTIME_SANITIZE").is_ok_and(|value| !value.trim().is_empty()) {
         eprintln!("skipped: a sanitized build never uses prebuilt binding packages");
         return;
     }

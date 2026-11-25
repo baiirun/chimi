@@ -60,9 +60,13 @@ ASAN_OPTIONS=detect_leaks=0 ./app
   is expected. The CI job sends reports to log files (`log_path`) so it does
   not break tests that compare a program's stderr.
 
-Under the variable, three tests skip the checks that cannot hold: that the
+Under the variable, the tests skip the checks that cannot hold: that the
 prebuilt runtime and binding packages are used, and that a program without
-tasks stays under 1 MiB.
+tasks stays under 1 MiB. Two Linux tests check the variable itself: a
+sanitized build compiles its own runtime and binding packages and links the
+sanitizer libraries, and an ordinary build after it does not reuse them.
+`CHIMI_TEST_RUNTIME_DEFINES` changes only the runtime archive, never a binding
+package.
 
 ## Fuzzing
 
