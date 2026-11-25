@@ -5205,23 +5205,22 @@ static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **argu
 }
 
 /* The `random` provider (testing.md, Randomness): xoshiro256** seeded through
-   SplitMix64, as random_source.rs, so a seed draws the same numbers on both
-   backends. `--random-seed` fixes the seed (`chimi test` gives each test its
-   own); without it the first draw seeds from the operating system. */
-static uint64_t random_state[4];
+   SplitMix64, in chimi_runtime::random, which the interpreter uses too, so a
+   seed draws the same numbers on both backends. `--random-seed` fixes the seed
+   (`chimi test` gives each test its own); without it the first draw seeds from
+   the operating system. The seed read and the lock stay here: the Rust crate
+   has no operating system to read from. */
+typedef struct {
+  uint64_t state[4];
+} ChimiRandom;
+extern ChimiRandom chimi_random_seeded_v1(uint64_t seed);
+extern uint64_t chimi_random_next_v1(ChimiRandom *generator);
+
+static ChimiRandom random_generator;
 static bool random_seed_given, random_read;
 static uint64_t random_seed;
 /* Guards the stream and random_read: every carrier draws from the one stream. */
 static pthread_mutex_t random_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static uint64_t splitmix64(uint64_t *state) {
-  uint64_t mixed = (*state += UINT64_C(0x9e3779b97f4a7c15));
-  mixed = (mixed ^ (mixed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-  mixed = (mixed ^ (mixed >> 27)) * UINT64_C(0x94d049bb133111eb);
-  return mixed ^ (mixed >> 31);
-}
-
-static uint64_t rotate_left(uint64_t value, int count) { return (value << count) | (value >> (64 - count)); }
 
 static uint64_t os_random_seed(void) {
   uint64_t seed = 0;
@@ -5238,19 +5237,10 @@ static uint64_t os_random_seed(void) {
 static uint64_t random_next(void) {
   pthread_mutex_lock(&random_lock);
   if (!random_read) {
-    uint64_t mix = random_seed_given ? random_seed : os_random_seed();
-    for (int index = 0; index < 4; ++index) random_state[index] = splitmix64(&mix);
+    random_generator = chimi_random_seeded_v1(random_seed_given ? random_seed : os_random_seed());
     random_read = true;
   }
-  uint64_t *state = random_state;
-  uint64_t result = rotate_left(state[1] * 5, 7) * 9;
-  uint64_t shifted = state[1] << 17;
-  state[2] ^= state[0];
-  state[3] ^= state[1];
-  state[1] ^= state[2];
-  state[0] ^= state[3];
-  state[2] ^= shifted;
-  state[3] = rotate_left(state[3], 45);
+  uint64_t result = chimi_random_next_v1(&random_generator);
   pthread_mutex_unlock(&random_lock);
   return result;
 }
