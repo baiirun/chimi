@@ -1,0 +1,12 @@
+import std/cli as Cli
+import std/path as Path
+import std/test as Test
+
+const include = Cli.repeated("include", "I", "Add a search directory", Cli.path)
+const level = Cli.repeated("level", "l", "A level", Cli.int)
+const tool = Cli.command("tool", "A tool", [Cli.arg(include), Cli.arg(level)])
+
+test "a repeated option collects every value in order" {
+  let parsed = Cli.parse(tool, ["-I", "a", "--include=b", "-Ic", "--include", "d"])
+  Test.assert_equal(Cli.get(parsed, include), [Path.from("a"), Path.from("b"), Path.from("c"), Path.from("d")])
+}

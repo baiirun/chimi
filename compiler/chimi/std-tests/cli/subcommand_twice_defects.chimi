@@ -1,0 +1,12 @@
+import std/cli as Cli
+import std/test as Test
+
+const add = Cli.subcommand(Cli.command("add", "Add an item", []))
+const other_add = Cli.subcommand(Cli.command("add", "Add another way", []))
+
+test "two subcommands with one name defect" {
+  let twice = Test.capture_defect(fn() {
+    Cli.command("t", "", [Cli.arg(add), Cli.arg(other_add)])
+  })
+  Test.assert_equal(twice, "Cli.command: t declares a name twice, or declares help")
+}

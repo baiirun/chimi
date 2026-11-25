@@ -1,0 +1,21 @@
+import std/cli as Cli
+import std/test as Test
+import std/text as Text
+
+const include = Cli.repeated("include", "I", "Add a search directory", Cli.path)
+const level = Cli.repeated("level", "l", "A level", Cli.int)
+const tool = Cli.command("tool", "A tool", [Cli.arg(include), Cli.arg(level)])
+
+test "usage marks a repeated option" {
+  let expected = Text.join([
+    "A tool",
+    "",
+    "usage: tool [options]",
+    "",
+    "Options:",
+    "  -I, --include <path>...  Add a search directory",
+    "  -l, --level <int>...     A level",
+    "  -h, --help               Print this help",
+  ], "\n")
+  Test.assert_equal(Cli.usage(tool), expected)
+}

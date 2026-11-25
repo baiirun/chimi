@@ -1,0 +1,31 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const list = Cli.subcommand(Cli.command("list", "List the items", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(add), Cli.arg(list)])
+
+fn usage_failure(arguments: List<Text>) -> (CliError, Text) {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, message)) -> (error, message)
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+fn help(arguments: List<Text>) -> Text {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Help(text)) -> text
+    _ -> Test.fail("expected help for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "help before a subcommand's name is the parent's" {
+  Test.assert_equal(help(["--help", "add"]), Cli.usage(tool))
+  Test.assert_equal(help(["--nope", "--help"]), Cli.usage(tool))
+  let (error, _) = usage_failure(["--nope", "add", "--help"])
+  Test.assert_equal(error, CliError.UnknownOption("--nope"))
+}

@@ -1,0 +1,21 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const count = Cli.option("count", "n", "How many", Cli.int)
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(count), Cli.arg(add)])
+
+fn usage_error(arguments: List<Text>) -> CliError {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, _)) -> error
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "a bad parent value wins over the subcommand's help and errors" {
+  Test.assert_equal(usage_error(["--count", "x", "add", "--help"]), CliError.InvalidValue("--count", "x", "int"))
+  Test.assert_equal(usage_error(["-n", "x", "add", "milk", "--bad"]), CliError.InvalidValue("--count", "x", "int"))
+}

@@ -1,0 +1,13 @@
+import std/cli as Cli
+import std/test as Test
+
+const color = Cli.switch("color", "c", "Color the output", True)
+const pager = Cli.switch("pager", "", "Page long output", False)
+const quiet = Cli.flag("quiet", "q", "Say less")
+const tool = Cli.command("tool", "A tool", [Cli.arg(color), Cli.arg(pager), Cli.arg(quiet)])
+
+test "a switch is its default unless given" {
+  let parsed = Cli.parse(tool, [])
+  Test.assert_equal(Cli.get(parsed, color), True)
+  Test.assert_equal(Cli.get(parsed, pager), False)
+}
