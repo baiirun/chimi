@@ -349,8 +349,7 @@ fn build_to_path(
     // runtime's Rust leaves, so only a program without it needs this one.
     let standalone_runtime_archive_path = if fiber_runtime_archive_path.is_none() {
         let path = output_directory.join("libchimi_runtime_standalone.a");
-        std::fs::copy(bundled_standalone_runtime_archive()?, &path)
-            .map_err(|error| format!("materialize bundled Rust runtime: {error}"))?;
+        write_standalone_runtime_archive(&path)?;
         Some(path)
     } else {
         None
@@ -745,9 +744,10 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
     })
 }
 
-/// The Rust runtime archive that a program without the fiber runtime links:
+/// The Rust runtime archive that a program without the fiber runtime links,
+/// as a file for the process lab's C harnesses:
 /// `CHIMI_STANDALONE_RUNTIME_ARCHIVE` when set, else the one embedded in the
-/// compiler. Unlike the fiber archive, no ordinary Cargo build of the
+/// compiler, written once to the temporary directory. Unlike the fiber archive, no ordinary Cargo build of the
 /// workspace produces it, so there is nothing to look for beside the compiler.
 pub(crate) fn bundled_standalone_runtime_archive() -> Result<PathBuf, String> {
     if let Some(path) = archive_override("CHIMI_STANDALONE_RUNTIME_ARCHIVE")? {
@@ -764,6 +764,26 @@ pub(crate) fn bundled_standalone_runtime_archive() -> Result<PathBuf, String> {
         "chimi-runtime-standalone",
         EMBEDDED_STANDALONE_RUNTIME_ARCHIVE,
     )
+}
+
+/// Writes the standalone Rust runtime archive to `path`, in the build's own
+/// directory, so a build leaves nothing in the temporary directory.
+fn write_standalone_runtime_archive(path: &Path) -> Result<(), String> {
+    let bytes = match archive_override("CHIMI_STANDALONE_RUNTIME_ARCHIVE")? {
+        Some(source) => std::fs::read(&source)
+            .map_err(|error| format!("read {}: {error}", source.display()))?,
+        None if EMBEDDED_STANDALONE_RUNTIME_ARCHIVE.is_empty() => {
+            return Err(
+                "the Chimi Rust runtime archive was not built into this compiler; set CHIMI_STANDALONE_RUNTIME_ARCHIVE"
+                    .to_owned(),
+            );
+        }
+        None => EMBEDDED_STANDALONE_RUNTIME_ARCHIVE.to_vec(),
+    };
+    if std::fs::read(path).is_ok_and(|present| present == bytes) {
+        return Ok(());
+    }
+    std::fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 fn archive_override(variable: &str) -> Result<Option<PathBuf>, String> {
