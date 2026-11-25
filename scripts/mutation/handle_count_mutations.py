@@ -26,7 +26,7 @@ MUTATIONS = [
         "        *count -= 1;\n        if *count > 1 {",
     )]),
     unit("a queue keeps an earlier run's keys", H, [(
-        "        if queue.run != run {\n            queue.keys.clear();\n            queue.run = run;\n            return None;\n        }\n",
+        "            if queue.run != run {\n                queue.keys.clear();\n                queue.run = run;\n                return None;\n            }\n",
         "",
     )]),
     unit("a task key reads as a channel", H, [(

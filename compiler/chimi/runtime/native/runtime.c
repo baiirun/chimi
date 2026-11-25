@@ -675,7 +675,7 @@ static Carrier carrier_first = {.fiber = {.heap = &main_heap}};
 #ifdef CHIMI_CARRIER_SIMULATION
 /* A test build (parallel-scheduler.md, "Runtime state by owner"): every fiber
    resumes on the other of two carriers from the one it parked on, each with its
-   own scratch, caches, counters and release queue, the way a fiber migrates
+   own scratch, caches, and counters, the way a fiber migrates
    once N carriers run. It finds a pointer into a carrier kept across a park and
    a field filed as carrier state that must follow the fiber. Since an
    allocation is often freed on the other carrier, it also exercises the

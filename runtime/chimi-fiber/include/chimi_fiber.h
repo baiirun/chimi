@@ -851,9 +851,14 @@ uint64_t chimi_fiber_current_incarnation(void);
    on the thread that dropped it, on behalf of that fiber's task, or once
    that thread's carrier has no ready task, on behalf of none. A key dropped
    on a thread that runs no carrier, or after chimi_scheduler_run returned,
-   is not released: teardown releases every value the scheduler holds. Each
-   chimi_scheduler_run starts with no handle counted. A drop of a key with no
-   count (one an earlier run counted) does nothing. */
+   is not released: teardown releases every value the scheduler holds.
+
+   The counts belong to the process, so runs must not overlap: each
+   chimi_scheduler_run or chimi_scheduler_execute starts with no handle
+   counted, and keys an earlier run queued are never released. A value an
+   earlier run counted must not be freed during a later run, since its key
+   may name one of the later run's channels or tasks; a drop of a key the
+   current run has not counted does nothing. */
 #define CHIMI_TASK_HANDLE_KEY (UINT64_C(1) << 63)
 void chimi_fiber_handle_retain(uint64_t key);
 void chimi_fiber_handle_drop(uint64_t key);

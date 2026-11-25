@@ -2518,9 +2518,6 @@ impl Scheduler {
         // `chimi_fiber_request` keeps it alive until the fiber resumes.
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
         let park = self.tasks[&owner].park;
-        if !self.apply_task_releases(owner) {
-            return;
-        }
         // A running task is no longer parked in a select, whatever it asks
         // now (a reissued select registers afresh), so a scope refusal cannot
         // leave its watchers and wake timer behind.
@@ -2531,6 +2528,11 @@ impl Scheduler {
         // and any bit it was woken for; anything else leaves the wait.
         if kind != REQUEST_SIGNAL_WAIT {
             self.withdraw_signal_wait(owner);
+        }
+        // After the clears, so a channel the task watched is no longer
+        // among its select sources when its last handle is released.
+        if !self.apply_task_releases(owner) {
+            return;
         }
         self.poll_scope_deadlines(owner);
         if self.refuse_for_scope(owner, kind) {

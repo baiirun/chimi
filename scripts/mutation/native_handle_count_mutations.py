@@ -20,7 +20,7 @@ def m(name, edits):
 
 MUTATIONS = [
     m("a new handle is not counted", [(
-        "  channel_endpoint_retain(native_handle_key(slot, entry->generation));\n", "")]),
+        "  counted_handle_retain(native_handle_key(slot, generation));\n", "")]),
     m("a value never names its handle's key", [(
         "  if (value->kind == VALUE_NATIVE_HANDLE)\n"
         "    return native_handle_key(value->as.handle.slot, value->as.handle.generation);\n", "")]),
@@ -31,8 +31,7 @@ MUTATIONS = [
     m("an unreferenced key ignores the generation", [(
         "  if (entry->type != NULL && entry->generation == generation)",
         "  if (entry->type != NULL)")]),
-    m("a native key is queued like a channel", [(
-        "  if ((channel & (TASK_HANDLE_KEY | NATIVE_HANDLE_KEY)) == NATIVE_HANDLE_KEY)\n"
-        "    native_handle_unreferenced(channel);\n  else\n    release_queue_push(channel);",
-        "  release_queue_push(channel);")]),
+    m("a native key is counted like a channel", [(
+        "static void counted_handle_drop(uint64_t key) {\n  if (!is_native_handle_key(key)) {",
+        "static void counted_handle_drop(uint64_t key) {\n  if (true) {")]),
 ]

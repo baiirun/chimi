@@ -180,7 +180,9 @@ pub(crate) fn begin_run() {
 /// Queues `key` on this thread for the scheduler to release.
 pub(crate) fn queue(key: u64) {
     let run = with_run(|run| run.load(Ordering::Relaxed));
-    QUEUE.with(|queue| {
+    // After this thread's locals are gone (a value freed during thread
+    // exit) there is no scheduler left to release the key: it is dropped.
+    let _ = QUEUE.try_with(|queue| {
         let mut queue = queue.borrow_mut();
         if queue.run != run {
             queue.keys.clear();
@@ -193,15 +195,18 @@ pub(crate) fn queue(key: u64) {
 /// The next release this thread queued for the current run, if any.
 pub(crate) fn take() -> Option<Released> {
     let run = with_run(|run| run.load(Ordering::Relaxed));
-    QUEUE.with(|queue| {
-        let mut queue = queue.borrow_mut();
-        if queue.run != run {
-            queue.keys.clear();
-            queue.run = run;
-            return None;
-        }
-        queue.keys.pop().map(Released::from_key)
-    })
+    QUEUE
+        .try_with(|queue| {
+            let mut queue = queue.borrow_mut();
+            if queue.run != run {
+                queue.keys.clear();
+                queue.run = run;
+                return None;
+            }
+            queue.keys.pop().map(Released::from_key)
+        })
+        .ok()
+        .flatten()
 }
 
 #[unsafe(no_mangle)]
