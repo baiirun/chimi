@@ -1,0 +1,17 @@
+# mutation run at 2b301a37299243774b2815c314ca2735c922e56e
+# task_handle_trace_mutations.py: 10 mutants against compiler/chimi
+BASELINE ok  [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (173s)
+BASELINE ok  [cargo test -p chimi-fiber --lib a_task_handle_used_by_another_task_reports_the_handle_and_its_owner] (23s)
+BASELINE ok  [trace_show -- a_process_body_is_listed_under_its_incarnation] (2s)
+BASELINE ok  [trace_export -- a_process_body_is_a_span_tagged_with_its_incarnation] (1s)
+KILLED       the scheduler reports no task-handle violation [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (63s)
+KILLED       the intruder is reported as the handle's owner [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (64s)
+KILLED       a cancel is reported as a result read [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (62s)
+KILLED       an unknown task is reported as a wrong owner [cargo test -p chimi-fiber --lib a_task_handle_used_by_another_task_reports_the_handle_and_its_owner] (6s)
+KILLED       the runtime words a task violation like a channel one [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (61s)
+KILLED       a process body writes no start span [trace_show -- a_process_body_is_listed_under_its_incarnation] (57s)
+KILLED       a process body's span names no incarnation [trace_show -- a_process_body_is_listed_under_its_incarnation] (57s)
+KILLED       a resumed fiber is told no incarnation [trace_show -- a_process_body_is_listed_under_its_incarnation] (60s)
+KILLED       trace show leaves the process name off a body [trace_show -- a_process_body_is_listed_under_its_incarnation] (68s)
+KILLED       the OTLP export drops the incarnation attribute [trace_export -- a_process_body_is_a_span_tagged_with_its_incarnation] (18s)
+# result: every mutant killed

@@ -822,3 +822,66 @@ fn a_process_is_named_from_its_start() {
             .ends_with("processes that did not return:\n  main.worker incarnation 2: defected: boom\n")
     );
 }
+
+// CHI-312: each process body is its own tree, named like its entry in the
+// process list, with the body's operations under it. The supervised pool's
+// worker_b defects on its first incarnation (2) and is replaced by
+// incarnation 4. Rejects a runtime that writes no body span (the body's
+// operations would be bare roots), a body span without its incarnation (the
+// line would not say which worker), and a viewer that drops the body's
+// outcome or length.
+#[test]
+fn a_process_body_is_listed_under_its_incarnation() {
+    let directory = scratch("process-body");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs/supervised-pool");
+    let executable = directory.join("pool");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&directory)
+        .args(["build", "--root", root.to_str().unwrap(), "app/main", "-o"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{build:?}");
+    let trace = directory.join("trace.jsonl");
+    let run = Command::new(&executable)
+        .args(["--chimi-runner", "--clock=virtual", "--trace=full"])
+        .arg(format!("--telemetry-file={}", trace.display()))
+        .arg(format!("--outcome-file={}", directory.join("outcome.jsonl").display()))
+        .arg("--")
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+
+    let report = stdout(&chimi(&[
+        "trace",
+        "show",
+        trace.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "app/main",
+    ]));
+    let lines: Vec<&str> = report.lines().collect();
+    let body = lines
+        .iter()
+        .position(|line| line.starts_with("process app/main.worker_b incarnation 2  "))
+        .unwrap_or_else(|| panic!("no body line for incarnation 2:\n{report}"));
+    assert!(lines[body].ends_with("  1.0 ms  defect"), "{report}");
+    assert!(
+        lines[body + 1].starts_with("  sequence  ") && lines[body + 1].ends_with("  defect"),
+        "{report}"
+    );
+    for incarnation in [1, 3, 4] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("process app/main.worker_")
+                    && line.contains(&format!(" incarnation {incarnation}  "))),
+            "incarnation {incarnation}:\n{report}"
+        );
+    }
+    assert!(
+        report.contains("  app/main.worker_b incarnation 2: defected: "),
+        "{report}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}

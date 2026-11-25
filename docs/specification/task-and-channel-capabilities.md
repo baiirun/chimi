@@ -559,7 +559,10 @@ that owns the capability, for example
 `channel capability violation: task 1 cannot hand the Receiver of channel 1 to
 task 3: task 2 owns it`, or
 `channel capability violation: task 1 cannot use the Receiver of channel 1 in
-Channel.receive: task 2 owns it`. A child's violation defects its owner, so the
+Channel.receive: task 2 owns it`. A Task handle used by a task that did not
+start it is named the same way, for example `task capability violation: task 3
+cannot read the result of task 2: task 1 owns it` (CHI-316); the use is
+`read the result of`, `cancel`, or `wait for` (a combinator or `Wait`). A child's violation defects its owner, so the
 program ends with the child's message. `tests/cli.rs` `native_backstop_*`
 build and run one program per route.
 
@@ -569,9 +572,6 @@ Not yet covered:
   "requires the bounded Channel runtime"), so these routes run natively only;
 - a violation emits no dedicated trace event; the trace shows only the
   defected task's cancellation and terminal events.
-- a task handle used by a task that does not own it defects that task, but
-  the program then ends with the scheduler's deadlock message instead of the
-  violation (CHI-316).
 
 ## Conformance matrix
 

@@ -167,6 +167,19 @@ pub fn render_trace(text: &str, locate: Locate<'_>, all: bool) -> Result<String,
     Ok(report)
 }
 
+/// A process body's span name, as its entry in "processes that did not
+/// return" names it: `process app/main.worker incarnation 2`.
+pub(crate) fn process_label(name: Option<&str>, incarnation: Option<u64>) -> String {
+    let mut label = String::from("process");
+    if let Some(name) = name {
+        let _ = write!(label, " {name}");
+    }
+    if let Some(incarnation) = incarnation {
+        let _ = write!(label, " incarnation {incarnation}");
+    }
+    label
+}
+
 #[derive(Default)]
 struct Trace {
     executions: Vec<Execution>,
@@ -316,10 +329,9 @@ impl Execution {
         let time = record.attribute_number("time_ns");
         self.timed |= time.is_some_and(|time| time != 0);
         match event {
-            "computation_started" | "operation_started" | "dependency_called" => {
-                self.start_span(event, record)
-            }
-            "computation_completed" | "operation_completed" => {
+            "computation_started" | "operation_started" | "dependency_called"
+            | "process_body_started" => self.start_span(event, record),
+            "computation_completed" | "operation_completed" | "process_body_completed" => {
                 if let Some(&span) = record
                     .number("span_id")
                     .and_then(|id| self.span_index.get(&id))
@@ -396,6 +408,11 @@ impl Execution {
                 record.attribute_text("requirement").unwrap_or("?"),
                 record.attribute_text("method").unwrap_or("?")
             ),
+            "process_body_started" => {
+                let incarnation = record.number("incarnation_id");
+                let name = incarnation.and_then(|id| self.process_names.get(&id));
+                process_label(name.map(String::as_str), incarnation)
+            }
             _ => operation.to_owned(),
         };
         let location = record

@@ -76,7 +76,9 @@ cancels the children started inside it, and emits `clock_scope_fired`.
 tell the running fiber whether a cancel ends the whole task and whether a
 scope cancel is waiting; `chimi_fiber_scope_polls()` tells a loop to poll
 with `CHIMI_REQUEST_SCOPE_CHECK` now and then, because under the real clock
-every request first fires the task's own due scope deadlines.
+every request first fires the task's own due scope deadlines. `chimi_fiber_current_incarnation()` names the process incarnation the
+running fiber belongs to, or 0, so a traced process body can name itself
+without a request.
 `CHIMI_REQUEST_SELECT` (`scheduler/select.rs`) backs `Wait.first`. Its
 `context` points to `value` `ChimiSelectSource` entries (a receiver, the
 caller's inbox, a child task, or an execution-clock deadline). It answers

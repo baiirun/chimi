@@ -168,7 +168,8 @@ Telemetry contains event records only:
 ### Event times
 
 Every semantic event (`computation_started`, `operation_started`,
-`operation_completed`, `dependency_called` and `computation_completed`)
+`operation_completed`, `dependency_called`, `process_body_started`,
+`process_body_completed` and `computation_completed`)
 carries `attributes.time_ns`. It is the execution clock's reading when the
 event happened, in nanoseconds since the clock's origin, with the same
 meaning as the `time_ns` of process and clock events. `computation_started`
@@ -197,6 +198,30 @@ event's wall time:
   program the interpreter can run.
 - An event's existing attributes come first. `time_ns` follows them, then
   `start_unix_ns`, then `modules` ("Source modules").
+
+### Process bodies
+
+Each process incarnation's body is a span of its own (CHI-312), so a reader
+can tie the body's operations to the incarnation's `process_started` and
+`process_terminated`. Under `--trace=boundaries` and `--trace=full` the
+native runtime writes `process_body_started` when the body begins and
+`process_body_completed` when it ends:
+
+```json
+{"schema":"chimi.runtime.v1","event":"process_body_started","sequence":214,"computation":"main","execution_id":"e","span_id":96,"parent_span_id":null,"incarnation_id":1,"operation":"process_body","attributes":{"time_ns":0}}
+{"schema":"chimi.runtime.v1","event":"process_body_completed","sequence":366,"computation":"main","execution_id":"e","span_id":96,"parent_span_id":null,"incarnation_id":1,"operation":"process_body","attributes":{"outcome":"defect","time_ns":1000000}}
+```
+
+- `span_id` is the parent span of the body's top operations, and
+  `parent_span_id` is null: a body is not inside any operation of the
+  computation.
+- `incarnation_id` is the incarnation's id, as on its process events. The
+  runtime reads it with `chimi_fiber_current_incarnation()`, which is not a
+  scheduler request, so tracing cannot change what the body does.
+- `outcome` is the body's result, as on `operation_completed`. A body the
+  scheduler abandons at a park (a forced stop) writes no completion.
+- A body whose start handoff argument is missing, or that is cancelled
+  before it begins, writes neither event.
 
 ### Source modules
 
