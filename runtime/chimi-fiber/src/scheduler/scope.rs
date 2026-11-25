@@ -61,7 +61,8 @@ use super::{
     TaskPhase, cause,
 };
 use crate::ChimiFiberCommand;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ffi::{CStr, CString, c_char};
 
 /// Identity of one cancellation scope, unique within the scheduler.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -158,6 +159,10 @@ thread_local! {
     static RESUME_SCOPE_PENDING: Cell<bool> = const { Cell::new(false) };
     static RESUME_POLLS: Cell<bool> = const { Cell::new(false) };
     static RESUME_INCARNATION: Cell<u64> = const { Cell::new(0) };
+    /// The defect message the running process body reported before its
+    /// entry returned (`chimi_fiber_report_defect`); the resume's own
+    /// carrier takes it when the entry's result arrives.
+    static DEFECT_MESSAGE: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
 /// What the fiber about to resume may read about its own cancellation state.
@@ -192,6 +197,35 @@ pub(super) fn set_resume_context(context: ResumeContext) {
     RESUME_SCOPE_PENDING.with(|cell| cell.set(context.scope_pending));
     RESUME_POLLS.with(|cell| cell.set(context.polls));
     RESUME_INCARNATION.with(|cell| cell.set(context.incarnation.map_or(0, IncarnationId::get)));
+    DEFECT_MESSAGE.with(|cell| cell.borrow_mut().take());
+}
+
+/// The defect message the fiber that just returned on this thread reported,
+/// if it reported one.
+pub(super) fn take_defect_message() -> Option<CString> {
+    DEFECT_MESSAGE.with(|cell| cell.borrow_mut().take())
+}
+
+#[unsafe(no_mangle)]
+/// Reports why the running process body defected, just before its entry
+/// returns a defect: the scheduler keeps the message with the incarnation
+/// and hands it to the defect report. Ignored outside a process body and
+/// after a task-level cancellation, whose end the scheduler has decided.
+/// `message` is copied; NULL reads as "defect". Never parks.
+///
+/// # Safety
+/// `message` is NULL or a NUL-terminated string readable for the call.
+pub unsafe extern "C" fn chimi_fiber_report_defect(message: *const c_char) {
+    if RESUME_TERMINAL.with(Cell::get) || RESUME_INCARNATION.with(Cell::get) == 0 {
+        return;
+    }
+    let copy = if message.is_null() {
+        CString::from(c"defect")
+    } else {
+        // SAFETY: the caller passes a NUL-terminated string.
+        unsafe { CStr::from_ptr(message) }.to_owned()
+    };
+    DEFECT_MESSAGE.with(|cell| *cell.borrow_mut() = Some(copy));
 }
 
 #[unsafe(no_mangle)]

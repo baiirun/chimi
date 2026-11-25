@@ -54,9 +54,6 @@ const SHARED: &[&str] = &[
     "test_logs",
     "test_log_count",
     "test_log_lock",
-    "process_defects",
-    "process_defect_count",
-    "process_defect_lock",
     // The `random` provider's one seeded stream, behind its lock.
     "random_lock",
     "random_state",

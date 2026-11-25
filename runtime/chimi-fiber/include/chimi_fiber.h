@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHIMI_FIBER_ABI_VERSION 32u
+#define CHIMI_FIBER_ABI_VERSION 33u
 #define CHIMI_FIBER_MIN_STACK_BYTES (32u * 1024u)
 #define CHIMI_FIBER_MAX_STACK_BYTES (8u * 1024u * 1024u)
 
@@ -91,15 +91,11 @@ enum {
   /* `supervisor` is the parent and `membership` the handle from
      START_SUPERVISOR. Parks until the nested subtree has stopped. */
   CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR = 23,
-  /* ChimiSchedulerRequest: `channel` is a channel id from
-     CHIMI_REQUEST_CHANNEL_BOUNDED. Any task may issue it, once, when the host
-     holds no reference to any of the channel's endpoints any more. Replies
-     OK. See ChimiValueRelease for what happens to the values the channel
-     holds; a task parked on it is answered as if the channel were aborted.
-     The id is invalid afterwards: any channel request naming it, a second
-     release included, is a contract violation that defects the caller. A
-     host that counts its handles with chimi_fiber_handle_retain and
-     chimi_fiber_handle_drop never issues it: the scheduler does. */
+  /* Not a request since ABI 33: the scheduler releases a channel itself once
+     no counted value names it (chimi_fiber_handle_drop). The kind a
+     ChimiCapabilityViolation names when such a release finds the channel
+     unknown. See ChimiValueRelease for what happens to the values a released
+     channel holds; a task parked on it is answered as if it were aborted. */
   CHIMI_REQUEST_CHANNEL_RELEASE = 24,
   /* ChimiSchedulerRequest: enters a cancellation scope of the calling task
      whose deadline Instant is `value`; the reply's `token` is the scope id.
@@ -244,15 +240,8 @@ enum {
      CHIMI_REQUEST_IO_WITHDRAW names to wake the waiter when that resource
      closes; a wait on a withdrawn key answers PENDING at once. */
   CHIMI_REQUEST_CHILD_WAIT = 47,
-  /* ChimiSchedulerRequest: no value names task `task` any more, so nothing
-     can read its outcome again. Once the task is terminal, now or later, the
-     scheduler removes its record and releases its kept result value; a kept
-     defect code stays until the scheduler ends. Any task may issue it, since
-     the last copy of a handle can die in any heap. OK, or ERROR for an
-     unknown task, a process body, a live root, or a second release. Never
-     parks, and not a cancellation point. A host that counts its handles
-     (chimi_fiber_handle_retain) never issues it: the scheduler does. */
-  CHIMI_REQUEST_TASK_RELEASE = 46,
+  /* 46 was CHIMI_REQUEST_TASK_RELEASE until ABI 33: the scheduler releases
+     a task itself once no counted value names it. */
   /* ChimiSchedulerRequest: see CHIMI_REQUEST_RESOURCE_ENTER. */
   CHIMI_REQUEST_RESOURCE_USE = 49,
 };
@@ -627,6 +616,9 @@ typedef struct {
   /* 1 when the body overflowed its fiber stack, which the host cannot see:
      the body never returns from its entry. */
   uint32_t stack_overflow;
+  /* The message the body reported with chimi_fiber_report_defect, or NULL.
+     It lives for the report's call. */
+  const char *message;
 } ChimiProcessTermination;
 
 /* Called with the record of every incarnation that defected, as it finishes
@@ -677,7 +669,7 @@ enum {
    the outcome carries is released, whether it was observed or not, after
    the root is terminal and before the call returns. A channel value is
    released when it is discarded: its parked send is cancelled, its channel
-   is aborted or released (CHIMI_REQUEST_CHANNEL_RELEASE) while it is
+   is aborted or released (no value names it) while it is
    queued, or the task it was handed to (a receiver, or a refused sender) is
    cancelled before the reply is written. A release request releases each
    queued value before it replies; values already delivered are never
@@ -833,6 +825,12 @@ uint32_t chimi_fiber_cancel_is_terminal(void);
 /* The process incarnation the running fiber's task runs, or 0 when it is not
    a process body. It reads only the fiber's resume state and cannot park. */
 uint64_t chimi_fiber_current_incarnation(void);
+/* Called by a process body just before its entry returns
+   CHIMI_FIBER_DEFECTED: why it defected. The scheduler keeps a copy with the
+   incarnation and passes it to the ChimiProcessDefectReport as `message`.
+   Ignored outside a process body and after a task-level cancellation, whose
+   end the scheduler has decided. NULL reads as "defect". Never parks. */
+void chimi_fiber_report_defect(const char *message);
 
 /* Handle counts. Every live Sender, Receiver or Completion value the host
    holds is one reference to its channel, and every live Task value one
@@ -846,9 +844,8 @@ uint64_t chimi_fiber_current_incarnation(void);
    copy it counts can reach another carrier.
 
    When a key's count reaches zero no value can name it again, and the
-   scheduler releases it as if CHIMI_REQUEST_CHANNEL_RELEASE or
-   CHIMI_REQUEST_TASK_RELEASE had been issued: at the next request of a fiber
-   on the thread that dropped it, on behalf of that fiber's task, or once
+   scheduler releases it: at the next request of a fiber on the thread that
+   dropped it, on behalf of that fiber's task, or once
    that thread's carrier has no ready task, on behalf of none. A key dropped
    on a thread that runs no carrier, or after chimi_scheduler_run returned,
    is not released: teardown releases every value the scheduler holds.
@@ -898,7 +895,7 @@ size_t chimi_scheduler_live_memberships(void);
 /* The most task records the scheduler held at once during the last
    chimi_scheduler_run, the root included. A loop that starts and drops
    tasks keeps it bounded, because each record goes once its task is
-   released (CHIMI_REQUEST_TASK_RELEASE) and terminal. Zero before any run. */
+   released (no value names it) and terminal. Zero before any run. */
 size_t chimi_scheduler_peak_task_records(void);
 
 #endif

@@ -100,6 +100,8 @@ pub const REQUEST_SUPERVISOR_STOP: u32 = 20;
 pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
 pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
 pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
+/// Not a request since ABI 33: the kind a capability violation names when
+/// the scheduler releases a counted channel it does not know.
 pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
 /// Enters a cancellation scope: `value` is its deadline; the reply's `token`
 /// is the scope id. A cancellation point.
@@ -183,10 +185,6 @@ pub const REQUEST_SIGNAL_WAIT: u32 = 45;
 /// unreaped child. Holds virtual time like an IO wait. A cancellation point,
 /// withdrawn by a cancellation (`scheduler/child.rs`).
 pub const REQUEST_CHILD_WAIT: u32 = 47;
-/// No value names `task` any more (`Scheduler::release_task`): OK, or ERROR
-/// for an unknown task, a process body, a live root, or a second release.
-/// Any task may issue it. Never parks, and not a cancellation point.
-pub const REQUEST_TASK_RELEASE: u32 = 46;
 pub const RESPONSE_UNSET: u32 = 0;
 pub const RESPONSE_OK: u32 = 1;
 pub const RESPONSE_PENDING: u32 = 2;
@@ -2485,6 +2483,10 @@ impl Scheduler {
         }
         self.keep_task_value(task, &event);
         let outcome = self.outcome(task, event);
+        let message = scope::take_defect_message();
+        if let (TaskOutcome::Defected { .. }, Some(message)) = (outcome, message) {
+            self.keep_defect_message(task, message);
+        }
         if self.tasks[&task].process.is_some() && self.is_forced(task) {
             // A forced body's children end with it, releases or not.
             self.force_terminal(task, outcome, true);
@@ -2652,14 +2654,6 @@ impl Scheduler {
             REQUEST_IO_WITHDRAW => self.handle_io_withdraw(owner, request),
             REQUEST_SIGNAL_WAIT => self.handle_signal_wait(owner, request),
             REQUEST_CHILD_WAIT => self.handle_child_wait(owner, request),
-            REQUEST_TASK_RELEASE => {
-                request.status = if self.release_task(TaskId(request.task)).is_ok() {
-                    RESPONSE_OK
-                } else {
-                    RESPONSE_ERROR
-                };
-                let _ = self.wake(owner);
-            }
             REQUEST_TASK_START => {
                 let Some(entry) = request.entry else {
                     request.status = RESPONSE_ERROR;
@@ -2826,17 +2820,6 @@ impl Scheduler {
             REQUEST_CHANNEL_ABORT => {
                 let receiver = Receiver::from_raw(request.channel, request.owner, request.token);
                 request.status = if self.channel_abort(owner, receiver).is_ok() {
-                    RESPONSE_OK
-                } else {
-                    RESPONSE_ERROR
-                };
-                let _ = self.wake(owner);
-            }
-            REQUEST_CHANNEL_RELEASE => {
-                request.status = if self
-                    .channel_release(owner, ChannelId::from_raw(request.channel))
-                    .is_ok()
-                {
                     RESPONSE_OK
                 } else {
                     RESPONSE_ERROR
