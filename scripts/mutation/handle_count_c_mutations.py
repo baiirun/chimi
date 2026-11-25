@@ -23,7 +23,7 @@ MUTATIONS = [
         "static void counted_handle_retain(uint64_t key) {\n",
     )], targets=["task_release"], filter=""),
     dict(name="a native handle no value names stays open", file=R, edits=[(
-        "  if (handle_table_release(key)) native_handle_unreferenced(key);\n",
-        "  (void)handle_table_release(key);\n",
+        "  if (native_handle_release(key)) native_handle_unreferenced(key);\n",
+        "  (void)native_handle_release(key);\n",
     )], targets=["net", "std_exec"], filter=""),
 ]

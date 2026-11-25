@@ -63,7 +63,7 @@ static _Atomic bool producer_done;
    scheduler's). The keys here name no open handle, so these retain and drop
    them in the table directly, without counted_handle_drop's close. */
 static void table_retain(uint64_t key) { native_handle_retain(key | NATIVE_HANDLE_KEY); }
-static bool locked_drop(uint64_t key) { return handle_table_release(key | NATIVE_HANDLE_KEY); }
+static bool locked_drop(uint64_t key) { return native_handle_release(key | NATIVE_HANDLE_KEY); }
 
 /* Thread `thread`'s own key number `index`, far from the anchored keys. */
 static uint64_t own_key(int thread, uint64_t index) {
@@ -132,8 +132,11 @@ int main(void) {
   for (int index = 0; index < 2; ++index) pthread_join(threads[index], NULL);
   for (uint64_t key = 1; key <= KEYS; ++key)
     CHECK(locked_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
-  CHECK(handle_table.count == 0, "%zu keys left in the table", (size_t)handle_table.count);
-  CHECK(handle_table.capacity >= 8192, "the table grew to only %zu slots", handle_table.capacity);
+  pthread_mutex_lock(&handle_count_lock);
+  size_t left = chimi_handle_counts_len_v1(), capacity = chimi_handle_counts_capacity_v1();
+  pthread_mutex_unlock(&handle_count_lock);
+  CHECK(left == 0, "%zu keys left in the table", left);
+  CHECK(capacity >= 8192, "the table grew to only %zu slots", capacity);
   puts("ok");
   return 0;
 }
