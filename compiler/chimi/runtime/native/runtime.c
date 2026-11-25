@@ -3137,13 +3137,27 @@ static Decimal decimal_of(const ChimiValue *value) { return value->as.decimal; }
 static ChimiValue *decimal_value(Decimal decimal) {
   ChimiValue *v = new_value(VALUE_DECIMAL); v->as.decimal = decimal; return v;
 }
+/* Numeric order, -1, 0 or 1, out of line so chimi_value_compare's frame keeps no
+   by-value decimals. */
+__attribute__((noinline)) static int decimal_order(const ChimiValue *left, const ChimiValue *right) {
+  return chimi_decimal_compare_v1(decimal_of(left), decimal_of(right));
+}
+__attribute__((noinline)) static ChimiValue *decimal_negated(const ChimiValue *value) {
+  return decimal_value(chimi_decimal_negate_v1(decimal_of(value)));
+}
 /* `Decimal.to_text`: exactly `scale` fraction digits. `output` holds DECIMAL_TEXT_BYTES. */
 static void decimal_text(Decimal value, char *output) { chimi_decimal_text_v1(value, false, output); }
 /* The debug form: trailing fraction zeros removed, so equal values render the same. */
 static void decimal_normalized_text(Decimal value, char *output) { chimi_decimal_text_v1(value, true, output); }
 
-/* Applies `+`, `-`, or `*`; typing rejects `/` and `%` on Decimal (T4306). */
-static ChimiControl *decimal_arithmetic(uint32_t operator, Decimal l, Decimal r, int64_t node) {
+/* Applies `+`, `-`, or `*`; typing rejects `/` and `%` on Decimal (T4306).
+   Kept out of line, as decimal_negated is: chimi_rt_binary and chimi_rt_unary sit
+   in every frame of a recursion through an operator, and the 24-byte decimals
+   and text buffers would grow each of those frames (the task stack test in
+   tests/cli.rs recurses 1,000 calls through `+`). */
+__attribute__((noinline)) static ChimiControl *decimal_arithmetic(uint32_t operator, const ChimiValue *left,
+                                                                  const ChimiValue *right, int64_t node) {
+  Decimal l = decimal_of(left), r = decimal_of(right);
   const char *symbol = binary_symbol(operator); Decimal output; bool fits = false;
   switch (operator) {
     case CHIMI_BINARY_ADD: fits = chimi_decimal_add_v1(l, r, &output); break;
@@ -3967,7 +3981,7 @@ static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *ri
       case VALUE_DURATION:
       case VALUE_INSTANT:
       case VALUE_TIMESTAMP: order = order_of(left->as.integer, right->as.integer); break;
-      case VALUE_DECIMAL: order = chimi_decimal_compare_v1(decimal_of(left), decimal_of(right)); break;
+      case VALUE_DECIMAL: order = decimal_order(left, right); break;
       /* Finite, so total; -0.0 and 0.0 are equal. */
       case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
       case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
@@ -12138,7 +12152,7 @@ NODE_WRAPPER(unary, "unary", {
   const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *control = RUN(node->a);
   if (control->kind != CONTROL_SUCCESS) { result = control; break; }
   if (control->value->kind == VALUE_FLOAT) { result = success(float_value(-control->value->as.floating)); break; }
-  if (control->value->kind == VALUE_DECIMAL) { result = success(decimal_value(chimi_decimal_negate_v1(decimal_of(control->value)))); break; }
+  if (control->value->kind == VALUE_DECIMAL) { result = success(decimal_negated(control->value)); break; }
   if (control->value->kind != VALUE_INTEGER) { result = defect("verified unary operand is not an integer", node_id); break; }
   if (control->value->as.integer == INT64_MIN) {
     result = defect(numeric_message("integer overflow in unary `-`: -(%" PRId64 ")", INT64_MIN), node_id); break;
@@ -12156,7 +12170,7 @@ NODE_WRAPPER(binary, "binary", {
     else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT)
       result = float_arithmetic(node->a, left->value->as.floating, right->value->as.floating, node_id);
     else if (left->value->kind == VALUE_DECIMAL && right->value->kind == VALUE_DECIMAL)
-      result = decimal_arithmetic(node->a, decimal_of(left->value), decimal_of(right->value), node_id);
+      result = decimal_arithmetic(node->a, left->value, right->value, node_id);
     else
       result = defect("verified binary operands are not numbers", node_id);
     break;

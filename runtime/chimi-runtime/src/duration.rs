@@ -1,16 +1,11 @@
 //! The `Duration` model, shared by the type checker's constant checks, the
 //! reference interpreter and the native runtime: a signed 64-bit count of
 //! nanoseconds (`time-and-outcomes.md`, "Duration"). `runtime.c` reaches its
-//! text form and parser through [`crate::duration_abi`] and keeps its own
-//! copies of the defect messages, which `tests/language.rs` checks against
-//! these on a generated set.
-//!
-//! Invariant: no operation wraps or saturates. A result outside `i64` is an `Err` holding
-//! the defect message.
+//! text form and parser through [`crate::duration_abi`]. The arithmetic and
+//! its defect messages are each backend's own (the compiler's `duration.rs`
+//! and `runtime.c`), which `tests/language.rs` compares on a generated set.
 
 use crate::text_buffer::TextBuffer;
-use alloc::borrow::ToOwned;
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -78,68 +73,9 @@ impl Unit {
     }
 }
 
-/// `Duration.<unit>(count)`.
-pub fn construct(unit: Unit, count: i64) -> Result<i64, String> {
-    count.checked_mul(unit.nanoseconds()).ok_or_else(|| {
-        format!(
-            "`Duration.{}({count})` overflows the Duration range",
-            unit.constructor()
-        )
-    })
-}
-
 /// `Duration.to_<unit>`: whole units, truncated toward zero.
 pub const fn whole_units(duration: i64, unit: Unit) -> i64 {
     duration / unit.nanoseconds()
-}
-
-pub fn add(left: i64, right: i64) -> Result<i64, String> {
-    left.checked_add(right)
-        .ok_or_else(|| overflow("add", &format!("{} + {}", to_text(left), to_text(right))))
-}
-
-pub fn subtract(left: i64, right: i64) -> Result<i64, String> {
-    left.checked_sub(right).ok_or_else(|| {
-        overflow(
-            "subtract",
-            &format!("{} - {}", to_text(left), to_text(right)),
-        )
-    })
-}
-
-pub fn multiply(duration: i64, factor: i64) -> Result<i64, String> {
-    duration
-        .checked_mul(factor)
-        .ok_or_else(|| overflow("multiply", &format!("{} * {factor}", to_text(duration))))
-}
-
-/// Truncates toward zero.
-pub fn divide(duration: i64, divisor: i64) -> Result<i64, String> {
-    if divisor == 0 {
-        return Err(format!(
-            "`Duration.divide` by zero: {} / 0",
-            to_text(duration)
-        ));
-    }
-    duration
-        .checked_div(divisor)
-        .ok_or_else(|| overflow("divide", &format!("{} / {divisor}", to_text(duration))))
-}
-
-pub fn negate(duration: i64) -> Result<i64, String> {
-    duration
-        .checked_neg()
-        .ok_or_else(|| overflow("negate", &format!("-({})", to_text(duration))))
-}
-
-pub fn absolute(duration: i64) -> Result<i64, String> {
-    duration
-        .checked_abs()
-        .ok_or_else(|| overflow("absolute", &format!("|{}|", to_text(duration))))
-}
-
-fn overflow(function: &str, operation: &str) -> String {
-    format!("`Duration.{function}` overflows the Duration range: {operation}")
 }
 
 /// The canonical text form: `0s`, `-1.5ms`, `250us`, `1h0m30s`, `2m3.25s`.
@@ -219,15 +155,16 @@ pub enum ParseFailure {
 
 /// One `<decimal><unit>` part, as an exact count of nanoseconds.
 #[derive(Clone, Copy, Debug)]
-struct Part {
-    unit: Unit,
+pub struct Part {
+    pub unit: Unit,
     /// Fits `i64` when negated together with the other parts (checked by `parse`).
-    nanoseconds: i128,
+    pub nanoseconds: i128,
 }
 
-struct Parsed {
-    negative: bool,
-    parts: Vec<Part>,
+/// A text [`parse`] reads, part by part, before the parts are summed.
+pub struct Parsed {
+    pub negative: bool,
+    pub parts: Vec<Part>,
 }
 
 /// `Duration.parse`: an optional `-`, then one or more `<decimal><unit>` parts with
@@ -251,41 +188,13 @@ pub fn parse(text: &str) -> Result<i64, ParseFailure> {
     i64::try_from(value).map_err(|_| ParseFailure::OutOfRange)
 }
 
-/// For a text `parse` accepts, the constructor expression with the same value:
-/// `Duration.seconds(5)` for `5s`, `Duration.add(Duration.hours(1), Duration.minutes(30))`
-/// for `1h30m`, `Duration.milliseconds(-1500)` for `-1.5s`, and `Duration.zero` for zero.
-///
-/// Ensures: each part becomes one constructor in its own unit, or in the largest smaller
-/// unit that makes its count whole; zero parts are left out; a negative text negates each
-/// count, so even the minimum value builds without overflow.
-pub fn constructor_expression(text: &str) -> Option<String> {
-    parse(text).ok()?;
-    let parsed = parse_parts(text).ok()?;
-    let calls = parsed
-        .parts
-        .iter()
-        .filter(|part| part.nanoseconds != 0)
-        .map(|part| {
-            let unit = Unit::DESCENDING
-                .into_iter()
-                .skip_while(|unit| *unit != part.unit)
-                .find(|unit| part.nanoseconds % i128::from(unit.nanoseconds()) == 0)
-                .expect("every part is a whole number of nanoseconds");
-            let count = part.nanoseconds / i128::from(unit.nanoseconds());
-            let count = if parsed.negative { -count } else { count };
-            format!("Duration.{}({count})", unit.constructor())
-        });
-    calls
-        .reduce(|sum, call| format!("Duration.add({sum}, {call})"))
-        .or_else(|| Some("Duration.zero".to_owned()))
-}
-
 /// The digits of a part's integer or fraction above which no value is in range or exact.
 /// An exact fraction has at most 13 significant digits: `h` is 2^13 * 5^11 * 9 ns.
 const MAX_INTEGER_DIGITS: usize = 22;
 const MAX_FRACTION_DIGITS: usize = 13;
 
-fn parse_parts(text: &str) -> Result<Parsed, ParseFailure> {
+/// The parts of a text in the grammar [`parse`] reads, unsummed.
+pub fn parse_parts(text: &str) -> Result<Parsed, ParseFailure> {
     if text.is_empty() {
         return Err(ParseFailure::Empty);
     }
@@ -445,41 +354,5 @@ mod tests {
             parse("99999999999999999999999999999h1x"),
             Err(ParseFailure::Invalid)
         );
-    }
-
-    #[test]
-    fn constructor_expressions_have_the_parsed_value() {
-        for (text, expression) in [
-            ("5s", "Duration.seconds(5)"),
-            (
-                "1h30m",
-                "Duration.add(Duration.hours(1), Duration.minutes(30))",
-            ),
-            ("-1.5s", "Duration.milliseconds(-1500)"),
-            ("1h0m", "Duration.hours(1)"),
-            ("0", "Duration.zero"),
-            ("0s", "Duration.zero"),
-        ] {
-            assert_eq!(constructor_expression(text).as_deref(), Some(expression));
-        }
-        assert_eq!(constructor_expression("5x"), None);
-    }
-
-    #[test]
-    fn arithmetic_defects_instead_of_wrapping() {
-        assert!(construct(Unit::Hours, 2_562_047).is_ok());
-        assert!(construct(Unit::Hours, 2_562_048).is_err());
-        assert!(construct(Unit::Hours, -2_562_048).is_err());
-        assert_eq!(add(i64::MAX - 1, 1), Ok(i64::MAX));
-        assert!(add(i64::MAX, 1).is_err());
-        assert!(subtract(i64::MIN, 1).is_err());
-        assert!(multiply(i64::MAX, 2).is_err());
-        assert_eq!(divide(-7, 2), Ok(-3));
-        assert!(divide(1, 0).is_err());
-        assert!(divide(i64::MIN, -1).is_err());
-        assert!(negate(i64::MIN).is_err());
-        assert!(absolute(i64::MIN).is_err());
-        assert_eq!(absolute(i64::MIN + 1), Ok(i64::MAX));
-        assert_eq!(whole_units(-1_999_999, Unit::Milliseconds), -1);
     }
 }
