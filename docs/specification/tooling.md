@@ -267,12 +267,22 @@ Rules:
   the record has them), the number of events, and the computation tree.
   An outcome record belongs to the execution whose event came just before
   it.
+- A second `computation_started` under an id already seen starts a second
+  run written with the same `--execution-id`: it and the events after it
+  under that id are that run's. Each such run is reported on its own, headed
+  `execution <id> (run N)`, so the runs' trees and outcomes never merge.
 - In the tree, each operation shows its kind, its source location and its
   outcome when that is not success. An operation that did not succeed and
   none of whose children failed is marked `<- started here`, since that is
   where the failure began; one that started but never completed says
   `(did not finish)`. A dependency call shows as
   `dependency <requirement>.<method>`.
+- An operation that completed shows how long it took, from its events'
+  `time_ns` (runtime-output-channels.md, "Event times"), after its
+  location: whole `ns` below a microsecond, then `µs`, `ms` or `s` with one
+  decimal (two for seconds). A run whose events are all at 0 read no clock
+  (an interpreter run, or one that never needed the scheduler), so it shows
+  no lengths. Under the virtual clock the lengths are virtual time.
 - By default only operations that did not succeed are listed, with each
   parent's succeeded children folded into a count, so the failure path
   stays readable in a long run. `--all` lists every operation.
@@ -302,15 +312,16 @@ Rules:
   warning on standard error says the source is likely not the one the run
   was built from.
 - After the tree come the process incarnations that ended other than by
-  returning, with their cause and defect message, and the tasks that never
+  returning, with their name (from `process_terminated`, or else the
+  incarnation's `process_started`), cause and defect message, and the tasks that never
   ended, with the channel a parked task waits on (from the
   `channel_receive_parked` or `channel_send_parked` event after its
   `task_parked`): the usual reasons a concurrent run stops or hangs.
 
-Not yet: timing (`chimi trace export --otlp` gives span times to a tracing tool), channel and clock event
-detail, linking a process's spans to its entry in the process list, telling
-apart two runs concatenated under the same `--execution-id` (their events
-merge), and a browsable or interactive view. Chimi has no REPL
+Not yet: channel and clock event detail, linking a process's spans to its
+entry in the process list (no operation event names the incarnation it ran
+in, so a process body's tree is listed after the computation's on its own),
+and a browsable or interactive view. Chimi has no REPL
 (decisions.md, 2026-11-17): exploration happens in tests and runnable doc
 examples.
 

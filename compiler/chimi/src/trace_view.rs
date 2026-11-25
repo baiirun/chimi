@@ -172,10 +172,19 @@ struct Trace {
     executions: Vec<Execution>,
 }
 
-/// One `execution_id`'s records, in sequence order.
+/// One run's records, in sequence order: an `execution_id`'s, or one of the
+/// runs that share it when several were written under one `--execution-id`.
 #[derive(Default)]
 struct Execution {
     id: String,
+    /// The run's place among the runs that share its id, from 1, when more
+    /// than one does.
+    run: Option<usize>,
+    /// Some event time is not 0: the run read a clock, so durations mean
+    /// something. A run that never needs the scheduler writes 0 throughout.
+    timed: bool,
+    /// Each process incarnation's name, from its `process_started`.
+    process_names: HashMap<u64, String>,
     spans: Vec<Span>,
     span_index: HashMap<u64, usize>,
     roots: Vec<usize>,
@@ -184,12 +193,16 @@ struct Execution {
     outcome: Option<String>,
     events: usize,
     modules: FileModules,
+    /// Its `computation_started` has been read.
+    started: bool,
 }
 
 struct Span {
     label: String,
     location: Option<(u32, u32)>,
     outcome: Option<String>,
+    started_ns: Option<i64>,
+    completed_ns: Option<i64>,
     children: Vec<usize>,
 }
 
@@ -245,13 +258,24 @@ impl Trace {
                 return Err(error("neither an event nor an outcome"));
             };
             let id = record.text("execution_id").unwrap_or("").to_owned();
-            let slot = *by_id.entry(id.clone()).or_insert_with(|| {
-                trace.executions.push(Execution {
-                    id,
-                    ..Execution::default()
-                });
-                trace.executions.len() - 1
-            });
+            // A second `computation_started` under one id is a second run
+            // written with the same `--execution-id`: it and the events after
+            // it are that run's, so the two runs' trees stay apart.
+            let rerun = event == "computation_started"
+                && by_id
+                    .get(&id)
+                    .is_some_and(|&slot| trace.executions[slot].started);
+            let slot = match by_id.get(&id) {
+                Some(&slot) if !rerun => slot,
+                _ => {
+                    trace.executions.push(Execution {
+                        id: id.clone(),
+                        ..Execution::default()
+                    });
+                    by_id.insert(id, trace.executions.len() - 1);
+                    trace.executions.len() - 1
+                }
+            };
             last_slot = Some(slot);
             let execution = &mut trace.executions[slot];
             if let Some(outcome) = early_outcome.take() {
@@ -265,6 +289,23 @@ impl Trace {
                 ..Execution::default()
             });
         }
+        let mut runs: HashMap<&str, usize> = HashMap::new();
+        for execution in &trace.executions {
+            *runs.entry(&execution.id).or_default() += 1;
+        }
+        let shared: Vec<bool> = trace
+            .executions
+            .iter()
+            .map(|execution| runs[execution.id.as_str()] > 1)
+            .collect();
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for (execution, shared) in trace.executions.iter_mut().zip(shared) {
+            if shared {
+                let run = seen.entry(execution.id.clone()).or_default();
+                *run += 1;
+                execution.run = Some(*run);
+            }
+        }
         Ok(trace)
     }
 }
@@ -272,6 +313,8 @@ impl Trace {
 impl Execution {
     fn add(&mut self, event: &str, record: &Record<'_>) {
         self.events += 1;
+        let time = record.attribute_number("time_ns");
+        self.timed |= time.is_some_and(|time| time != 0);
         match event {
             "computation_started" | "operation_started" | "dependency_called" => {
                 self.start_span(event, record)
@@ -282,14 +325,25 @@ impl Execution {
                     .and_then(|id| self.span_index.get(&id))
                 {
                     self.spans[span].outcome = record.attribute_text("outcome").map(str::to_owned);
+                    self.spans[span].completed_ns = time;
+                }
+            }
+            "process_started" => {
+                let name = record.attribute_text("name");
+                if let (Some(incarnation), Some(name)) = (record.number("incarnation_id"), name) {
+                    self.process_names.insert(incarnation, name.to_owned());
                 }
             }
             "process_terminated" => {
                 let cause = record.attribute_text("cause").unwrap_or("ended");
                 if cause != "returned" {
+                    let incarnation = record.number("incarnation_id");
+                    let name = record.attribute_text("name").map(str::to_owned).or_else(|| {
+                        incarnation.and_then(|id| self.process_names.get(&id).cloned())
+                    });
                     self.processes.push(ProcessEnd {
-                        name: record.attribute_text("name").map(str::to_owned),
-                        incarnation: record.number("incarnation_id"),
+                        name,
+                        incarnation,
                         cause: cause.to_owned(),
                         defect: record.attribute_text("defect").map(str::to_owned),
                     });
@@ -330,6 +384,7 @@ impl Execution {
     fn start_span(&mut self, event: &str, record: &Record<'_>) {
         if event == "computation_started" {
             self.modules = FileModules::of(record);
+            self.started = true;
         }
         let operation = record.text("operation").unwrap_or("operation");
         let label = match event {
@@ -352,6 +407,8 @@ impl Execution {
             label,
             location,
             outcome: (event == "dependency_called").then(|| "success".to_owned()),
+            started_ns: record.attribute_number("time_ns"),
+            completed_ns: None,
             children: Vec::new(),
         });
         if let Some(id) = record.number("span_id") {
@@ -368,7 +425,11 @@ impl Execution {
 
     fn render(&self, report: &mut String, locate: Locate<'_>, all: bool) {
         if !self.id.is_empty() {
-            let _ = writeln!(report, "execution {}", self.id);
+            let _ = write!(report, "execution {}", self.id);
+            if let Some(run) = self.run {
+                let _ = write!(report, " (run {run})");
+            }
+            report.push('\n');
         }
         let _ = writeln!(
             report,
@@ -477,6 +538,11 @@ impl Execution {
             let location = locate(location).unwrap_or(format!("file {file} at {start}"));
             let _ = write!(report, "  {location}");
         }
+        if let (true, Some(started), Some(completed)) =
+            (self.timed, span.started_ns, span.completed_ns)
+        {
+            let _ = write!(report, "  {}", duration(completed.saturating_sub(started).max(0)));
+        }
         let failed_children: Vec<usize> = span
             .children
             .iter()
@@ -511,6 +577,19 @@ fn indent(depth: usize) -> String {
         "  ".repeat(depth)
     } else {
         format!("{}[depth {depth}] ", "  ".repeat(MAX_INDENT))
+    }
+}
+
+/// A span's length as a person reads it: whole nanoseconds below a
+/// microsecond, then one decimal of the largest unit that keeps it at 1 or
+/// more.
+fn duration(nanoseconds: i64) -> String {
+    let value = nanoseconds as f64;
+    match nanoseconds {
+        ..1_000 => format!("{nanoseconds} ns"),
+        ..1_000_000 => format!("{:.1} µs", value / 1e3),
+        ..1_000_000_000 => format!("{:.1} ms", value / 1e6),
+        _ => format!("{:.2} s", value / 1e9),
     }
 }
 
