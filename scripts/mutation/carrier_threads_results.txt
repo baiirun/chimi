@@ -1,25 +1,15 @@
-# mutation run at 280d5908d304f6bdd72c6caf4a090ff9f68cf462
-# carrier_threads_mutations.py: 15 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (87s)
-KILLED       the random stream has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (40s)
-TIMEOUT      the test logs have no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (600s)
-KILLED       an event is written without the trace lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (36s)
-KILLED       span ids come from a plain counter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (39s)
-KILLED       profile counts are plain adds [runtime_state -- the_runtime_state_holds_across_carrier_threads] (39s)
-KILLED       heap owners come from a plain counter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (39s)
-KILLED       the file table has no lock in fs_take [runtime_state -- the_runtime_state_holds_across_carrier_threads] (39s)
-KILLED       a read does not count as a user [runtime_state -- the_runtime_state_holds_across_carrier_threads] (38s)
-KILLED       a close ignores the users [runtime_state -- the_runtime_state_holds_across_carrier_threads] (36s)
-KILLED       the last user does not close [runtime_state -- the_runtime_state_holds_across_carrier_threads] (37s)
-KILLED       a slot is reused while its descriptor is in use [runtime_state -- the_runtime_state_holds_across_carrier_threads] (38s)
-KILLED       the sum skips carrier 0 [runtime_state -- the_runtime_state_holds_across_carrier_threads] (38s)
-KILLED       a carrier thread does not bind its carrier [runtime_state -- the_runtime_state_holds_across_carrier_threads] (37s)
-KILLED       a task on an unbound thread runs [runtime_state -- the_runtime_state_holds_across_carrier_threads] (39s)
-KILLED       carriers_create leaves the count at one [runtime_state -- the_runtime_state_holds_across_carrier_threads] (38s)
-# result: every mutant killed
-# rerun at c97ae096 after the fixture gained a 60 s watchdog alarm:
-KILLED       the test logs have no lock (40s; a realloc race had left a thread spinning, which the alarm now fails)
-# added after the verifier found the scheduler emitter unexercised; the fixture now emits scheduler events too:
-KILLED       a scheduler event is written without the trace lock (42s)
-# 16 of 16 killed. Not covered by any mutant: process_defect_lock, whose code
-# is compiled only with the process kernel, which the C fixtures do not link.
+# mutation run at 45449fab0e42fbd0430cedc762223d78715c994f
+# carrier_threads_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (61s)
+STALE        the random stream has no lock: edit text occurs 0 times in runtime/native/runtime.c
+KILLED       the test logs have no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (56s)
+STALE        an event is written without the trace lock: edit text occurs 0 times in runtime/native/runtime.c
+KILLED       a scheduler event is written without the trace lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (51s)
+STALE        span ids come from a plain counter: edit text occurs 0 times in runtime/native/runtime.c
+KILLED       profile counts are plain adds [runtime_state -- the_runtime_state_holds_across_carrier_threads] (53s)
+KILLED       heap owners come from a plain counter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
+KILLED       the sum skips carrier 0 [runtime_state -- the_runtime_state_holds_across_carrier_threads] (56s)
+KILLED       a carrier thread does not bind its carrier [runtime_state -- the_runtime_state_holds_across_carrier_threads] (53s)
+KILLED       a task on an unbound thread runs [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
+KILLED       carriers_create leaves the count at one [runtime_state -- the_runtime_state_holds_across_carrier_threads] (52s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

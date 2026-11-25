@@ -677,9 +677,58 @@ static void a_close_during_a_read_waits_for_it(void) {
   errno = 0;
   CHECK(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "the last user did not close the descriptor");
   CHECK(!fs_close(handle), "a handle closed twice");
+  int third = open("/dev/null", O_RDONLY);
+  CHECK(third >= 0, "open /dev/null");
+  int64_t reused = fs_insert(third);
+  CHECK(((uint64_t)reused & 0xffffffffu) == ((uint64_t)handle & 0xffffffffu), "the freed slot was not reused");
+  CHECK(fs_take(handle) == -1, "a closed handle reached the file that reused its slot");
+  CHECK(fs_close(reused), "close the third handle");
   CHECK(fs_close(next), "close the second handle");
   errno = 0;
   CHECK(fcntl(other, F_GETFD) == -1 && errno == EBADF, "an unused handle's close did not close");
+}
+
+/* Carrier threads lending out one file at once, first with no close until
+   they finish, then with thread 0 closing it halfway: every loan is counted,
+   so no descriptor is closed under a loan and the close or the last give
+   after it releases the descriptor. A lost count leaves it open or closes it
+   early. */
+enum { LOAN_ROUNDS = 20000 };
+static int64_t lent_file;
+static int lent_fd;
+static uint32_t lent_close_at;
+
+static void *lend_file(void *raw_index) {
+  size_t index = (uintptr_t)raw_index;
+  for (uint32_t round = 0; round < LOAN_ROUNDS; ++round) {
+    if (index == 0 && round == lent_close_at) CHECK(fs_close(lent_file), "the lent file was closed early");
+    int fd = fs_take(lent_file);
+    if (fd < 0) continue;
+    CHECK(fd == lent_fd, "a loan named another descriptor");
+    CHECK(fcntl(fd, F_GETFD) != -1, "a descriptor was closed under a loan");
+    fs_give(lent_file);
+  }
+  return NULL;
+}
+
+static void lend_one_file(uint32_t close_at) {
+  lent_fd = open("/dev/null", O_RDONLY);
+  CHECK(lent_fd >= 0, "open /dev/null");
+  lent_file = fs_insert(lent_fd);
+  lent_close_at = close_at;
+  pthread_t threads[THREADS];
+  for (size_t index = 0; index < THREADS; ++index)
+    CHECK(pthread_create(&threads[index], NULL, lend_file, (void *)(uintptr_t)index) == 0, "start");
+  for (size_t index = 0; index < THREADS; ++index) pthread_join(threads[index], NULL);
+  if (close_at >= LOAN_ROUNDS) CHECK(fs_close(lent_file), "close the lent file");
+  CHECK(fs_take(lent_file) == -1, "a closed file was lent");
+  errno = 0;
+  CHECK(fcntl(lent_fd, F_GETFD) == -1 && errno == EBADF, "a loan was lost: the descriptor was left open");
+}
+
+static void the_file_table_counts_loans_across_threads(void) {
+  lend_one_file(LOAN_ROUNDS);
+  lend_one_file(LOAN_ROUNDS / 2);
 }
 
 static void *start_a_task_unbound(void *unused) {
@@ -715,6 +764,7 @@ int main(void) {
   carrier_bind(&carrier_first);
   decode_constants();
   a_close_during_a_read_waits_for_it();
+  the_file_table_counts_loans_across_threads();
   a_constant_compacts_on_one_carrier();
   a_carrier_alone_takes_consecutive_ids();
   carriers_create(THREADS + 1);

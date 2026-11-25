@@ -9123,59 +9123,35 @@ static char *fs_path(const ChimiValue *path) {
   return copy;
 }
 
-/* The open files. A handle is `slot | generation << 32`, so a handle used after
-   its file was closed names a slot whose generation moved on and fails with
-   FS_CLOSED instead of reaching another file. A handle is an integer that any
-   task, on any carrier, may hold, so the table is behind fs_file_lock, and a
-   read or write takes the descriptor for the length of its system call
-   (fs_take, fs_give). A close during one leaves the descriptor open until it
-   is given back, so the number is not reused under the call. The slot keeps
-   `fd` until then, and only a slot without one is reused. */
-typedef struct {
-  int fd;
-  uint32_t generation;
-  bool open;
-  uint32_t users;
-} FsFile;
-static FsFile *fs_files;
-static size_t fs_file_count;
+/* The open files live in the Rust runtime's table (runtime/chimi-runtime/src/
+   files.rs), which the interpreter shares: a handle is `slot | generation << 32`,
+   so one used after its file was closed fails with FS_CLOSED instead of reaching
+   another file. Any task, on any carrier, may hold a handle, so every call into
+   the table holds fs_file_lock; the Rust crate is no_std and has no lock of its
+   own, as for the random stream. A read or write borrows the descriptor for the
+   length of its system call (fs_take, fs_give); a close during one leaves the
+   descriptor open until it is given back, so the number is not reused under the
+   call. The table hands back each descriptor to close exactly once, and it is
+   closed here after the lock is released. */
+extern int64_t chimi_files_insert_v1(int32_t fd);
+extern int32_t chimi_files_take_v1(int64_t handle);
+extern int32_t chimi_files_give_v1(int64_t handle);
+extern int32_t chimi_files_close_v1(int64_t handle);
+enum { FILES_NOT_OPEN = -2 };
 static pthread_mutex_t fs_file_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int64_t fs_insert(int fd) {
   pthread_mutex_lock(&fs_file_lock);
-  size_t slot = 0;
-  while (slot < fs_file_count && (fs_files[slot].open || fs_files[slot].fd >= 0)) ++slot;
-  if (slot == fs_file_count) {
-    FsFile *grown = realloc(fs_files, (fs_file_count + 1) * sizeof(*fs_files));
-    if (!grown) exhausted_memory();
-    fs_files = grown;
-    fs_files[fs_file_count++] = (FsFile){-1, 0, false, 0};
-  }
-  fs_files[slot].fd = fd;
-  fs_files[slot].open = true;
-  int64_t handle = (int64_t)slot | ((int64_t)fs_files[slot].generation << 32);
+  int64_t handle = chimi_files_insert_v1(fd);
   pthread_mutex_unlock(&fs_file_lock);
   return handle;
-}
-
-/* The open file `handle` names, or NULL. The caller holds fs_file_lock. */
-static FsFile *fs_get(int64_t handle) {
-  uint64_t slot = (uint64_t)handle & 0xffffffffu;
-  if (handle < 0 || slot >= fs_file_count) return NULL;
-  FsFile *file = &fs_files[slot];
-  return file->open && (int64_t)file->generation == handle >> 32 ? file : NULL;
 }
 
 /* The descriptor of open `handle`, to be given back with fs_give, or -1 when
    the handle is closed. */
 static int fs_take(int64_t handle) {
   pthread_mutex_lock(&fs_file_lock);
-  FsFile *file = fs_get(handle);
-  int fd = -1;
-  if (file) {
-    ++file->users;
-    fd = file->fd;
-  }
+  int fd = chimi_files_take_v1(handle);
   pthread_mutex_unlock(&fs_file_lock);
   return fd;
 }
@@ -9184,12 +9160,7 @@ static int fs_take(int64_t handle) {
    closes its descriptor. */
 static void fs_give(int64_t handle) {
   pthread_mutex_lock(&fs_file_lock);
-  FsFile *file = &fs_files[(uint64_t)handle & 0xffffffffu];
-  int fd = -1;
-  if (--file->users == 0 && !file->open) {
-    fd = file->fd;
-    file->fd = -1;
-  }
+  int fd = chimi_files_give_v1(handle);
   pthread_mutex_unlock(&fs_file_lock);
   if (fd >= 0) (void)close(fd);
 }
@@ -9198,19 +9169,10 @@ static void fs_give(int64_t handle) {
    which drops the file, a close error is not reported. */
 static bool fs_close(int64_t handle) {
   pthread_mutex_lock(&fs_file_lock);
-  FsFile *file = fs_get(handle);
-  int fd = -1;
-  if (file) {
-    file->open = false;
-    ++file->generation;
-    if (file->users == 0) {
-      fd = file->fd;
-      file->fd = -1;
-    }
-  }
+  int fd = chimi_files_close_v1(handle);
   pthread_mutex_unlock(&fs_file_lock);
   if (fd >= 0) (void)close(fd);
-  return file != NULL;
+  return fd != FILES_NOT_OPEN;
 }
 
 /* A descriptor that is not a regular file (a pipe, a terminal, a socket) is made
