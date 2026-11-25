@@ -1,6 +1,6 @@
 id = "chimi"
 name = "Chimi"
-version = "0.0.1"
+version = "0.0.2"
 schema_version = 1
 authors = ["Byron Guina"]
 description = "Chimi language support: syntax highlighting and the chimi-lsp language server"
@@ -10,7 +10,7 @@ repository = "https://github.com/baiirun/chimi"
 # Zed checks out this revision and builds `src/parser.c` under `path`.
 # For local development, point `repository` at this checkout with `file://`.
 repository = "https://github.com/baiirun/chimi"
-rev = "d848eb197eec1fb95cfb5a421e35f6ab8f190e01"
+rev = "cb4fa820a6cbcdb017a060c3ef705c13748c30ca"
 path = "editors/tree-sitter-chimi"
 
 [language_servers.chimi-lsp]
