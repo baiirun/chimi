@@ -11,7 +11,15 @@ use super::{ExpressionFact, ProjectTypeChecker};
 use crate::diagnostic::{Diagnostic, DiagnosticStage};
 use crate::ids::{ModuleId, SymbolId, TextRange, TypeId};
 use crate::resolution::ProjectSymbolKind;
-use crate::semantic::{CallArgument, ModuleExpression};
+use crate::semantic::{CallArgument, CallForm, ModuleExpression, Pattern};
+
+/// What `reject_positional_struct_pattern` reported.
+pub(super) struct RejectedStructPattern {
+    /// The diagnostic carries an edit that rewrites the whole pattern.
+    pub(super) fixed: bool,
+    /// The pattern names one sub-pattern per field.
+    pub(super) arity_matches: bool,
+}
 
 impl ProjectTypeChecker {
     /// Whether `symbol` is a struct's constructor.
@@ -83,31 +91,30 @@ impl ProjectTypeChecker {
 
     /// Reports `Money(cents)` as a pattern: a struct's fields are matched by
     /// name. Ensures: when the pattern names one sub-pattern per field, the
-    /// diagnostic carries the edit to `Money { cents: cents }`.
+    /// diagnostic carries the edit to `Money { cents: cents }`, with nested
+    /// positional struct patterns rewritten in the same edit; a bare `Money`
+    /// gets the edit to `Money { .. }`; and a pattern inside another one's
+    /// edit (`outer_fixed`) gets no edit of its own. `None` when `pattern` is
+    /// not a struct's.
     pub(super) fn reject_positional_struct_pattern(
         &mut self,
         module_id: ModuleId,
-        pattern: &crate::semantic::Pattern,
-        arguments: &[crate::semantic::Pattern],
+        pattern: &Pattern,
+        arguments: &[Pattern],
         range: TextRange,
-    ) {
-        let Some(constructor) = self.resolved_pattern_symbol(module_id, pattern) else {
-            return;
-        };
+        outer_fixed: bool,
+    ) -> Option<RejectedStructPattern> {
+        let constructor = self.resolved_pattern_symbol(module_id, pattern)?;
         if !self.is_struct_constructor(constructor) {
-            return;
+            return None;
         }
         let name = self.resolved.symbol(constructor).name.clone();
-        let fields = self
-            .fields
-            .get(&constructor)
-            .map(|fields| fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
-            .unwrap_or_default();
+        let fields = self.struct_field_names(constructor);
+        let arity_matches = arguments.len() == fields.len();
         let module = &self.resolved.semantic.modules[module_id.raw() as usize];
         let file_id = module.source.file_id();
         let source = module.source.text();
-        let slice = |range: TextRange| &source[range.start() as usize..range.end() as usize];
-        let written = slice(range);
+        let written = &source[range.start() as usize..range.end() as usize];
         let mut diagnostic = Diagnostic::error(
             DiagnosticStage::Type,
             "T4216",
@@ -118,19 +125,99 @@ impl ProjectTypeChecker {
                 braced(&name, fields.iter().map(|field| format!("{field}: ...")).collect())
             ),
         );
-        if arguments.len() == fields.len() && written.ends_with(')') {
-            let callee = &written[..written.find('(').unwrap_or(written.len())];
-            let replacement = braced(
-                callee,
-                fields
-                    .iter()
-                    .zip(arguments)
-                    .map(|(field, argument)| format!("{field}: {}", slice(argument.range())))
-                    .collect(),
-            );
+        let replacement = if outer_fixed {
+            None
+        } else if arguments.is_empty() && !written.contains('(') {
+            Some(format!("{written} {{ .. }}"))
+        } else if arity_matches && written.ends_with(')') {
+            Some(self.braced_struct_pattern(module_id, pattern, arguments, range))
+        } else {
+            None
+        };
+        let fixed = replacement.is_some();
+        if let Some(replacement) = replacement {
             diagnostic = diagnostic.with_fix(range, replacement);
         }
         self.push_type_diagnostic(diagnostic);
+        Some(RejectedStructPattern {
+            fixed,
+            arity_matches,
+        })
+    }
+
+    fn struct_field_names(&self, constructor: SymbolId) -> Vec<String> {
+        self.fields
+            .get(&constructor)
+            .map(|fields| fields.iter().map(|field| field.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// `Name(a, b)` written as `Name { first: a, second: b }`, with each
+    /// argument that is itself a positional struct pattern of the right field
+    /// count rewritten the same way.
+    fn braced_struct_pattern(
+        &self,
+        module_id: ModuleId,
+        pattern: &Pattern,
+        arguments: &[Pattern],
+        range: TextRange,
+    ) -> String {
+        let source = self.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .text();
+        let written = &source[range.start() as usize..range.end() as usize];
+        let callee = &written[..written.find('(').unwrap_or(written.len())];
+        let fields = self
+            .resolved_pattern_symbol(module_id, pattern)
+            .map(|constructor| self.struct_field_names(constructor))
+            .unwrap_or_default();
+        braced(
+            callee,
+            fields
+                .iter()
+                .zip(arguments)
+                .map(|(field, argument)| {
+                    format!("{field}: {}", self.rewritten_sub_pattern(module_id, argument))
+                })
+                .collect(),
+        )
+    }
+
+    /// `argument` as written, with every positional struct pattern in it, at
+    /// any depth, rewritten to the braced form: one sub-pattern per field
+    /// becomes `Name { field: pattern, .. }`, and a bare name `Name { .. }`.
+    fn rewritten_sub_pattern(&self, module_id: ModuleId, argument: &Pattern) -> String {
+        let source = self.resolved.semantic.modules[module_id.raw() as usize]
+            .source
+            .text();
+        let range = argument.range();
+        let written = &source[range.start() as usize..range.end() as usize];
+        if let Pattern::Constructor {
+            arguments,
+            form: CallForm::Positional,
+            ..
+        } = argument
+            && let Some(constructor) = self.resolved_pattern_symbol(module_id, argument)
+            && self.is_struct_constructor(constructor)
+        {
+            let fields = self.struct_field_names(constructor).len();
+            if fields == arguments.len() && written.ends_with(')') {
+                return self.braced_struct_pattern(module_id, argument, arguments, range);
+            }
+            if arguments.is_empty() && !written.contains('(') {
+                return format!("{written} {{ .. }}");
+            }
+        }
+        let mut children = argument.children();
+        children.sort_by_key(|child| std::cmp::Reverse(child.range().start()));
+        let mut text = written.to_owned();
+        for child in children {
+            let child_range = child.range();
+            let start = (child_range.start() - range.start()) as usize;
+            let end = (child_range.end() - range.start()) as usize;
+            text.replace_range(start..end, &self.rewritten_sub_pattern(module_id, child));
+        }
+        text
     }
 
     /// Reports field braces in a pattern that lowering could not order: an
