@@ -258,7 +258,7 @@ Watch.publish:        fn<T>(Watch.Publisher<T>, T) errors Channel.SendError<T>
 Watch.subscribe:      fn<T>(Watch.Publisher<T>) -> Watch.Subscription<T>
 Watch.receive:        fn<T>(Watch.Subscription<T>) -> Channel.Receive<T> errors ChannelError
 
-Select.watch:         fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
+Wait.watch:         fn<T, A, F, R>(Watch.Subscription<T>, fn(Receive<T>) -> A errors F needs R)
                         -> Event<A, F | Channel.Aborted> needs R
 ```
 
@@ -292,11 +292,11 @@ loop count = 0 {
 
 - Each accepted value goes to exactly one receiver. Receivers parked in
   `Channel.receive` are served in the order they parked. A receiver waiting
-  in `Select.first` is woken and competes when it polls again; a parked
-  plain receive is served before any select. There is no fairness between
+  in `Wait.first` is woken and competes when it polls again; a parked
+  plain receive is served before any wait. There is no fairness between
   receivers beyond that.
 - `Channel.abort(receiver)` ends that receiver. Its later receives fail with
-  `Channel.Aborted`, and so does a select on it. An owner's exit ends the
+  `Channel.Aborted`, and so does a wait on it. An owner's exit ends the
   receivers it owns, and so does discarding a message that carries one.
 - The queue is aborted when its last receiver ends, by any of these routes.
   A receiver in flight inside a message counts as live. For a channel that
@@ -382,10 +382,10 @@ handle was removed already, through it or a copy (CHI-240).
 
 ### Choosing among variants
 
-`Select.receive` accepts any Receiver, including a broadcast subscription and
-a receiver from `Channel.add_receiver`. `Select.watch` is the watch
+`Wait.receive` accepts any Receiver, including a broadcast subscription and
+a receiver from `Channel.add_receiver`. `Wait.watch` is the watch
 subscription's event. Readiness is the same as for a receive: a value,
-`Drained`, or `Aborted` makes the event ready. Several tasks may select on
+`Drained`, or `Aborted` makes the event ready. Several tasks may wait on
 receivers of one queue; each value still goes to one of them.
 
 ### Variants as implemented (CHI-231)
@@ -402,21 +402,21 @@ receivers of one queue; each value still goes to one of them.
   owns its value as an ordinary queued message.
 - **Watch subscriptions** are conflating queues of capacity one: a publish
   replaces an unread value and releases the old one.
-- **Select commit.** A select that answers with a ready receiver takes the
+- **Wait commit.** A wait that answers with a ready receiver takes the
   value in the same scheduler step and keeps it for the task's receive,
   which the host issues next and which answers with that value at once. No
   other receiver of the same queue can take it in between, whatever runs
   first. A value kept for a task that ends before its receive is released
   with the task's other operations. Inbox and task sources consume nothing,
   since each has a single consumer. The other sources keep their values.
-- **Events borrow their receiver.** A `Select.receive` or `Select.watch`
+- **Events borrow their receiver.** A `Wait.receive` or `Wait.watch`
   event reads its receiver without holding it, so building one moves
   nothing, but using the event after the receiver moved is `T4241` at the
   event (CHI-224), including when the receiver is read from a field such as
   `jobs.receiver`. Moving the receiver into another binding of the same task
-  leaves the event valid. A select's answer borrows nothing. The link holds
+  leaves the event valid. A wait's answer borrows nothing. The link holds
   through a call whose result may hold an event (a helper that wraps
-  `Select.receive`, or a closure that returns a captured event), a field
+  `Wait.receive`, or a closure that returns a captured event), a field
   read, a loop's `break` value, and a pattern binding whose type may hold an
   event (CHI-241). Calls are not followed, so the rule is conservative: such
   a result borrows every receiver passed to the call, and a pattern binding
@@ -428,7 +428,7 @@ receivers of one queue; each value still goes to one of them.
   watch, subscribe), capability violations 7 (a published value holds a
   capability) and 8 (an operation on the wrong kind of channel), and the
   `copy_channel_value` hook at the end of `ChimiSchedulerConfig`. Native
-  runtime ABI 33 adds the nine intrinsics after `Select.first`.
+  runtime ABI 33 adds the nine intrinsics after `Wait.first`.
 
 ## Owner exit and automatic cleanup
 

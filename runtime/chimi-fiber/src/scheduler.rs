@@ -667,7 +667,7 @@ struct Task {
     scopes: Vec<scope::Scope>,
     /// The parent's innermost scope when this task was started.
     started_in_scope: Option<ScopeId>,
-    /// What the task's parked `Select.first` waits on.
+    /// What the task's parked `Wait.first` waits on.
     select: Option<select::SelectWait>,
     /// The descriptor wait the task is parked on.
     io_wait: Option<reactor::IoWaitId>,
@@ -694,9 +694,9 @@ pub enum ClockEventKind {
     DeadlockWaiter,
     /// A cancellation scope's deadline passed. A boundary event.
     ScopeFired,
-    /// A `Select.first` found nothing ready and parked. A boundary event.
+    /// A `Wait.first` found nothing ready and parked. A boundary event.
     SelectParked,
-    /// A `Select.first` committed to the event whose index is
+    /// A `Wait.first` committed to the event whose index is
     /// `request_kind`. A boundary event.
     SelectCommitted,
     /// SIGINT or SIGTERM (its number in `request_kind`) cancelled the

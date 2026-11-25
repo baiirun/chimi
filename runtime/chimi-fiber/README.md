@@ -77,7 +77,7 @@ tell the running fiber whether a cancel ends the whole task and whether a
 scope cancel is waiting; `chimi_fiber_scope_polls()` tells a loop to poll
 with `CHIMI_REQUEST_SCOPE_CHECK` now and then, because under the real clock
 every request first fires the task's own due scope deadlines.
-`CHIMI_REQUEST_SELECT` (`scheduler/select.rs`) backs `Select.first`. Its
+`CHIMI_REQUEST_SELECT` (`scheduler/select.rs`) backs `Wait.first`. Its
 `context` points to `value` `ChimiSelectSource` entries (a receiver, the
 caller's inbox, a child task, or an execution-clock deadline). It answers
 with the index of the first ready source in list order, or registers the task
@@ -85,7 +85,7 @@ on every source and parks it; a wake only makes the host ask again, and each
 request withdraws the previous registrations. The host then issues the
 committed source's own request, which answers at once; a committed receive's
 value is taken in the select step and kept for that request.
-`clock_select_parked` and `clock_select_committed` are its trace events.
+`clock_wait_parked` and `clock_wait_committed` are its trace events.
 
 `CHIMI_REQUEST_IO_WAIT` (`scheduler/reactor.rs`) is the IO reactor: a task
 waits until the descriptor in `value` is ready for the `token` interest

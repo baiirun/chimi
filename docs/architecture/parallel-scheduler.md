@@ -920,7 +920,7 @@ four keep one carrier.
        2, 4 and 8 carriers (10 or 20 times each in the suite, two minutes
        at most per run): six processes in a ring passing four tokens 3000
        hops each; eight receivers of one queue fed by three producer
-       processes, half in a two-arm `Select.first` and half in
+       processes, half in a two-arm `Wait.first` and half in
        `Channel.receive`, taking 1 to 6000 with none lost or doubled; four
        registered workers that defect after every second answer, about a
        hundred restarts while main keeps asking; twenty rounds of six

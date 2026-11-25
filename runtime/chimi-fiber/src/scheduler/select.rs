@@ -1,6 +1,6 @@
 //! `CHIMI_REQUEST_SELECT`: one task waits on several sources and commits to
 //! the first that is ready, in list order (time-and-outcomes.md, "Semantics of
-//! `Select.first`").
+//! `Wait.first`").
 //!
 //! The request answers with the index of the first ready source, and the
 //! host then performs that source's ordinary operation (receive, process

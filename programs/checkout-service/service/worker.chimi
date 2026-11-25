@@ -5,7 +5,7 @@ import std/clock as Clock
 import std/duration as Duration.{Duration}
 import std/list as List
 import std/result.{Result}
-import std/select as Select
+import std/wait as Wait
 import std/task.{Timeout}
 import std/watch as Watch
 
@@ -100,16 +100,16 @@ pub fn work(
     // A drained watch is always ready, so it leaves the list once it drains;
     // a paused worker leaves out the queue. The heartbeat is always there.
     let watching = case following {
-      True -> [Select.watch(settings, fn(next) { Wake.Changed(next) })]
+      True -> [Wait.watch(settings, fn(next) { Wake.Changed(next) })]
       False -> []
     }
     let taking = case paused {
       True -> []
-      False -> [Select.receive(jobs, fn(next) { Wake.Next(next) })]
+      False -> [Wait.receive(jobs, fn(next) { Wake.Next(next) })]
     }
-    let beat = Select.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
+    let beat = Wait.after(Duration.milliseconds(heartbeat_ms), Wake.Beat)
     let events_now = List.concat([watching, taking, [beat]])
-    let wake = Select.first(events_now)
+    let wake = Wait.first(events_now)
     case wake {
       Wake.Changed(Receive.Received(changed)) -> (changed.paused, following, handled)
       Wake.Changed(Receive.Drained) -> (paused, False, handled)

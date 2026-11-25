@@ -3,11 +3,11 @@ import std/clock.{Clock}
 import std/duration as Duration
 import std/process as Process
 import std/process.{Inbox}
-import std/select as Select
+import std/wait as Wait
 import std/supervisor as Supervisor
 
 // SD13: a ticker that never calls `Process.receive` directly. It waits with
-// `Select.first` on its inbox and a 1 s timer, counting ticks, under a 30 s
+// `Wait.first` on its inbox and a 1 s timer, counting ticks, under a 30 s
 // `shutdown_within`. Main stops the root at 2.5s. The drain makes the inbox
 // event ready at once (its mailbox is closed and empty), so the inbox's
 // receive returns cancellation and the ticker ends `cancelled` at 2.5s. A
@@ -27,9 +27,9 @@ fn ticking(inbox: Inbox<Message>) -> Void needs {
   clock: Clock
 } {
   loop ticks = 0 {
-    let wake = Select.first([
-      Select.inbox(inbox, fn(message: Message) { Wake.Got(message) }),
-      Select.after(Duration.seconds(1), Wake.Tick),
+    let wake = Wait.first([
+      Wait.inbox(inbox, fn(message: Message) { Wake.Got(message) }),
+      Wait.after(Duration.seconds(1), Wake.Tick),
     ])
     case wake {
       Wake.Got(_) -> ticks

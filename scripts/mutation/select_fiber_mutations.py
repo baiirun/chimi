@@ -1,4 +1,4 @@
-"""Scheduler mutants of `Select.first` (CHI-203) whose proof is a chimi-fiber
+"""Scheduler mutants of `Wait.first` (CHI-203) whose proof is a chimi-fiber
 test rather than a compiled program.
 
 Run: scripts/mutation/mutate.py scripts/mutation/select_fiber_mutations.py
