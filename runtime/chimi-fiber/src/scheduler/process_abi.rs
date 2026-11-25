@@ -292,18 +292,16 @@ unsafe fn read_policy(policy: *const ChimiSupervisorPolicy, depth: usize) -> Opt
 
 /// Visits the context of every process member of a policy the request
 /// handed over, as far as the policy can be read: the same reads
-/// `read_policy` makes, without validating any value.
+/// `read_policy` makes, without validating any value. Unlike `read_policy`
+/// it has no depth limit, so a policy refused for its depth still has every
+/// context released; the host built it by recursing as deep.
 ///
 /// # Safety
 /// As for `read_policy`.
 unsafe fn visit_policy_contexts(
     policy: *const ChimiSupervisorPolicy,
-    depth: usize,
     visit: &mut impl FnMut(*mut c_void),
 ) {
-    if depth > MAX_POLICY_DEPTH {
-        return;
-    }
     // SAFETY: the caller guarantees a null or readable policy.
     let Some(policy) = (unsafe { policy.as_ref() }) else {
         return;
@@ -318,11 +316,50 @@ unsafe fn visit_policy_contexts(
             MEMBER_PROCESS => visit(member.process.context),
             // SAFETY: nested policies satisfy the same contract.
             MEMBER_SUPERVISOR => unsafe {
-                visit_policy_contexts(member.supervisor, depth + 1, visit)
+                visit_policy_contexts(member.supervisor, visit)
             },
             _ => {}
         }
     }
+}
+
+/// The specification contexts a start request hands over: once a fiber
+/// issues `SUPERVISOR_START`, `START_PROCESS` or `START_SUPERVISOR`, the
+/// scheduler owns every context it names, whether or not it serves the
+/// request. Empty for any other kind.
+///
+/// # Safety
+/// `request` points to a live `ChimiProcessRequest` whose policy or spec is
+/// null or readable, as the generated runtime passes them.
+pub(super) unsafe fn start_contexts(request: *const ChimiProcessRequest) -> Vec<*mut c_void> {
+    // SAFETY: the caller guarantees a live record.
+    let input = unsafe { request.read() };
+    let mut contexts = Vec::new();
+    match input.kind {
+        super::REQUEST_SUPERVISOR_START | super::REQUEST_SUPERVISOR_START_SUPERVISOR => {
+            // SAFETY: as for `read_policy`.
+            unsafe { visit_policy_contexts(input.policy, &mut |context| contexts.push(context)) }
+        }
+        super::REQUEST_SUPERVISOR_START_PROCESS => {
+            // SAFETY: a null or readable spec.
+            if let Some(spec) = unsafe { input.spec.as_ref() } {
+                contexts.push(spec.context);
+            }
+        }
+        _ => {}
+    }
+    contexts
+}
+
+/// True for the requests whose specification contexts the scheduler owns
+/// once issued (`start_contexts`).
+pub(super) fn is_start(kind: u32) -> bool {
+    matches!(
+        kind,
+        super::REQUEST_SUPERVISOR_START
+            | super::REQUEST_SUPERVISOR_START_PROCESS
+            | super::REQUEST_SUPERVISOR_START_SUPERVISOR
+    )
 }
 
 fn start_status(error: StartError) -> u32 {
@@ -467,7 +504,7 @@ impl Scheduler {
                 let Some(policy) = (unsafe { read_policy(input.policy, 0) }) else {
                     // SAFETY: as above; the request handed these contexts over.
                     unsafe {
-                        visit_policy_contexts(input.policy, 0, &mut |context| {
+                        visit_policy_contexts(input.policy, &mut |context| {
                             self.release_spec_context(context)
                         })
                     };
@@ -505,9 +542,10 @@ impl Scheduler {
                 let started = if input.message == 0 {
                     self.start_process(supervisor, spec, restart)
                 } else {
-                    // A violation leaves the request unanswered, so the host
-                    // still owns the spec context and the message.
+                    // A violation leaves the request unanswered: the host
+                    // keeps the message, and the context is released here.
                     if let Err(error) = self.channels.check_carried(owner, &carried) {
+                        self.release_spec_context(spec.context);
                         let _ = self.channel_violation::<()>(
                             owner,
                             error,
@@ -556,7 +594,7 @@ impl Scheduler {
                 ) else {
                     // SAFETY: as above; the request handed these contexts over.
                     unsafe {
-                        visit_policy_contexts(input.policy, 0, &mut |context| {
+                        visit_policy_contexts(input.policy, &mut |context| {
                             self.release_spec_context(context)
                         })
                     };

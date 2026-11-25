@@ -1,0 +1,14 @@
+# mutation run at 9bd29dc2a037d0d2c77869858ad8c06c782a5199
+# start_context_mutations.py: 10 mutants against runtime/chimi-fiber
+BASELINE ok  [lib -- process_tests] (6s)
+KILLED       a start its caller's releases defect keeps its contexts [lib -- process_tests] (8s)
+KILLED       a forced body abandoned at a start keeps its contexts [lib -- process_tests] (6s)
+KILLED       an unwind abandoned at a start keeps its contexts [lib -- process_tests] (7s)
+KILLED       an abandoned start's contexts are not released [lib -- process_tests] (8s)
+KILLED       a policy past the depth limit keeps its deepest contexts [lib -- process_tests] (9s)
+KILLED       a handoff refused for a violation keeps its context [lib -- process_tests] (9s)
+KILLED       a start process names no context [lib -- process_tests] (10s)
+KILLED       a supervisor start names no contexts [lib -- process_tests] (4s)
+KILLED       a nested supervisor start is not a start [lib -- process_tests] (9s)
+KILLED       unserved contexts are not released [lib -- process_tests] (9s)
+# result: every mutant killed
