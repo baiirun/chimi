@@ -754,6 +754,12 @@ fn a_timed_run_shows_how_long_each_span_took() {
     assert!(report.contains("computation main  file 0 at 0  1.8 µs  defect\n"), "{report}");
     assert!(report.contains("  call  file 0 at 0  600 ns  defect"), "{report}");
 
+    for (end, shown) in [(2_999_997, "1.0 ms  defect  <- started here"), (2_999_999_997, "1.00 s  defect  <-")] {
+        std::fs::write(&trace, run(end)).unwrap();
+        let report = stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()]));
+        assert!(report.contains(&format!("  call  file 0 at 0  {shown}")), "{report}");
+    }
+
     std::fs::write(&trace, run(0)).unwrap();
     let untimed = stdout(&chimi(&["trace", "show", "--all", trace.to_str().unwrap()]));
     assert!(untimed.contains("computation main  file 0 at 0  defect\n"), "{untimed}");

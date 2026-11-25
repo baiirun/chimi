@@ -270,7 +270,11 @@ Rules:
 - A second `computation_started` under an id already seen starts a second
   run written with the same `--execution-id`: it and the events after it
   under that id are that run's. Each such run is reported on its own, headed
-  `execution <id> (run N)`, so the runs' trees and outcomes never merge.
+  `execution <id> (run N)`, so the runs' trees never merge; an outcome
+  record still belongs to the run whose event came just before it. This
+  reads a file of runs written one after another. Runs written at the same
+  time under one id cannot be told apart, and `chimi trace export` refuses a
+  rerun, since its spans need ids unique within one trace.
 - In the tree, each operation shows its kind, its source location and its
   outcome when that is not success. An operation that did not succeed and
   none of whose children failed is marked `<- started here`, since that is

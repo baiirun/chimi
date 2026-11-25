@@ -424,10 +424,10 @@ impl Execution {
     }
 
     fn render(&self, report: &mut String, locate: Locate<'_>, all: bool) {
-        if !self.id.is_empty() {
+        if !self.id.is_empty() || self.run.is_some() {
             let _ = write!(report, "execution {}", self.id);
             if let Some(run) = self.run {
-                let _ = write!(report, " (run {run})");
+                let _ = write!(report, "{}(run {run})", if self.id.is_empty() { "" } else { " " });
             }
             report.push('\n');
         }
@@ -583,14 +583,20 @@ fn indent(depth: usize) -> String {
 /// A span's length as a person reads it: whole nanoseconds below a
 /// microsecond, then one decimal of the largest unit that keeps it at 1 or
 /// more.
+/// The unit is chosen after rounding, so 999_999 ns is `1.0 ms`, not
+/// `1000.0 µs`.
 fn duration(nanoseconds: i64) -> String {
-    let value = nanoseconds as f64;
-    match nanoseconds {
-        ..1_000 => format!("{nanoseconds} ns"),
-        ..1_000_000 => format!("{:.1} µs", value / 1e3),
-        ..1_000_000_000 => format!("{:.1} ms", value / 1e6),
-        _ => format!("{:.2} s", value / 1e9),
+    if nanoseconds < 1_000 {
+        return format!("{nanoseconds} ns");
     }
+    let value = nanoseconds as f64;
+    for (scale, unit) in [(1e3, "µs"), (1e6, "ms")] {
+        let shown = format!("{:.1}", value / scale);
+        if shown.parse::<f64>().is_ok_and(|shown| shown < 1000.0) {
+            return format!("{shown} {unit}");
+        }
+    }
+    format!("{:.2} s", value / 1e9)
 }
 
 fn describe_outcome(outcome: &str, record: &Record<'_>) -> String {

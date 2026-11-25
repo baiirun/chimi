@@ -23,12 +23,12 @@ MUTATIONS = [
         "",
     )]),
     mutant("microseconds print as nanoseconds", [(
-        "        ..1_000_000 => format!(\"{:.1} µs\", value / 1e3),",
-        "        ..1_000_000 => format!(\"{nanoseconds} ns\"),",
+        "    for (scale, unit) in [(1e3, \"µs\"), (1e6, \"ms\")] {",
+        "    for (scale, unit) in [(1e6, \"ms\")] {",
     )]),
     mutant("seconds keep one decimal", [(
-        "        _ => format!(\"{:.2} s\", value / 1e9),",
-        "        _ => format!(\"{:.1} s\", value / 1e9),",
+        "    format!(\"{:.2} s\", value / 1e9)",
+        "    format!(\"{:.1} s\", value / 1e9)",
     )]),
     mutant("a rerun merges into the first run", [(
         "            let rerun = event == \"computation_started\"",
@@ -41,5 +41,12 @@ MUTATIONS = [
     mutant("the start's process name is ignored", [(
         "                        incarnation.and_then(|id| self.process_names.get(&id).cloned())",
         "                        None",
+    )]),
+]
+
+MUTATIONS += [
+    mutant("the unit is chosen before rounding", [(
+        "        if shown.parse::<f64>().is_ok_and(|shown| shown < 1000.0) {",
+        "        if value / scale < 1000.0 {",
     )]),
 ]
