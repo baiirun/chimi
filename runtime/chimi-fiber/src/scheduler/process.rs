@@ -1164,7 +1164,7 @@ impl Scheduler {
         receipt
     }
 
-    /// The inbox event of a `Select.first` by `task`: `None` when `task` is
+    /// The inbox event of a `Wait.first` by `task`: `None` when `task` is
     /// not a process body; else whether a receive would answer at once (a
     /// message, or a pending shutdown, which a receive reports). When not,
     /// the next accepted message wakes the task, as a parked receive is woken.

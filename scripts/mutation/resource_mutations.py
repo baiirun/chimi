@@ -88,7 +88,7 @@ MUTATIONS = [
     outcomes("interpreter: a release defect outranks a use defect", INTERPRETER, [(
         "        (used @ Control::Defect { .. }, _) => used,\n        (_, released @ Control::Defect { .. }) => released,",
         "        (_, released @ Control::Defect { .. }) => released,\n        (used @ Control::Defect { .. }, _) => used,")]),
-    # Processes and Select (review findings).
+    # Processes and Wait (review findings).
     resources("a containment cancel does not wake a selecting release", SCHEDULER, [(
         "        if outcome.is_defect()\n            && let Some(parent) = parent\n        {\n            self.wake_selecting_parent(parent, task);",
         "        if false\n            && let Some(parent) = parent\n        {\n            self.wake_selecting_parent(parent, task);")]),

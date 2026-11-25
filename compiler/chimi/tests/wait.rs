@@ -1,6 +1,6 @@
-//! Conformance for `std/select` (time-and-outcomes.md, "Choosing among
-//! events", and the conformance rows Select commit, Select cancellation, and
-//! Select timer, plus the Tracing row's select park and commit).
+//! Conformance for `std/wait` (time-and-outcomes.md, "Choosing among
+//! events", and the conformance rows Wait commit, Wait cancellation, and
+//! Wait timer, plus the Tracing row's wait park and commit).
 //!
 //! Every native run uses the virtual clock, so a select that would wait on
 //! the wall clock times the suite out instead of passing slowly.
@@ -16,7 +16,7 @@ const IMPORTS: &str = concat!(
     "import std/clock as Clock\n",
     "import std/clock.{Instant, Timestamp}\n",
     "import std/duration as Duration\n",
-    "import std/select as Select\n",
+    "import std/wait as Wait\n",
     "import std/task as Task\n",
     "import std/task.{Timeout}\n",
 );
@@ -154,7 +154,7 @@ fn type_codes(source: &str) -> Vec<String> {
 
 const SECOND: i64 = 1_000_000_000;
 
-// ----- Select commit ----------------------------------------------------------
+// ----- Wait commit ------------------------------------------------------------
 
 // With two ready channels only the first in list order delivers; the other
 // keeps its value for the next select. Rejects random or last-wins choice,
@@ -169,10 +169,10 @@ fn among_ready_channels_the_first_in_list_order_delivers() {
             "  let second = Channel.bounded(1)\n",
             "  Channel.send(first.sender, 1)\n",
             "  Channel.send(second.sender, 2)\n",
-            "  let a = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
-            "  let b = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
+            "  let a = Wait.first([Wait.receive(second.receiver, value), Wait.receive(first.receiver, value)])\n",
+            "  let b = Wait.first([Wait.receive(second.receiver, value), Wait.receive(first.receiver, value)])\n",
             "  Channel.close(second.completion)\n",
-            "  let c = Select.first([Select.receive(second.receiver, value), Select.receive(first.receiver, value)])\n",
+            "  let c = Wait.first([Wait.receive(second.receiver, value), Wait.receive(first.receiver, value)])\n",
             "  a * 100 + b * 10 + c\n",
             "}\n",
         ),
@@ -202,7 +202,7 @@ fn a_parked_select_takes_the_first_value_to_arrive() {
             "  let fast_sender = fast.sender\n",
             "  let s = Task.start(fn() { later(slow_sender, 9, 5) })\n",
             "  let f = Task.start(fn() { later(fast_sender, 3, 7) })\n",
-            "  let got = Select.first([Select.receive(slow.receiver, value), Select.receive(fast.receiver, value)])\n",
+            "  let got = Wait.first([Wait.receive(slow.receiver, value), Wait.receive(fast.receiver, value)])\n",
             "  let waited = Duration.to_seconds(Clock.since(start))\n",
             "  let rest = value(Channel.receive(slow.receiver))\n",
             "  got * 1000 + waited * 10 + rest\n",
@@ -226,7 +226,7 @@ fn an_aborted_channel_fails_the_select_without_mapping() {
             "pub fn main() -> Int {\n",
             "  let channel = Channel.bounded(1)\n",
             "  Channel.abort(channel.receiver)\n",
-            "  case Select.first([Select.receive(channel.receiver, mapped)]) {\n",
+            "  case Wait.first([Wait.receive(channel.receiver, mapped)]) {\n",
             "    Success(value) -> value\n",
             "    Failure(ChannelError.Aborted) -> 42\n",
             "  }\n",
@@ -246,9 +246,9 @@ fn a_closed_channel_is_ready_and_drained() {
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let channel = Channel.bounded(1)\n",
             "  Channel.close(channel.completion)\n",
-            "  Select.first([\n",
-            "    Select.after(Duration.seconds(1), 7),\n",
-            "    Select.receive(channel.receiver, fn(next) { value(next) + 40 }),\n",
+            "  Wait.first([\n",
+            "    Wait.after(Duration.seconds(1), 7),\n",
+            "    Wait.receive(channel.receiver, fn(next) { value(next) + 40 }),\n",
             "  ])\n",
             "}\n",
         ),
@@ -268,9 +268,9 @@ fn the_same_receiver_twice_commits_the_earlier_event() {
             "  let channel = Channel.bounded(2)\n",
             "  Channel.send(channel.sender, 5)\n",
             "  Channel.send(channel.sender, 6)\n",
-            "  let first = Select.first([\n",
-            "    Select.receive(channel.receiver, fn(next) { value(next) + 100 }),\n",
-            "    Select.receive(channel.receiver, value),\n",
+            "  let first = Wait.first([\n",
+            "    Wait.receive(channel.receiver, fn(next) { value(next) + 100 }),\n",
+            "    Wait.receive(channel.receiver, value),\n",
             "  ])\n",
             "  first * 10 + value(Channel.receive(channel.receiver))\n",
             "}\n",
@@ -280,7 +280,7 @@ fn the_same_receiver_twice_commits_the_earlier_event() {
     assert_eq!(result.outcome, success("1056"));
 }
 
-// A select nothing can wake is a virtual deadlock that names `Select.first`.
+// A select nothing can wake is a virtual deadlock that names `Wait.first`.
 #[test]
 fn a_select_nothing_can_wake_is_a_deadlock_naming_select() {
     let result = run_virtual(
@@ -288,7 +288,7 @@ fn a_select_nothing_can_wake_is_a_deadlock_naming_select() {
         concat!(
             "pub fn main() -> Int {\n",
             "  let channel = Channel.bounded(1)\n",
-            "  let got = Select.first([Select.receive(channel.receiver, value)])\n",
+            "  let got = Wait.first([Wait.receive(channel.receiver, value)])\n",
             "  Channel.send(channel.sender, 1)\n",
             "  got\n",
             "}\n",
@@ -301,7 +301,7 @@ fn a_select_nothing_can_wake_is_a_deadlock_naming_select() {
         String::from_utf8_lossy(&result.process.stderr)
     );
     assert!(report.contains("deadlock"), "{report}");
-    assert!(report.contains("Select.first"), "{report}");
+    assert!(report.contains("Wait.first"), "{report}");
 }
 
 // A mapping function's failure is the select's failure.
@@ -318,7 +318,7 @@ fn a_mapping_failure_is_the_select_failure() {
             "pub fn main() -> Int {\n",
             "  let channel = Channel.bounded(1)\n",
             "  Channel.send(channel.sender, 3)\n",
-            "  case Select.first([Select.receive(channel.receiver, even)]) {\n",
+            "  case Wait.first([Wait.receive(channel.receiver, even)]) {\n",
             "    Success(value) -> value\n",
             "    Failure(Odd.Found(value)) -> value * 10\n",
             "    Failure(ChannelError.Aborted) -> 0\n",
@@ -348,8 +348,8 @@ fn a_task_event_waits_for_the_task_and_bubbles_its_failure() {
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let a = Task.start(fn() { slow(4, False) })\n",
             "  let b = Task.start(fn() { slow(6, True) })\n",
-            "  let first = Select.first([Select.task(b, tenfold), Select.task(a, tenfold)])\n",
-            "  let second = case Select.first([Select.task(b, tenfold)]) {\n",
+            "  let first = Wait.first([Wait.task(b, tenfold), Wait.task(a, tenfold)])\n",
+            "  let second = case Wait.first([Wait.task(b, tenfold)]) {\n",
             "    Success(value) -> value\n",
             "    Failure(Broke.Down) -> 7\n",
             "  }\n",
@@ -380,9 +380,9 @@ fn a_process_waits_on_its_inbox_or_a_timer() {
             "enum Wake {\n  Got(message: Message)\n  Idle\n}\n",
             "fn body(inbox: Inbox<Message>) -> Void needs { clock: Clock.Clock } {\n",
             "  let total = loop total = 0 {\n",
-            "    let wake = Select.first([\n",
-            "      Select.inbox(inbox, fn(message: Message) -> Wake { Wake.Got(message) }),\n",
-            "      Select.after(Duration.seconds(10), Wake.Idle),\n",
+            "    let wake = Wait.first([\n",
+            "      Wait.inbox(inbox, fn(message: Message) -> Wake { Wake.Got(message) }),\n",
+            "      Wait.after(Duration.seconds(10), Wake.Idle),\n",
             "    ])\n",
             "    case wake {\n",
             "      Wake.Got(Message.Add(amount, report)) -> {\n",
@@ -420,9 +420,9 @@ fn a_process_waits_on_its_inbox_or_a_timer() {
     );
 }
 
-// ----- Select timer -----------------------------------------------------------
+// ----- Wait timer -------------------------------------------------------------
 
-// `Select.after` measures from the start of the `Select.first` call, not
+// `Wait.after` measures from the start of the `Wait.first` call, not
 // from when the event was built, and the earliest timer commits. Rejects a
 // deadline fixed at construction (that run would end at 10 s) and a timer
 // list that commits the last one.
@@ -433,9 +433,9 @@ fn after_measures_from_the_select_call() {
         concat!(
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let start = Clock.now()\n",
-            "  let events = [Select.after(Duration.seconds(10), 1), Select.after(Duration.seconds(4), 2)]\n",
+            "  let events = [Wait.after(Duration.seconds(10), 1), Wait.after(Duration.seconds(4), 2)]\n",
             "  Clock.sleep(Duration.seconds(5))\n",
-            "  let got = Select.first(events)\n",
+            "  let got = Wait.first(events)\n",
             "  got * 100 + Duration.to_seconds(Clock.since(start))\n",
             "}\n",
         ),
@@ -445,7 +445,7 @@ fn after_measures_from_the_select_call() {
     assert_eq!(clock_advances(&result.telemetry), [5 * SECOND, 9 * SECOND]);
 }
 
-// `Select.at` with a passed deadline is ready at once; ties keep list order.
+// `Wait.at` with a passed deadline is ready at once; ties keep list order.
 #[test]
 fn a_passed_deadline_is_ready_and_ties_keep_list_order() {
     let result = run_virtual(
@@ -453,9 +453,9 @@ fn a_passed_deadline_is_ready_and_ties_keep_list_order() {
         concat!(
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let now = Clock.now()\n",
-            "  let past = Select.first([Select.at(Clock.add(now, Duration.seconds(1)), 1), Select.at(now, 2), Select.at(now, 3)])\n",
+            "  let past = Wait.first([Wait.at(Clock.add(now, Duration.seconds(1)), 1), Wait.at(now, 2), Wait.at(now, 3)])\n",
             "  let later = Clock.add(now, Duration.seconds(2))\n",
-            "  let tie = Select.first([Select.at(later, 4), Select.at(later, 5)])\n",
+            "  let tie = Wait.first([Wait.at(later, 4), Wait.at(later, 5)])\n",
             "  past * 10 + tie\n",
             "}\n",
         ),
@@ -473,7 +473,7 @@ fn a_user_clock_timer_works_through_its_sleep_until() {
     let result = run_virtual(
         "user-clock",
         concat!(
-            "fn wait() -> Int { Select.first([Select.after(Duration.seconds(3), 8)]) }\n",
+            "fn wait() -> Int { Wait.first([Wait.after(Duration.seconds(3), 8)]) }\n",
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let base = clock\n",
             "  let shift = Duration.hours(1)\n",
@@ -511,7 +511,7 @@ fn a_user_clock_timer_does_not_break_the_commit() {
             "  0\n",
             "}\n",
             "fn wait(receiver: Receiver<Int>) -> Int {\n",
-            "  Select.first([Select.receive(receiver, value), Select.after(Duration.seconds(10), 99)])\n",
+            "  Wait.first([Wait.receive(receiver, value), Wait.after(Duration.seconds(10), 99)])\n",
             "}\n",
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let channel = Channel.bounded(0)\n",
@@ -552,7 +552,7 @@ fn a_due_user_clock_timer_keeps_list_order() {
         "user-clock-due",
         concat!(
             "fn wait(receiver: Receiver<Int>) -> Int {\n",
-            "  Select.first([Select.after(Duration.seconds(0), 1), Select.receive(receiver, fn(next) { 2 })])\n",
+            "  Wait.first([Wait.after(Duration.seconds(0), 1), Wait.receive(receiver, fn(next) { 2 })])\n",
             "}\n",
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let channel = Channel.bounded(1)\n",
@@ -592,7 +592,7 @@ fn a_buffered_send_wakes_a_parked_select() {
             "    let _ = Channel.send(sender, 4)\n",
             "    0\n",
             "  })\n",
-            "  Select.first([Select.receive(channel.receiver, value)])\n",
+            "  Wait.first([Wait.receive(channel.receiver, value)])\n",
             "}\n",
         ),
         "off",
@@ -613,7 +613,7 @@ fn a_timeout_withdraws_a_parked_select() {
         concat!(
             "fn wait() -> Int {\n",
             "  let channel = Channel.bounded(1)\n",
-            "  let got = Select.first([Select.receive(channel.receiver, value)])\n",
+            "  let got = Wait.first([Wait.receive(channel.receiver, value)])\n",
             "  let _ = Channel.send(channel.sender, 1)\n",
             "  got\n",
             "}\n",
@@ -662,9 +662,9 @@ fn a_worker_takes_jobs_and_beats_while_idle() {
             "  let period = Duration.seconds(10)\n",
             "  loop state = (0, 0, Clock.add(Clock.now(), period)) {\n",
             "    let (sum, beats, next_beat) = state\n",
-            "    let wake = case Select.first([\n",
-            "      Select.receive(jobs, fn(next: Receive<Int>) -> Wake { Wake.Next(next) }),\n",
-            "      Select.at(next_beat, Wake.Beat),\n",
+            "    let wake = case Wait.first([\n",
+            "      Wait.receive(jobs, fn(next: Receive<Int>) -> Wake { Wake.Next(next) }),\n",
+            "      Wait.at(next_beat, Wake.Beat),\n",
             "    ]) {\n",
             "      Success(wake) -> wake\n",
             "      Failure(ChannelError.Aborted) -> break -1\n",
@@ -694,7 +694,7 @@ fn a_worker_takes_jobs_and_beats_while_idle() {
     );
 }
 
-// ----- Select cancellation ----------------------------------------------------
+// ----- Wait cancellation ------------------------------------------------------
 
 // A timeout that cancels a parked select delivers nothing and leaves the
 // channel as it was: a sender that arrives afterwards is never received, so
@@ -707,7 +707,7 @@ fn cancelling_a_parked_select_leaves_the_channel_unchanged() {
         concat!(
             "import std/channel.{SendError}\n",
             "fn wait(receiver: Receiver<Int>) -> Int {\n",
-            "  Select.first([Select.receive(receiver, value)])\n",
+            "  Wait.first([Wait.receive(receiver, value)])\n",
             "}\n",
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
             "  let late = Channel.bounded(0)\n",
@@ -744,7 +744,7 @@ fn cancelling_a_parked_select_leaves_the_channel_unchanged() {
 #[test]
 fn an_empty_event_list_is_rejected_or_defects() {
     assert_eq!(
-        type_codes("pub fn main() -> Int { Select.first([]) }\n"),
+        type_codes("pub fn main() -> Int { Wait.first([]) }\n"),
         ["T4345"]
     );
     let result = run_virtual(
@@ -752,8 +752,8 @@ fn an_empty_event_list_is_rejected_or_defects() {
         concat!(
             "import std/list as List\n",
             "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
-            "  let events = [Select.after(Duration.seconds(1), 1)]\n",
-            "  Select.first(List.slice(events, 1..1))\n",
+            "  let events = [Wait.after(Duration.seconds(1), 1)]\n",
+            "  Wait.first(List.slice(events, 1..1))\n",
             "}\n",
         ),
         "off",
@@ -774,8 +774,8 @@ fn an_empty_event_list_is_rejected_or_defects() {
 fn an_event_is_task_local() {
     let captured = type_codes(concat!(
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
-        "  let event = Select.after(Duration.seconds(1), 1)\n",
-        "  let task = Task.start(fn() { Select.first([event]) })\n",
+        "  let event = Wait.after(Duration.seconds(1), 1)\n",
+        "  let task = Task.start(fn() { Wait.first([event]) })\n",
         "  Task.result(task)\n",
         "}\n",
     ));
@@ -787,7 +787,7 @@ fn an_event_is_task_local() {
     let sent = type_codes(concat!(
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
         "  let channel = Channel.bounded(1)\n",
-        "  Channel.send(channel.sender, Select.after(Duration.seconds(1), 1))\n",
+        "  Channel.send(channel.sender, Wait.after(Duration.seconds(1), 1))\n",
         "  1\n",
         "}\n",
     ));
@@ -796,33 +796,33 @@ fn an_event_is_task_local() {
 
 // ----- Tracing ----------------------------------------------------------------
 
-// Select park and commit are boundary events, the commit carrying the
+// Wait park and commit are boundary events, the commit carrying the
 // event's index; `off` constructs none.
 #[test]
-fn select_park_and_commit_are_boundary_events() {
+fn wait_park_and_commit_are_boundary_events() {
     let body = concat!(
         "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
-        "  Select.first([Select.after(Duration.seconds(5), 1), Select.after(Duration.seconds(2), 2)])\n",
+        "  Wait.first([Wait.after(Duration.seconds(5), 1), Wait.after(Duration.seconds(2), 2)])\n",
         "}\n",
     );
     let traced = run_virtual("trace", body, "boundaries");
     assert_eq!(traced.outcome, success("2"));
-    let select_lines: Vec<_> = traced
+    let wait_lines: Vec<_> = traced
         .telemetry
         .lines()
-        .filter(|line| line.contains("clock_select"))
+        .filter(|line| line.contains("clock_wait"))
         .collect();
-    assert_eq!(select_lines.len(), 2, "{}", traced.telemetry);
-    assert!(select_lines[0].contains("\"event\":\"clock_select_parked\""));
-    assert!(select_lines[1].contains("\"event\":\"clock_select_committed\""));
+    assert_eq!(wait_lines.len(), 2, "{}", traced.telemetry);
+    assert!(wait_lines[0].contains("\"event\":\"clock_wait_parked\""));
+    assert!(wait_lines[1].contains("\"event\":\"clock_wait_committed\""));
     assert!(
-        select_lines[1].contains("\"index\":1"),
+        wait_lines[1].contains("\"index\":1"),
         "{}",
-        select_lines[1]
+        wait_lines[1]
     );
     let quiet = run_virtual("trace-off", body, "off");
     assert_eq!(quiet.outcome, success("2"));
-    assert!(!quiet.telemetry.contains("clock_select"));
+    assert!(!quiet.telemetry.contains("clock_wait"));
 }
 
 // ----- Interpreter --------------------------------------------------------------
@@ -835,7 +835,7 @@ fn the_interpreter_reports_select_as_native_only() {
         &path,
         format!(
             "{IMPORTS}{VALUE}pub fn main() -> Int needs {{ clock: Clock.Clock }} {{\n  \
-             Select.first([Select.after(Duration.seconds(1), 1)])\n}}\n"
+             Wait.first([Wait.after(Duration.seconds(1), 1)])\n}}\n"
         ),
     )
     .unwrap();
@@ -848,7 +848,7 @@ fn the_interpreter_reports_select_as_native_only() {
     let outcome = stdout.lines().last().unwrap_or_default();
     assert!(
         outcome.contains("\"outcome\":\"defect\"")
-            && outcome.contains("Select.after requires the native runtime"),
+            && outcome.contains("Wait.after requires the native runtime"),
         "{outcome}"
     );
     std::fs::remove_dir_all(scratch).unwrap();

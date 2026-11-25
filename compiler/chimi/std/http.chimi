@@ -43,7 +43,7 @@ import std/net as Net.{Connection, Listener, NetError, Network}
 import std/process as Process.{HandoffSpec, Inbox}
 import std/resource as Resource
 import std/result as Result.{Err, Ok}
-import std/select as Select
+import std/wait as Wait
 import std/stream as Stream.{Reader, StreamError, Writer}
 import std/supervisor as Supervisor.{HandoffError, Running}
 import std/task as Task
@@ -394,18 +394,18 @@ fn serve_admitted<E, R>(inbox: Inbox<Unused>, accepted: Connection, bounds: Limi
     })
   })
   // A new follower's first receive is the flag's value now, which catches a
-  // drain that began before this follower; the select wakes only for a change.
+  // drain that began before this follower; the wait wakes only for a change.
   let now_draining = Watch.receive(drained)
   let woken = case now_draining {
     Receive.Received(True) -> Woken.Draining
-    _ -> Select.first([
-      Select.task(serving, fn(_) { Woken.Served }),
-      Select.inbox(inbox, fn(_) { Woken.Stopped }),
-      Select.watch(drained, fn(_) { Woken.Draining }),
+    _ -> Wait.first([
+      Wait.task(serving, fn(_) { Woken.Served }),
+      Wait.inbox(inbox, fn(_) { Woken.Stopped }),
+      Wait.watch(drained, fn(_) { Woken.Draining }),
     ])
   }
   case (woken, is_set(working)) {
-    (Woken.Draining, True) -> Select.first([Select.task(serving, fn(_) { Void }), Select.inbox(inbox, fn(_) { Void })])
+    (Woken.Draining, True) -> Wait.first([Wait.task(serving, fn(_) { Void }), Wait.inbox(inbox, fn(_) { Void })])
     _ -> Void
   }
 }

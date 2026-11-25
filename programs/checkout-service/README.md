@@ -3,7 +3,7 @@
 This forcing program (CHI-207) is the Phase 3 service, and since T5
 (CHI-290) also the multi-package workspace of Phase 9: a checkout service
 that uses failure-set types, `std/result`, causes, retry, timeouts and
-deadlines, `Task.all`, `Task.results`, `Task.race`, `Select.first`, a
+deadlines, `Task.all`, `Task.results`, `Task.race`, `Wait.first`, a
 broadcast, and a watch together. What it showed about choice syntax and
 error propagation is written up in
 [the evidence note](../../docs/research/phase-3-forcing-program-evidence.md).
@@ -12,7 +12,7 @@ error propagation is written up in
   charge with a per-attempt timeout and backoff, a race between two
   carriers, notifications whose failures are counted rather than raised, and
   a deadline over the whole checkout, stored as a `Result`.
-- `service/worker.chimi`: a worker that selects on the shared order queue, the
+- `service/worker.chimi`: a worker that waits on the shared order queue, the
   settings watch, and a heartbeat timer, and reports on a broadcast.
 - `checkout/fakes.chimi`: deterministic stand-ins for the services a checkout
   calls. They wait on the clock like network calls and fail by rule.
@@ -55,10 +55,10 @@ The run prints `expected.stdout` exactly, and its outcome record is
 - Order 7 arrives while the workers are paused and waits until they resume.
   Its fraud service is unreachable, so it goes on for review and succeeds.
 - The settings close before the queue, so each worker drops its drained
-  watch from its select and keeps serving until the queue drains.
+  watch from its `Wait.first` and keeps serving until the queue drains.
 - The audit counts 2 completed and 5 rejected orders, and the heartbeats the
   idle workers sent while paused.
 
 `compiler/chimi/tests/cli.rs` (`native_checkout_service_forces_the_phase_3_surface`)
 builds and runs the program, compares both expected files, checks the
-select and scope trace events, and runs the tests.
+wait and scope trace events, and runs the tests.

@@ -24,7 +24,7 @@ mod constants;
 pub(crate) mod durations;
 pub(crate) mod failure_sets;
 pub(crate) mod process;
-mod select;
+mod wait;
 mod struct_literals;
 
 mod properties;
@@ -263,8 +263,8 @@ impl PropertyDerivation {
 #[derive(Clone, Copy)]
 enum HeldPart {
     Type(TypeId),
-    /// A `Select.Event`, whatever its arguments.
-    SelectEvent,
+    /// A `Wait.Event`, whatever its arguments.
+    WaitEvent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1319,9 +1319,9 @@ impl TypedProject {
         self.type_may_hold_with(container, HeldPart::Type(part), &HashMap::new(), 0)
     }
 
-    /// Whether a value of `container` may hold a `Select.Event` of any type.
+    /// Whether a value of `container` may hold a `Wait.Event` of any type.
     pub(crate) fn type_may_hold_select_event(&self, container: TypeId) -> bool {
-        self.type_may_hold_with(container, HeldPart::SelectEvent, &HashMap::new(), 0)
+        self.type_may_hold_with(container, HeldPart::WaitEvent, &HashMap::new(), 0)
     }
 
     fn type_may_hold_with(
@@ -1343,11 +1343,11 @@ impl TypedProject {
         }
         let is_part = match part {
             HeldPart::Type(part) => self.same_type_with(container, part, generics, depth),
-            HeldPart::SelectEvent => matches!(
+            HeldPart::WaitEvent => matches!(
                 &self.types[container.raw() as usize],
                 CanonicalType::Named { symbol, .. }
                     if self.resolved.standard_symbol(*symbol)
-                        == Some(StandardSymbol::Type(StandardType::SelectEvent))
+                        == Some(StandardSymbol::Type(StandardType::WaitEvent))
             ),
         };
         if is_part {
@@ -1538,7 +1538,7 @@ impl TypedProject {
         match self.resolved.standard_symbol(symbol) {
             // An event is task-local like the handle or inbox it may hold
             // (time-and-outcomes.md, "Events").
-            Some(StandardSymbol::Type(StandardType::Task | StandardType::SelectEvent)) => {
+            Some(StandardSymbol::Type(StandardType::Task | StandardType::WaitEvent)) => {
                 return ValueProperties::PARENT_LOCAL;
             }
             Some(StandardSymbol::Type(
@@ -2061,7 +2061,7 @@ impl ProjectTypeChecker {
         self.index_process_contracts();
         self.index_clock_contracts();
         self.index_combinator_contracts();
-        self.index_select_contracts();
+        self.index_wait_contracts();
         let text = self.builtin_type("Text");
         let int = self.builtin_type("Int");
         let bool_type = self.builtin_type("Bool");
@@ -9398,7 +9398,7 @@ impl ProjectTypeChecker {
                                 Some(StandardSymbol::Type(
                                     StandardType::Task
                                     | StandardType::ProcessSpec
-                                    | StandardType::SelectEvent,
+                                    | StandardType::WaitEvent,
                                 )) => Some(1),
                                 Some(StandardSymbol::Type(StandardType::ProcessHandoffSpec)) => {
                                     Some(2)

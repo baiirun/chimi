@@ -140,7 +140,7 @@ impl ProjectTypeChecker {
     /// in covariant positions (fields and success types, never a function input),
     /// so two instances whose arguments there are failure sets may join by union
     /// ("Joins"). Inferred from the declaration; `List`, `Option`, `Task`, and
-    /// `Select.Event` only hand their arguments out.
+    /// `Wait.Event` only hand their arguments out.
     pub(crate) fn type_parameter_is_covariant(&self, owner: SymbolId, index: usize) -> bool {
         self.parameter_is_covariant_within(owner, index, 0)
     }
@@ -157,7 +157,7 @@ impl ProjectTypeChecker {
             || matches!(
                 self.resolved.standard_symbol(owner),
                 Some(StandardSymbol::Type(
-                    StandardType::Option | StandardType::Task | StandardType::SelectEvent
+                    StandardType::Option | StandardType::Task | StandardType::WaitEvent
                 ))
             )
         {
