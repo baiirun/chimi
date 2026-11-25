@@ -59,19 +59,15 @@ MUTATIONS = [
     m("a removal keeps the key count",
       "            *slot = Entry::default();\n        }\n        self.len = self.len.saturating_sub(1);",
       "            *slot = Entry::default();\n        }"),
-    m("a new key is not counted",
-      "            entry.key = key;\n            self.len += 1;",
-      "            entry.key = key;"),
     m("the last hole is not cleared",
       "        if let Some(slot) = self.entries.get_mut(hole) {\n            *slot = Entry::default();\n        }\n        self.len",
       "        self.len"),
-    # A map that never grows, or fills completely, makes a probe loop
-    # forever; the unit tests then time out instead of failing, so the
-    # threshold mutant here stops short of full.
+    # A map that never grows or fills completely (a new key left uncounted,
+    # a threshold at full) or whose size is not a power of two (a fixed
+    # growth step) makes a probe loop forever, so the unit tests time out
+    # rather than fail; those mutants are left out, and the threshold
+    # mutant here stops short of full.
     m("the map grows only at three quarters full",
       "        if self.len.saturating_add(1).saturating_mul(2) > self.entries.len() && !self.grow() {",
       "        if self.len.saturating_add(1).saturating_mul(4) > self.entries.len().saturating_mul(3) && !self.grow() {"),
-    m("the map grows by a fixed step",
-      "self.entries.len().saturating_mul(2) };",
-      "self.entries.len().saturating_add(64) };"),
 ]
