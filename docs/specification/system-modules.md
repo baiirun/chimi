@@ -465,7 +465,8 @@ pub enum CliError {
   UnknownOption(option: Text), MissingValue(option: Text),
   UnexpectedValue(option: Text, value: Text),
   InvalidValue(name: Text, value: Text, expected: Text),
-  MissingArgument(name: Text), UnexpectedArgument(value: Text)
+  MissingArgument(name: Text), UnexpectedArgument(value: Text),
+  MissingCommand, UnknownCommand(name: Text)
 }
 
 pub const text   // { name: "text", read: fn(Text) -> Option<Text> }
@@ -473,9 +474,12 @@ pub const int    // { name: "int", read: fn(Text) -> Option<Int> }
 pub const path   // { name: "path", read: fn(Text) -> Option<Path> }
 
 pub fn flag(long: Text, short: Text, help: Text) -> Handle<Bool>
+pub fn switch(long: Text, short: Text, help: Text, default: Bool) -> Handle<Bool>
 pub fn option<T>(long: Text, short: Text, help: Text, parser: { name: Text, read: fn(Text) -> Option<T> }) -> Handle<Option<T>>
+pub fn repeated<T>(long: Text, short: Text, help: Text, parser: …) -> Handle<List<T>>
 pub fn argument<T>(name: Text, help: Text, parser: …) -> Handle<T>
 pub fn rest<T>(name: Text, help: Text, parser: …) -> Handle<List<T>>
+pub fn subcommand(command: Command) -> Handle<Option<Parsed>>
 pub fn arg<T>(handle: Handle<T>) -> Arg
 pub fn command(name: Text, summary: Text, args: List<Arg>) -> Command
 pub fn version(command: Command, version: Text) -> Command
@@ -503,6 +507,29 @@ pub fn main(arguments: List<Text>) -> Exit needs { console: Console } {
 }
 ```
 
+A command may instead hold subcommands, each a handle made from its own
+`command`. After parsing, the chosen one's `get` is `Some(sub)`, read with
+that subcommand's handles, and every other one's is `None`:
+
+<!-- chimi: fragment -->
+```chimi
+const all = Cli.flag("all", "a", "Include hidden items")
+const list = Cli.subcommand(Cli.command("list", "List the items", [Cli.arg(all)]))
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(list), Cli.arg(add)])
+
+pub fn main(arguments: List<Text>) -> Exit needs { console: Console } {
+  let parsed = Cli.parse(tool, arguments)
+  case (Cli.get(parsed, list), Cli.get(parsed, add)) {
+    (Some(sub), _) -> console.write_line("listing, all: ${Cli.get(sub, all)}")
+    (_, Some(sub)) -> console.write_line("adding ${Cli.get(sub, item)}")
+    _ -> console.write_line("parse always chooses one")
+  }
+  Exit.Code(0)
+}
+```
+
 Parsing follows getopt and the GNU long-option conventions:
 
 - `parse` MUST accept `--long value`, `--long=value`, `-s value`, `-svalue`,
@@ -513,9 +540,20 @@ Parsing follows getopt and the GNU long-option conventions:
   second character is a digit or `.` (`-5`), since a short name is a letter.
   An option that takes a value MUST take the next word as it is, even when it
   starts with `-`.
+- A `switch` MUST accept `--long` and `-s` as `True` and `--no-long` as
+  `False`, keep the last one given, and be its `default` when neither is.
+  Neither form takes a value. A `flag` has no `--no-` form.
+- A `repeated` option MUST collect every value, each through its parser, in
+  the order given, and be an empty list when not given.
 - Positionals MUST fill the declared `argument`s in order, then a `rest`,
   which takes every remaining one. A positional past them is
   `UnexpectedArgument`; a missing `argument` is `MissingArgument`.
+- In a command with subcommands, the first positional word, including one
+  right after `--`, MUST name a subcommand (`UnknownCommand` otherwise, and
+  `MissingCommand` when there is none). Every word after it MUST be parsed by
+  that subcommand as its own command line, so options before the name are
+  the parent's and options after it the subcommand's. The subcommand's help,
+  usage errors and synopsis MUST name it after its parent, as `tool add`.
 - A value its parser refuses MUST be `InvalidValue`, naming `--long` for an
   option and `<name>` for a positional, with the parser's name as `expected`.
 - `--help` or `-h` anywhere before `--`, or `h` among a cluster's leading
@@ -523,19 +561,26 @@ Parsing follows getopt and the GNU long-option conventions:
   with `Exit.Help(usage)`. `--version` MUST fail with
   `Exit.Help("name version")` when the command has a version; otherwise it
   is an ordinary option, which the command may declare. Both MUST win over
-  an error in an earlier word.
+  an error in an earlier word. A subcommand's name ends the words the parent
+  searches for help, so `tool add --help` is `add`'s help and
+  `tool --bogus add --help` is the parent's usage error.
 - Any other wrong arguments MUST fail with `Exit.Usage(error, message)`,
   where `message` is `name: what was wrong`, the synopsis, and a line
   pointing at `--help`.
 - `command` MUST defect when two args share a long name or short letter, one
-  declares `help` or `h`, or a positional follows a `rest`. `version` MUST
+  declares `help` or `h`, a positional follows a `rest`, or it holds both
+  positionals and subcommands; a switch's `--no-long` counts as one of its
+  names. `version` MUST
   defect when the command declares `--version`. `flag` and `option` MUST
   defect on a long name that is empty, starts with `-` or holds `=`, or a
   short name that is not empty or one ASCII letter. `get` MUST defect on a
   handle whose name the parsed command does not declare; handles are told
   apart by name and kind, so an option and a positional may share a name.
-- `usage` lists the summary, the synopsis, the positionals, and the options
-  with `--help` and `--version` last, in two aligned columns.
+- `usage` lists the summary, the synopsis, the positionals or the
+  subcommands with their summaries, and the options with `--help` and
+  `--version` last, in two aligned columns. A switch shows as
+  `--[no-]long` and a repeated option's value as `<value>...`. A command with
+  subcommands has the synopsis `name [options] <command> [<args>...]`.
 
 ### Ending a program with Exit
 
@@ -557,9 +602,8 @@ its own status. The runner recognizes the type by the compiler's marker on
 named `Exit` is an ordinary value. `chimi run` applies it the same way, after
 its event lines.
 
-- Not in this module: subcommands, defaults from environment variables,
-  options that collect every value, negatable flags (`--no-x`), abbreviated
-  long options, and shell completion.
+- Not in this module: defaults from environment variables, abbreviated long
+  options, and shell completion.
 
 ## Decisions
 
@@ -609,6 +653,13 @@ its event lines.
   give, without macros. The usage and help errors are an `Exit` value that
   `main` ends with, rather than an `exit()` call, so releases and the drain
   still run first.
+- **A subcommand is a handle too,** so it keeps the one rule (declare a
+  handle, read it with `get`) and a misspelled subcommand is a compile error.
+  Dispatch on the chosen name as text was rejected as stringly typed. A
+  subcommand parses its own words, as git and cargo do, rather than sharing
+  the parent's options, so each has its own help and errors. `repeated` and
+  `switch` are new functions beside `option` and `flag`, not parser tricks or
+  a `--no-` form on every flag, so the type and usage show what was declared.
 - **`join` appends.** Replacing on an absolute part is a known source of
   path-traversal bugs, and Chimi prefers the rule a reader can predict.
 
@@ -633,6 +684,8 @@ its event lines.
 | The interpreter defects on a wait; a fake on both backends; `T4400` without one | `tests/std_signal.rs` `the_interpreter_needs_the_native_runtime_to_wait`, `a_test_supplies_signals_as_a_fake` |
 | `temporary_directory` is removed after the test; `files_within` refuses paths outside it and relative ones; a fake; `T4400` without one; `T4401` from `main` | `tests/host_modules.rs` `a_test_uses_real_files_in_a_temporary_directory_or_a_fake` |
 | Option forms, clusters, the last repeat, `--`, dash words, positionals and rest, every `CliError`, help and version anywhere, the usage layout, and each declaration defect, on both backends | `std-tests/cli/` (one test per file) |
+| Subcommands: the chosen one is `Some`, nesting, parent and subcommand options, `--` before the name, missing and unknown ones, errors and help named after the parent, the usage layout, and the defects | `std-tests/cli/subcommands.chimi`, `subcommand_errors.chimi`, `subcommand_defects.chimi` |
+| Switches (`--no-`, last wins, default, no value, usage) and repeated options (order, empty, each parsed, usage) | `std-tests/cli/switches.chimi`, `repeated_values.chimi` |
 | `Help` to standard output with 0, `Usage` to standard error with 2, `Code(n)`, a code outside 0 to 255 as 70, after `main`'s releases, natively and with `chimi run` | `tests/std_cli.rs` |
 | A status for an exit code or a signal; arguments pass unchanged; a second `wait` answers the same | `tests/std_exec.rs` `a_child_reports_how_it_ended` |
 | `NotFound`, `PermissionDenied` and `InvalidDirectory` before the child starts; `PATH` lookup; variables and a replaced environment; a working directory; `Stdio.Null`; a relative program with another working directory; `Failed` for a file the kernel cannot run | `tests/std_exec.rs` `a_command_that_cannot_start_fails_with_its_reason` |

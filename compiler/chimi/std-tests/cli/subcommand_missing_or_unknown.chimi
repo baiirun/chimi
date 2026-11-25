@@ -1,0 +1,27 @@
+import std/cli as Cli.{CliError, Exit}
+import std/result as Result.{Err}
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const list = Cli.subcommand(Cli.command("list", "List the items", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(add), Cli.arg(list)])
+
+fn usage_failure(arguments: List<Text>) -> (CliError, Text) {
+  case Result.capture(fn() { Cli.parse(tool, arguments) }) {
+    Err(Exit.Usage(error, message)) -> (error, message)
+    _ -> Test.fail("expected a usage failure for ${Text.join(arguments, " ")}")
+  }
+}
+
+test "a missing or unknown subcommand is a usage error of the parent" {
+  Test.assert_equal(usage_failure([]), (CliError.MissingCommand, "tool: missing command\nusage: tool [options] <command> [<args>...]\nTry 'tool --help' for more information."))
+  Test.assert_equal(usage_failure(["-v"]), (CliError.MissingCommand, "tool: missing command\nusage: tool [options] <command> [<args>...]\nTry 'tool --help' for more information."))
+  Test.assert_equal(usage_failure(["--"]), (CliError.MissingCommand, "tool: missing command\nusage: tool [options] <command> [<args>...]\nTry 'tool --help' for more information."))
+  let (unknown, _) = usage_failure(["remove", "milk"])
+  Test.assert_equal(unknown, CliError.UnknownCommand("remove"))
+  let (dashed, _) = usage_failure(["--", "-v"])
+  Test.assert_equal(dashed, CliError.UnknownCommand("-v"))
+}

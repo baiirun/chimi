@@ -1,0 +1,26 @@
+import std/cli as Cli
+import std/test as Test
+import std/text as Text
+
+const verbose = Cli.flag("verbose", "v", "Say more")
+const item = Cli.argument("item", "What to add", Cli.text)
+const add = Cli.subcommand(Cli.command("add", "Add an item", [Cli.arg(item)]))
+const list = Cli.subcommand(Cli.command("list", "List the items", []))
+const tool = Cli.command("tool", "Keep a list", [Cli.arg(verbose), Cli.arg(add), Cli.arg(list)])
+
+test "usage lists the subcommands" {
+  let expected = Text.join([
+    "Keep a list",
+    "",
+    "usage: tool [options] <command> [<args>...]",
+    "",
+    "Commands:",
+    "  add   Add an item",
+    "  list  List the items",
+    "",
+    "Options:",
+    "  -v, --verbose  Say more",
+    "  -h, --help     Print this help",
+  ], "\n")
+  Test.assert_equal(Cli.usage(tool), expected)
+}

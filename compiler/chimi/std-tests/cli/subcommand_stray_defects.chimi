@@ -1,0 +1,13 @@
+import std/cli as Cli
+import std/test as Test
+
+const add = Cli.subcommand(Cli.command("add", "Add an item", []))
+
+test "a subcommand handle the parsed command does not hold defects" {
+  let tool = Cli.command("t", "", [Cli.arg(add)])
+  let list = Cli.subcommand(Cli.command("list", "", []))
+  let stray = Test.capture_defect(fn() {
+    Cli.get(Cli.parse(tool, ["add"]), list)
+  })
+  Test.assert_equal(stray, "Cli.get: list is not part of the parsed command")
+}
