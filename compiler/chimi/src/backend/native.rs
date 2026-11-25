@@ -599,6 +599,14 @@ fn prebuilt_runtime_archive(key: &str, process_kernel: bool) -> Option<&'static 
     (!prebuilt_key.is_empty() && prebuilt_key == key).then_some(archive)
 }
 
+// Written by `build.rs`; empty when the nested build of `chimi-fiber` failed
+// or the compiler was built without the native backend.
+const EMBEDDED_FIBER_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libchimi_fiber.a"));
+
+/// The fiber runtime archive to link: `CHIMI_FIBER_RUNTIME_ARCHIVE` when set,
+/// else the archive embedded in the compiler (written once to the temporary
+/// directory under a name keyed by its contents), else the newest one beside
+/// the compiler in its Cargo target directory.
 pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("CHIMI_FIBER_RUNTIME_ARCHIVE") {
         let path = PathBuf::from(path);
@@ -606,6 +614,9 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
             .is_file()
             .then_some(path)
             .ok_or_else(|| "CHIMI_FIBER_RUNTIME_ARCHIVE does not name a file".to_owned());
+    }
+    if !EMBEDDED_FIBER_ARCHIVE.is_empty() {
+        return materialize_embedded_fiber_archive(&std::env::temp_dir());
     }
     let executable = std::env::current_exe()
         .map_err(|error| format!("locate compiler executable for fiber runtime: {error}"))?;
@@ -654,6 +665,40 @@ pub(crate) fn bundled_fiber_archive() -> Result<PathBuf, String> {
             "bundled Chimi fiber runtime ABI {FIBER_RUNTIME_ABI_VERSION} is missing; set CHIMI_FIBER_RUNTIME_ARCHIVE"
         )
     })
+}
+
+/// Writes the embedded fiber archive to `directory` as
+/// `chimi-fiber-<abi>-<hash>.a` unless a file of that name is already there,
+/// and returns its path. The name is keyed by the archive's bytes, so a
+/// present file holds them; a new one is written to a name no other write
+/// uses and renamed into place, so a concurrent build, in this process or
+/// another, never links a half-written archive.
+fn materialize_embedded_fiber_archive(directory: &Path) -> Result<PathBuf, String> {
+    let hash = blake3::hash(EMBEDDED_FIBER_ARCHIVE).to_hex();
+    let path = directory.join(format!(
+        "chimi-fiber-{FIBER_RUNTIME_ABI_VERSION}-{}.a",
+        &hash[..16]
+    ));
+    if path.is_file() {
+        return Ok(path);
+    }
+    static WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let partial = directory.join(format!(
+        "chimi-fiber-{}-{}-{}.partial",
+        &hash[..16],
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&partial, EMBEDDED_FIBER_ARCHIVE)
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&partial);
+            format!(
+                "write embedded fiber runtime to {}: {error}",
+                path.display()
+            )
+        })?;
+    Ok(path)
 }
 
 fn requires_fiber_runtime(core: &CoreProgram) -> bool {

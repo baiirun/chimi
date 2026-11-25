@@ -7,6 +7,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -652,11 +655,12 @@ fn the_interpreter_needs_the_native_runtime_to_wait() {
         format!("{IMPORTS}\npub fn main() -> Text needs {{ signals: Signals }} {{\n  waited([Signal.Hangup])\n}}\n"),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&program)
-        .output()
-        .unwrap();
+    let output = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&program),
+    )
+    .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Signal.next requires the native runtime"),
@@ -668,11 +672,12 @@ fn the_interpreter_needs_the_native_runtime_to_wait() {
         format!("{IMPORTS}\npub fn main() -> Text needs {{ signals: Signals }} {{\n  waited([])\n}}\n"),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(&program)
-        .output()
-        .unwrap();
+    let output = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(&program),
+    )
+    .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Signal.next needs at least one signal to wait for"),

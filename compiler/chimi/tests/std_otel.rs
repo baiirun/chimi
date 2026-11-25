@@ -40,8 +40,11 @@ impl Scratch {
     /// `main`'s text outcome on both backends, which must agree.
     fn outcome(&self, program: &str) -> String {
         self.write("main.chimi", program);
-        let interpreted = self.chimi(&["run", "main.chimi"]);
-        let interpreted = text_outcome(&String::from_utf8(interpreted.stdout).unwrap());
+        let _ = std::fs::remove_file(self.0.join("interpreted.jsonl"));
+        let interpreted = self.chimi(&["run", "main.chimi", "--outcome-file=interpreted.jsonl"]);
+        assert!(interpreted.status.success(), "{interpreted:?}");
+        let interpreted =
+            text_outcome(&std::fs::read_to_string(self.0.join("interpreted.jsonl")).unwrap());
         let built = self.chimi(&["build", "main.chimi", "-o", "program"]);
         assert!(built.status.success(), "{built:?}");
         let outcome = self.0.join("outcome.jsonl");

@@ -52,8 +52,8 @@ impl Scratch {
         self.run(self.0.join("program").to_str().unwrap(), arguments)
     }
 
-    /// `chimi run`, whose standard output is the reference interpreter's
-    /// event lines followed by what the program wrote.
+    /// `chimi run`, whose standard output and error are what the program and
+    /// the runner wrote, as a native executable's are.
     fn interpreted(&self, arguments: &[&str]) -> Run {
         let mut command = vec!["run", "cases.chimi"];
         if !arguments.is_empty() {
@@ -75,16 +75,6 @@ struct Run {
     status: Option<i32>,
     stdout: String,
     stderr: String,
-}
-
-/// The interpreter's standard output with its JSON event and outcome lines
-/// removed, leaving what the program and the runner wrote.
-fn written(stdout: &str) -> String {
-    stdout
-        .lines()
-        .filter(|line| !line.starts_with("{\"schema\":"))
-        .map(|line| format!("{line}\n"))
-        .collect()
 }
 
 const GREP: &str = r#"import std/cli as Cli
@@ -124,10 +114,8 @@ Try 'grep --help' for more information.
 ";
 
 /// Checks one run on both backends: its status, standard error, and
-/// standard output, which natively is what the program wrote (`console`) and
-/// then what the runner wrote (`shown`). The interpreter records console
-/// writes as events rather than writing them, so there only `shown` is
-/// compared.
+/// standard output, which is what the program wrote (`console`) and then
+/// what the runner wrote (`shown`), the same on both.
 fn check(
     scratch: &Scratch,
     arguments: &[&str],
@@ -146,10 +134,10 @@ fn check(
     assert_eq!(
         (
             interpreted.status,
-            written(&interpreted.stdout),
+            interpreted.stdout,
             interpreted.stderr.as_str()
         ),
-        (Some(status), shown.to_owned(), stderr),
+        (Some(status), format!("{console}{shown}"), stderr),
         "interpreted {arguments:?}"
     );
 }

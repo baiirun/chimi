@@ -6,6 +6,9 @@
 //! Every native run uses the virtual clock, so a test that would wait on the
 //! wall clock times the suite out instead of passing slowly.
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use chimi::source::SourceSnapshot;
 use chimi::{Compiler, ProjectSource};
 use std::path::{Path, PathBuf};
@@ -906,11 +909,12 @@ fn the_interpreter_writes_the_native_virtual_event_times() {
     let executable = build_native(&scratch, "interpreter-times", body);
     let native = run(&executable, &scratch, "native", "full", &["--clock=virtual"]);
     assert_eq!(native.outcome, success("2"));
-    let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-        .arg("run")
-        .arg(scratch.join("interpreter-times.chimi"))
-        .output()
-        .expect("run the reference interpreter");
+    let output = interpreter::traced(
+        Command::new(env!("CARGO_BIN_EXE_chimi"))
+            .arg("run")
+            .arg(scratch.join("interpreter-times.chimi")),
+    )
+    .expect("run the reference interpreter");
     let interpreted = event_attributes(&String::from_utf8_lossy(&output.stdout));
     assert!(interpreted.first().unwrap().contains("\"start_unix_ns\":0"), "{interpreted:?}");
     assert!(interpreted.iter().any(|line| line.starts_with("dependency_called")), "{interpreted:?}");
@@ -940,11 +944,12 @@ fn the_interpreter_reports_the_clock_operations_as_native_only() {
             format!("{IMPORTS}pub fn main() -> Int {{\n  {call}\n}}\n"),
         )
         .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_chimi"))
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("run the reference interpreter");
+        let output = interpreter::traced(
+            Command::new(env!("CARGO_BIN_EXE_chimi"))
+                .arg("run")
+                .arg(&path),
+        )
+        .expect("run the reference interpreter");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let outcome = stdout.lines().last().unwrap_or_default();
         assert!(

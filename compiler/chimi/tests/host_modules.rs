@@ -3,6 +3,9 @@
 //! controlled environment and working directory. Each test compares the two
 //! backends' outcome records with the expected one.
 
+#[path = "support/interpreter.rs"]
+mod interpreter;
+
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,11 +42,12 @@ fn run_both(name: &str, source: &str, variables: &[(&str, &str)]) -> String {
     // Each backend starts without the `work` directory a program may make.
     let fresh_work = || drop(std::fs::remove_dir_all(scratch.join("work")));
     fresh_work();
-    let interpreted = command(Path::new(env!("CARGO_BIN_EXE_chimi")), &scratch, variables)
-        .arg("run")
-        .arg(&program)
-        .output()
-        .unwrap();
+    let interpreted = interpreter::traced(
+        command(Path::new(env!("CARGO_BIN_EXE_chimi")), &scratch, variables)
+            .arg("run")
+            .arg(&program),
+    )
+    .unwrap();
     let interpreted = String::from_utf8_lossy(&interpreted.stdout)
         .lines()
         .last()
