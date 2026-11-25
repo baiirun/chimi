@@ -8,7 +8,7 @@
    code is the shipped code with its names prefixed. */
 
 /* Unicode White_Space, the characters Text.trim_start and Text.trim_end remove; the
-   interpreter's core_operations::reference_is_white_space keeps the same table. */
+   Rust side's chimi_runtime::text::is_white_space keeps the same table. */
 static bool reference_is_white_space(uint32_t code) {
   return (code >= 0x9 && code <= 0xd) || code == 0x20 || code == 0x85 || code == 0xa0 ||
          code == 0x1680 || (code >= 0x2000 && code <= 0x200a) || code == 0x2028 ||
