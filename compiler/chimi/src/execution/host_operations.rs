@@ -514,7 +514,7 @@ pub(super) struct MetricsAggregate {
     aggregate: chimi_runtime::metrics::Aggregate,
     /// Set by the first `Metrics.runner_document`: from then on the provider
     /// records without `--metrics-file`.
-    pub(super) reading: bool,
+    reading: bool,
 }
 
 impl MetricsAggregate {
