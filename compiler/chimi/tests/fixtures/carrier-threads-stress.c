@@ -226,7 +226,7 @@ static ChimiValue *handle_copy(uint64_t packed) {
   value->as.handle.slot = (uint32_t)(packed >> 32);
   value->as.handle.generation = (uint32_t)packed;
   value->as.handle.name = resource_type.name;
-  channel_endpoint_retain(native_handle_key(value->as.handle.slot, value->as.handle.generation));
+  counted_handle_retain(native_handle_key(value->as.handle.slot, value->as.handle.generation));
   return value;
 }
 

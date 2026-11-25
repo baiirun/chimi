@@ -1,0 +1,47 @@
+import std/channel as Channel.{Receive}
+import std/int as Int
+import std/list as List
+import std/task as Task
+import std/wait as Wait
+
+// Channel and task handle churn (CHI-308): each of N rounds makes a fresh
+// channel and a child task that sends one value on it, takes the value
+// with a two-arm `Wait.first` (an idle channel first, so the select polls
+// both) and then reads the child's result. Every round creates endpoint
+// and task handle values, copies a Sender into the child, and drops them
+// all, so each round releases a channel and a task. The outcome is 2N.
+
+fn same(next: Receive<Int>) -> Receive<Int> {
+  next
+}
+
+fn received(next: Receive<Int>) -> Int {
+  case next {
+    Receive.Received(value) -> value
+    Receive.Drained -> 0
+  }
+}
+
+pub fn main(arguments: List<Text>) -> Int {
+  let rounds = case List.first(arguments) {
+    Some(text) -> Int.parse(text)
+    None -> 0
+  }
+  let idle = Channel.bounded(1)
+  loop state = (0, 0) {
+    let (round, total) = state
+    case round == rounds {
+      True -> break total
+      False -> {
+        let pair = Channel.bounded(1)
+        let sender = pair.sender
+        let child = Task.start(fn() -> Int {
+          Channel.send(sender, 1)
+          1
+        })
+        let value = received(Wait.first([Wait.receive(idle.receiver, same), Wait.receive(pair.receiver, same)]))
+        (round + 1, total + value + Task.result(child))
+      }
+    }
+  }
+}

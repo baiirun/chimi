@@ -62,6 +62,7 @@ pub use crate::channel::{
     ChannelMetrics, Completion, HubKind, ReceiveResult, Receiver, SendResult, Sender,
 };
 use crate::channel::{ChannelRegistry, Observation, Transition};
+use crate::handles::Released;
 use crate::{
     ChimiFiber, ChimiFiberCommand, ChimiFiberConfig, ChimiFiberEntry, ChimiFiberEvent,
     ChimiFiberState, chimi_fiber_create, chimi_fiber_destroy, chimi_fiber_resume,
@@ -304,13 +305,6 @@ pub type ValueCopy = unsafe extern "C" fn(*mut c_void, i64) -> i64;
 /// Releases the entry context of a started task whose entry never ran. See
 /// `ChimiTaskContextRelease` in `include/chimi_fiber.h`.
 pub type TaskContextRelease = unsafe extern "C" fn(*mut c_void, *mut c_void);
-
-/// Takes one release the carrier running now queued while no task was
-/// running, such as a count that reached zero inside a release hook. Writes
-/// `REQUEST_CHANNEL_RELEASE` or `REQUEST_TASK_RELEASE` and its id and returns
-/// true, or returns false once the queue is empty. See `ChimiReleaseTake` in
-/// `include/chimi_fiber.h`.
-pub type ReleaseTake = unsafe extern "C" fn(*mut c_void, *mut u32, *mut u64) -> bool;
 
 /// Why a channel request broke the capability contract. See
 /// `ChimiCapabilityViolation` in `include/chimi_fiber.h`.
@@ -795,10 +789,6 @@ pub struct SchedulerOptions {
     /// `violation_context`, when the scheduler defects the violating task.
     pub capability_violation_report: Option<CapabilityViolationReport>,
     pub violation_context: *mut c_void,
-    /// Called with `release_context` whenever this carrier's ready queue is
-    /// empty, until it returns false: the releases it hands over are applied
-    /// with no task attributed.
-    pub take_release: Option<ReleaseTake>,
 }
 
 impl SchedulerOptions {
@@ -816,7 +806,6 @@ impl SchedulerOptions {
             release_context: std::ptr::null_mut(),
             capability_violation_report: None,
             violation_context: std::ptr::null_mut(),
-            take_release: None,
         }
     }
 }
@@ -960,7 +949,6 @@ struct KernelConfig {
     release_task_value: Option<(ValueRelease, *mut c_void)>,
     release_channel_value: Option<(ValueRelease, *mut c_void)>,
     release_task_context: Option<(TaskContextRelease, *mut c_void)>,
-    take_release: Option<(ReleaseTake, *mut c_void)>,
     capability_violation_report: Option<(CapabilityViolationReport, *mut c_void)>,
 }
 
@@ -1007,7 +995,6 @@ impl Scheduler {
             release_context,
             capability_violation_report,
             violation_context,
-            take_release,
         } = options;
         let mut channels =
             ChannelRegistry::new(trace_mode != TraceMode::Off, trace_mode == TraceMode::Full);
@@ -1049,7 +1036,6 @@ impl Scheduler {
                 release_task_value: release_task_value.map(|release| (release, release_context)),
                 release_channel_value: release_channel_value.map(|release| (release, release_context)),
                 release_task_context: release_task_context.map(|release| (release, release_context)),
-                take_release: take_release.map(|take| (take, release_context)),
                 capability_violation_report: capability_violation_report
                     .map(|report| (report, violation_context)),
             },
@@ -1634,32 +1620,20 @@ impl Scheduler {
         Some(task)
     }
 
-    /// Applies every release `take_release` hands over, with no task
-    /// attributed; true if there was one. Runs only between resumes, never
-    /// inside a channel transition, so the registry is never mid-update.
-    /// Keys the host queues after the last drive (during shutdown or the
-    /// scheduler's teardown) are not drained: teardown releases every value
-    /// the scheduler holds, so only their trace events are missing, and the
-    /// host clears its queues before the next run.
+    /// Applies every release this thread's handle queue holds
+    /// (`crate::handles`), with no task attributed; true if there was one.
+    /// Runs only between resumes, never inside a channel transition, so the
+    /// registry is never mid-update. Keys queued after the last drive (during
+    /// shutdown or the scheduler's teardown) are not applied: teardown
+    /// releases every value the scheduler holds, so only their trace events
+    /// are missing, and the next run discards them.
     fn drain_host_releases(&mut self) -> bool {
-        let Some((take, context)) = self.config.take_release else {
-            return false;
-        };
         let mut drained = false;
-        loop {
-            let (mut kind, mut id) = (0_u32, 0_u64);
-            // SAFETY: the configuring caller keeps the hook and its context
-            // valid until execution returns; both outputs are writable.
-            if !unsafe { take(context, &mut kind, &mut id) } {
-                return drained;
-            }
+        while let Some(released) = crate::handles::take() {
             drained = true;
-            let applied = match kind {
-                REQUEST_CHANNEL_RELEASE => {
-                    match self
-                        .channels
-                        .release_unreferenced(None, ChannelId::from_raw(id))
-                    {
+            let applied = match released {
+                Released::Channel(id) => {
+                    match self.channels.release_unreferenced(None, ChannelId::from_raw(id)) {
                         Ok(transition) => {
                             self.apply_channel_transition(transition);
                             true
@@ -1667,13 +1641,36 @@ impl Scheduler {
                         Err(_) => false,
                     }
                 }
-                REQUEST_TASK_RELEASE => self.release_task(TaskId(id)).is_ok(),
-                _ => false,
+                Released::Task(id) => self.release_task(TaskId(id)).is_ok(),
             };
-            // The host's count table names only ids it was handed, each once.
-            debug_assert!(applied, "the host drained an unknown release {kind} {id}");
+            // The counts name only ids the scheduler handed out, each once.
+            debug_assert!(applied, "the handle queue held an unknown release {released:?}");
             self.remove_released_terminal();
         }
+        drained
+    }
+
+    /// Applies the releases this thread queued, on behalf of `owner`, which
+    /// has just parked with a request: a fiber's request carries the
+    /// releases its own frees caused, as each of them were the task's own
+    /// release. A channel release naming an unknown channel defects `owner`
+    /// (`channel_release`); false then, and the request is not served.
+    fn apply_task_releases(&mut self, owner: TaskId) -> bool {
+        while let Some(released) = crate::handles::take() {
+            match released {
+                Released::Channel(id) => {
+                    if self.channel_release(owner, ChannelId::from_raw(id)).is_err() {
+                        return false;
+                    }
+                }
+                // A task's handles never leave the task that started it, so
+                // a refused release is one the record already took.
+                Released::Task(id) => {
+                    let _ = self.release_task(TaskId(id));
+                }
+            }
+        }
+        true
     }
 
     /// Queues `task` on its home carrier: the one way work becomes ready,
@@ -2521,6 +2518,9 @@ impl Scheduler {
         // `chimi_fiber_request` keeps it alive until the fiber resumes.
         let kind = unsafe { (*request.cast::<RequestHeader>()).kind };
         let park = self.tasks[&owner].park;
+        if !self.apply_task_releases(owner) {
+            return;
+        }
         // A running task is no longer parked in a select, whatever it asks
         // now (a reissued select registers afresh), so a scope refusal cannot
         // leave its watchers and wake timer behind.
@@ -3564,6 +3564,7 @@ pub unsafe extern "C" fn chimi_scheduler_execute_with_config(
         2 => TraceMode::Full,
         _ => return scheduler_defect_outcome(SCHEDULER_DEFECT_CODE),
     };
+    crate::handles::begin_run();
     let mut scheduler = Scheduler::with_options(SchedulerOptions {
         release_task_value: config.release_task_value,
         release_channel_value: config.release_channel_value,

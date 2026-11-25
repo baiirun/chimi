@@ -9,6 +9,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 mod channel;
+pub mod handles;
 pub mod scheduler;
 #[cfg(all(
     unix,
@@ -17,7 +18,7 @@ pub mod scheduler;
 ))]
 mod stack_overflow;
 
-pub const ABI_VERSION: u32 = 31;
+pub const ABI_VERSION: u32 = 32;
 pub const MIN_STACK_BYTES: usize = 32 * 1024;
 pub const MAX_STACK_BYTES: usize = 8 * 1024 * 1024;
 const PANIC_DEFECT_CODE: i64 = -1;

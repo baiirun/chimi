@@ -59,9 +59,11 @@ static _Atomic size_t ring_head;
 static _Atomic size_t ring_tail;
 static _Atomic bool producer_done;
 
-/* channel_endpoint_drop without its release queue, which is carrier state and
-   so not shared by the two threads. */
-static bool locked_drop(uint64_t key) { return handle_table_release(key); }
+/* The table counts native handle keys (channel and task keys are the
+   scheduler's). The keys here name no open handle, so these retain and drop
+   them in the table directly, without counted_handle_drop's close. */
+static void table_retain(uint64_t key) { native_handle_retain(key | NATIVE_HANDLE_KEY); }
+static bool locked_drop(uint64_t key) { return handle_table_release(key | NATIVE_HANDLE_KEY); }
 
 /* Thread `thread`'s own key number `index`, far from the anchored keys. */
 static uint64_t own_key(int thread, uint64_t index) {
@@ -71,7 +73,7 @@ static uint64_t own_key(int thread, uint64_t index) {
 /* Inserts own key `index` and deletes the one WINDOW keys before it, so about
    WINDOW of the thread's keys are live at a time. */
 static void slide_window(int thread, uint64_t index) {
-  channel_endpoint_retain(own_key(thread, index));
+  table_retain(own_key(thread, index));
   if (index >= WINDOW)
     CHECK(locked_drop(own_key(thread, index - WINDOW)), "own key %" PRIu64 " kept a reference",
           own_key(thread, index - WINDOW));
@@ -89,7 +91,7 @@ static void *producer(void *unused) {
   for (int round = 0; round < ROUNDS; ++round) {
     for (uint64_t key = 1; key <= KEYS; ++key) {
       if (key % 16 == 0) slide_window(0, own++);
-      channel_endpoint_retain(key);
+      table_retain(key);
       size_t head = atomic_load_explicit(&ring_head, memory_order_relaxed);
       while (head - atomic_load_explicit(&ring_tail, memory_order_acquire) == 1024) {}
       ring[head % 1024] = key;
@@ -123,7 +125,7 @@ static void *consumer(void *unused) {
 
 int main(void) {
   channel_endpoints_reset();
-  for (uint64_t key = 1; key <= KEYS; ++key) channel_endpoint_retain(key);
+  for (uint64_t key = 1; key <= KEYS; ++key) table_retain(key);
   pthread_t threads[2];
   CHECK(pthread_create(&threads[0], NULL, producer, NULL) == 0, "start producer");
   CHECK(pthread_create(&threads[1], NULL, consumer, NULL) == 0, "start consumer");
