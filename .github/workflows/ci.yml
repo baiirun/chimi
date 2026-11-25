@@ -57,13 +57,13 @@ jobs:
   # (CHIMI_TEST_RUNTIME_SANITIZE in backend/native.rs), so a memory error or
   # undefined behaviour in the C fails the test that reached it.
   # Under the sanitizers the suite takes about an hour and a half, so it runs
-  # in four shards (scripts/sanitizer-shard.sh).
+  # in six shards (scripts/sanitizer-shard.sh).
   sanitizers:
     name: sanitizers (${{ matrix.shard }})
     strategy:
       fail-fast: false
       matrix:
-        shard: [cli, process-lab, rest-1, rest-2]
+        shard: [cli, process-lab, rest-1, rest-2, rest-3, rest-4]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

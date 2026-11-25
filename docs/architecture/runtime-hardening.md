@@ -11,7 +11,7 @@ keep. It came in with CHI-304.
 
 | Check | Where | What it catches |
 | --- | --- | --- |
-| `sanitizers (<shard>)` CI jobs | `.github/workflows/ci.yml`, `scripts/sanitizer-shard.sh` | The whole test suite, in four shards since it takes about an hour and a half under the sanitizers, with every native program the tests build compiled with AddressSanitizer and UndefinedBehaviorSanitizer. A report stops the program, so the test fails; the job also fails on any report in its log files. |
+| `sanitizers (<shard>)` CI jobs | `.github/workflows/ci.yml`, `scripts/sanitizer-shard.sh` | The whole test suite, in six shards since it takes about an hour and a half under the sanitizers, with every native program the tests build compiled with AddressSanitizer and UndefinedBehaviorSanitizer. A report stops the program, so the test fails; the job also fails on any report in its log files. |
 | ThreadSanitizer fixtures | `compiler/chimi/tests/runtime_state.rs` | Shared runtime state touched outside its lock, from two to four real threads. |
 | Sanitized C fixtures | `tests/native_list_fuzz.rs`, the native heap test in `tests/cli.rs`, `tests/runtime_fuzz.rs` | ASan and UBSan over the heap, the persistent list and the fuzz corpus. |
 | `fuzz (<target>)` CI jobs | `scripts/fuzz-runtime.sh` | libFuzzer for two minutes on each of `json`, `text`, `decimal` and `duration`, from the committed corpus. |
