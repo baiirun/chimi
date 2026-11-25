@@ -1,0 +1,12 @@
+# mutation run at 2642710f1ce8d602c96143d58e5a931d012ddf8e
+# rust_console_mutations.py: 8 mutants against runtime/chimi-runtime
+BASELINE ok  [lib -- console::] (2s)
+KILLED       a failure also fails lines already written [lib -- console::] (0s)
+KILLED       a failure keeps the queued bytes [lib -- console::] (1s)
+KILLED       a write does not count toward the lines [lib -- console::] (1s)
+KILLED       a line ends before its last byte [lib -- console::] (1s)
+KILLED       a pending line reads as written [lib -- console::] (1s)
+KILLED       a failed line reads as pending or written [lib -- console::] (1s)
+KILLED       the queue grows instead of moving its bytes to the front [lib -- console::] (1s)
+KILLED       an ended line is kept [lib -- console::] (1s)
+# result: every mutant killed
