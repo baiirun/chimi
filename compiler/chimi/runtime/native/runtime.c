@@ -5205,29 +5205,19 @@ static uint64_t random_next(void) {
    without the scheduler there is no other task to keep running, and under the
    virtual clock the order tasks run in must not depend on how fast the reader
    drains the pipe. */
-typedef struct ConsoleLine ConsoleLine;
-struct ConsoleLine {
-  uint64_t end; /* Queue offset just past the line. */
-  int error;    /* Nonzero once a failed write dropped the line. */
-  ConsoleLine *next;
-  ConsoleLine *previous;
-};
-
-/* The bytes waiting for one open file. */
-typedef struct {
-  unsigned char *bytes;
-  size_t capacity;
-  size_t start;
-  size_t end;
-  /* Queue offset of bytes[start]: every byte before it is written or dropped. */
-  uint64_t resolved;
-  /* The writers waiting for their lines, in queue order. Each record is on
-     the heap, not its writer's stack: a fiber that overflows its stack while
-     it waits ends without returning, and its record must not dangle. The
-     writer unlinks and frees it before returning. */
-  ConsoleLine *first;
-  ConsoleLine *last;
-} ConsoleQueue;
+/* The queues and the lines their writers wait on live in the Rust runtime
+   (runtime/chimi-runtime/src/console.rs), by index: 0 standard output, 1
+   standard error, 2 the log file. Every call is made holding console_lock.
+   A line's record outlives a fiber that overflows its stack while it waits,
+   since the queue owns it rather than the writer's stack. */
+extern bool chimi_console_push_v1(size_t queue, const void *bytes, size_t length);
+extern size_t chimi_console_queued_v1(size_t queue);
+extern const unsigned char *chimi_console_front_v1(size_t queue);
+extern void chimi_console_advance_v1(size_t queue, size_t count);
+extern void chimi_console_fail_v1(size_t queue, int error);
+extern int64_t chimi_console_begin_line_v1(size_t queue);
+extern int chimi_console_line_state_v1(size_t queue, int64_t line);
+extern void chimi_console_end_line_v1(size_t queue, int64_t line);
 
 typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
 
@@ -5239,11 +5229,10 @@ typedef struct {
   FILE *file;
   /* Its own queue, or standard output's when both descriptors name the same
      open file (`2>&1`, one terminal), so their lines never interleave. */
-  ConsoleQueue *queue;
+  size_t queue;
 } ConsoleStream;
 
 enum { CONSOLE_STREAM_COUNT = 3 };
-static ConsoleQueue console_queues[CONSOLE_STREAM_COUNT];
 /* Standard output, standard error, and std/log's --log-file (fd -1 when
    there is none), which is written like the other two so a slow reader never
    blocks a carrier and its lines never tear or interleave. */
@@ -5278,7 +5267,7 @@ static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stre
   if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
   size_t index = (size_t)(stream - console_streams);
   if (!stream->file) stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
-  stream->queue = &console_queues[index];
+  stream->queue = index;
   struct stat status;
   bool known = fstat(stream->fd, &status) == 0;
   stream->socket = known && S_ISSOCK(status.st_mode);
@@ -5298,66 +5287,36 @@ static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stre
   return stream->mode;
 }
 
-static void console_enqueue(ConsoleQueue *queue, const void *bytes, size_t length) {
-  if (queue->end + length > queue->capacity) {
-    size_t queued = queue->end - queue->start;
-    /* An empty queue may have no buffer yet, and memmove from NULL is undefined. */
-    if (queued) memmove(queue->bytes, queue->bytes + queue->start, queued);
-    queue->start = 0;
-    queue->end = queued;
-    if (queued + length > queue->capacity) {
-      size_t capacity = queue->capacity ? queue->capacity : 4096;
-      while (capacity < queued + length) {
-        if (capacity > SIZE_MAX / 2) exhausted_memory();
-        capacity *= 2;
-      }
-      unsigned char *grown = realloc(queue->bytes, capacity);
-      if (!grown) exhausted_memory();
-      queue->bytes = grown;
-      queue->capacity = capacity;
-    }
-  }
-  memcpy(queue->bytes + queue->end, bytes, length);
-  queue->end += length;
-}
-
-/* Drops every queued byte and fails each line not yet fully written with
-   `error`. A line already written stays written. */
-static void console_fail(ConsoleQueue *queue, int error) {
-  for (ConsoleLine *line = queue->first; line; line = line->next)
-    if (line->end > queue->resolved) line->error = error;
-  queue->resolved += queue->end - queue->start;
-  queue->start = queue->end = 0;
+static void console_enqueue(size_t queue, const void *bytes, size_t length) {
+  if (!chimi_console_push_v1(queue, bytes, length)) exhausted_memory();
 }
 
 /* One write(2) from the front of the queue, at most `limit` bytes. False with
    errno set when it failed; an interruption or a descriptor a parent left
    non-blocking reports nothing written and true. */
 static bool console_write_front(const ConsoleStream *stream, size_t limit) {
-  ConsoleQueue *queue = stream->queue;
-  size_t length = queue->end - queue->start;
+  size_t length = chimi_console_queued_v1(stream->queue);
   if (length > limit) length = limit;
+  const unsigned char *front = chimi_console_front_v1(stream->queue);
   ssize_t count = stream->socket
-    ? send(stream->fd, queue->bytes + queue->start, length, MSG_DONTWAIT)
-    : write(stream->fd, queue->bytes + queue->start, length);
+    ? send(stream->fd, front, length, MSG_DONTWAIT)
+    : write(stream->fd, front, length);
   if (count < 0) return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
-  queue->start += (size_t)count;
-  queue->resolved += (uint64_t)count;
+  chimi_console_advance_v1(stream->queue, (size_t)count);
   return true;
 }
 
 /* Writes the whole queue, blocking this thread. Only the end of the program
    uses it, when no task is left to keep running. */
 static void console_drain_blocking(const ConsoleStream *stream) {
-  ConsoleQueue *queue = stream->queue;
-  while (queue->start < queue->end) {
+  while (chimi_console_queued_v1(stream->queue)) {
     struct pollfd poll_fd = {.fd = stream->fd, .events = POLLOUT};
     if (poll(&poll_fd, 1, -1) < 0 && errno != EINTR) {
-      console_fail(queue, errno);
+      chimi_console_fail_v1(stream->queue, errno);
       return;
     }
     if (!console_write_front(stream, SIZE_MAX)) {
-      console_fail(queue, errno);
+      chimi_console_fail_v1(stream->queue, errno);
       return;
     }
   }
@@ -5369,13 +5328,6 @@ static void console_drain_all(void) {
   for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
     if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
   if (entered) console_leave();
-}
-
-static void console_unlink(ConsoleQueue *queue, ConsoleLine *line) {
-  if (line->previous) line->previous->next = line->next;
-  else queue->first = line->next;
-  if (line->next) line->next->previous = line->previous;
-  else queue->last = line->previous;
 }
 
 /* Waits until `stream` is writable and writes the front of its queue.
@@ -5394,13 +5346,13 @@ static int console_wait_and_write(const ConsoleStream *stream) {
   console_enter();
   if (cancel) return CONSOLE_CANCELLED;
   if (request.status == CHIMI_RESPONSE_PENDING) return CONSOLE_WAITED;
-  ConsoleQueue *queue = stream->queue;
   if (request.status == CHIMI_RESPONSE_ERROR) {
-    console_fail(queue, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
+    chimi_console_fail_v1(stream->queue, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
     return CONSOLE_WAITED;
   }
   /* Another writer may have emptied the queue while this one waited. */
-  if (queue->start < queue->end && !console_write_front(stream, PIPE_BUF)) console_fail(queue, errno);
+  if (chimi_console_queued_v1(stream->queue) && !console_write_front(stream, PIPE_BUF))
+    chimi_console_fail_v1(stream->queue, errno);
   return CONSOLE_WAITED;
 }
 
@@ -5421,32 +5373,25 @@ static int console_write_line_locked(const ChimiRuntime *runtime, ConsoleStream 
     clearerr(stream->file);
     return error;
   }
-  ConsoleQueue *queue = stream->queue;
+  size_t queue = stream->queue;
   /* A body ending under a terminal cancel must not park (CHI-265), and must
      not block the other tasks either: its line is queued for later writers or
      the end of the program, past the limit if need be. */
   bool terminal = chimi_fiber_cancel_is_terminal();
   /* Nothing is queued yet, so a cancellation here loses nothing. */
-  while (!terminal && queue->start < queue->end &&
-         queue->end - queue->start + length + 1 > CONSOLE_QUEUE_LIMIT)
+  size_t queued;
+  while (!terminal && (queued = chimi_console_queued_v1(queue)) &&
+         queued + length + 1 > CONSOLE_QUEUE_LIMIT)
     if (console_wait_and_write(stream) == CONSOLE_CANCELLED) return -1;
   console_enqueue(queue, text, length);
   console_enqueue(queue, "\n", 1);
   if (terminal) return 0;
-  ConsoleLine *line = malloc(sizeof(*line));
-  if (!line) exhausted_memory();
-  *line = (ConsoleLine){.end = queue->resolved + (queue->end - queue->start), .previous = queue->last};
-  if (queue->last) queue->last->next = line;
-  else queue->first = line;
-  queue->last = line;
-  int outcome = 0;
-  for (;;) {
-    if (line->error) { outcome = line->error; break; }
-    if (queue->resolved >= line->end) break;
+  int64_t line = chimi_console_begin_line_v1(queue);
+  if (line < 0) exhausted_memory();
+  int outcome;
+  while ((outcome = chimi_console_line_state_v1(queue, line)) < 0)
     if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
-  }
-  console_unlink(queue, line);
-  free(line);
+  chimi_console_end_line_v1(queue, line);
   return outcome;
 }
 

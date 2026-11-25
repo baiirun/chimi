@@ -14,6 +14,8 @@ extern crate alloc;
 
 #[cfg(all(feature = "bindings", unix))]
 mod binding;
+pub mod console;
+mod console_abi;
 pub mod decimal;
 mod decimal_abi;
 pub mod duration;
@@ -29,6 +31,7 @@ pub mod metrics;
 mod metrics_abi;
 pub mod random;
 mod random_abi;
+mod serialized;
 pub mod text;
 mod text_abi;
 mod text_buffer;

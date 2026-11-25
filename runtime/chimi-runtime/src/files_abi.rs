@@ -8,25 +8,9 @@
 //! `runtime.c` closes a descriptor they hand back after releasing the lock.
 
 use crate::files::{Closed, FileTable};
-use core::cell::UnsafeCell;
+use crate::serialized::Serialized;
 
-/// The table, which only the holder of `runtime.c`'s lock touches.
-struct Serialized<T>(UnsafeCell<T>);
-
-// SAFETY: every exported function's caller holds the one lock that
-// serializes access.
-unsafe impl<T: Send> Sync for Serialized<T> {}
-
-impl<T> Serialized<T> {
-    /// # Safety
-    /// The caller holds `runtime.c`'s `fs_file_lock`.
-    unsafe fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
-        // SAFETY: the lock makes this the only reference.
-        body(unsafe { &mut *self.0.get() })
-    }
-}
-
-static FILES: Serialized<FileTable<i32>> = Serialized(UnsafeCell::new(FileTable::new()));
+static FILES: Serialized<FileTable<i32>> = Serialized::new(FileTable::new());
 
 /// Opens descriptor `fd` and returns its handle.
 /// # Safety
