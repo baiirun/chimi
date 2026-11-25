@@ -290,7 +290,9 @@ fn unused_private_types_and_names_are_reported() {
          enum Matched {\n  One,\n  Two,\n}\n\n\
          type Total = Int\n\n\
          /// Doc.\npub fn make(total: Total) -> Int {\n  let used = Used { y: total }\n  used.y\n}\n\n\
-         /// Doc.\npub fn which(value: Matched) -> Int {\n  case value {\n    One -> 1\n    _ -> 2\n  }\n}\n",
+         /// Doc.\npub fn which(value: Matched) -> Int {\n  case value {\n    One -> 1\n    _ -> 2\n  }\n}\n\n\
+         enum Level {\n  Low,\n  High,\n}\n\n\
+         /// Doc.\npub fn built() -> Int {\n  let _level = High\n  1\n}\n",
     );
 
     assert_eq!(code, Some(1));
