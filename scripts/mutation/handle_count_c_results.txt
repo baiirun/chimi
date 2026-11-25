@@ -1,9 +1,10 @@
-# mutation run at 2141c05f0ec3ee07dd5ce32adec081d42e0c1948
-# handle_count_c_mutations.py: 4 mutants against compiler/chimi
-BASELINE ok  [task_release] (70s)
-BASELINE ok  [net std_exec] (13s)
-KILLED       a channel or task value is not counted [task_release] (50s)
-KILLED       a freed channel or task value is not uncounted [task_release] (51s)
-KILLED       a retain does not tell the freers to look [task_release] (51s)
-KILLED       a native handle no value names stays open [net std_exec] (60s)
+# mutation run at 4c9c451cce008f68db45e2cf72c0d561cf904892
+# handle_count_c_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [task_release] (68s)
+BASELINE ok  [net std_exec] (12s)
+KILLED       a channel or task value is not counted [task_release] (56s)
+KILLED       a freed channel or task value is not uncounted [task_release] (58s)
+KILLED       a retain does not tell the freers to look [task_release] (56s)
+KILLED       a native handle no value names stays open [net std_exec] (66s)
+KILLED       a new execution keeps the last one's native handle counts [runtime_state -- the_handle_table_counts_across_threads] (57s)
 # result: every mutant killed
