@@ -106,10 +106,11 @@ release hooks: `release_task_value` for every value a task returned except
 the outcome's, `release_channel_value` for every sent value the
 scheduler discards (a cancelled send, an aborted or released queue, a ready
 reply whose task is cancelled), and `release_task_context` for the context of
-a started task that ends before its entry runs. The host issues
-`CHIMI_REQUEST_CHANNEL_RELEASE` when it drops its last reference to a
-channel's endpoints; the channel's queued values are released then rather than
-when execution ends, and its id becomes invalid. `ChimiValueRelease` and
+a started task that ends before its entry runs. The host counts every value
+naming a channel or task (`chimi_fiber_handle_retain` and
+`chimi_fiber_handle_drop`); when the last one goes, the scheduler releases the
+channel, its queued values are released then rather than when execution ends,
+and its id becomes invalid. `ChimiValueRelease` and
 `ChimiTaskContextRelease` in `include/chimi_fiber.h` state the ownership
 contract.
 

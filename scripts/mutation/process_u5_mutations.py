@@ -82,7 +82,7 @@ MUTATIONS = [
         "            stack_overflow: matches!(outcome, TaskOutcome::StackOverflow { .. }),",
         "            stack_overflow: false,")]),
     cli("a body's defect message is dropped", RUNTIME, STACK_TEST, [(
-        "      if (!runtime->silent) remember_process_defect(control->message);\n", "")]),
+        "      chimi_fiber_report_defect(control->message);\n", "")]),
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
     lab("a send skips the foreign-pointer check", RUNTIME, "CB07",
         ["did not defect"], [(

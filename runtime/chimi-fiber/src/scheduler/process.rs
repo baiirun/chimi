@@ -33,7 +33,7 @@ use super::{
 use crate::channel::Carried;
 use crate::{ChimiFiberCommand, ChimiFiberEntry};
 use std::collections::{BTreeMap, VecDeque};
-use std::ffi::c_void;
+use std::ffi::{CString, c_char, c_void};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::rc::Rc;
 use std::time::Duration;
@@ -355,6 +355,9 @@ pub struct ChimiProcessTermination {
     /// 1 when the body overflowed its fiber stack: a defect the host cannot
     /// see, because the body never returns from its entry.
     pub stack_overflow: u32,
+    /// The message the body reported (`chimi_fiber_report_defect`), or null.
+    /// It lives for the report's call.
+    pub message: *const c_char,
 }
 
 /// Receives the termination record of every incarnation that defected, as
@@ -464,6 +467,8 @@ pub(super) struct Incarnation {
     stopping: Option<Stopping>,
     /// The start argument of a handoff incarnation until its body takes it.
     argument: Option<u64>,
+    /// Why the body defected, as it reported (`chimi_fiber_report_defect`).
+    defect_message: Option<CString>,
 }
 
 /// One accepted entry of a mailbox, in arrival order.
@@ -610,6 +615,18 @@ pub(super) enum Receipt {
 }
 
 impl Scheduler {
+    /// Keeps the defect message `task`'s body reported with its incarnation,
+    /// for the defect report when the incarnation ends. A task that runs no
+    /// incarnation reported nothing the host reads.
+    pub(super) fn keep_defect_message(&mut self, task: TaskId, message: CString) {
+        let Some(incarnation) = self.tasks.get(&task).and_then(|record| record.process) else {
+            return;
+        };
+        if let Some(record) = self.kernel.incarnations.get_mut(&incarnation) {
+            record.defect_message = Some(message);
+        }
+    }
+
     /// Installs the hook that receives every defected incarnation's
     /// termination record, under any trace mode.
     pub fn set_process_defect_report(
@@ -1517,6 +1534,7 @@ impl Scheduler {
                 receiving: false,
                 stopping: None,
                 argument: None,
+                defect_message: None,
             },
         );
         Ok(incarnation)
@@ -1579,6 +1597,10 @@ impl Scheduler {
                 incarnation: incarnation.0,
                 cause: cause.code(),
                 stack_overflow: u32::from(stack_overflow),
+                message: record
+                    .defect_message
+                    .as_ref()
+                    .map_or(std::ptr::null(), |message| message.as_ptr()),
             };
             // SAFETY: the hook's owner keeps it and its context valid for the
             // scheduler's lifetime; the record lives for the call.

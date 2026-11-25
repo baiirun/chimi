@@ -37,6 +37,8 @@ fn named(label: u64) -> Address {
 enum Msg {
     Add(i64),
     Crash,
+    /// Defects without reporting a message.
+    CrashQuietly,
     Return,
     Fail,
     /// Sends `Add(value)` to the address twice in one resume.
@@ -287,7 +289,12 @@ unsafe extern "C" fn worker(context: *mut c_void) -> ChimiFiberResult {
                 *log.totals.entry(me).or_default() += amount;
                 log.adds.push((me, amount));
             }),
-            Msg::Crash => return defected(),
+            Msg::Crash => {
+                // SAFETY: a NUL-terminated literal.
+                unsafe { super::scope::chimi_fiber_report_defect(c"crashed".as_ptr()) };
+                return defected();
+            }
+            Msg::CrashQuietly => return defected(),
             Msg::Return => return ended(PROCESS_END_RETURNED),
             Msg::Fail => return ended(PROCESS_END_FAILED),
             Msg::RelayTwice(to, value) => {
@@ -873,6 +880,70 @@ fn mb05_messages_queued_before_a_defect_are_discarded_not_carried_over() {
     };
     assert_eq!(total(replacement), 0);
     assert_eq!(log(|log| log.released.clone()), [add]);
+}
+
+thread_local! {
+    /// What the defect report received: incarnation, message, stack overflow.
+    static DEFECT_REPORTS: RefCell<Vec<(u64, Option<String>, u32)>> = const { RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn record_defect_report(_context: *mut c_void, termination: *const ChimiProcessTermination) {
+    // SAFETY: the scheduler passes a record that lives for the call.
+    let termination = unsafe { &*termination };
+    let message = (!termination.message.is_null()).then(|| {
+        // SAFETY: a non-null message is NUL-terminated and lives for the call.
+        unsafe { std::ffi::CStr::from_ptr(termination.message) }.to_string_lossy().into_owned()
+    });
+    DEFECT_REPORTS.with(|reports| {
+        reports.borrow_mut().push((termination.incarnation, message, termination.stack_overflow))
+    });
+}
+
+/// The defect message a body reports as it ends reaches the defect report
+/// with its incarnation; an end that is not a defect reports nothing.
+#[test]
+fn a_defected_bodys_message_reaches_the_defect_report() {
+    DEFECT_REPORTS.with(|reports| reports.borrow_mut().clear());
+    let mut lab = Lab::new();
+    lab.scheduler
+        .set_process_defect_report(Some(record_defect_report), ptr::null_mut());
+    let root = lab.scheduler.start_supervisor(policy(vec![], 4)).unwrap();
+    for label in [COUNTER, PEER] {
+        lab.scheduler
+            .start_process(root, spec(Some(label), 8), Restart::Never)
+            .expect("admitted");
+    }
+    lab.deliver(named(COUNTER), Msg::Fail);
+    lab.deliver(named(PEER), Msg::Crash);
+    lab.settle();
+    let crashed = lab.started()[1].1;
+    assert_eq!(
+        DEFECT_REPORTS.with(|reports| reports.borrow().clone()),
+        [(crashed.get(), Some("crashed".to_owned()), 0)]
+    );
+}
+
+/// A restarted incarnation starts with no message: one that defects without
+/// reporting reaches the report with none, not its predecessor's.
+#[test]
+fn a_restarted_incarnation_does_not_inherit_a_defect_message() {
+    DEFECT_REPORTS.with(|reports| reports.borrow_mut().clear());
+    let mut lab = Lab::new();
+    lab.scheduler
+        .set_process_defect_report(Some(record_defect_report), ptr::null_mut());
+    let root = lab.scheduler.start_supervisor(policy(vec![], 4)).unwrap();
+    lab.scheduler
+        .start_process(root, spec(Some(COUNTER), 8), Restart::OnDefect)
+        .expect("admitted");
+    lab.deliver(named(COUNTER), Msg::Crash);
+    lab.settle();
+    lab.deliver(named(COUNTER), Msg::CrashQuietly);
+    lab.settle();
+    let started: Vec<u64> = lab.started().iter().map(|(_, incarnation)| incarnation.get()).collect();
+    assert_eq!(
+        DEFECT_REPORTS.with(|reports| reports.borrow().clone()),
+        [(started[0], Some("crashed".to_owned()), 0), (started[1], None, 0)]
+    );
 }
 
 #[test]
@@ -2745,6 +2816,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         offset_of!(ChimiProcessTermination, incarnation),
         offset_of!(ChimiProcessTermination, cause),
         offset_of!(ChimiProcessTermination, stack_overflow),
+        offset_of!(ChimiProcessTermination, message),
         size_of::<ChimiDeadlockWaiter>(),
         offset_of!(ChimiDeadlockWaiter, request_kind),
         size_of::<ChimiCapabilityViolation>(),
@@ -2806,7 +2878,6 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         REQUEST_IO_WITHDRAW as usize,
         REQUEST_SIGNAL_WAIT as usize,
         REQUEST_CHILD_WAIT as usize,
-        REQUEST_TASK_RELEASE as usize,
         REQUEST_RESOURCE_USE as usize,
         VIOLATION_OWN_RECEIVER as usize,
         IO_READABLE as usize,
@@ -2817,7 +2888,7 @@ fn ob07_the_process_abi_layouts_match_the_c_header() {
         VIOLATION_UNKNOWN_TASK as usize,
     ];
     assert_eq!(&c[..count], &rust[..]);
-    assert_eq!(crate::chimi_fiber_abi_version(), 32);
+    assert_eq!(crate::chimi_fiber_abi_version(), 33);
 }
 
 // ----- Review regressions (ts-c1f62f, ts-3d5b38) --------------------------

@@ -79,6 +79,7 @@ __attribute__((weak)) uint32_t chimi_fiber_cancel_is_terminal(void) { return 1; 
 __attribute__((weak)) uint32_t chimi_fiber_scope_cancel_pending(void) { return 0; }
 __attribute__((weak)) uint32_t chimi_fiber_scope_polls(void) { return 0; }
 __attribute__((weak)) uint64_t chimi_fiber_current_incarnation(void) { return 0; }
+__attribute__((weak)) void chimi_fiber_report_defect(const char *message) { (void)message; }
 /* Without the fiber archive no channel or task value exists to count. */
 __attribute__((weak)) void chimi_fiber_handle_retain(uint64_t key) { (void)key; }
 __attribute__((weak)) void chimi_fiber_handle_drop(uint64_t key) { (void)key; }
@@ -7670,47 +7671,6 @@ typedef struct {
 } ProcessSpecContext;
 
 
-/* The defect messages of incarnations whose body defected, kept until the
-   scheduler reports the incarnation's end (record_process_defect), which
-   follows before any other incarnation of the same body can run. */
-typedef struct { uint64_t incarnation; char *message; } ProcessDefect;
-static ProcessDefect *process_defects;
-static size_t process_defect_count;
-/* A body's fiber adds its message on its carrier; the termination report,
-   under the kernel lock, takes it. */
-static pthread_mutex_t process_defect_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static void remember_process_defect(const char *message) {
-  /* A body resumed with a terminal cancel already has its end decided by the
-     scheduler, which reports no defect message for it, and a request now would
-     park it and abandon its fiber and heap (CHI-265). */
-  if (chimi_fiber_cancel_is_terminal()) return;
-  ChimiProcessRequest self = {.kind = CHIMI_REQUEST_PROCESS_SELF};
-  if (scheduler_request(&self) == CHIMI_FIBER_CANCEL || self.status != CHIMI_RESPONSE_OK) return;
-  char *copy = strdup(message ? message : "defect");
-  if (!copy) exhausted_memory();
-  pthread_mutex_lock(&process_defect_lock);
-  ProcessDefect *grown = realloc(process_defects, (process_defect_count + 1) * sizeof(*grown));
-  if (!grown) exhausted_memory();
-  process_defects = grown;
-  process_defects[process_defect_count++] = (ProcessDefect){self.address, copy};
-  pthread_mutex_unlock(&process_defect_lock);
-}
-
-/* The remembered message of `incarnation`, handed to the caller to free, or NULL. */
-static char *take_process_defect(uint64_t incarnation) {
-  char *message = NULL;
-  pthread_mutex_lock(&process_defect_lock);
-  for (size_t index = 0; index < process_defect_count; ++index)
-    if (process_defects[index].incarnation == incarnation) {
-      message = process_defects[index].message;
-      process_defects[index] = process_defects[--process_defect_count];
-      break;
-    }
-  pthread_mutex_unlock(&process_defect_lock);
-  return message;
-}
-
 /* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
@@ -7757,7 +7717,7 @@ ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
     case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
     case CONTROL_DEFECT:
     case CONTROL_BREAK:
-      remember_process_defect(control->message);
+      chimi_fiber_report_defect(control->message);
       result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
       break;
   }
@@ -11538,14 +11498,13 @@ static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, s
 }
 
 #if CHIMI_PROCESS_KERNEL
-/* Keeps the latest defected incarnation and its message: the body's own defect,
-   remembered when it ended, or a stack overflow the scheduler saw. */
+/* Keeps the latest defected incarnation and its message: the one its body
+   reported as it ended, or a stack overflow the scheduler saw. */
 static void record_process_defect(void *context, const ChimiProcessTermination *termination) {
   ChimiRuntime *runtime = context;
-  char *message = take_process_defect(termination->incarnation);
-  if (termination->stack_overflow) {
-    free(message);
-    message = strdup("Process stack overflow");
+  char *message = NULL;
+  if (termination->stack_overflow || termination->message) {
+    message = strdup(termination->stack_overflow ? "Process stack overflow" : termination->message);
     if (!message) exhausted_memory();
   }
   free(runtime->last_defect_message);
