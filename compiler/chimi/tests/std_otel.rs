@@ -376,7 +376,12 @@ impl Scratch {
     /// Builds `program` natively and runs it on the real clock, writing
     /// its metrics to `metrics.json`; returns the run and the file.
     fn run_native(&self, program: &str) -> (std::process::Output, String) {
-        let (output, metrics, _) = self.run_native_timed(program);
+        self.run_native_on(program, "real")
+    }
+
+    /// As `run_native`, on the runner's `clock` source ("real" or "virtual").
+    fn run_native_on(&self, program: &str, clock: &str) -> (std::process::Output, String) {
+        let (output, metrics, _) = self.run_native_clocked(program, clock);
         (output, metrics)
     }
 
@@ -384,6 +389,14 @@ impl Scratch {
     fn run_native_timed(
         &self,
         program: &str,
+    ) -> (std::process::Output, String, std::time::Duration) {
+        self.run_native_clocked(program, "real")
+    }
+
+    fn run_native_clocked(
+        &self,
+        program: &str,
+        clock: &str,
     ) -> (std::process::Output, String, std::time::Duration) {
         self.write("main.chimi", program);
         let built = self.chimi(&["build", "main.chimi", "-o", "program"]);
@@ -393,7 +406,7 @@ impl Scratch {
         let started = std::time::Instant::now();
         let output = Command::new(self.0.join("program"))
             .current_dir(&self.0)
-            .args(["--chimi-runner", "--clock=real"])
+            .args(["--chimi-runner", &format!("--clock={clock}")])
             .arg(format!("--metrics-file={}", metrics.display()))
             .arg("--")
             .output()
@@ -459,6 +472,13 @@ fn metrics_are_pushed_every_interval_and_when_the_body_ends() {
 // A collector that refuses, answers 5xx or never answers does not fail the
 // program, and each failed push is counted once. Rejects a push failure
 // raised into the body, or a failure counted twice or not at all.
+//
+// The refused and failing collectors run on the virtual clock: time holds
+// while a connect or send is in flight, so the 20 ms timeout cannot cut a
+// push short on a slow machine, and the 503 collector receives exactly the
+// two pushes. The collector that never answers needs the real clock, since
+// only real time ends its wait; there, whether a push's bytes arrive before
+// the 20 ms timeout depends on the machine, so its pushes are not counted.
 #[test]
 fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -472,12 +492,12 @@ fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
     Clock.sleep(Duration.milliseconds(300))
     "done""#;
     let settings = ", interval: Duration.milliseconds(200), timeout: Duration.milliseconds(20), flush_within: Duration.milliseconds(20)";
-    for (port, name) in [
-        (refused_port, "refused"),
-        (failing.port, "failing"),
-        (slow.port, "slow"),
+    for (port, name, clock) in [
+        (refused_port, "refused", "virtual"),
+        (failing.port, "failing", "virtual"),
+        (slow.port, "slow", "real"),
     ] {
-        let (output, metrics) = scratch.run_native(&exporting(port, settings, body));
+        let (output, metrics) = scratch.run_native_on(&exporting(port, settings, body), clock);
         assert!(output.status.success(), "{name}: {output:?}");
         assert!(
             metrics.contains(
@@ -487,7 +507,6 @@ fn a_collector_that_is_down_slow_or_failing_is_counted_not_raised() {
         );
     }
     assert_eq!(failing.pushes().len(), 2);
-    assert_eq!(slow.pushes().len(), 2);
 }
 
 // The last push is given `flush_within`, not `timeout`, so a collector that
