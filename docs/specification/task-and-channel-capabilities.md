@@ -545,6 +545,14 @@ Checked at run time (native, by the owner token):
 - the sender's own copy of a capability it sent, while the message waits to
   be received: the use defects, and the message says the capability was sent
   in a message no task has received yet.
+- a parent-local or exclusive value hidden behind a type whose properties
+  depend on the value, an interface, a function, or a generic `T`, and passed
+  through a parameter or returned from a call (CHI-311): the checker sees the
+  value's real properties only inside the function that builds it, so a
+  record holding a `Task` handle may cross as an interface value, and a
+  closure capturing one may cross as a function. The same decision applies:
+  the compiler does not summarize what a callee does with its parameters, and
+  the task that uses the handle without owning it defects.
 
 The defect names the capability, the task that broke the contract, and the task
 that owns the capability, for example
@@ -561,6 +569,9 @@ Not yet covered:
   "requires the bounded Channel runtime"), so these routes run natively only;
 - a violation emits no dedicated trace event; the trace shows only the
   defected task's cancellation and terminal events.
+- a task handle used by a task that does not own it defects that task, but
+  the program then ends with the scheduler's deadlock message instead of the
+  violation (CHI-316).
 
 ## Conformance matrix
 

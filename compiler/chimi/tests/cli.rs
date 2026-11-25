@@ -5452,6 +5452,32 @@ fn native_backstop_a_callee_that_hands_its_parameter_to_a_task_defects_the_calle
     );
 }
 
+// task-and-channel-capabilities.md, "Checked at run time" (CHI-311): a Task
+// handle captured by a closure that crosses a function boundary as an interface
+// value is not followed by the checker, so a child task may reach it. The run
+// must defect rather than hand the child the result (which would print 7).
+// The message is the scheduler's deadlock one until CHI-316 names the handle.
+#[test]
+fn native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader() {
+    let message = native_capability_defect(
+        "interface-hides-task",
+        concat!(
+            "interface Peek {\n",
+            "  read: fn() -> Int\n",
+            "}\n",
+            "fn run(peek: Peek) -> Int {\n",
+            "  let child = Task.start(fn() -> Int { peek.read() })\n",
+            "  Task.result(child)\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let task = Task.start(fn() -> Int { 7 })\n",
+            "  run({ read: fn() -> Int { Task.result(task) } })\n",
+            "}\n",
+        ),
+    );
+    assert!(!message.is_empty());
+}
+
 // task-and-channel-capabilities.md, "Checked at run time": a generic function
 // reached through a function value is not followed either, so `dup` called as
 // `f(c.receiver)` or a higher-order `twice(x, f)` can give two tasks one Receiver.

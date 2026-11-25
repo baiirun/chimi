@@ -8608,7 +8608,10 @@ impl ProjectTypeChecker {
                 );
                 continue;
             };
-            if let Some(reason) = self.provider_conformance_error(*provider_type, need.interface) {
+            if let Some(reason) = self
+                .private_provider_error(module_id, *provider_type, need.interface)
+                .or_else(|| self.provider_conformance_error(*provider_type, need.interface))
+            {
                 self.type_error_range(
                     module_id,
                     "T4213",
@@ -8930,6 +8933,46 @@ impl ProjectTypeChecker {
             }
         }
         self.intern_needs_row(row)
+    }
+
+    /// Why a struct from another module cannot be a provider (CHI-311): its
+    /// fields are private to its module, so supplying an interface member
+    /// through one would read a field the providing site cannot see, as
+    /// `value.field` there would (`E_PRIVATE_STRUCT_FIELD`). `None` for any
+    /// other provider, for a need that is not an interface (the struct itself),
+    /// and for an interface with no members.
+    fn private_provider_error(
+        &mut self,
+        module_id: ModuleId,
+        provider: TypeId,
+        interface: TypeId,
+    ) -> Option<String> {
+        let provider = self.resolve_inference_type(provider);
+        let CanonicalType::Named { symbol, .. } = &self.types[provider.raw() as usize] else {
+            return None;
+        };
+        let owner = self.resolved.symbol(*symbol);
+        if owner.kind != ProjectSymbolKind::Struct || owner.module_id == Some(module_id) {
+            return None;
+        }
+        let name = owner.name.clone();
+        let interface = self.resolve_inference_type(interface);
+        // A need written as the struct itself takes the value whole; only an
+        // interface reads members through the provider's fields.
+        let reads_members = matches!(
+            &self.types[interface.raw() as usize],
+            CanonicalType::Named { symbol, .. }
+                if self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Interface
+        );
+        if !reads_members {
+            return None;
+        }
+        let member = self.type_fields(interface)?.into_iter().next()?.name;
+        Some(format!(
+            "is a `{name}`, whose fields are private to its module, so it cannot supply \
+             member `{member}` here; pass a record, as `{{ {member}: ... }}`, or let `{name}`'s \
+             module provide it"
+        ))
     }
 
     fn provider_conformance_error(
