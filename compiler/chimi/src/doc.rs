@@ -334,6 +334,12 @@ impl<'tree> ItemNodes<'tree> {
         item_doc(self.module.source.text(), self.item_start(declaration))
     }
 
+    /// The source range of the declaration's whole item, comments before it
+    /// excluded.
+    pub(crate) fn item_range(&self, declaration: &ModuleDeclaration) -> Option<crate::ids::TextRange> {
+        self.node(declaration).map(|node| node.range())
+    }
+
     fn node(&self, declaration: &ModuleDeclaration) -> Option<SyntaxNode<'tree>> {
         let name = declaration.name.range;
         let after = self
