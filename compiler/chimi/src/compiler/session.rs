@@ -115,7 +115,7 @@ impl IncrementalTypeReport {
             .iter()
             .map(|module| (module.source.file_id(), module.source.path()))
             .collect();
-        for finding in crate::lint::lint(resolved, |origin| {
+        for finding in crate::lint::lint(&self.types.typed, |origin| {
             origin == crate::compiler::ModuleOrigin::Own
         }) {
             if let Some(path) = paths.get(&finding.file_id()) {

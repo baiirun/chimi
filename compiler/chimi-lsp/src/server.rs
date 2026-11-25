@@ -17,18 +17,19 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Rename,
-    Request as _,
+    CodeActionRequest, Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
+    References, Rename, Request as _,
 };
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, Diagnostic,
-    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, Documentation,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Location,
-    MarkupContent, MarkupKind, NumberOrString, Position, PositionEncodingKind,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SaveOptions,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentFormattingParams, Documentation, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverContents, HoverParams, InitializeParams, InlayHint, InlayHintKind, InlayHintLabel,
+    InlayHintParams, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use std::error::Error;
@@ -62,6 +63,7 @@ pub fn run(connection: &Connection) -> ServerResult<()> {
         references_provider: Some(lsp_types::OneOf::Left(true)),
         rename_provider: Some(lsp_types::OneOf::Left(true)),
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_owned()]),
             ..CompletionOptions::default()
@@ -184,6 +186,42 @@ impl Server<'_> {
                             .collect::<Vec<_>>()
                     });
                 Response::new_ok(id, hints)
+            }
+            CodeActionRequest::METHOD => {
+                let (id, params) =
+                    request.extract::<CodeActionParams>(CodeActionRequest::METHOD)?;
+                let uri = params.text_document.uri;
+                let requested = LineRange {
+                    start: line_position(params.range.start),
+                    end: line_position(params.range.end),
+                };
+                let actions: Vec<CodeActionOrCommand> = document(&uri)
+                    .map(|path| self.workspace.quick_fixes(&path, requested))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|fix| {
+                        let edits = fix
+                            .edits
+                            .into_iter()
+                            .map(|edit| TextEdit {
+                                range: range(edit.range),
+                                new_text: edit.text,
+                            })
+                            .collect();
+                        CodeActionOrCommand::CodeAction(CodeAction {
+                            title: fix.title,
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            diagnostics: Some(vec![diagnostic(fix.diagnostic)]),
+                            edit: Some(WorkspaceEdit {
+                                changes: Some([(uri.clone(), edits)].into_iter().collect()),
+                                ..WorkspaceEdit::default()
+                            }),
+                            is_preferred: Some(true),
+                            ..CodeAction::default()
+                        })
+                    })
+                    .collect();
+                Response::new_ok(id, actions)
             }
             Completion::METHOD => {
                 let (id, params) = request.extract::<CompletionParams>(Completion::METHOD)?;

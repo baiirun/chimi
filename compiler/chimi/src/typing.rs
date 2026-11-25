@@ -687,6 +687,10 @@ pub(crate) struct TypedProject {
     pub(crate) failure_rows: Vec<FailureRow>,
     pub(crate) needs_rows: Vec<NeedsRow>,
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
+    /// The needs each function's body reaches, directly or through calls, by
+    /// the function's symbol. A written clause may list more (its contract
+    /// carries them); `chimi lint` reports those extra entries.
+    pub(crate) reached_needs: HashMap<SymbolId, NeedsRowId>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     /// Each failure-type pattern (`error: FileError` over a failure-set value) by its
@@ -1678,6 +1682,7 @@ struct ProjectTypeChecker {
     needs_rows: Vec<NeedsRow>,
     needs_row_intern: HashMap<NeedsRow, NeedsRowId>,
     contracts: HashMap<SymbolId, CallableContract>,
+    reached_needs: HashMap<SymbolId, NeedsRowId>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
@@ -1953,6 +1958,7 @@ impl ProjectTypeChecker {
             needs_rows: Vec::new(),
             needs_row_intern: HashMap::new(),
             contracts: HashMap::new(),
+            reached_needs: HashMap::new(),
             declaration_types: HashMap::new(),
             pattern_binding_types: HashMap::new(),
             failure_type_patterns: HashMap::new(),
@@ -2913,6 +2919,12 @@ impl ProjectTypeChecker {
                 .filter(|(symbol, _)| !affected_symbols.contains(symbol))
                 .map(|(symbol, contract)| (*symbol, contract.clone()))
                 .collect(),
+            reached_needs: previous
+                .reached_needs
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, row)| (*symbol, *row))
+                .collect(),
             declaration_types: previous
                 .declaration_types
                 .iter()
@@ -3110,6 +3122,7 @@ impl ProjectTypeChecker {
             failure_rows: self.failure_rows,
             needs_rows: self.needs_rows,
             contracts: self.contracts,
+            reached_needs: self.reached_needs,
             declaration_types: self.declaration_types,
             pattern_binding_types: self.pattern_binding_types,
             failure_type_patterns: self.failure_type_patterns,
@@ -3515,6 +3528,7 @@ impl ProjectTypeChecker {
                 };
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
+                self.reached_needs.insert(function_symbol, body_fact.needs);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
                 inferred.failures = self.close_failure_row(inferred.failures);
                 inferred.needs = self.close_needs_row(inferred.needs);
