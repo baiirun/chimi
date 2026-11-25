@@ -1,0 +1,27 @@
+# mutation run at c9ca47b9ec2cee32013104080ec23e5f06982954
+# rust_decimal_duration_mutations.py: 20 mutants against compiler/chimi
+BASELINE ok  [runtime_fuzz] (141s)
+KILLED       decimal magnitude bound allows 39 digits [runtime_fuzz] (53s)
+KILLED       decimal fraction printed one digit short [runtime_fuzz] (52s)
+KILLED       decimal read accepts a bare point [runtime_fuzz] (51s)
+KILLED       half-even rounds a tie to odd [runtime_fuzz] (53s)
+KILLED       normalized text keeps one trailing zero [runtime_fuzz] (53s)
+KILLED       order past u128 reversed [runtime_fuzz] (55s)
+KILLED       division drops the divisor's scale [runtime_fuzz] (53s)
+KILLED       ABI compare reports less as greater [runtime_fuzz] (53s)
+KILLED       ABI ignores the normalized flag [runtime_fuzz] (53s)
+KILLED       ABI subtract adds [runtime_fuzz] (56s)
+KILLED       ABI rounding codes shifted [runtime_fuzz] (55s)
+(an equivalent mutant, "zero prints as no digits", survived here: every caller pads to at least one digit, so the extra zero case was removed)
+KILLED       duration fraction printed one digit short [runtime_fuzz] (54s)
+KILLED       duration digits read in base 9 [runtime_fuzz] (52s)
+KILLED       duration allows a repeated unit [runtime_fuzz] (53s)
+KILLED       duration rounds an inexact fraction [runtime_fuzz] (54s)
+KILLED       ABI parse reports Empty as Invalid [runtime_fuzz] (55s)
+KILLED       C checked subtract adds [runtime_fuzz] (55s)
+KILLED       C maps OutOfRange to Invalid [runtime_fuzz] (52s)
+KILLED       C reads the text one byte short [runtime_fuzz] (52s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# rerun at e9ba81cf25b5892ebf51ff4155fdc47bfae5ef47 with the replacement mutant:
+KILLED       padding one zero short [runtime_fuzz] (55s)
+# result: every mutant killed

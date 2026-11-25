@@ -1,70 +1,13 @@
-//! The `Duration` model shared by the type checker's constant checks and the reference
-//! interpreter: a signed 64-bit count of nanoseconds (`time-and-outcomes.md`, "Duration").
-//!
-//! `runtime/native/runtime.c` reimplements every function here (`duration_*`). Both paths
-//! must produce the same values, texts, parse results, and defect messages, so a change
-//! here needs the matching change there; `tests/language.rs` runs a generated set
-//! through both.
+//! The `Duration` model lives in `chimi-runtime`, which the native runtime
+//! links too, so both backends print and parse durations with one
+//! implementation. The arithmetic and its defect messages are the compiler's
+//! own; `runtime.c` keeps matching ones, and `tests/language.rs` runs a
+//! generated set through both.
 //!
 //! Invariant: no operation wraps or saturates. A result outside `i64` is an `Err` holding
 //! the defect message.
 
-/// A unit a `Duration` is built from or written in, from the largest down.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Unit {
-    Hours,
-    Minutes,
-    Seconds,
-    Milliseconds,
-    Microseconds,
-    Nanoseconds,
-}
-
-impl Unit {
-    /// Largest first: the order the text form requires.
-    pub(crate) const DESCENDING: [Self; 6] = [
-        Self::Hours,
-        Self::Minutes,
-        Self::Seconds,
-        Self::Milliseconds,
-        Self::Microseconds,
-        Self::Nanoseconds,
-    ];
-
-    pub(crate) const fn nanoseconds(self) -> i64 {
-        match self {
-            Self::Hours => 3_600_000_000_000,
-            Self::Minutes => 60_000_000_000,
-            Self::Seconds => 1_000_000_000,
-            Self::Milliseconds => 1_000_000,
-            Self::Microseconds => 1_000,
-            Self::Nanoseconds => 1,
-        }
-    }
-
-    const fn suffix(self) -> &'static str {
-        match self {
-            Self::Hours => "h",
-            Self::Minutes => "m",
-            Self::Seconds => "s",
-            Self::Milliseconds => "ms",
-            Self::Microseconds => "us",
-            Self::Nanoseconds => "ns",
-        }
-    }
-
-    /// The `std/duration` constructor that takes a count of this unit.
-    pub(crate) const fn constructor(self) -> &'static str {
-        match self {
-            Self::Hours => "hours",
-            Self::Minutes => "minutes",
-            Self::Seconds => "seconds",
-            Self::Milliseconds => "milliseconds",
-            Self::Microseconds => "microseconds",
-            Self::Nanoseconds => "nanoseconds",
-        }
-    }
-}
+pub(crate) use chimi_runtime::duration::{ParseFailure, Unit, parse, parse_parts, to_text, whole_units};
 
 /// `Duration.<unit>(count)`.
 pub(crate) fn construct(unit: Unit, count: i64) -> Result<i64, String> {
@@ -74,11 +17,6 @@ pub(crate) fn construct(unit: Unit, count: i64) -> Result<i64, String> {
             unit.constructor()
         )
     })
-}
-
-/// `Duration.to_<unit>`: whole units, truncated toward zero.
-pub(crate) const fn whole_units(duration: i64, unit: Unit) -> i64 {
-    duration / unit.nanoseconds()
 }
 
 pub(crate) fn add(left: i64, right: i64) -> Result<i64, String> {
@@ -130,109 +68,6 @@ fn overflow(function: &str, operation: &str) -> String {
     format!("`Duration.{function}` overflows the Duration range: {operation}")
 }
 
-/// The canonical text form: `0s`, `-1.5ms`, `250us`, `1h0m30s`, `2m3.25s`.
-pub(crate) fn to_text(duration: i64) -> String {
-    if duration == 0 {
-        return "0s".to_owned();
-    }
-    let mut text = String::new();
-    if duration < 0 {
-        text.push('-');
-    }
-    // The magnitude of the minimum value does not fit `i64`.
-    let magnitude = duration.unsigned_abs();
-    let unit = |unit: Unit| unit.nanoseconds().unsigned_abs();
-    if magnitude < unit(Unit::Seconds) {
-        let small = [Unit::Milliseconds, Unit::Microseconds, Unit::Nanoseconds]
-            .into_iter()
-            .find(|candidate| magnitude >= unit(*candidate))
-            .expect("a nonzero magnitude is at least 1ns");
-        push_decimal(&mut text, magnitude, unit(small));
-        text.push_str(small.suffix());
-        return text;
-    }
-    let parts = [
-        (magnitude / unit(Unit::Hours), Unit::Hours),
-        (
-            magnitude % unit(Unit::Hours) / unit(Unit::Minutes),
-            Unit::Minutes,
-        ),
-        // In nanoseconds, so the fraction stays exact.
-        (magnitude % unit(Unit::Minutes), Unit::Seconds),
-    ];
-    let first = parts.iter().position(|(count, _)| *count != 0);
-    let last = parts.iter().rposition(|(count, _)| *count != 0);
-    let (Some(first), Some(last)) = (first, last) else {
-        unreachable!("a magnitude of at least one second has a nonzero part")
-    };
-    for (count, part_unit) in &parts[first..=last] {
-        if *part_unit == Unit::Seconds {
-            push_decimal(&mut text, *count, unit(Unit::Seconds));
-        } else {
-            text.push_str(&count.to_string());
-        }
-        text.push_str(part_unit.suffix());
-    }
-    text
-}
-
-/// Writes `value / scale` as an exact decimal with no trailing fraction zeros.
-fn push_decimal(text: &mut String, value: u64, scale: u64) {
-    text.push_str(&(value / scale).to_string());
-    let fraction = value % scale;
-    if fraction != 0 {
-        let width = scale.ilog10() as usize;
-        let digits = format!("{fraction:0width$}");
-        text.push('.');
-        text.push_str(digits.trim_end_matches('0'));
-    }
-}
-
-/// Why `Duration.parse` rejected a text: the variants of `std/duration.ParseError`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ParseFailure {
-    /// The empty text.
-    Empty,
-    /// Not the grammar, or a fraction that is not a whole number of nanoseconds.
-    Invalid,
-    /// Grammatical and exact, but outside the 64-bit range.
-    OutOfRange,
-}
-
-/// One `<decimal><unit>` part, as an exact count of nanoseconds.
-#[derive(Clone, Copy, Debug)]
-struct Part {
-    unit: Unit,
-    /// Fits `i64` when negated together with the other parts (checked by `parse`).
-    nanoseconds: i128,
-}
-
-struct Parsed {
-    negative: bool,
-    parts: Vec<Part>,
-}
-
-/// `Duration.parse`: an optional `-`, then one or more `<decimal><unit>` parts with
-/// units in strictly descending order, or the literal `0`. A decimal is digits with an
-/// optional `.digits` fraction.
-///
-/// Ensures: `parse(&to_text(d)) == Ok(d)` for every `d`; never rounds (`1.5ns` is
-/// `Invalid`); a grammatical, exact text outside the range is `OutOfRange`.
-pub(crate) fn parse(text: &str) -> Result<i64, ParseFailure> {
-    let parsed = parse_parts(text)?;
-    let magnitude = parsed
-        .parts
-        .iter()
-        .try_fold(0_i128, |total, part| total.checked_add(part.nanoseconds))
-        .ok_or(ParseFailure::OutOfRange)?;
-    let value = if parsed.negative {
-        -magnitude
-    } else {
-        magnitude
-    };
-    i64::try_from(value).map_err(|_| ParseFailure::OutOfRange)
-}
-
 /// For a text `parse` accepts, the constructor expression with the same value:
 /// `Duration.seconds(5)` for `5s`, `Duration.add(Duration.hours(1), Duration.minutes(30))`
 /// for `1h30m`, `Duration.milliseconds(-1500)` for `-1.5s`, and `Duration.zero` for zero.
@@ -262,170 +97,9 @@ pub(crate) fn constructor_expression(text: &str) -> Option<String> {
         .or_else(|| Some("Duration.zero".to_owned()))
 }
 
-/// The digits of a part's integer or fraction above which no value is in range or exact.
-/// An exact fraction has at most 13 significant digits: `h` is 2^13 * 5^11 * 9 ns.
-const MAX_INTEGER_DIGITS: usize = 22;
-const MAX_FRACTION_DIGITS: usize = 13;
-
-fn parse_parts(text: &str) -> Result<Parsed, ParseFailure> {
-    if text.is_empty() {
-        return Err(ParseFailure::Empty);
-    }
-    if text == "0" {
-        return Ok(Parsed {
-            negative: false,
-            parts: Vec::new(),
-        });
-    }
-    let (negative, mut rest) = match text.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, text),
-    };
-    let mut parts = Vec::<Part>::new();
-    let mut out_of_range = false;
-    while !rest.is_empty() {
-        let integer_length = rest.bytes().take_while(u8::is_ascii_digit).count();
-        if integer_length == 0 {
-            return Err(ParseFailure::Invalid);
-        }
-        let (integer, after) = rest.split_at(integer_length);
-        let (fraction, after) = match after.strip_prefix('.') {
-            Some(after) => {
-                let length = after.bytes().take_while(u8::is_ascii_digit).count();
-                if length == 0 {
-                    return Err(ParseFailure::Invalid);
-                }
-                after.split_at(length)
-            }
-            None => ("", after),
-        };
-        let unit = Unit::DESCENDING
-            .into_iter()
-            // `ms` before `m`: the longest suffix wins.
-            .filter(|unit| after.starts_with(unit.suffix()))
-            .max_by_key(|unit| unit.suffix().len())
-            .ok_or(ParseFailure::Invalid)?;
-        rest = &after[unit.suffix().len()..];
-        if parts
-            .last()
-            .is_some_and(|previous| previous.unit.nanoseconds() <= unit.nanoseconds())
-        {
-            return Err(ParseFailure::Invalid);
-        }
-        let scale = i128::from(unit.nanoseconds());
-        let fraction = fraction.trim_end_matches('0');
-        if fraction.len() > MAX_FRACTION_DIGITS {
-            return Err(ParseFailure::Invalid);
-        }
-        let denominator = 10_i128.pow(fraction.len() as u32);
-        let numerator = if fraction.is_empty() {
-            0
-        } else {
-            fraction.parse::<i128>().expect("ASCII digits") * scale
-        };
-        if numerator % denominator != 0 {
-            return Err(ParseFailure::Invalid);
-        }
-        let integer = integer.trim_start_matches('0');
-        let nanoseconds = if integer.len() > MAX_INTEGER_DIGITS {
-            out_of_range = true;
-            0
-        } else {
-            let whole = if integer.is_empty() {
-                0
-            } else {
-                integer.parse::<i128>().expect("ASCII digits")
-            };
-            whole * scale + numerator / denominator
-        };
-        parts.push(Part { unit, nanoseconds });
-    }
-    if parts.is_empty() {
-        return Err(ParseFailure::Invalid);
-    }
-    if out_of_range {
-        return Err(ParseFailure::OutOfRange);
-    }
-    Ok(Parsed { negative, parts })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn canonical_text_follows_the_spec_examples() {
-        let second = Unit::Seconds.nanoseconds();
-        for (value, text) in [
-            (0, "0s"),
-            (1_500_000, "1.5ms"),
-            (250_000, "250us"),
-            (7, "7ns"),
-            (-7, "-7ns"),
-            (3_600 * second, "1h"),
-            (5_400 * second, "1h30m"),
-            (3_630 * second, "1h0m30s"),
-            (123 * second + second / 4, "2m3.25s"),
-            (second + 1, "1.000000001s"),
-            (3_600 * second + 1, "1h0m0.000000001s"),
-            (i64::MAX, "2562047h47m16.854775807s"),
-            (i64::MIN, "-2562047h47m16.854775808s"),
-        ] {
-            assert_eq!(to_text(value), text, "{value}");
-            assert_eq!(parse(text), Ok(value), "{text}");
-        }
-    }
-
-    #[test]
-    fn parse_rejects_what_the_grammar_rejects_and_never_rounds() {
-        for text in [
-            "-",
-            "s",
-            "1",
-            "-0",
-            "1.5ns",
-            "1s1h",
-            "1m1m",
-            "1ms1m",
-            "1.s",
-            ".5s",
-            "1 s",
-            "+1s",
-            "1x",
-            "1h-1m",
-            "1µs",
-            "0.0000000005s",
-            "1s ",
-        ] {
-            assert_eq!(parse(text), Err(ParseFailure::Invalid), "{text:?}");
-        }
-        for (text, value) in [
-            ("0", 0),
-            ("-0s", 0),
-            ("1.0ns", 1),
-            ("1.5h", 5_400_000_000_000),
-            ("90s", 90_000_000_000),
-            ("001s", 1_000_000_000),
-            ("1.50s", 1_500_000_000),
-            ("1h1ms", 3_600_001_000_000),
-        ] {
-            assert_eq!(parse(text), Ok(value), "{text:?}");
-        }
-        for text in [
-            "2562047h47m16.854775808s",
-            "-2562047h47m16.854775809s",
-            "9223372036854775808ns",
-            "99999999999999999999999999999h",
-        ] {
-            assert_eq!(parse(text), Err(ParseFailure::OutOfRange), "{text:?}");
-        }
-        assert_eq!(parse(""), Err(ParseFailure::Empty));
-        // A grammar error anywhere outranks a range error.
-        assert_eq!(
-            parse("99999999999999999999999999999h1x"),
-            Err(ParseFailure::Invalid)
-        );
-    }
 
     #[test]
     fn constructor_expressions_have_the_parsed_value() {

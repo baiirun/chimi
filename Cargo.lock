@@ -119,6 +119,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "chimi-fiber",
+ "chimi-runtime",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-module",
