@@ -15,11 +15,14 @@
    Targets call the runtime's intrinsic entry points, as compiled programs do,
    so the checks hold for whatever implements those intrinsics. The json
    target also decodes each input with the C decoder the Rust one replaced
-   (json-c-reference.c) and checks that the two agree. The runtime is
+   (json-c-reference.c), and the decimal and duration targets compute with
+   the C code their Rust replaced (decimal-duration-c-reference.c); each
+   checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
 #include "json-c-reference.c"
+#include "decimal-duration-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
 enum {
@@ -290,10 +293,27 @@ static void fz_out_decimal(FuzzOutput *out, ChimiValue *decimal) {
   if (decimal) out_text(out, fz_decimal_to_text(decimal));
   else out_word(out, "none");
 }
+/* Checks a runtime result, a Decimal or NULL for None, against the C
+   reference's: the same presence, text and debug text. */
+static void fz_check_decimal(ChimiValue *actual, bool fits, ReferenceDecimal expected, const char *what) {
+  FUZZ_CHECK((actual != NULL) == fits, "%s: the C reference %s a value", what, fits ? "gives" : "gives no");
+  if (!actual) return;
+  char want[DECIMAL_TEXT_BYTES], got[DECIMAL_TEXT_BYTES];
+  reference_decimal_text(expected, want);
+  decimal_text(decimal_of(actual), got);
+  FUZZ_CHECK(strcmp(want, got) == 0, "%s: %s, the C reference %s", what, got, want);
+  reference_decimal_normalized_text(expected, want);
+  decimal_normalized_text(decimal_of(actual), got);
+  FUZZ_CHECK(strcmp(want, got) == 0, "%s: debug text %s, the C reference %s", what, got, want);
+}
 /* Reads `text` as a Decimal and checks that its printed form reads back to the
    same printed form. */
 static ChimiValue *fz_read_operand(ChimiValue *text, FuzzOutput *out, const char *name) {
   ChimiValue *decimal = fz_decimal_read(text);
+  ReferenceDecimal expected = {0};
+  /* The reference reads a C string, so a U+0000 inside is no digit. */
+  bool fits = !text_holds_nul(text) && reference_decimal_parse(text->as.text.bytes, &expected);
+  fz_check_decimal(decimal, fits, expected, "read");
   out_word(out, name); out_word(out, "="); fz_out_decimal(out, decimal);
   if (decimal) {
     ChimiValue *printed = fz_decimal_to_text(decimal), *reread = fz_decimal_read(printed);
@@ -317,19 +337,31 @@ static void fuzz_decimal(const uint8_t *data, size_t size, FuzzOutput *out) {
     {CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED, " subtract="},
     {CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED, " multiply="},
   };
+  ReferenceDecimal l = reference_decimal_of(left), r = reference_decimal_of(right), expected = {0};
   for (size_t index = 0; index < COUNT_OF(operations); ++index) {
     ChimiValue *arguments[] = {left, right};
     out_word(out, operations[index].name);
-    fz_out_decimal(out, fz_option(call_decimal(operations[index].intrinsic, arguments, 2)->value));
+    ChimiValue *result = fz_option(call_decimal(operations[index].intrinsic, arguments, 2)->value);
+    bool fits = index == 0 ? reference_decimal_add(l, r, &expected)
+              : index == 1 ? reference_decimal_add(l, reference_decimal_negate(r), &expected)
+              : reference_decimal_multiply(l, r, &expected);
+    fz_check_decimal(result, fits, expected, operations[index].name + 1);
+    fz_out_decimal(out, result);
   }
+  FUZZ_CHECK(chimi_decimal_compare_v1(decimal_of(left), decimal_of(right)) == reference_decimal_compare(l, r),
+             "compare: %d, the C reference %d", chimi_decimal_compare_v1(decimal_of(left), decimal_of(right)),
+             reference_decimal_compare(l, r));
   /* Decimal.divide crashes on a zero divisor before reaching the intrinsic. */
-  if (decimal_of(right).magnitude == 0) return;
+  if (r.magnitude == 0) return;
   uint8_t pick = size ? data[0] : 0;
   int64_t scale = pick % (DECIMAL_MAX_SCALE + 1), rounding = pick % (ROUND_HALF_EVEN + 1);
   ChimiValue *arguments[] = {left, right, integer_value(scale), integer_value(rounding)};
   out_word(out, " divide("); out_integer(out, scale); out_word(out, ","); out_integer(out, rounding);
   out_word(out, ")=");
-  fz_out_decimal(out, fz_option(call_decimal(CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED, arguments, 4)->value));
+  ChimiValue *quotient = fz_option(call_decimal(CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED, arguments, 4)->value);
+  fz_check_decimal(quotient, reference_decimal_divide(l, r, (uint32_t)scale, (ReferenceDecimalRounding)rounding, &expected),
+                   expected, "divide");
+  fz_out_decimal(out, quotient);
 }
 
 /* --- duration: parse and print -------------------------------------------- */
@@ -343,8 +375,34 @@ static ChimiValue *fz_duration_print(ChimiValue *duration) {
   fz_check_valid_text(text, "duration text");
   return text;
 }
+/* Checks `text`'s parse, and the text form of what it parses to, against the
+   C reference's. */
+static void fz_check_duration(ChimiValue *text, ChimiControl *parsed) {
+  int64_t expected = 0;
+  uint32_t failure = text_holds_nul(text) ? CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID
+                                          : reference_duration_parse(text->as.text.bytes, &expected);
+  uint32_t got = parsed->kind == CONTROL_FAILURE ? fz_standard_of(parsed->value) : 0;
+  FUZZ_CHECK(got == failure, "parse: constructor %u, the C reference %u", got, failure);
+  if (failure) return;
+  FUZZ_CHECK(parsed->value->as.integer == expected, "parse: %" PRId64 "ns, the C reference %" PRId64 "ns",
+             parsed->value->as.integer, expected);
+  char want[32], printed[32];
+  reference_duration_text(expected, want);
+  duration_text(expected, printed);
+  FUZZ_CHECK(strcmp(want, printed) == 0, "text: %s, the C reference %s", printed, want);
+}
 static void fuzz_duration(const uint8_t *data, size_t size, FuzzOutput *out) {
-  ChimiControl *parsed = fz_duration_parse(fz_input_text(data, size));
+  ChimiValue *text = fz_input_text(data, size);
+  ChimiControl *parsed = fz_duration_parse(text);
+  fz_check_duration(text, parsed);
+  /* Every value, not only the parsed ones: the input's first eight bytes too. */
+  if (size >= 8) {
+    int64_t raw; memcpy(&raw, data, sizeof(raw));
+    char want[32], printed[32];
+    reference_duration_text(raw, want);
+    duration_text(raw, printed);
+    FUZZ_CHECK(strcmp(want, printed) == 0, "text of %" PRId64 "ns: %s, the C reference %s", raw, printed, want);
+  }
   if (parsed->kind == CONTROL_FAILURE) {
     out_word(out, "error ");
     out_word(out, CHIMI_STRINGS[CHIMI_CONSTRUCTORS[parsed->value->as.constructed.constructor].variant_name]);
