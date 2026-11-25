@@ -61,8 +61,8 @@ MUTATIONS = [
         "                inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);\n                self.reached_needs.insert(function_symbol, inferred.needs);",
     )]),
     mutant("an emptied import line keeps its newline", L, [(
-        "                let end = if text[end..].starts_with('\\n') { end + 1 } else { end };",
-        "                let end = end;",
+        "                    end + 1\n                } else {",
+        "                    end\n                } else {",
     )]),
     mutant("a wrapped import line gets a fix", L, [(
         "        if self.render().as_deref() != Some(written) {",
