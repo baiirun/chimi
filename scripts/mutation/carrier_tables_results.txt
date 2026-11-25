@@ -1,17 +1,17 @@
-# mutation run at 602a1b96565b0c7c7ce3b9da9a1e0f63140a2783
-BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (93s)
-KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
-KILLED       a close ignores the holders [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
-KILLED       the last holder does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (42s)
-EQUIVALENT   a closed handle reads as open while held (survived; removed from the list: the close bumps the generation, so lookups already miss)
-KILLED       handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (40s)
-KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (42s)
-KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (40s)
-KILLED       a console line is written without the lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (41s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
-# mutation run at 602a1b96565b0c7c7ce3b9da9a1e0f63140a2783
-BASELINE ok  [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (16s)
-KILLED       a withdraw wakes no child wait [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (35s)
-KILLED       a child wait keeps no resource [lib -- a_withdraw_wakes_a_child_wait_on_its_resource] (34s)
-# result: every mutant killed
-# 9 of 9 non-equivalent mutants killed across both sets.
+# mutation run at 6b1935989cdcf7d1b1346990c59588c1a0d0deaa
+# carrier_tables_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (152s)
+KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
+KILLED       a close ignores the holders [runtime_state -- the_runtime_state_holds_across_carrier_threads] (73s)
+KILLED       the last holder does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (70s)
+SURVIVED     handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (71s)
+KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
+KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
+KILLED       a console line is written without the lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
+# result: 1 survivor, explained:
+# - handle lookups take no lock: since CHI-309 part 2 the slot table is in
+#   the Rust archive, which ThreadSanitizer does not instrument, so an
+#   unlocked read is not reported as a race. A lookup only reads, so it goes
+#   wrong only when another carrier grows the table at that moment, which no
+#   test can schedule. "making a handle takes no lock" is still caught, since
+#   concurrent opens corrupt the free list the fixture checks.

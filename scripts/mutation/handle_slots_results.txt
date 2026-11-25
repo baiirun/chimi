@@ -1,0 +1,16 @@
+# mutation run at 3794f205767b584b050705e45b5ed92fe8d76cd0
+# handle_slots_mutations.py: 12 mutants against runtime/chimi-runtime
+BASELINE ok  [lib -- handles] (1s)
+KILLED       a freed slot is never reused [lib -- handles] (1s)
+KILLED       reusing a slot drops the rest of the free list [lib -- handles] (1s)
+KILLED       a slot at the last generation is reused [lib -- handles] (1s)
+KILLED       the limit is ignored [lib -- handles] (1s)
+KILLED       a reused slot starts its generation over [lib -- handles] (1s)
+KILLED       a close of another kind closes it [lib -- handles] (1s)
+KILLED       holding a closed handle succeeds [lib -- handles] (1s)
+KILLED       letting go of an open handle releases it [lib -- handles] (1s)
+KILLED       the end leaves an open handle's generation [lib -- handles] (1s)
+KILLED       the end skips a handle closed while held [lib -- handles] (1s)
+KILLED       a handle of another type is accepted [lib -- handles] (1s)
+KILLED       a runner is not kept [lib -- handles] (1s)
+# result: every mutant killed

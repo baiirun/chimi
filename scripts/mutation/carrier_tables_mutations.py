@@ -5,6 +5,10 @@ Run: scripts/mutation/mutate.py scripts/mutation/carrier_tables_mutations.py
 Each mutant must turn the_runtime_state_holds_across_carrier_threads in
 runtime_state.rs red.
 Results: scripts/mutation/carrier_tables_results.txt.
+
+The binding handle slots are in Rust since CHI-309 part 2. ThreadSanitizer
+cannot see the Rust table, so "handle lookups take no lock" survives (see the
+results).
 """
 
 CRATE = "compiler/chimi"
