@@ -52,7 +52,9 @@ MUTATIONS = [
         ("call.make_integer(i64::from(columns)),\n                call.make_integer(i64::from(rows)),",
          "call.make_integer(i64::from(rows)),\n                call.make_integer(i64::from(columns)),")]),
     terminal_test("a pipe has a size", BINDING, [
-        ("    if !is_terminal(fd) {\n        return None;\n    }\n", "")]),
+        ("    if !is_terminal(fd) {\n        return None;\n    }\n", ""),
+        ("    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } != 0 {\n        return None;\n    }",
+         "    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } != 0 {\n        size.ws_col = 80;\n        size.ws_row = 24;\n    }")]),
     terminal_test("zero columns is a size", BINDING, [
         ("(size.ws_col != 0 && size.ws_row != 0)", "(size.ws_row != 0)")]),
     terminal_test("zero rows is a size", BINDING, [
