@@ -342,11 +342,11 @@ the drain makes the end `defected`, inside the shutdown protocol.
 
 A task's record holds its outcome so that `Task.result` can read it again.
 The record has to outlive the task's end for as long as any copy of the
-handle can still be read, and no longer. `runtime.c` counts task handles the
-way it counts channel endpoints: every `Task` value it builds retains a
-counted key, and `release_allocation`, the loop-pass dead sweep and
-`copy_forward` adjust the count. When the last copy goes, the runtime queues
-`CHIMI_REQUEST_TASK_RELEASE` next to the channel releases it already sends.
+handle can still be read, and no longer. The scheduler counts task handles
+the way it counts channel endpoints (CHI-308): every `Task` value `runtime.c`
+builds calls `chimi_fiber_handle_retain` with the task's key, and
+`release_allocation`, the loop-pass dead sweep and `copy_forward` adjust the
+count. When the last copy goes, the scheduler releases the task itself.
 
 The scheduler marks the task released. A released task that is still running
 keeps its record until it ends; a released task that has ended is removed at
@@ -850,9 +850,11 @@ symbols of the three tiers.
   the fragment for the next incarnation), and the body called with an inbox
   value. Return, `Failure`, defect, and cancellation map to
   `CHIMI_PROCESS_END_RETURNED`, `CHIMI_PROCESS_END_FAILED`, a defected fiber,
-  and a cancelled fiber. The heap is destroyed when the body ends. Under
-  tracing, a defected body's message is kept for its `process_terminated`
-  event (`defect`). A body that overflows its stack never returns from the
+  and a cancelled fiber. The heap is destroyed when the body ends. A
+  defected body hands its message to the scheduler just before its entry
+  returns (`chimi_fiber_report_defect`, CHI-308 step 3), which keeps it with
+  the incarnation and passes it to the defect report, so the root's outcome
+  and the `process_terminated` event (`defect`) can name it. A body that overflows its stack never returns from the
   entry, so the scheduler flags that end on the event instead, and the
   runtime names it `Process stack overflow`.
 - Every scheduler fiber (the root task, child tasks, and incarnations) has a
