@@ -14725,7 +14725,7 @@ fn a_record_fits_an_interface_but_a_struct_does_not() {
     assert_eq!(codes, ["T4203"]);
 }
 
-// CHI-234: a list element or case arm whose function type does not join with
+// CHI-234: a list element, case arm or call argument whose function type does not join with
 // the earlier ones is one error, and the failed join binds nothing. Before, the
 // join unified `pick`'s input with `Text` and then failed on the results, so
 // `items` was left a `List<Text>` and the next line failed too.
@@ -14763,6 +14763,15 @@ fn a_failed_function_join_binds_nothing() {
     )));
     assert_eq!(armed.len(), 1, "{armed:?}");
     assert_eq!(armed[0].0, "T4203");
+    // Two call arguments for one generic: the failed unify of the second with
+    // the first binds nothing either, so the error names the written types.
+    let called = diagnostics_of(&format!(
+        "fn both<B>(first: B, second: B) -> Int {{\n  0\n}}\n{}",
+        program("  let chosen = both(pick, count)\n")
+    ));
+    assert_eq!(called.len(), 1, "{called:?}");
+    assert_eq!(called[0].0, "T4203");
+    assert!(!called[0].1.contains("fn(Text) -> Text"), "{called:?}");
     // The same program without the clashing alternative checks cleanly, so
     // the one error above is the clash itself.
     assert!(check_codes(&program("  let chosen = [pick]\n")).is_empty());

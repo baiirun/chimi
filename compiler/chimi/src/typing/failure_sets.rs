@@ -356,12 +356,6 @@ impl ProjectTypeChecker {
         self.tentatively(|checker| checker.join_types_within(left, right, false, 0))
     }
 
-    /// `unify`, binding nothing when it fails.
-    fn unify_tentatively(&mut self, left: TypeId, right: TypeId) -> bool {
-        self.tentatively(|checker| checker.unify(left, right).then_some(()))
-            .is_some()
-    }
-
     /// Whether `left` and `right` are the same type, unifying them both ways
     /// only when they are.
     fn unify_both_ways(&mut self, left: TypeId, right: TypeId) -> bool {

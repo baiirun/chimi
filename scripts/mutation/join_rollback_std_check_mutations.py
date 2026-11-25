@@ -25,12 +25,20 @@ MUTATIONS = [
         "        self.join_types_within(left, right, false, 0)",
     )], "a_failed_function_join"),
     lang("tentatively: never restores", Y, [(
-        "        if result.is_none() {\n            self.restore_inference(snapshot);\n        }\n        result",
-        "        drop(snapshot);\n        result",
+        "        if result.is_none() {\n            self.restore_inference(snapshot);\n        } else {",
+        "        if false {\n            self.restore_inference(snapshot);\n        } else {",
     )], "a_failed_function_join"),
-    lang("restore: bindings not restored", Y, [(
-        "        self.inference_bindings = snapshot.bindings;\n",
-        "",
+    lang("restore: a new binding not removed", Y, [(
+        "                InferenceChange::Binding(variable, None) => {\n                    self.inference_bindings.remove(&variable);",
+        "                InferenceChange::Binding(_variable, None) => {",
+    )], "a_failed_function_join"),
+    lang("journal: bindings not recorded", Y, [(
+        "        if self.tentative_depth > 0 {\n            self.inference_journal\n                .push(InferenceChange::Binding(variable, previous));",
+        "        if self.tentative_depth > 99 {\n            self.inference_journal\n                .push(InferenceChange::Binding(variable, previous));",
+    )], "a_failed_function_join"),
+    lang("call: generic argument unify not tentative", Y, [(
+        "                    let unified = self.unify_tentatively(actual, bound);",
+        "                    let unified = self.unify(actual, bound);",
     )], "a_failed_function_join"),
     cli("std check: a missing module listed per operation", O, [(
         "        if !modules.contains(module_of(operation.id)) {\n            continue;\n        }\n        match declarations",

@@ -1761,6 +1761,11 @@ struct ProjectTypeChecker {
     /// Such a variable is bounded above, so widening its failure set by union
     /// would leave that check stale; it may only stay as wide as it is.
     bounded_inference_variables: HashSet<u32>,
+    /// What each open tentative check changed, oldest first, so a failed one
+    /// is undone without copying the inference state (`tentatively`).
+    inference_journal: Vec<InferenceChange>,
+    /// How many tentative checks are open; the journal records only then.
+    tentative_depth: u32,
     /// Needs groups being expanded, so a group reached again through one of its
     /// own entries' function types is reported (`T4104`, once per group)
     /// instead of recursing.
@@ -1981,11 +1986,19 @@ impl ListColumn {
     }
 }
 
-/// Inference state saved before a tentative check, restored when it fails.
+/// Where a tentative check began: the journal length and the property checks
+/// queued so far. It ends with `keep_inference` or `restore_inference`.
 struct InferenceSnapshot {
-    bindings: HashMap<u32, TypeId>,
-    bounded: HashSet<u32>,
+    journal: usize,
     property_checks: usize,
+}
+
+/// One change a tentative check made, with what undoes it.
+enum InferenceChange {
+    /// A variable bound, with its binding before.
+    Binding(u32, Option<TypeId>),
+    /// A variable newly bounded.
+    Bounded(u32),
 }
 
 impl ProjectTypeChecker {
@@ -2033,6 +2046,8 @@ impl ProjectTypeChecker {
             member_conformance_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            inference_journal: Vec::new(),
+            tentative_depth: 0,
             alias_types: HashMap::new(),
             aliases_in_progress: HashSet::new(),
             body_generics: HashSet::new(),
@@ -3078,6 +3093,8 @@ impl ProjectTypeChecker {
             member_conformance_depth: 0,
             generic_function_type_allowed: false,
             bounded_inference_variables: HashSet::new(),
+            inference_journal: Vec::new(),
+            tentative_depth: 0,
             expanding_groups: HashSet::new(),
             cyclic_groups: HashSet::new(),
             alias_types: HashMap::new(),
@@ -9043,7 +9060,10 @@ impl ProjectTypeChecker {
         // go on to try another rule.
         let snapshot = self.inference_snapshot();
         Some(match self.provider_conformance_error(actual, expected) {
-            None => Ok(()),
+            None => {
+                self.keep_inference(snapshot);
+                Ok(())
+            }
             Some(reason) => {
                 self.restore_inference(snapshot);
                 Err(reason)
@@ -9051,21 +9071,46 @@ impl ProjectTypeChecker {
         })
     }
 
-    /// The inference state a tentative check may change: what each variable
-    /// is bound to, which variables are bounded, and the property checks
-    /// queued so far.
-    fn inference_snapshot(&self) -> InferenceSnapshot {
+    /// Opens a tentative check of what may change: the variables bound and
+    /// bounded from here on, and the property checks queued.
+    fn inference_snapshot(&mut self) -> InferenceSnapshot {
+        self.tentative_depth += 1;
         InferenceSnapshot {
-            bindings: self.inference_bindings.clone(),
-            bounded: self.bounded_inference_variables.clone(),
+            journal: self.inference_journal.len(),
             property_checks: self.property_checks.len(),
         }
     }
 
+    /// Closes a tentative check, undoing what it changed.
     fn restore_inference(&mut self, snapshot: InferenceSnapshot) {
-        self.inference_bindings = snapshot.bindings;
-        self.bounded_inference_variables = snapshot.bounded;
+        for change in self.inference_journal.drain(snapshot.journal..).rev() {
+            match change {
+                InferenceChange::Binding(variable, Some(previous)) => {
+                    self.inference_bindings.insert(variable, previous);
+                }
+                InferenceChange::Binding(variable, None) => {
+                    self.inference_bindings.remove(&variable);
+                }
+                InferenceChange::Bounded(variable) => {
+                    self.bounded_inference_variables.remove(&variable);
+                }
+            }
+        }
         self.property_checks.truncate(snapshot.property_checks);
+        self.close_tentative();
+    }
+
+    /// Closes a tentative check, keeping what it changed; an enclosing check
+    /// may still undo it.
+    fn keep_inference(&mut self, _snapshot: InferenceSnapshot) {
+        self.close_tentative();
+    }
+
+    fn close_tentative(&mut self) {
+        self.tentative_depth -= 1;
+        if self.tentative_depth == 0 {
+            self.inference_journal.clear();
+        }
     }
 
     /// Runs `attempt` and keeps what it bound only when it succeeds, so a
@@ -9075,8 +9120,26 @@ impl ProjectTypeChecker {
         let result = attempt(self);
         if result.is_none() {
             self.restore_inference(snapshot);
+        } else {
+            self.keep_inference(snapshot);
         }
         result
+    }
+
+    /// `unify`, binding nothing when it fails.
+    pub(crate) fn unify_tentatively(&mut self, left: TypeId, right: TypeId) -> bool {
+        self.tentatively(|checker| checker.unify(left, right).then_some(()))
+            .is_some()
+    }
+
+    /// Binds `variable`, recording the binding it replaces while a tentative
+    /// check is open.
+    fn set_inference_binding(&mut self, variable: u32, type_id: TypeId) {
+        let previous = self.inference_bindings.insert(variable, type_id);
+        if self.tentative_depth > 0 {
+            self.inference_journal
+                .push(InferenceChange::Binding(variable, previous));
+        }
     }
 
     /// An interface with no type arguments, so a call can check a record
@@ -9190,17 +9253,28 @@ impl ProjectTypeChecker {
         let reason = self.generic_member_mismatch(actual, parameters, contract);
         self.member_conformance_depth -= 1;
         let reason = reason.or_else(|| {
-            let escapes = (0..existing_variables).any(|variable| {
-                let bound = self.inference_bindings.get(&variable).copied();
-                bound != snapshot.bindings.get(&variable).copied()
-                    && bound.is_some_and(|bound| self.type_mentions_generics(bound, parameters))
-            });
+            // A variable that existed before the check and that it bound.
+            let escapes = self.inference_journal[snapshot.journal..]
+                .iter()
+                .filter_map(|change| match change {
+                    InferenceChange::Binding(variable, _) if *variable < existing_variables => {
+                        Some(*variable)
+                    }
+                    _ => None,
+                })
+                .any(|variable| {
+                    self.inference_bindings
+                        .get(&variable)
+                        .is_some_and(|bound| self.type_mentions_generics(*bound, parameters))
+                });
             escapes.then_some(
                 "it is not generic; supply a generic function such as one declared `fn name<A>(..)`",
             )
         });
         if reason.is_some() {
             self.restore_inference(snapshot);
+        } else {
+            self.keep_inference(snapshot);
         }
         reason
     }
@@ -10803,7 +10877,9 @@ impl ProjectTypeChecker {
                     substitution.widenable_values.contains(&parameter)
                 };
                 if let Some(bound) = substitution.values.get(&parameter).copied() {
-                    let unified = self.unify(actual, bound);
+                    // A failed unify binds nothing, so the join below starts
+                    // from the two types as written.
+                    let unified = self.unify_tentatively(actual, bound);
                     // A generic function bound first and a fixed one second
                     // share the fixed type: keeping the generic one would let
                     // the call use the fixed function at any type.
@@ -11743,8 +11819,11 @@ impl ProjectTypeChecker {
         } else {
             right_variable
         };
-        if let Some(variable) = narrower {
-            self.bounded_inference_variables.insert(variable);
+        if let Some(variable) = narrower
+            && self.bounded_inference_variables.insert(variable)
+            && self.tentative_depth > 0
+        {
+            self.inference_journal.push(InferenceChange::Bounded(variable));
         }
         let left = self.resolve_inference_type(left);
         let right = self.resolve_inference_type(right);
@@ -11832,7 +11911,7 @@ impl ProjectTypeChecker {
                         symbol: left_symbol,
                         arguments: joined,
                     });
-                    self.inference_bindings.insert(variable, joined);
+                    self.set_inference_binding(variable, joined);
                 }
                 true
             }
@@ -11864,7 +11943,7 @@ impl ProjectTypeChecker {
                 };
                 let union = self.join_failure_sets([actual, expected]);
                 let joined = self.failure_set_type(union);
-                self.inference_bindings.insert(variable, joined);
+                self.set_inference_binding(variable, joined);
                 true
             }
             (CanonicalType::Function(left), CanonicalType::Function(right)) => {
@@ -11927,7 +12006,7 @@ impl ProjectTypeChecker {
         if self.inference_variable_occurs(variable, type_id) {
             return false;
         }
-        self.inference_bindings.insert(variable, type_id);
+        self.set_inference_binding(variable, type_id);
         true
     }
 
