@@ -1193,14 +1193,22 @@ program.
   variant patterns need a catch-all arm. A constructor with a field of an empty
   failure set (`Err` of `Result.capture` over a call that cannot fail) builds
   no value, so a `case` need not cover it and an arm for it is unreachable.
-- **Not yet.** A constructor expression has its enum's type, so
-  `StartError.NameTaken` written directly does not fit a parameter typed
-  `StartError.NameTaken`; only a narrowed value, such as a `Failure(...)`
-  binding, does (CHI-218). Joining two arguments for one generic parameter by
-  union (spec "Joins", third case) applies to list elements and case arms, not
-  yet to two call arguments that bind the same failure-set parameter. A set
-  written across lines must keep each `|` at the end of a line, not the start
-  of the next. Of the `Result` helpers in the conventions doc, only `capture`
+- **Written variants.** A constructor written where a closed failure set is
+  expected (a call argument, an annotated `let`, a function result) has its
+  variant's one-member type, so `StartError.NameTaken` fits a parameter typed
+  `StartError.NameTaken` (CHI-218). Elsewhere it has its enum's type.
+- **Call arguments.** Two arguments for one generic parameter join by the
+  list-element rule ("Joins") while only covariant uses have bound it. A use
+  under a function input or inside an invariant argument fixes the set, so a
+  later, wider argument is rejected (`T4346`) rather than handed to a callback
+  checked against the narrower set.
+- **Forwarded generics.** A function that hands its own generic to a callee's
+  failure-set parameter makes that generic a failure set, as raising it does,
+  so `wrap<X>(r: Result<Int, X>) { Result.get(r) }` checks (CHI-222). A
+  `T4203` for a value that is not a failure set names the callee's parameter.
+- **Not yet.** A set written across lines must keep each `|` at the end of a
+  line, not the start of the next. Of the `Result` helpers in the conventions
+  doc, only `capture`
   and `get` exist; `map`, `map_error`, `unwrap_or`, `to_option`, `error`,
   `is_ok`, and `is_err` come later.
 - **Variance.** A data type's argument fits a wider one only where its
