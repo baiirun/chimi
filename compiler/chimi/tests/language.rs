@@ -14313,3 +14313,148 @@ fn struct_pattern_and_case_subject_fixes_apply_cleanly() {
     assert!(fixed.contains("    Pair { left: Money { .. }, right: _ } -> x\n"));
     assert!(fixed.contains("  case (Money { cents: 1, currency: \"EUR\" }) {\n"));
 }
+
+// CHI-244: a record fits an interface wherever the interface is written as a
+// type, by the provider rule. Field order and extra fields do not matter.
+#[test]
+fn a_record_fits_an_interface_written_as_a_type() {
+    let outcome = run_both(
+        "record-fits-interface",
+        concat!(
+            "enum E {\n",
+            "  Bad\n",
+            "}\n",
+            "interface Pair {\n",
+            "  zeta: fn() -> Text\n",
+            "  alpha: fn(Int) -> Int errors E\n",
+            "  mid: Int\n",
+            "}\n",
+            "fn made() -> Pair {\n",
+            "  { extra: \"x\", mid: 3, alpha: fn(n: Int) -> Int { n + 1 }, zeta: fn() -> Text { \"Z\" } }\n",
+            "}\n",
+            "fn failing() {\n",
+            "  { alpha: fn(_n: Int) -> Int { Failure(E.Bad) }, mid: 4, zeta: fn() -> Text { \"F\" } }\n",
+            "}\n",
+            "fn score(p: Pair) -> Int {\n",
+            "  case p.alpha(p.mid) {\n",
+            "    Success(n) -> n\n",
+            "    Failure(_) -> 0 - p.mid\n",
+            "  }\n",
+            "}\n",
+            "fn tagged<T>(p: Pair, tag: T) -> T { tag }\n",
+            "struct Holder {\n",
+            "  pair: Pair,\n",
+            "}\n",
+            "fn chosen(first: Bool) -> Pair {\n",
+            "  case first {\n",
+            "    True -> made()\n",
+            "    False -> { zeta: fn() -> Text { \"C\" }, alpha: fn(n: Int) -> Int { n * 10 }, mid: 5 }\n",
+            "  }\n",
+            "}\n",
+            "pub fn main() -> Text {\n",
+            "  let held: Pair = failing()\n",
+            "  let pairs = [made(), held, { mid: 7, zeta: fn() -> Text { \"L\" }, alpha: fn(n: Int) -> Int { n } }]\n",
+            "  let scores = case pairs {\n",
+            "    [a, b, c] -> \"${score(a)} ${score(b)} ${score(c)}\"\n",
+            "    _ -> \"?\"\n",
+            "  }\n",
+            "  let names = \"${made().zeta()}${held.zeta()}${chosen(False).zeta()}\"\n",
+            "  let holder = Holder { pair: { zeta: fn() -> Text { \"H\" }, alpha: fn(n: Int) -> Int { n * 2 }, mid: 6 } }\n",
+            "  let typed: List<Pair> = [{ mid: 1, zeta: fn() -> Text { \"T\" }, alpha: fn(n: Int) -> Int { n } }, held]\n",
+            "  let firsts = case typed {\n",
+            "    [a, _] -> score(a)\n",
+            "    _ -> 0\n",
+            "  }\n",
+            "  \"${scores} ${names} ${score(chosen(False))} ${tagged(failing(), 9)} ${score(holder.pair)} ${firsts}\"\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":\"4 -4 7 ZFC 50 9 12 1\""
+    );
+}
+
+#[test]
+fn a_record_that_does_not_conform_says_which_member_is_wrong() {
+    let messages = coded_messages(concat!(
+        "enum E {\n",
+        "  Bad\n",
+        "}\n",
+        "enum F {\n",
+        "  Worse\n",
+        "}\n",
+        "interface Inv {\n",
+        "  reserve: fn(Text) -> Int errors E\n",
+        "}\n",
+        "fn missing() -> Inv {\n",
+        "  { other: 1 }\n",
+        "}\n",
+        "fn wider(_i: Inv) -> Int { 0 }\n",
+        "fn tagged<T>(_i: Inv, tag: T) -> T { tag }\n",
+        "pub fn main() -> Int {\n",
+        "  let _held: Inv = { reserve: fn(s: Text) -> Text { s } }\n",
+        "  let _n = tagged({ reserve: 1 }, 2)\n",
+        "  wider({ reserve: fn(_s: Text) -> Int { Failure(F.Worse) } })\n",
+        "}\n",
+    ));
+    assert_eq!(
+        messages,
+        [
+            (
+                "T4203".to_owned(),
+                "function result has type `{ other: Int }`, expected `Inv`; the record is missing member `reserve`".to_owned()
+            ),
+            (
+                "T4203".to_owned(),
+                "the value of this annotated `let` has type `{ reserve: fn(Text) -> Text }`, expected `Inv`; the record has incompatible member `reserve`: success type differs".to_owned()
+            ),
+            (
+                "T4203".to_owned(),
+                "call argument has type `{ reserve: Int }`, expected `Inv`".to_owned()
+            ),
+            (
+                "T4203".to_owned(),
+                "call argument has type `{ reserve: fn(Text) -> Int errors F }`, expected `Inv`; the record has incompatible member `reserve`: it exposes failures outside the interface contract".to_owned()
+            ),
+        ]
+    );
+}
+
+// A struct does not fit an interface written as a type: another module's
+// interface would otherwise read the struct's private fields.
+#[test]
+fn a_record_fits_an_interface_but_a_struct_does_not() {
+    let module = |path: &str, source: &str| {
+        ProjectSource::new(path, SourceSnapshot::from_text(format!("{path}.chimi"), source))
+            .expect("valid module path")
+    };
+    let report = Compiler::type_project(vec![
+        module(
+            "main",
+            concat!(
+                "import acct as Acct\n",
+                "interface Peek {\n",
+                "  secret: Int\n",
+                "}\n",
+                "fn peek(p: Peek) -> Int { p.secret }\n",
+                "pub fn main() -> Int { peek(Acct.open()) }\n",
+            ),
+        ),
+        module(
+            "acct",
+            concat!(
+                "pub struct Account {\n",
+                "  secret: Int,\n",
+                "}\n",
+                "pub fn open() -> Account { Account { secret: 42 } }\n",
+            ),
+        ),
+    ]);
+    let codes = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["T4203"]);
+}

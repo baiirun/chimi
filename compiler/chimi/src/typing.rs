@@ -259,6 +259,14 @@ impl PropertyDerivation {
     }
 }
 
+/// What `type_may_hold` looks for inside a container type.
+#[derive(Clone, Copy)]
+enum HeldPart {
+    Type(TypeId),
+    /// A `Select.Event`, whatever its arguments.
+    SelectEvent,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CapabilityClass {
     Ordinary,
@@ -687,6 +695,10 @@ pub(crate) struct TypedProject {
     pub(crate) failure_rows: Vec<FailureRow>,
     pub(crate) needs_rows: Vec<NeedsRow>,
     pub(crate) contracts: HashMap<SymbolId, CallableContract>,
+    /// The needs each function's body reaches, directly or through calls, by
+    /// the function's symbol. A written clause may list more (its contract
+    /// carries them); `chimi lint` reports those extra entries.
+    pub(crate) reached_needs: HashMap<SymbolId, NeedsRowId>,
     pub(crate) declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pub(crate) pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     /// Each failure-type pattern (`error: FileError` over a failure-set value) by its
@@ -1304,13 +1316,18 @@ impl TypedProject {
     /// anything, since a closure or provider can capture any value. Conservative past
     /// a nesting depth, so a recursive type cannot loop.
     pub(crate) fn type_may_hold(&self, container: TypeId, part: TypeId) -> bool {
-        self.type_may_hold_with(container, part, &HashMap::new(), 0)
+        self.type_may_hold_with(container, HeldPart::Type(part), &HashMap::new(), 0)
+    }
+
+    /// Whether a value of `container` may hold a `Select.Event` of any type.
+    pub(crate) fn type_may_hold_select_event(&self, container: TypeId) -> bool {
+        self.type_may_hold_with(container, HeldPart::SelectEvent, &HashMap::new(), 0)
     }
 
     fn type_may_hold_with(
         &self,
         container: TypeId,
-        part: TypeId,
+        part: HeldPart,
         generics: &HashMap<SymbolId, TypeId>,
         depth: usize,
     ) -> bool {
@@ -1324,7 +1341,16 @@ impl TypedProject {
         {
             return self.type_may_hold_with(*bound, part, generics, depth + 1);
         }
-        if self.same_type_with(container, part, generics, depth) {
+        let is_part = match part {
+            HeldPart::Type(part) => self.same_type_with(container, part, generics, depth),
+            HeldPart::SelectEvent => matches!(
+                &self.types[container.raw() as usize],
+                CanonicalType::Named { symbol, .. }
+                    if self.resolved.standard_symbol(*symbol)
+                        == Some(StandardSymbol::Type(StandardType::SelectEvent))
+            ),
+        };
+        if is_part {
             return true;
         }
         let holds = |id: TypeId, generics: &HashMap<SymbolId, TypeId>| {
@@ -1678,6 +1704,7 @@ struct ProjectTypeChecker {
     needs_rows: Vec<NeedsRow>,
     needs_row_intern: HashMap<NeedsRow, NeedsRowId>,
     contracts: HashMap<SymbolId, CallableContract>,
+    reached_needs: HashMap<SymbolId, NeedsRowId>,
     declaration_types: HashMap<(ModuleId, SemanticId), TypeId>,
     pattern_binding_types: HashMap<(ModuleId, SemanticId), TypeId>,
     failure_type_patterns: HashMap<(ModuleId, SemanticId), Vec<(SymbolId, usize)>>,
@@ -1956,6 +1983,7 @@ impl ProjectTypeChecker {
             needs_rows: Vec::new(),
             needs_row_intern: HashMap::new(),
             contracts: HashMap::new(),
+            reached_needs: HashMap::new(),
             declaration_types: HashMap::new(),
             pattern_binding_types: HashMap::new(),
             failure_type_patterns: HashMap::new(),
@@ -2916,6 +2944,12 @@ impl ProjectTypeChecker {
                 .filter(|(symbol, _)| !affected_symbols.contains(symbol))
                 .map(|(symbol, contract)| (*symbol, contract.clone()))
                 .collect(),
+            reached_needs: previous
+                .reached_needs
+                .iter()
+                .filter(|(symbol, _)| !affected_symbols.contains(symbol))
+                .map(|(symbol, row)| (*symbol, *row))
+                .collect(),
             declaration_types: previous
                 .declaration_types
                 .iter()
@@ -3113,6 +3147,7 @@ impl ProjectTypeChecker {
             failure_rows: self.failure_rows,
             needs_rows: self.needs_rows,
             contracts: self.contracts,
+            reached_needs: self.reached_needs,
             declaration_types: self.declaration_types,
             pattern_binding_types: self.pattern_binding_types,
             failure_type_patterns: self.failure_type_patterns,
@@ -3518,6 +3553,7 @@ impl ProjectTypeChecker {
                 };
                 inferred.failures =
                     self.union_failure_rows([inferred.failures, body_fact.failures]);
+                self.reached_needs.insert(function_symbol, body_fact.needs);
                 inferred.needs = self.union_needs_rows([inferred.needs, body_fact.needs]);
                 inferred.failures = self.close_failure_row(inferred.failures);
                 inferred.needs = self.close_needs_row(inferred.needs);
@@ -8885,6 +8921,59 @@ impl ProjectTypeChecker {
             .collect()
     }
 
+    /// Interface conformance is implicit: a record that has every member of an
+    /// interface fits it wherever the interface is written as a type, by the
+    /// same rule `using` applies to a provider. `None` unless `actual` is a
+    /// record and `expected` an interface; otherwise whether it conforms, with
+    /// the reason when it does not. A struct does not fit this way: its fields
+    /// may be private to its module, and an interface must not read them.
+    fn record_interface_conformance(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> Option<Result<(), String>> {
+        let actual = self.resolve_inference_type(actual);
+        let expected = self.resolve_inference_type(expected);
+        if !matches!(self.types[actual.raw() as usize], CanonicalType::Record(_))
+            || !self.is_interface_type(expected)
+        {
+            return None;
+        }
+        // A failed check leaves no bindings behind, since a join or call may
+        // go on to try another rule.
+        let bindings = self.inference_bindings.clone();
+        let bounded = self.bounded_inference_variables.clone();
+        let property_checks = self.property_checks.len();
+        Some(match self.provider_conformance_error(actual, expected) {
+            None => Ok(()),
+            Some(reason) => {
+                self.inference_bindings = bindings;
+                self.bounded_inference_variables = bounded;
+                self.property_checks.truncate(property_checks);
+                Err(reason)
+            }
+        })
+    }
+
+    /// An interface with no type arguments, so a call can check a record
+    /// against it before the call's generics are bound.
+    fn is_plain_interface_type(&self, type_id: TypeId) -> bool {
+        self.is_interface_type(type_id)
+            && matches!(
+                &self.types[type_id.raw() as usize],
+                CanonicalType::Named { arguments, .. } if arguments.is_empty()
+            )
+    }
+
+    fn is_interface_type(&self, type_id: TypeId) -> bool {
+        match &self.types[type_id.raw() as usize] {
+            CanonicalType::Named { symbol, .. } => {
+                self.resolved.symbol(*symbol).kind == ProjectSymbolKind::Interface
+            }
+            _ => false,
+        }
+    }
+
     /// Whether `actual` may be stored in a struct or record field, or passed as
     /// a call argument, of type `expected`: the `using` provider rule, so a
     /// function value may expose fewer failures and needs than `expected`
@@ -8944,6 +9033,13 @@ impl ProjectTypeChecker {
                     return Some("it needs dependencies outside the interface contract");
                 }
                 None
+            }
+            (CanonicalType::Record(_), CanonicalType::Named { .. })
+                if self.is_interface_type(expected) =>
+            {
+                self.record_interface_conformance(actual, expected)
+                    .and_then(Result::err)
+                    .map(|_| "it does not conform to the interface")
             }
             _ if self.unify(actual, expected) => None,
             _ => Some("value type differs"),
@@ -10782,6 +10878,12 @@ impl ProjectTypeChecker {
             self.types[resolved_actual.raw() as usize].clone(),
             self.types[resolved_expected.raw() as usize].clone(),
         ) else {
+            if self.is_plain_interface_type(resolved_expected)
+                && let Some(conformance) =
+                    self.record_interface_conformance(resolved_actual, resolved_expected)
+            {
+                return conformance.is_ok();
+            }
             return self.match_call_type(actual, expected, substitution);
         };
         actual_contract.inputs.len() == expected_contract.inputs.len()
@@ -11325,6 +11427,20 @@ impl ProjectTypeChecker {
         expected: TypeId,
         context: &str,
     ) -> bool {
+        match self.record_interface_conformance(actual, expected) {
+            Some(Ok(())) => return true,
+            Some(Err(reason)) => {
+                let message = self.mismatch_message(context, actual, expected);
+                self.type_error_range(
+                    module_id,
+                    "T4203",
+                    range,
+                    format!("{message}; the record {reason}"),
+                );
+                return false;
+            }
+            None => {}
+        }
         if self.unify(actual, expected) {
             return true;
         }

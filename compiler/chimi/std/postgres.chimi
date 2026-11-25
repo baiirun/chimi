@@ -344,7 +344,7 @@ struct Session {
 // The connection is kept only when the startup finishes: `kept` is set as
 // the last step, and both releases close what was opened while it is unset.
 fn open(given: Given, target: Target) -> Session needs {
-  network: Network, clock: Clock
+  network: Network
 } {
   let kept = Watch.starting_with(False).publisher
   Resource.scoped(fn() { Net.connect(target.host, target.port) }, fn(raw) { close_unless(kept, raw) }, fn(raw) {
