@@ -74,7 +74,10 @@ fn main() {
         Vec::new()
     };
     std::fs::write(out.join("libchimi_fiber.a"), fiber).expect("write embedded fiber runtime");
-    let standalone = if prebuilds(&target) {
+    // Unlike the C archives, this needs no host C compiler for the target,
+    // only Rust's standard library for it, so a cross-compiled compiler
+    // carries it too.
+    let standalone = if std::env::var_os("CARGO_FEATURE_NATIVE_BACKEND").is_some() {
         prebuild_standalone_runtime(&out, &target).unwrap_or_else(|error| {
             println!(
                 "cargo:warning=Rust runtime archive not embedded ({error}); chimi build will look for it beside the compiler"

@@ -531,6 +531,9 @@ static _Noreturn void runtime_exit(int code) {
 }
 
 static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
+/* The same end for the Rust runtime archive's allocator (chimi-runtime-standalone). */
+_Noreturn void chimi_runtime_exhausted_memory(void);
+_Noreturn void chimi_runtime_exhausted_memory(void) { exhausted_memory(); runtime_exit(70); }
 
 /* Freed blocks of up to SMALL_BLOCK_LIMIT bytes are kept on per-size free lists and
    reused, because a message or a pass allocates and frees many small blocks and the
