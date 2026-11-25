@@ -52,7 +52,7 @@ MUTATIONS = [
         ("        .chain(report.need())\n", ""),
     ]),
     hover("hover on a type name says nothing", LSP, [
-        ("        let supply = target.runner()?;\n        return Some(",
-         "        let _supply = target.runner()?;\n        return None;\n        #[allow(unreachable_code)]\n        return Some("),
+        ("        let supply = target.runner()?;\n",
+         "        let supply = target.runner()?;\n        if supply.fixed_name() != Some(\"\") {\n            return None;\n        }\n"),
     ]),
 ]

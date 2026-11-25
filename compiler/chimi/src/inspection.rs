@@ -169,7 +169,7 @@ impl NeedInspection {
         } else {
             format!(
                 "`{name}` is not supplied by the runner, which supplies a `{}` only as `{}`. \
-                 Supply `{name}` with `using`, on `main` and in tests.",
+                 Some caller must supply `{name}` with `using`, in a program and in tests.",
                 supply.interface,
                 supply.fixed_name().unwrap_or_default()
             )
