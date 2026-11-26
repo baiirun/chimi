@@ -1,0 +1,11 @@
+# mutation run at 8cc2ea3ea180d1655ce08090019d4ef6c3d095ed
+# heap_verify_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [../../scripts/mutation/heap-verify-harness.sh] (58s)
+KILLED       a full pass frees a marked survivor [../../scripts/mutation/heap-verify-harness.sh] (56s)
+KILLED       a sweep leaves the survivor counts behind [../../scripts/mutation/heap-verify-harness.sh] (52s)
+KILLED       a pass frees a marked young allocation [../../scripts/mutation/heap-verify-harness.sh] (54s)
+KILLED       marking skips a list node's values [../../scripts/mutation/heap-verify-harness.sh] (55s)
+KILLED       young chunk survivors are not moved [../../scripts/mutation/heap-verify-harness.sh] (53s)
+KILLED       adopted areas are not promoted [../../scripts/mutation/heap-verify-harness.sh] (55s)
+# result: every mutant killed
+# 'marking skips a list node's values' is reported by the collector's own forwarding check before the heap check runs.
