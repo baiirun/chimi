@@ -2438,11 +2438,6 @@ static bool decimal_make(bool negative, DecimalMagnitude magnitude, uint32_t sca
 }
 static Decimal decimal_of(const ChimiValue *value) { return value->as.decimal; }
 static ChimiValue *decimal_value(Decimal decimal) { return chimi_value_decimal_v1(decimal); }
-/* Numeric order, -1, 0 or 1, out of line so chimi_value_compare's frame keeps no
-   by-value decimals. */
-__attribute__((noinline)) static int decimal_order(const ChimiValue *left, const ChimiValue *right) {
-  return chimi_decimal_compare_v1(decimal_of(left), decimal_of(right));
-}
 __attribute__((noinline)) static ChimiValue *decimal_negated(const ChimiValue *value) {
   return decimal_value(chimi_decimal_negate_v1(decimal_of(value)));
 }
@@ -2667,243 +2662,39 @@ static ChimiValue *select_value(ChimiValue *value, const char *name) {
   return NULL;
 }
 
-static uint16_t map_height(const MapNode *node) { return node ? node->height : 0; }
-static uint16_t map_max(uint16_t left, uint16_t right) { return left > right ? left : right; }
-static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root);
-static MapNode *map_node(ChimiValue *key, ChimiValue *value, MapNode *left, MapNode *right) {
-  MapNode *node = allocate(1, sizeof(*node));
-  allocation_kind(node, ALLOCATION_MAP_NODE);
-  node->key = key; node->value = value; node->left = left; node->right = right;
-  node->height = (uint16_t)(1 + map_max(map_height(left), map_height(right)));
-  return node;
+/* The persistent Map tree, which Set shares, and structural order live in
+   runtime/chimi-runtime/src/heap/map.rs and compare.rs. */
+int32_t chimi_value_compare_v1(const ChimiValue *left, const ChimiValue *right);
+int32_t chimi_json_number_compare_v1(const char *left, const char *right);
+char *chimi_json_number_canonical_text_v1(const char *text, size_t *length);
+MapNode *chimi_map_put_v1(MapNode *node, ChimiValue *key, ChimiValue *value);
+MapNode *chimi_map_remove_v1(MapNode *node, const ChimiValue *key);
+ChimiValue *chimi_map_get_v1(const MapNode *node, const ChimiValue *key);
+int64_t chimi_map_size_v1(const MapNode *node);
+const MapNode **chimi_map_entries_v1(const MapNode *root, size_t *length);
+
+/* Structural order: -1, 0 or 1; both values have the same equatable type. */
+static int chimi_value_compare(const ChimiValue *left, const ChimiValue *right) {
+  return chimi_value_compare_v1(left, right);
 }
-static MapNode *map_rotate_left(MapNode *node) {
-  MapNode *right = node->right;
-  MapNode *left = map_node(node->key, node->value, node->left, right->left);
-  return map_node(right->key, right->value, left, right->right);
-}
-static MapNode *map_rotate_right(MapNode *node) {
-  MapNode *left = node->left;
-  MapNode *right = map_node(node->key, node->value, left->right, node->right);
-  return map_node(left->key, left->value, left->left, right);
-}
-static MapNode *map_balance(MapNode *node) {
-  int balance = (int)map_height(node->left) - (int)map_height(node->right);
-  if (balance > 1) {
-    if (map_height(node->left->right) > map_height(node->left->left))
-      node = map_node(node->key, node->value, map_rotate_left(node->left), node->right);
-    return map_rotate_right(node);
-  }
-  if (balance < -1) {
-    if (map_height(node->right->left) > map_height(node->right->right))
-      node = map_node(node->key, node->value, node->left, map_rotate_right(node->right));
-    return map_rotate_left(node);
-  }
-  return node;
+/* The order of two JSON numbers by the exact decimal they denote. */
+static int json_number_compare(const char *left, const char *right) {
+  return chimi_json_number_compare_v1(left, right);
 }
 static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) {
-  if (!node) return map_node(key, value, NULL, NULL);
-  int order = chimi_value_compare(key, node->key);
-  /* An equal key already held stays; only the value changes. */
-  if (order == 0) return map_node(node->key, value, node->left, node->right);
-  if (order < 0) return map_balance(map_node(node->key, node->value,
-                                            map_put_node(node->left, key, value), node->right));
-  return map_balance(map_node(node->key, node->value, node->left,
-                              map_put_node(node->right, key, value)));
+  return chimi_map_put_v1(node, key, value);
 }
-/* The least node of `node` in `*least`, and the tree without it. */
-static MapNode *map_remove_least(MapNode *node, MapNode **least) {
-  if (!node->left) { *least = node; return node->right; }
-  MapNode *left = map_remove_least(node->left, least);
-  return map_balance(map_node(node->key, node->value, left, node->right));
-}
-/* `node` without `key`, rebalanced; `node` itself when it has no such key. The
-   recursion is bounded by the tree height. */
-static MapNode *map_remove_node(MapNode *node, const ChimiValue *key) {
-  if (!node) return NULL;
-  int order = chimi_value_compare(key, node->key);
-  if (order < 0) {
-    MapNode *left = map_remove_node(node->left, key);
-    return left == node->left ? node : map_balance(map_node(node->key, node->value, left, node->right));
-  }
-  if (order > 0) {
-    MapNode *right = map_remove_node(node->right, key);
-    return right == node->right ? node : map_balance(map_node(node->key, node->value, node->left, right));
-  }
-  if (!node->left) return node->right;
-  if (!node->right) return node->left;
-  MapNode *least = NULL;
-  MapNode *right = map_remove_least(node->right, &least);
-  return map_balance(map_node(least->key, least->value, node->left, right));
-}
-static int64_t map_size(const MapNode *node) {
-  return node ? 1 + map_size(node->left) + map_size(node->right) : 0;
-}
-static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) {
-  while (node) {
-    int order = chimi_value_compare(key, node->key);
-    if (order == 0) return node->value;
-    node = order < 0 ? node->left : node->right;
-  }
-  return NULL;
-}
-
-/* Structural order: the one comparison behind `==`, `<`, `Order.compare`, and Map
-   keys. For ordered types it is the source-level order; for types that are only
-   equatable (records, maps, Json.Value) it is an internal total order consistent
-   with equality. It mirrors execution/structural.rs. The walk keeps its own work
-   stack, so nesting depth never costs host stack: the first COMPARE_INLINE_STEPS
-   steps live in the caller's frame, which covers comparing scalars and small
-   values without a heap allocation, and deeper walks move to the heap. */
-enum { COMPARE_INLINE_STEPS = 32 };
-typedef struct { const ChimiValue *left; const ChimiValue *right; int decided; } CompareStep;
-typedef struct {
-  CompareStep *steps; size_t length; size_t capacity;
-  CompareStep inline_steps[COMPARE_INLINE_STEPS];
-} CompareStack;
-
-static void compare_push(CompareStack *stack, const ChimiValue *left, const ChimiValue *right, int decided) {
-  if (stack->length == stack->capacity) {
-    size_t capacity = stack->capacity * 2;
-    bool on_heap = stack->steps != stack->inline_steps;
-    CompareStep *steps = realloc(on_heap ? stack->steps : NULL, capacity * sizeof(*steps));
-    if (steps == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-    if (!on_heap) memcpy(steps, stack->inline_steps, stack->length * sizeof(*steps));
-    stack->steps = steps; stack->capacity = capacity;
-  }
-  stack->steps[stack->length++] = (CompareStep){left, right, decided};
-}
-/* A step with no values decides the comparison when every step above it was equal,
-   such as the length rule after the shared prefix of two lists. */
-static void compare_decide(CompareStack *stack, int decided) { compare_push(stack, NULL, NULL, decided); }
-static int order_of(int64_t left, int64_t right) { return (left > right) - (left < right); }
-
-/* A signed decimal integer of any size, as in json.rs: a written exponent may have
-   more digits than any machine integer holds and is never clamped or wrapped.
-   `digits` are values 0-9, most significant first, with no leading zeros; zero has
-   length 0 and is never negative. The buffer is owned. */
-typedef struct { bool negative; unsigned char *digits; size_t length; } DecimalExponent;
-static DecimalExponent decimal_exponent(bool negative, const unsigned char *digits, size_t length, unsigned char zero) {
-  while (length > 0 && *digits == zero) { ++digits; --length; }
-  DecimalExponent exponent = {negative && length > 0, malloc(length ? length : 1), length};
-  if (exponent.digits == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  for (size_t index = 0; index < length; ++index) exponent.digits[index] = (unsigned char)(digits[index] - zero);
-  return exponent;
-}
-static int magnitude_order(const DecimalExponent *left, const DecimalExponent *right) {
-  if (left->length != right->length) return left->length < right->length ? -1 : 1;
-  int order = left->length ? memcmp(left->digits, right->digits, left->length) : 0;
-  return (order > 0) - (order < 0);
-}
-static int decimal_exponent_order(const DecimalExponent *left, const DecimalExponent *right) {
-  int left_rank = left->negative ? -1 : left->length > 0, right_rank = right->negative ? -1 : right->length > 0;
-  if (left_rank != right_rank) return left_rank < right_rank ? -1 : 1;
-  return left->negative ? -magnitude_order(left, right) : magnitude_order(left, right);
-}
-/* left + right as a new value; neither argument is consumed. */
-static DecimalExponent decimal_exponent_sum(const DecimalExponent *left, const DecimalExponent *right) {
-  int order = magnitude_order(left, right);
-  if (left->negative != right->negative && order == 0) return decimal_exponent(false, NULL, 0, 0);
-  const DecimalExponent *larger = order >= 0 ? left : right, *smaller = order >= 0 ? right : left;
-  bool subtract = left->negative != right->negative;
-  size_t length = larger->length + 1;
-  unsigned char *result = malloc(length);
-  if (result == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  int carry = 0;
-  for (size_t place = 0; place < length; ++place) {
-    int big = place < larger->length ? larger->digits[larger->length - 1 - place] : 0;
-    int small = place < smaller->length ? smaller->digits[smaller->length - 1 - place] : 0;
-    int digit = subtract ? big - small - carry : big + small + carry;
-    carry = subtract ? digit < 0 : digit > 9;
-    result[length - 1 - place] = (unsigned char)(subtract ? digit + 10 * carry : digit - 10 * carry);
-  }
-  DecimalExponent sum = decimal_exponent(larger->negative, result, length, 0);
-  free(result);
-  return sum;
-}
-static DecimalExponent decimal_exponent_of(int64_t value) {
-  char text[24]; snprintf(text, sizeof(text), "%" PRIu64, value < 0 ? -(uint64_t)value : (uint64_t)value);
-  return decimal_exponent(value < 0, (const unsigned char *)text, strlen(text), '0');
-}
-
-/* A JSON number as sign x 0.digits x 10^exponent with no leading or trailing zeros
-   in digits; zero has sign 0. */
-typedef struct { int sign; const char *digits; size_t length; DecimalExponent exponent; char *owned; } CanonicalNumber;
-static CanonicalNumber canonical_number(const char *text) {
-  CanonicalNumber number = {0};
-  bool negative = *text == '-'; if (negative) ++text;
-  size_t mantissa = strcspn(text, "eE");
-  DecimalExponent exponent = decimal_exponent(false, NULL, 0, 0);
-  if (text[mantissa]) {
-    const char *written = text + mantissa + 1; bool negative_exponent = *written == '-';
-    if (*written == '-' || *written == '+') ++written;
-    free(exponent.digits);
-    exponent = decimal_exponent(negative_exponent, (const unsigned char *)written, strlen(written), '0');
-  }
-  size_t point = strcspn(text, ".eE"); if (point > mantissa) point = mantissa;
-  number.owned = malloc(mantissa + 1);
-  if (number.owned == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  size_t length = 0;
-  for (size_t index = 0; index < mantissa; ++index)
-    if (text[index] != '.') number.owned[length++] = text[index];
-  size_t leading = 0; while (leading < length && number.owned[leading] == '0') ++leading;
-  while (length > leading && number.owned[length - 1] == '0') --length;
-  number.exponent = exponent;
-  if (length == leading) return number;
-  number.sign = negative ? -1 : 1; number.digits = number.owned + leading; number.length = length - leading;
-  DecimalExponent offset = decimal_exponent_of((int64_t)point - (int64_t)leading);
-  number.exponent = decimal_exponent_sum(&exponent, &offset);
-  free(exponent.digits); free(offset.digits);
-  return number;
-}
-static int json_number_compare(const char *left_text, const char *right_text) {
-  CanonicalNumber left = canonical_number(left_text), right = canonical_number(right_text);
-  int order = order_of(left.sign, right.sign);
-  if (order == 0 && left.sign != 0) {
-    order = decimal_exponent_order(&left.exponent, &right.exponent);
-    if (order == 0) {
-      size_t shared = left.length < right.length ? left.length : right.length;
-      int digits = memcmp(left.digits, right.digits, shared);
-      order = digits != 0 ? (digits > 0) - (digits < 0) : order_of((int64_t)left.length, (int64_t)right.length);
-    }
-    if (left.sign < 0) order = -order;
-  }
-  free(left.owned); free(right.owned); free(left.exponent.digits); free(right.exponent.digits);
-  return order;
-}
-
-static int field_name_order(const void *left, const void *right) {
-  return strcmp((*(const RuntimeField *const *)left)->name, (*(const RuntimeField *const *)right)->name);
-}
-/* Records have no declaration order; name order is a fixed order both sides share. */
-static const RuntimeField **fields_by_name(const RuntimeField *fields, uint32_t length) {
-  const RuntimeField **sorted = malloc((length ? length : 1) * sizeof(*sorted));
-  if (sorted == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  for (uint32_t index = 0; index < length; ++index) sorted[index] = &fields[index];
-  qsort(sorted, length, sizeof(*sorted), field_name_order);
-  return sorted;
-}
+/* `node` without `key`; `node` itself when it has no such key. */
+static MapNode *map_remove_node(MapNode *node, const ChimiValue *key) { return chimi_map_remove_v1(node, key); }
+static int64_t map_size(const MapNode *node) { return chimi_map_size_v1(node); }
+static ChimiValue *map_get_node(MapNode *node, const ChimiValue *key) { return chimi_map_get_v1(node, key); }
 
 typedef struct { const MapNode **nodes; size_t length; } MapEntries;
-/* In key order, so equal maps yield equal sequences whatever their insertion history.
-   The tree is balanced, so the pending stack never exceeds its height. */
+/* In key order, in a block the caller frees. */
 static MapEntries map_entries(const MapNode *root) {
-  size_t capacity = 16, length = 0, pending_length = 0;
-  const MapNode **nodes = malloc(capacity * sizeof(*nodes)); const MapNode *pending[64];
-  if (nodes == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  const MapNode *node = root;
-  for (;;) {
-    while (node) { pending[pending_length++] = node; node = node->left; }
-    if (pending_length == 0) break;
-    node = pending[--pending_length];
-    if (length == capacity) {
-      capacity *= 2; const MapNode **grown = realloc(nodes, capacity * sizeof(*nodes));
-      if (grown == NULL) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-      nodes = grown;
-    }
-    nodes[length++] = node; node = node->right;
-  }
-  return (MapEntries){nodes, length};
+  MapEntries entries;
+  entries.nodes = chimi_map_entries_v1(root, &entries.length);
+  return entries;
 }
 
 /* Writing an outcome value as JSON. The writer keeps its own stack of steps, so a
@@ -3070,112 +2861,10 @@ static void json_value(FILE *output, const ChimiValue *root) {
   free(steps.items);
 }
 
-static uint32_t constructor_ordinal(uint32_t symbol) {
+/* The declaration-order ordinal of the constructor named by `symbol`, for
+   structural order in heap/compare.rs. */
+uint32_t chimi_runtime_constructor_ordinal_v1(uint32_t symbol) {
   return CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor].ordinal;
-}
-
-/* Requires: both values have the same equatable type. Returns -1, 0, or 1. */
-static int chimi_value_compare(const ChimiValue *left_root, const ChimiValue *right_root) {
-  CompareStack stack; int order = 0;
-  stack.steps = stack.inline_steps; stack.length = 0; stack.capacity = COMPARE_INLINE_STEPS;
-  compare_push(&stack, left_root, right_root, 0);
-  while (order == 0 && stack.length != 0) {
-    CompareStep step = stack.steps[--stack.length];
-    if (step.left == NULL) { order = step.decided; continue; }
-    const ChimiValue *left = step.left, *right = step.right;
-    if (left == right) continue;
-    if (left->kind != right->kind) { order = order_of(left->kind, right->kind); continue; }
-    switch (left->kind) {
-      case VALUE_VOID: break;
-      case VALUE_INTEGER:
-      case VALUE_DURATION:
-      case VALUE_INSTANT:
-      case VALUE_TIMESTAMP: order = order_of(left->as.integer, right->as.integer); break;
-      case VALUE_DECIMAL: order = decimal_order(left, right); break;
-      /* Finite, so total; -0.0 and 0.0 are equal. */
-      case VALUE_FLOAT: order = (left->as.floating > right->as.floating) - (left->as.floating < right->as.floating); break;
-      case VALUE_BOOLEAN: order = order_of(left->as.boolean, right->as.boolean); break;
-      /* Lexicographic by unsigned byte: memcmp compares as unsigned char. */
-      case VALUE_TEXT:
-      case VALUE_BYTES: {
-        size_t left_length = left->as.text.length, right_length = right->as.text.length;
-        int bytes = memcmp(left->as.text.bytes, right->as.text.bytes,
-                           left_length < right_length ? left_length : right_length);
-        order = bytes ? (bytes > 0) - (bytes < 0) : order_of(left_length, right_length); break;
-      }
-      case VALUE_JSON_NUMBER: order = json_number_compare(left->as.json_number, right->as.json_number); break;
-      case VALUE_LIST: {
-        uint32_t left_length = list_length(left), right_length = list_length(right);
-        uint32_t shared = left_length < right_length ? left_length : right_length;
-        compare_decide(&stack, order_of(left_length, right_length));
-        for (uint32_t index = shared; index-- > 0;)
-          compare_push(&stack, list_get(left, index), list_get(right, index), 0);
-        break;
-      }
-      case VALUE_RECORD: {
-        uint32_t length = left->as.record.length < right->as.record.length ? left->as.record.length : right->as.record.length;
-        const RuntimeField **left_fields = fields_by_name(left->as.record.fields, length);
-        const RuntimeField **right_fields = fields_by_name(right->as.record.fields, length);
-        for (uint32_t index = length; index-- > 0;)
-          compare_push(&stack, left_fields[index]->value, right_fields[index]->value, 0);
-        free(left_fields); free(right_fields);
-        break;
-      }
-      /* Normalized bounds, so 0..3 == 0..=2; empty ranges keep their bounds. */
-      case VALUE_RANGE:
-        order = order_of(left->as.range.start, right->as.range.start);
-        if (order == 0) order = order_of(left->as.range.end, right->as.range.end);
-        break;
-      /* Typing gives both tuples one arity; elements compare left to right. */
-      case VALUE_TUPLE:
-        for (uint32_t index = left->as.record.length; index-- > 0;)
-          compare_push(&stack, left->as.record.fields[index].value, right->as.record.fields[index].value, 0);
-        break;
-      case VALUE_CONSTRUCTED: {
-        order = order_of(constructor_ordinal(left->as.constructed.constructor),
-                         constructor_ordinal(right->as.constructed.constructor));
-        if (order != 0) break;
-        uint32_t length = left->as.constructed.length;
-        for (uint32_t index = length; index-- > 0;)
-          compare_push(&stack, left->as.constructed.fields[index].value, right->as.constructed.fields[index].value, 0);
-        break;
-      }
-      /* A set's values are all Void, so the walk compares its items. */
-      case VALUE_MAP:
-      case VALUE_SET: {
-        MapEntries left_entries = map_entries(left->as.map), right_entries = map_entries(right->as.map);
-        size_t shared = left_entries.length < right_entries.length ? left_entries.length : right_entries.length;
-        compare_decide(&stack, order_of((int64_t)left_entries.length, (int64_t)right_entries.length));
-        for (size_t index = shared; index-- > 0;) {
-          compare_push(&stack, left_entries.nodes[index]->value, right_entries.nodes[index]->value, 0);
-          compare_push(&stack, left_entries.nodes[index]->key, right_entries.nodes[index]->key, 0);
-        }
-        free(left_entries.nodes); free(right_entries.nodes);
-        break;
-      }
-      /* Typing admits no comparison of these; identity keeps the order total. */
-      case VALUE_CALLABLE: case VALUE_TASK: case VALUE_CHANNEL_SENDER:
-      case VALUE_CHANNEL_RECEIVER: case VALUE_CHANNEL_COMPLETION:
-      case VALUE_PROCESS_INBOX: case VALUE_SUPERVISOR_RUNNING: case VALUE_MANAGED_PROCESS:
-      case VALUE_MANAGED_SUPERVISOR: case VALUE_CAUSE:
-        order = order_of((int64_t)(uintptr_t)left, (int64_t)(uintptr_t)right); break;
-      /* Routing kind, then the name or incarnation it routes to. */
-      case VALUE_PROCESS_MONITOR: case VALUE_TEST_RECORDER: case VALUE_TEST_SCRIPT:
-      case VALUE_TEST_MAILBOX:
-        order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target); break;
-      case VALUE_NATIVE_HANDLE:
-        order = order_of(left->as.handle.slot, right->as.handle.slot);
-        if (order == 0) order = order_of(left->as.handle.generation, right->as.handle.generation);
-        break;
-      case VALUE_PROCESS_ADDRESS:
-        order = order_of(left->as.address.kind, right->as.address.kind);
-        if (order == 0)
-          order = order_of((int64_t)left->as.address.target, (int64_t)right->as.address.target);
-        break;
-    }
-  }
-  if (stack.steps != stack.inline_steps) free(stack.steps);
-  return order;
 }
 
 static uint32_t standard_constructor_symbol(uint32_t standard_constructor) {
@@ -5636,48 +5325,13 @@ static void debug_quote(TextBuffer *buffer, const ChimiValue *text) {
   buffer_char(buffer, '"');
 }
 
-/* json.rs `canonical_number_text`: the exact value, so equal numbers render alike.
-   Positional when the decimal exponent of the first significant digit is from -6
-   to 20, otherwise d.ddde<exponent>, as in 1e21 and 1e400. */
+/* json.rs `canonical_number_text`, from heap/json_number.rs: the exact value,
+   so equal numbers render alike. */
 static void debug_json_number(TextBuffer *buffer, const char *text) {
-  CanonicalNumber number = canonical_number(text);
-  if (number.sign == 0) {
-    debug_text(buffer, "0");
-  } else {
-    if (number.sign < 0) buffer_char(buffer, '-');
-    /* 0.digits x 10^exponent: `exponent` digits come before the point. */
-    DecimalExponent low = decimal_exponent_of(-5), high = decimal_exponent_of(21);
-    bool positional = decimal_exponent_order(&number.exponent, &low) >= 0 &&
-                      decimal_exponent_order(&number.exponent, &high) <= 0;
-    free(low.digits); free(high.digits);
-    int64_t length = (int64_t)number.length;
-    if (positional) {
-      int64_t before = 0;
-      for (size_t index = 0; index < number.exponent.length; ++index) before = before * 10 + number.exponent.digits[index];
-      if (number.exponent.negative) before = -before;
-      if (before >= length) {
-        buffer_bytes(buffer, number.digits, number.length);
-        for (int64_t zero = length; zero < before; ++zero) buffer_char(buffer, '0');
-      } else if (before > 0) {
-        buffer_bytes(buffer, number.digits, (size_t)before); buffer_char(buffer, '.');
-        buffer_bytes(buffer, number.digits + before, (size_t)(length - before));
-      } else {
-        buffer_bytes(buffer, "0.", 2);
-        for (int64_t zero = 0; zero < -before; ++zero) buffer_char(buffer, '0');
-        buffer_bytes(buffer, number.digits, number.length);
-      }
-    } else {
-      buffer_char(buffer, number.digits[0]);
-      if (length > 1) { buffer_char(buffer, '.'); buffer_bytes(buffer, number.digits + 1, number.length - 1); }
-      DecimalExponent one_less = decimal_exponent_of(-1);
-      DecimalExponent scientific = decimal_exponent_sum(&number.exponent, &one_less);
-      buffer_char(buffer, 'e');
-      if (scientific.negative) buffer_char(buffer, '-');
-      for (size_t index = 0; index < scientific.length; ++index) buffer_char(buffer, (char)('0' + scientific.digits[index]));
-      free(one_less.digits); free(scientific.digits);
-    }
-  }
-  free(number.owned); free(number.exponent.digits);
+  size_t length = 0;
+  char *canonical = chimi_json_number_canonical_text_v1(text, &length);
+  buffer_bytes(buffer, canonical, length);
+  free(canonical);
 }
 
 /* The renderer keeps its own stack of steps, so a value of any nesting depth costs
