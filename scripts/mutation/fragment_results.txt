@@ -1,0 +1,32 @@
+# mutation run at a1379c9a140be25d54f8523628d2efd12575cb6b
+# fragment_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [../../scripts/mutation/native-heap-harness.sh] (80s)
+KILLED       adopted messages join the heap's base area, not the innermost region [../../scripts/mutation/native-heap-harness.sh] (67s)
+KILLED       a copy follows a pointer into another heap [../../scripts/mutation/native-heap-harness.sh] (68s)
+STALE        a copy keeps no forwarding table: edit text occurs 0 times in ../../runtime/chimi-runtime/src/heap/fragment.rs
+KILLED       a window's copy copies the whole vector [../../scripts/mutation/native-heap-harness.sh] (66s)
+KILLED       destroying a heap skips its adopted fragments [../../scripts/mutation/native-heap-harness.sh] (67s)
+#
+# The stale mutant's pattern predates the inline forwarding table of the
+# review fixes; retargeted to copy.table.find and rerun:
+# rerun at 08d8345d10d257d0e2feea7778b75270d12768bf
+TIMEOUT      a copy keeps no forwarding table [../../scripts/mutation/native-heap-harness.sh] (600s)
+# result: every mutant killed
+
+# The process lab mutants retargeted to heap/fragment.rs (process_heap and
+# process_u5 lists keep no results file of their own):
+# mutation run at a1379c9a140be25d54f8523628d2efd12575cb6b
+# process_heap_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (63s)
+KILLED       CB06: a fragment copy ignores foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (63s)
+KILLED       CB06: a fragment copy reports and then follows foreign pointers [cargo run --quiet --bin chimi-process-lab -- --scenario CB06 --through U4] (64s)
+# result: every mutant killed
+# mutation run at a1379c9a140be25d54f8523628d2efd12575cb6b
+# process_u5_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario CB02 --through U5] (57s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MF01 --through U5] (2s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MF04 --through U5] (1s)
+STALE        CB02: a message copy ignores sharing: edit text occurs 0 times in ../../runtime/chimi-runtime/src/heap/fragment.rs
+KILLED       MF01: received messages join the heap's base area [cargo run --quiet --bin chimi-process-lab -- --scenario MF01 --through U5] (59s)
+KILLED       MF04: each small fragment costs a 64 KiB chunk [cargo run --quiet --bin chimi-process-lab -- --scenario MF04 --through U5] (56s)
+KILLED       CB02: a message copy ignores sharing [cargo run --quiet --bin chimi-process-lab -- --scenario CB02 --through U5] (112s)

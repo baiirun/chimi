@@ -8,3 +8,10 @@ KILLED       a dead task handle in a loop pass is not dropped [task_release] (60
 KILLED       the scheduler ignores a task release [task_release] (63s)
 KILLED       the memory report omits the task peak [task_release] (74s)
 # result: every mutant killed
+
+# CHI-305 phase 3: retargeted to heap/fragment.rs
+# mutation run at a1379c9a140be25d54f8523628d2efd12575cb6b
+# task_handle_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [task_release] (68s)
+KILLED       a copied task handle is not retained [task_release] (61s)
+# result: every mutant killed
