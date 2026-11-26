@@ -22,8 +22,8 @@ MUTATIONS = [
         "    uint64_t key = counted_handle_key(duplicate);\n    if (key) counted_handle_retain(key);",
         "    uint64_t key = counted_handle_key(duplicate);\n    if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_retain(key);")]),
     handle("a freed allocation keeps its task handle counted", [(
-        "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key) counted_handle_drop(key);\n  }\n  if (header->area->heap)",
-        "    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n    if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_drop(key);\n  }\n  if (header->area->heap)")]),
+        "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_drop(key);\n}",
+        "  uint64_t key = counted_handle_key(value);\n  if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_drop(key);\n}")]),
     handle("a dead task handle in a loop pass is not dropped", [(
         "      if (handles_live() && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key) counted_handle_drop(key);",
         "      if (handles_live() && header->kind == ALLOCATION_VALUE) {\n        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));\n        if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_drop(key);")]),

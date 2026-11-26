@@ -176,7 +176,7 @@ const TASK_TERMINAL: &[&str] = &["task_terminal"];
 
 use Stage::*;
 
-pub static SCENARIOS: [Scenario; 163] = [
+pub static SCENARIOS: [Scenario; 164] = [
     // Static: compile-pass.
     fixture("SP01", "static-contract-example", U1),
     fixture("SP02", "spec-inside-using-shareable-provider", U2),
@@ -368,6 +368,7 @@ pub static SCENARIOS: [Scenario; 163] = [
     fixture("MF03", "memory-flat-over-memberships", U10).runs(&["100", "10000"]),
     fixture("MF04", "small-fragments-share-slabs", U5),
     fixture("MF05", "task-loop-reclaims", U3).runs(&["10000", "1000000"]),
+    fixture("MF07", "process-heap-peak-counts-its-blocks", U5),
     Scenario::new(
         "MF06",
         "pay-for-play-linking",

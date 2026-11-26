@@ -50,8 +50,10 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  const char *operation;", "} ProfileRow;"),
     ("enum { SMALL_BLOCK_GRAIN", "};"),
     ("typedef struct SmallBlock {", "} SmallBlock;"),
+    ("typedef struct {\n  SmallBlock *lists[", "} SmallBlockCache;"),
     ("typedef struct { void **items;", "} PointerStack;"),
     ("typedef struct {\n  RuntimeHeap *heap;\n  AllocationArea *target;", "} FiberContext;"),
+    ("typedef struct {\n  FiberContext fiber;", "} Carrier;"),
     ("typedef struct {\n  size_t total_allocated_bytes;", "} ScopeTotals;"),
     ("enum { FRAGMENT_ROOTS", "} RuntimeFragment;"),
 ];

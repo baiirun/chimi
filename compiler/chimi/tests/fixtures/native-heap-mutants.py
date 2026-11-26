@@ -47,7 +47,6 @@ def cargo(*tests):
     return run
 
 HEAP = harness(ASAN, "native-heap.c", [])
-HEAP_CACHED = harness(["-O2"], "native-heap.c", [])
 FUZZ = harness(ASAN, "native-list-fuzz.c", ["88172645463325252", "40000"])
 RELEASE = cargo("native_cancelling_a_child", "native_dropping_a_channel", "native_trace_reports_a_released",
                 "native_children_keep", "native_a_receiver_that", "native_cancelled_sends",
@@ -114,12 +113,12 @@ MUTANTS = [
     ("never-queue-release", "dropped channels free their queued messages",
      "    chimi_fiber_handle_drop(key);\n    return;\n", "    return;\n", RELEASE),
     ("endpoint-free-not-counted", "dropped channels free their queued messages",
-     "    if (key) counted_handle_drop(key);\n  }\n  if (header->area->heap)",
-     "    (void)key;\n  }\n  if (header->area->heap)", RELEASE),
+     "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_drop(key);\n}",
+     "  uint64_t key = counted_handle_key(value);\n  (void)key;\n}", RELEASE),
     ("no-task-context-hook", "an unrun child's captures are freed",
      "    .release_task_context = release_task_context,\n", "", RELEASE),
-    ("small-block-not-zeroed", "reused blocks are zeroed like calloc",
-     "      memset(block, 0, rounded);\n", "", HEAP_CACHED),
+    # The small-block cache is Rust since CHI-305 step 5 phase 1; its
+    # zeroing is mutated in scripts/mutation/small_block_mutations.py.
 ]
 
 def main():

@@ -533,6 +533,8 @@ pub(super) fn check(scenario: &Scenario, options: &Options) -> Result<Vec<Run>, 
 /// memory report:
 /// - `equal <field>`: the field has the same value in every run;
 /// - `at_most <field> <limit>`: the field is at most `limit` in every run;
+/// - `at_least <field> <limit>`: the field is at least `limit` in every run,
+///   which catches a count that stops being kept and reads 0 in every run;
 /// - `exactly <field> <value>`: the field is `value` in every run.
 fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<(), String> {
     let lines = expected_lines(scenario, MEMORY)?;
@@ -555,13 +557,13 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
     for (index, line) in lines.iter().enumerate() {
         let malformed = || {
             format!(
-                "{MEMORY} line {}: `{line}` is not `equal <field>`, `at_most <field> <limit>`, or `exactly <field> <value>`",
+                "{MEMORY} line {}: `{line}` is not `equal <field>`, `at_most <field> <limit>`, `at_least <field> <limit>`, or `exactly <field> <value>`",
                 index + 1
             )
         };
         let (rule, field, bound) = match line.split(' ').collect::<Vec<_>>().as_slice() {
             ["equal", field] => ("equal", *field, None),
-            [rule @ ("at_most" | "exactly"), field, bound] => (
+            [rule @ ("at_most" | "at_least" | "exactly"), field, bound] => (
                 *rule,
                 *field,
                 Some(bound.parse::<u64>().map_err(|_| malformed())?),
@@ -599,6 +601,7 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
         let failed = match (rule, bound) {
             ("equal", _) => values.windows(2).any(|pair| pair[0] != pair[1]),
             ("at_most", Some(limit)) => values.iter().any(|value| *value > limit),
+            ("at_least", Some(limit)) => values.iter().any(|value| *value < limit),
             (_, Some(expected)) => values.iter().any(|value| *value != expected),
             _ => false,
         };
@@ -606,6 +609,7 @@ fn check_memory(scenario: &Scenario, runs: &[Run], options: &Options) -> Result<
             let claim = match (rule, bound) {
                 ("equal", _) => "differs".to_owned(),
                 ("at_most", Some(limit)) => format!("exceeds {limit}"),
+                ("at_least", Some(limit)) => format!("is below {limit}"),
                 (_, bound) => format!("is not {}", bound.unwrap_or_default()),
             };
             return Err(format!(

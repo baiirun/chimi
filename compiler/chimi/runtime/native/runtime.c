@@ -478,9 +478,9 @@ typedef enum { HEAP_OK = 0, HEAP_FOREIGN_POINTER = 1 } HeapStatus;
    Each carrier keeps its own copy, a signed delta: an allocation made on one
    carrier can be freed on another, so one carrier's count can fall below zero,
    and only the sum over carriers (heap_totals_sum) is the process's. A peak is
-   recorded per carrier (footprint_record_peak), which is the process's with one
+   recorded per carrier (record_peak in chimi-runtime heap/allocator.rs), which is the process's with one
    carrier or in the simulation; with several carrier threads the report's
-   peaks are the process-wide ones footprint_fold keeps. */
+   peaks are the process-wide ones its fold keeps. */
 typedef struct {
   int64_t live_allocations;
   int64_t footprint_bytes;
@@ -522,7 +522,8 @@ typedef struct {
 } ProfileRow;
 /* Allocated once at startup and indexed by node, and shared by every carrier,
    so each count is a relaxed atomic add (profile_count). */
-static ProfileRow *profile_rows;
+#define profile_rows chimi_runtime_profile_rows
+ProfileRow *chimi_runtime_profile_rows;
 
 static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }
 
@@ -559,6 +560,12 @@ enum { SMALL_BLOCK_GRAIN = 16, SMALL_BLOCK_LIMIT = 256, SMALL_BLOCK_CACHE = 4096
 #define CHIMI_SMALL_BLOCK_CACHE 1
 #endif
 typedef struct SmallBlock { struct SmallBlock *next; } SmallBlock;
+/* One carrier's free lists, one per size class, and their lengths. The cache
+   that keeps them is Rust (chimi-runtime heap/small_blocks.rs). */
+typedef struct {
+  SmallBlock *lists[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  uint32_t counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+} SmallBlockCache;
 
 /* A growable stack of allocations, used by marking and copying so neither recurses:
    both run on 64 KiB fiber stacks. */
@@ -622,7 +629,7 @@ typedef struct {
      footprint_add record the peak there. */
   int64_t pending_footprint_bytes;
   /* This carrier's footprints as last folded into the process-wide counters
-     (footprint_fold); used only with several carrier threads. */
+     (heap/allocator.rs fold); used only with several carrier threads. */
   int64_t folded_footprint_bytes;
   int64_t folded_fragment_footprint_bytes;
   /* Bytes allocated outside every region, static constants included. Nothing
@@ -642,8 +649,7 @@ typedef struct {
   uint64_t copied_bytes;
   /* The foreign owner the last failed fragment_copy reached. */
   uint64_t fragment_copy_foreign_owner;
-  SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
-  uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  SmallBlockCache small_blocks;
   YoungChunk *young_chunk_cache;
   uint32_t young_chunk_cache_count;
   /* The pass in progress. Marking reaches only this region's young allocations, plus
@@ -704,7 +710,15 @@ static Carrier carrier_first = {.fiber = {.heap = &main_heap}};
    counters' signed deltas. */
 static Carrier carrier_second = {.fiber = {.heap = &main_heap}};
 static Carrier *carrier_others = &carrier_second;
-static size_t carrier_count = 2;
+#define carrier_count chimi_runtime_carrier_count
+size_t chimi_runtime_carrier_count = 2;
+/* How the carriers run, for the Rust allocator's footprint accounting
+   (heap/allocator.rs): 0 one carrier, 1 several carrier threads, 2 this
+   simulation. */
+uint8_t chimi_runtime_carrier_mode = 2;
+/* Unused here (the simulation's `carrier` is a plain pointer), but the Rust
+   allocator names it on Linux; see the threaded build's. */
+intptr_t chimi_runtime_carrier_tls_offset;
 static Carrier *carrier = &carrier_first;
 
 static Carrier *carrier_at(size_t index) { return index == 0 ? &carrier_first : &carrier_others[index - 1]; }
@@ -749,7 +763,8 @@ static void carrier_migrate(Carrier *parked) {
 static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_first;
 #if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
 /* Set before main, on the main thread, and read on every thread. */
-static intptr_t carrier_tls_offset;
+#define carrier_tls_offset chimi_runtime_carrier_tls_offset
+intptr_t carrier_tls_offset;
 static inline char *carrier_thread_pointer(void) {
   char *pointer;
 #if defined(__x86_64__)
@@ -772,7 +787,10 @@ __attribute__((noinline)) static Carrier *carrier_current(void) {
 #endif
 #define carrier (carrier_current())
 static Carrier *carrier_others;
-static size_t carrier_count = 1;
+#define carrier_count chimi_runtime_carrier_count
+size_t chimi_runtime_carrier_count = 1;
+/* As in the simulation: 0 one carrier, 1 several carrier threads. */
+uint8_t chimi_runtime_carrier_mode = 0;
 
 static Carrier *carrier_at(size_t index) { return index == 0 ? &carrier_first : &carrier_others[index - 1]; }
 
@@ -799,6 +817,7 @@ static void carriers_create(size_t count) {
   }
   for (size_t index = 0; index + 1 < count; ++index) carrier_others[index].fiber.heap = &main_heap;
   carrier_count = count;
+  chimi_runtime_carrier_mode = 1;
   footprint_seed_process();
 }
 
@@ -827,41 +846,23 @@ static HeapTotals heap_totals_sum(void) {
   return sum;
 }
 
+void *chimi_small_block_take_v1(SmallBlockCache *cache, int64_t *cached_bytes, size_t bytes, bool enabled);
+void chimi_small_block_give_v1(SmallBlockCache *cache, int64_t *cached_bytes, void *block, size_t bytes,
+                               bool enabled);
+
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
   Carrier *const here = carrier;
-  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
-  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
-    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    SmallBlock *block = here->small_blocks[class];
-    if (block) {
-      here->small_blocks[class] = block->next;
-      --here->small_block_counts[class];
-      here->heap_totals.cached_bytes -= rounded;
-      memset(block, 0, rounded);
-      return block;
-    }
-  }
-  void *block = calloc(1, rounded);
+  void *block = chimi_small_block_take_v1(&here->small_blocks, &here->heap_totals.cached_bytes, bytes,
+                                          CHIMI_SMALL_BLOCK_CACHE);
   if (!block) exhausted_memory();
   return block;
 }
 
 static void small_block_give(void *pointer, size_t bytes) {
   Carrier *const here = carrier;
-  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
-  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
-    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    if (here->small_block_counts[class] < SMALL_BLOCK_CACHE) {
-      SmallBlock *block = pointer;
-      block->next = here->small_blocks[class];
-      here->small_blocks[class] = block;
-      ++here->small_block_counts[class];
-      here->heap_totals.cached_bytes += rounded;
-      return;
-    }
-  }
-  free(pointer);
+  chimi_small_block_give_v1(&here->small_blocks, &here->heap_totals.cached_bytes, pointer, bytes,
+                            CHIMI_SMALL_BLOCK_CACHE);
 }
 
 static AllocationArea *current_area(void) {
@@ -870,34 +871,6 @@ static AllocationArea *current_area(void) {
   return here->fiber.heap->innermost ? &here->fiber.heap->innermost->young : &here->fiber.heap->base;
 }
 
-
-/* The footprints a peak check compares. With one carrier its own delta is the
-   process's. The simulation's two carriers share one thread, so it compares
-   their sum, as a single carrier would. With several carrier threads one
-   carrier's delta is not the process's (an allocation made on one carrier
-   can be freed on another, so one carrier's count drifts without bound), and
-   the report's peaks come from footprint_fold instead. */
-#ifdef CHIMI_CARRIER_SIMULATION
-static int64_t footprint_now(void) {
-  int64_t sum = 0;
-  for (size_t index = 0; index < carrier_count; ++index)
-    sum += carrier_at(index)->heap_totals.footprint_bytes + carrier_at(index)->pending_footprint_bytes;
-  return sum;
-}
-
-static int64_t fragment_footprint_now(void) {
-  int64_t sum = 0;
-  for (size_t index = 0; index < carrier_count; ++index) sum += carrier_at(index)->heap_totals.fragment_footprint_bytes;
-  return sum;
-}
-#else
-static int64_t footprint_now(void) {
-  Carrier *const here = carrier;
-  return here->heap_totals.footprint_bytes + here->pending_footprint_bytes;
-}
-
-static int64_t fragment_footprint_now(void) { return carrier->heap_totals.fragment_footprint_bytes; }
-#endif
 
 /* Process-wide footprints and their peaks with several carrier threads
    (step 3 PR 6b). Each carrier folds its change into them once it has moved
@@ -908,105 +881,44 @@ static int64_t fragment_footprint_now(void) { return carrier->heap_totals.fragme
    atomic add per 64 KiB of change, instead of one per allocation, keeps the
    carriers off one cache line (as take_mark_epoch). */
 enum { FOOTPRINT_FOLD_BYTES = 64 * 1024, FOOTPRINT_FOLD_SLACK = FOOTPRINT_FOLD_BYTES + YOUNG_CHUNK_BYTES };
-static _Atomic int64_t process_footprint_bytes;
-static _Atomic int64_t process_peak_footprint_bytes;
-static _Atomic int64_t process_fragment_footprint_bytes;
-static _Atomic int64_t process_peak_fragment_footprint_bytes;
+#define process_footprint_bytes chimi_runtime_process_footprint_bytes
+#define process_peak_footprint_bytes chimi_runtime_process_peak_footprint_bytes
+#define process_fragment_footprint_bytes chimi_runtime_process_fragment_footprint_bytes
+#define process_peak_fragment_footprint_bytes chimi_runtime_process_peak_fragment_footprint_bytes
+_Atomic int64_t process_footprint_bytes;
+_Atomic int64_t process_peak_footprint_bytes;
+_Atomic int64_t process_fragment_footprint_bytes;
+_Atomic int64_t process_peak_fragment_footprint_bytes;
 
+/* The footprint accounting is Rust (chimi-runtime heap/allocator.rs), with the
+   allocator that keeps it; the counters above stay here with the memory report
+   that reads them. */
+void chimi_footprint_add_v1(Carrier *here, size_t bytes);
+void chimi_footprint_sub_v1(Carrier *here, size_t bytes);
+void chimi_fragment_footprint_add_v1(Carrier *here, size_t bytes);
+void chimi_fragment_footprint_sub_v1(Carrier *here, size_t bytes);
+void chimi_footprint_seed_process_v1(Carrier *first);
+static void footprint_add(size_t bytes) { chimi_footprint_add_v1(carrier, bytes); }
+static void footprint_sub(size_t bytes) { chimi_footprint_sub_v1(carrier, bytes); }
+static void fragment_footprint_add(size_t bytes) { chimi_fragment_footprint_add_v1(carrier, bytes); }
+static void fragment_footprint_sub(size_t bytes) { chimi_fragment_footprint_sub_v1(carrier, bytes); }
 #ifndef CHIMI_CARRIER_SIMULATION
-static void atomic_raise(_Atomic int64_t *peak, int64_t value) {
-  int64_t high = atomic_load_explicit(peak, memory_order_relaxed);
-  while (value > high &&
-         !atomic_compare_exchange_weak_explicit(peak, &high, value, memory_order_relaxed, memory_order_relaxed)) {
-  }
-}
+/* Starts the process-wide counters from carrier 0 (carriers_create). */
+static void footprint_seed_process(void) { chimi_footprint_seed_process_v1(&carrier_first); }
 #endif
 
-#ifndef CHIMI_CARRIER_SIMULATION
-/* Out of line, so the allocator's inlined check stays one compare. */
-__attribute__((noinline, cold)) static void footprint_fold_now(int64_t now, int64_t *folded,
-                                                               _Atomic int64_t *process,
-                                                               _Atomic int64_t *peak) {
-  int64_t change = now - *folded;
-  *folded = now;
-  atomic_raise(peak, atomic_fetch_add_explicit(process, change, memory_order_relaxed) + change);
-}
-#endif
+/* What the Rust allocator needs from here. */
+const bool chimi_runtime_small_block_cache = CHIMI_SMALL_BLOCK_CACHE;
+Carrier *chimi_runtime_carrier_at(size_t index);
+Carrier *chimi_runtime_carrier_at(size_t index) { return carrier_at(index); }
+/* The running carrier, for the Rust allocator where it cannot read the
+   thread-local itself (other platforms, and the simulation). */
+Carrier *chimi_runtime_current_carrier(void);
+Carrier *chimi_runtime_current_carrier(void) { return carrier; }
 
-/* Folds this carrier's change since its last fold into a process-wide
-   footprint once it reaches FOOTPRINT_FOLD_BYTES either way, and raises the
-   peak to the new sum. Nothing with one carrier, or in the simulation, whose
-   own peaks are already the process's. */
-static inline void footprint_fold(int64_t now, int64_t *folded, _Atomic int64_t *process, _Atomic int64_t *peak) {
-#ifdef CHIMI_CARRIER_SIMULATION
-  (void)now, (void)folded, (void)process, (void)peak;
-#else
-  if (carrier_count == 1) return;
-  int64_t change = now - *folded;
-  if (change < FOOTPRINT_FOLD_BYTES && change > -FOOTPRINT_FOLD_BYTES) return;
-  footprint_fold_now(now, folded, process, peak);
-#endif
-}
-
-#ifndef CHIMI_CARRIER_SIMULATION
-/* Starts the process-wide counters from carrier 0, the only carrier before
-   carriers_create, so the peak keeps whatever carrier 0 reached before. */
-static void footprint_seed_process(void) {
-  int64_t footprint = carrier_first.heap_totals.footprint_bytes + carrier_first.pending_footprint_bytes;
-  int64_t fragments = carrier_first.heap_totals.fragment_footprint_bytes;
-  carrier_first.folded_footprint_bytes = footprint;
-  carrier_first.folded_fragment_footprint_bytes = fragments;
-  atomic_store_explicit(&process_footprint_bytes, footprint, memory_order_relaxed);
-  atomic_store_explicit(&process_fragment_footprint_bytes, fragments, memory_order_relaxed);
-  atomic_store_explicit(&process_peak_footprint_bytes, carrier_first.heap_totals.peak_footprint_bytes,
-                        memory_order_relaxed);
-  atomic_store_explicit(&process_peak_fragment_footprint_bytes,
-                        carrier_first.heap_totals.peak_fragment_footprint_bytes, memory_order_relaxed);
-}
-#endif
-
-static inline void footprint_record_peak(void) {
-  Carrier *const here = carrier;
-  int64_t footprint = footprint_now();
-  if (footprint > here->heap_totals.peak_footprint_bytes) here->heap_totals.peak_footprint_bytes = footprint;
-  footprint_fold(footprint, &here->folded_footprint_bytes, &process_footprint_bytes, &process_peak_footprint_bytes);
-}
-
-static void footprint_add(size_t bytes) {
-  carrier->heap_totals.footprint_bytes += (int64_t)bytes;
-  footprint_record_peak();
-}
-
-/* The peak is recorded before the fall (the young bytes deferred in
-   pending_footprint_bytes peak just before it), and the fall is folded after
-   it, so a carrier that only frees still brings the process count down. */
-static inline void footprint_sub(size_t bytes) {
-  Carrier *const here = carrier;
-  footprint_record_peak();
-  here->heap_totals.footprint_bytes -= (int64_t)bytes;
-  footprint_fold(footprint_now(), &here->folded_footprint_bytes, &process_footprint_bytes,
-                 &process_peak_footprint_bytes);
-}
-
-static void fragment_footprint_fold(void) {
-  footprint_fold(fragment_footprint_now(), &carrier->folded_fragment_footprint_bytes,
-                 &process_fragment_footprint_bytes, &process_peak_fragment_footprint_bytes);
-}
-
-static void fragment_footprint_add(size_t bytes) {
-  Carrier *const here = carrier;
-  here->heap_totals.fragment_footprint_bytes += (int64_t)bytes;
-  int64_t footprint = fragment_footprint_now();
-  if (footprint > here->heap_totals.peak_fragment_footprint_bytes)
-    here->heap_totals.peak_fragment_footprint_bytes = footprint;
-  fragment_footprint_fold();
-}
-
-static void fragment_footprint_sub(size_t bytes) {
-  carrier->heap_totals.fragment_footprint_bytes -= (int64_t)bytes;
-  fragment_footprint_fold();
-}
-
+/* scope_add_live, heap_add_live and area_link have Rust twins in the allocator
+   (heap/allocator.rs); these serve the C collector and fragment code until
+   they move too (phases 2 and 3). */
 static void scope_add_live(AllocationScope *scope, size_t bytes) {
   scope->live_bytes += bytes;
   if (scope->live_bytes > scope->peak_live_bytes) scope->peak_live_bytes = scope->live_bytes;
@@ -1085,84 +997,26 @@ static void flush_young_counts(AllocationScope *scope) {
   footprint_add(count * sizeof(AllocationHeader) + bytes);
 }
 
-/* A zeroed block of `rounded` bytes (a multiple of SMALL_BLOCK_GRAIN, at most
-   YOUNG_CHUNK_LARGEST) from `scope`'s chunks. */
-static AllocationHeader *young_bump(AllocationScope *scope, size_t rounded) {
-  if ((size_t)(scope->bump_end - scope->bump) < rounded) {
-    YoungChunk *chunk = young_chunk_take();
-    if (scope->last_chunk) {
-      scope->last_chunk->used = scope->bump;
-      scope->last_chunk->next = chunk;
-    } else {
-      scope->first_chunk = chunk;
-    }
-    scope->last_chunk = chunk;
-    scope->bump = chunk->data;
-    scope->bump_end = chunk->data + YOUNG_CHUNK_CAPACITY;
-    /* The deferred young bytes count toward the process footprint here,
-       once per chunk, so a long pass cannot hide them from its peak. */
-    footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,
-                   &process_peak_footprint_bytes);
-  }
-  AllocationHeader *header = (AllocationHeader *)scope->bump;
-  scope->bump += rounded;
-  return header;
-}
-
 static size_t young_rounded(size_t bytes) {
   return (sizeof(AllocationHeader) + bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
 }
 
-static void *allocate(size_t count, size_t size) {
-  Carrier *const here = carrier;
-  if (count == 0) count = 1;
-  size_t bytes;
-  if (__builtin_mul_overflow(count, size, &bytes) ||
-      bytes > SIZE_MAX - sizeof(AllocationHeader) - SMALL_BLOCK_GRAIN) {
-    fputs("Chimi runtime allocation overflow\n", stderr); runtime_exit(70);
-  }
-  AllocationScope *innermost = here->fiber.target ? NULL : here->fiber.heap->innermost;
-  if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {
-    size_t rounded = young_rounded(bytes);
-    AllocationHeader *header = young_bump(innermost, rounded);
-    header->bytes = bytes;
-    header->area = &innermost->young;
-    header->in_chunk = true;
-    innermost->pending_bytes += bytes;
-    ++innermost->pending_count;
-    here->pending_footprint_bytes += sizeof(AllocationHeader) + bytes;
-    if (profile_rows && here->fiber.heap->profiled_node_plus_one) {
-      ProfileRow *row = &profile_rows[here->fiber.heap->profiled_node_plus_one - 1];
-      profile_count(&row->allocations, 1);
-      profile_count(&row->allocated_bytes, bytes);
-    }
-    return header + 1;
-  }
-  AllocationArea *area = current_area();
-  AllocationHeader *header = small_block_take(sizeof(*header) + bytes);
-  header->bytes = bytes;
-  area_link(area, header);
-  if (area->heap) heap_add_live(area->heap, bytes);
-  if (area->scope) {
-    AllocationScope *scope = area->scope;
-    scope_add_live(scope, bytes);
-    scope->total_allocated_bytes += bytes;
-    scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
-  } else if (area->role != AREA_FRAGMENT) {
-    here->unscoped_allocated_bytes += bytes;
-  }
-  if (profile_rows && here->fiber.heap->profiled_node_plus_one) {
-    ProfileRow *row = &profile_rows[here->fiber.heap->profiled_node_plus_one - 1];
-    profile_count(&row->allocations, 1);
-    profile_count(&row->allocated_bytes, bytes);
-  }
-  if (area->role != AREA_STATIC) {
-    ++here->heap_totals.live_allocations;
-    footprint_add(sizeof(*header) + bytes);
-    if (area->role == AREA_FRAGMENT) fragment_footprint_add(sizeof(*header) + bytes);
-  }
-  return header + 1;
+/* The allocator is Rust (chimi-runtime heap/allocator.rs): `count` zeroed items
+   of `size` bytes in the running fiber's area, from the innermost region's young
+   chunks when they fit. It ends the program on overflow or exhausted memory. */
+void *chimi_allocate_v1(size_t count, size_t size);
+/* It reads the running carrier itself, the way `carrier` does here: passing
+   it from an inlined wrapper grew a small program by 13 KB, and an out-of-line
+   wrapper cost a loop 4% more instructions. */
+static void *allocate(size_t count, size_t size) { return chimi_allocate_v1(count, size); }
+
+/* What the allocator needs from the C that is still here. */
+_Noreturn void chimi_runtime_allocation_overflow(void);
+_Noreturn void chimi_runtime_allocation_overflow(void) {
+  fputs("Chimi runtime allocation overflow\n", stderr); runtime_exit(70);
 }
+YoungChunk *chimi_runtime_young_chunk_take(void);
+YoungChunk *chimi_runtime_young_chunk_take(void) { return young_chunk_take(); }
 
 static AllocationHeader *allocation_header(const void *value) {
   return value ? (AllocationHeader *)value - 1 : NULL;
@@ -1229,7 +1083,8 @@ size_t chimi_handle_counts_capacity_v1(void);
    the next execution starts (channel_endpoints_reset). It is one flag for
    both tables, so the freers' shortcut below costs one load: every freed
    allocation pays it. */
-static _Atomic bool handles_counted;
+#define handles_counted chimi_runtime_handles_counted
+_Atomic bool handles_counted;
 
 /* False only while no value this execution made can be a counted handle, so
    a freer may skip looking. A freer's own value was retained before it, so
@@ -1298,21 +1153,22 @@ static void channel_endpoints_reset(void) {
   atomic_store_explicit(&handles_counted, false, memory_order_relaxed);
 }
 
-/* Frees one allocation that its area has already unlinked. */
+/* Drops the count a freed value holds when it is a counted handle; the Rust
+   allocator's release calls it once handles are live. */
+void chimi_runtime_release_counted_value(const ChimiValue *value);
+void chimi_runtime_release_counted_value(const ChimiValue *value) {
+  uint64_t key = counted_handle_key(value);
+  if (key) counted_handle_drop(key);
+}
+
+/* Frees one allocation that its area has already unlinked (the Rust allocator's
+   release, heap/allocator.rs). */
+void chimi_release_allocation_v1(Carrier *here, AllocationHeader *header);
 static void release_allocation(AllocationHeader *header) {
-  if (handles_live() && header->kind == ALLOCATION_VALUE) {
-    uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
-    if (key) counted_handle_drop(key);
-  }
-  if (header->area->heap) header->area->heap->live_bytes -= header->bytes;
-  if (header->area->role != AREA_STATIC) {
-    --carrier->heap_totals.live_allocations;
-    footprint_sub(sizeof(*header) + header->bytes);
-  }
 #if CHIMI_HEAP_VERIFY
   if (carrier->collecting_scope) pointer_stack_push(&heap_verify_freed, header + 1);
 #endif
-  small_block_give(header, sizeof(*header) + header->bytes);
+  chimi_release_allocation_v1(carrier, header);
 }
 
 /* Frees every allocation of `area`, leaving it empty. O(allocations). */
@@ -1834,6 +1690,11 @@ _Static_assert(sizeof(((FiberContext *)0)->target) == 8, "layout: sizeof(((Fiber
 _Static_assert(sizeof(SmallBlock) == 8, "layout: sizeof(SmallBlock)");
 _Static_assert(offsetof(SmallBlock, next) == 0, "layout: offsetof(SmallBlock, next)");
 _Static_assert(sizeof(((SmallBlock *)0)->next) == 8, "layout: sizeof(((SmallBlock *)0)->next)");
+_Static_assert(sizeof(SmallBlockCache) == 192, "layout: sizeof(SmallBlockCache)");
+_Static_assert(offsetof(SmallBlockCache, lists) == 0, "layout: offsetof(SmallBlockCache, lists)");
+_Static_assert(sizeof(((SmallBlockCache *)0)->lists) == 128, "layout: sizeof(((SmallBlockCache *)0)->lists)");
+_Static_assert(offsetof(SmallBlockCache, counts) == 128, "layout: offsetof(SmallBlockCache, counts)");
+_Static_assert(sizeof(((SmallBlockCache *)0)->counts) == 64, "layout: sizeof(((SmallBlockCache *)0)->counts)");
 _Static_assert(sizeof(PointerStack) == 24, "layout: sizeof(PointerStack)");
 _Static_assert(offsetof(PointerStack, items) == 0, "layout: offsetof(PointerStack, items)");
 _Static_assert(sizeof(((PointerStack *)0)->items) == 8, "layout: sizeof(((PointerStack *)0)->items)");
@@ -1843,6 +1704,90 @@ _Static_assert(CHIMI_LAYOUT_CLASS(((PointerStack *)0)->length) == 2, "layout: CH
 _Static_assert(offsetof(PointerStack, capacity) == 16, "layout: offsetof(PointerStack, capacity)");
 _Static_assert(sizeof(((PointerStack *)0)->capacity) == 8, "layout: sizeof(((PointerStack *)0)->capacity)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((PointerStack *)0)->capacity) == 2, "layout: CHIMI_LAYOUT_CLASS(((PointerStack *)0)->capacity)");
+_Static_assert(sizeof(Carrier) == 656, "layout: sizeof(Carrier)");
+_Static_assert(offsetof(Carrier, fiber) == 0, "layout: offsetof(Carrier, fiber)");
+_Static_assert(sizeof(((Carrier *)0)->fiber) == 16, "layout: sizeof(((Carrier *)0)->fiber)");
+_Static_assert(offsetof(Carrier, heap_totals) == 16, "layout: offsetof(Carrier, heap_totals)");
+_Static_assert(sizeof(((Carrier *)0)->heap_totals) == 64, "layout: sizeof(((Carrier *)0)->heap_totals)");
+_Static_assert(offsetof(Carrier, pending_footprint_bytes) == 80, "layout: offsetof(Carrier, pending_footprint_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->pending_footprint_bytes) == 8, "layout: sizeof(((Carrier *)0)->pending_footprint_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->pending_footprint_bytes) == 1, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->pending_footprint_bytes)");
+_Static_assert(offsetof(Carrier, folded_footprint_bytes) == 88, "layout: offsetof(Carrier, folded_footprint_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->folded_footprint_bytes) == 8, "layout: sizeof(((Carrier *)0)->folded_footprint_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->folded_footprint_bytes) == 1, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->folded_footprint_bytes)");
+_Static_assert(offsetof(Carrier, folded_fragment_footprint_bytes) == 96, "layout: offsetof(Carrier, folded_fragment_footprint_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->folded_fragment_footprint_bytes) == 8, "layout: sizeof(((Carrier *)0)->folded_fragment_footprint_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->folded_fragment_footprint_bytes) == 1, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->folded_fragment_footprint_bytes)");
+_Static_assert(offsetof(Carrier, unscoped_allocated_bytes) == 104, "layout: offsetof(Carrier, unscoped_allocated_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->unscoped_allocated_bytes) == 8, "layout: sizeof(((Carrier *)0)->unscoped_allocated_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->unscoped_allocated_bytes) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->unscoped_allocated_bytes)");
+_Static_assert(offsetof(Carrier, capture_transfer_probes) == 112, "layout: offsetof(Carrier, capture_transfer_probes)");
+_Static_assert(sizeof(((Carrier *)0)->capture_transfer_probes) == 8, "layout: sizeof(((Carrier *)0)->capture_transfer_probes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->capture_transfer_probes) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->capture_transfer_probes)");
+_Static_assert(offsetof(Carrier, process_heap_peak_value_bytes) == 120, "layout: offsetof(Carrier, process_heap_peak_value_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->process_heap_peak_value_bytes) == 8, "layout: sizeof(((Carrier *)0)->process_heap_peak_value_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->process_heap_peak_value_bytes) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->process_heap_peak_value_bytes)");
+_Static_assert(offsetof(Carrier, copy_counting) == 128, "layout: offsetof(Carrier, copy_counting)");
+_Static_assert(sizeof(((Carrier *)0)->copy_counting) == 1, "layout: sizeof(((Carrier *)0)->copy_counting)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->copy_counting) == 3, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->copy_counting)");
+_Static_assert(offsetof(Carrier, copied_values) == 136, "layout: offsetof(Carrier, copied_values)");
+_Static_assert(sizeof(((Carrier *)0)->copied_values) == 8, "layout: sizeof(((Carrier *)0)->copied_values)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->copied_values) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->copied_values)");
+_Static_assert(offsetof(Carrier, copied_bytes) == 144, "layout: offsetof(Carrier, copied_bytes)");
+_Static_assert(sizeof(((Carrier *)0)->copied_bytes) == 8, "layout: sizeof(((Carrier *)0)->copied_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->copied_bytes) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->copied_bytes)");
+_Static_assert(offsetof(Carrier, fragment_copy_foreign_owner) == 152, "layout: offsetof(Carrier, fragment_copy_foreign_owner)");
+_Static_assert(sizeof(((Carrier *)0)->fragment_copy_foreign_owner) == 8, "layout: sizeof(((Carrier *)0)->fragment_copy_foreign_owner)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->fragment_copy_foreign_owner) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->fragment_copy_foreign_owner)");
+_Static_assert(offsetof(Carrier, small_blocks) == 160, "layout: offsetof(Carrier, small_blocks)");
+_Static_assert(sizeof(((Carrier *)0)->small_blocks) == 192, "layout: sizeof(((Carrier *)0)->small_blocks)");
+_Static_assert(offsetof(Carrier, young_chunk_cache) == 352, "layout: offsetof(Carrier, young_chunk_cache)");
+_Static_assert(sizeof(((Carrier *)0)->young_chunk_cache) == 8, "layout: sizeof(((Carrier *)0)->young_chunk_cache)");
+_Static_assert(offsetof(Carrier, young_chunk_cache_count) == 360, "layout: offsetof(Carrier, young_chunk_cache_count)");
+_Static_assert(sizeof(((Carrier *)0)->young_chunk_cache_count) == 4, "layout: sizeof(((Carrier *)0)->young_chunk_cache_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->young_chunk_cache_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->young_chunk_cache_count)");
+_Static_assert(offsetof(Carrier, collecting_scope) == 368, "layout: offsetof(Carrier, collecting_scope)");
+_Static_assert(sizeof(((Carrier *)0)->collecting_scope) == 8, "layout: sizeof(((Carrier *)0)->collecting_scope)");
+_Static_assert(offsetof(Carrier, collecting_full) == 376, "layout: offsetof(Carrier, collecting_full)");
+_Static_assert(sizeof(((Carrier *)0)->collecting_full) == 1, "layout: sizeof(((Carrier *)0)->collecting_full)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_full) == 3, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_full)");
+_Static_assert(offsetof(Carrier, collecting_foreign) == 377, "layout: offsetof(Carrier, collecting_foreign)");
+_Static_assert(sizeof(((Carrier *)0)->collecting_foreign) == 1, "layout: sizeof(((Carrier *)0)->collecting_foreign)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_foreign) == 3, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_foreign)");
+_Static_assert(offsetof(Carrier, collecting_epoch) == 384, "layout: offsetof(Carrier, collecting_epoch)");
+_Static_assert(sizeof(((Carrier *)0)->collecting_epoch) == 8, "layout: sizeof(((Carrier *)0)->collecting_epoch)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_epoch) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->collecting_epoch)");
+_Static_assert(offsetof(Carrier, next_epoch) == 392, "layout: offsetof(Carrier, next_epoch)");
+_Static_assert(sizeof(((Carrier *)0)->next_epoch) == 8, "layout: sizeof(((Carrier *)0)->next_epoch)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->next_epoch) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->next_epoch)");
+_Static_assert(offsetof(Carrier, end_epoch) == 400, "layout: offsetof(Carrier, end_epoch)");
+_Static_assert(sizeof(((Carrier *)0)->end_epoch) == 8, "layout: sizeof(((Carrier *)0)->end_epoch)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->end_epoch) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->end_epoch)");
+_Static_assert(offsetof(Carrier, next_span) == 408, "layout: offsetof(Carrier, next_span)");
+_Static_assert(sizeof(((Carrier *)0)->next_span) == 8, "layout: sizeof(((Carrier *)0)->next_span)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->next_span) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->next_span)");
+_Static_assert(offsetof(Carrier, end_span) == 416, "layout: offsetof(Carrier, end_span)");
+_Static_assert(sizeof(((Carrier *)0)->end_span) == 8, "layout: sizeof(((Carrier *)0)->end_span)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->end_span) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->end_span)");
+_Static_assert(offsetof(Carrier, mark_stack) == 424, "layout: offsetof(Carrier, mark_stack)");
+_Static_assert(sizeof(((Carrier *)0)->mark_stack) == 24, "layout: sizeof(((Carrier *)0)->mark_stack)");
+_Static_assert(offsetof(Carrier, copy_stack) == 448, "layout: offsetof(Carrier, copy_stack)");
+_Static_assert(sizeof(((Carrier *)0)->copy_stack) == 24, "layout: sizeof(((Carrier *)0)->copy_stack)");
+_Static_assert(offsetof(Carrier, copy_pending) == 472, "layout: offsetof(Carrier, copy_pending)");
+_Static_assert(sizeof(((Carrier *)0)->copy_pending) == 24, "layout: sizeof(((Carrier *)0)->copy_pending)");
+_Static_assert(offsetof(Carrier, fs_read_chunk) == 496, "layout: offsetof(Carrier, fs_read_chunk)");
+_Static_assert(sizeof(((Carrier *)0)->fs_read_chunk) == 8, "layout: sizeof(((Carrier *)0)->fs_read_chunk)");
+_Static_assert(offsetof(Carrier, scope_totals) == 504, "layout: offsetof(Carrier, scope_totals)");
+_Static_assert(sizeof(((Carrier *)0)->scope_totals) == 128, "layout: sizeof(((Carrier *)0)->scope_totals)");
+_Static_assert(offsetof(Carrier, host_stack_limit) == 632, "layout: offsetof(Carrier, host_stack_limit)");
+_Static_assert(sizeof(((Carrier *)0)->host_stack_limit) == 8, "layout: sizeof(((Carrier *)0)->host_stack_limit)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->host_stack_limit) == 2, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->host_stack_limit)");
+_Static_assert(offsetof(Carrier, bound) == 648, "layout: offsetof(Carrier, bound)");
+_Static_assert(sizeof(((Carrier *)0)->bound) == 1, "layout: sizeof(((Carrier *)0)->bound)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->bound) == 3, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->bound)");
+_Static_assert(offsetof(Carrier, console_lock_held) == 649, "layout: offsetof(Carrier, console_lock_held)");
+_Static_assert(sizeof(((Carrier *)0)->console_lock_held) == 1, "layout: sizeof(((Carrier *)0)->console_lock_held)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((Carrier *)0)->console_lock_held) == 3, "layout: CHIMI_LAYOUT_CLASS(((Carrier *)0)->console_lock_held)");
 _Static_assert(sizeof(ProfileRow) == 32, "layout: sizeof(ProfileRow)");
 _Static_assert(offsetof(ProfileRow, operation) == 0, "layout: offsetof(ProfileRow, operation)");
 _Static_assert(sizeof(((ProfileRow *)0)->operation) == 8, "layout: sizeof(((ProfileRow *)0)->operation)");
@@ -11035,7 +10980,7 @@ static bool write_profile(const char *path) {
 }
 
 /* With several carrier threads, replaces the summed totals' peaks (each one
-   carrier's) with the process-wide peaks footprint_fold kept, raised to the
+   carrier's) with the process-wide peaks heap/allocator.rs folds, raised to the
    exact sum now, which the report reads once no fiber runs. They are then
    within carrier_count * FOOTPRINT_FOLD_SLACK of the true peak. */
 static void report_process_peaks(HeapTotals *totals) {
@@ -11058,7 +11003,7 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
     fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
     return true;
   }
-  footprint_record_peak();
+  footprint_add(0); /* records the peak */
   HeapTotals totals = heap_totals_sum();
   report_process_peaks(&totals);
   uint64_t unscoped_allocated_bytes = 0, capture_transfer_probes = 0, copied_values = 0, copied_bytes = 0;

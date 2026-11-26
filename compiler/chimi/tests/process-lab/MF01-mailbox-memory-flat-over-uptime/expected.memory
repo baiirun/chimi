@@ -1,2 +1,4 @@
 equal process_heap_peak_value_bytes
 equal heap_chunks_live
+at_least process_heap_peak_value_bytes 4096
+at_least unscoped_allocated_bytes 4096

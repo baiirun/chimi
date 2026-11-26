@@ -1,0 +1,47 @@
+import std/channel as Channel
+import std/channel.{Receive, Sender}
+import std/duration as Duration
+import std/process as Process
+import std/process.{Inbox}
+import std/supervisor as Supervisor
+import std/list as List
+// MF07: a process builds a list of 2,000 Ints, one vector too large for a
+// young chunk, so it is a block of its own in the process's heap. The heap's
+// peak, which the memory report gives as process_heap_peak_value_bytes,
+// counts it (at least its size), and its frees take off only what was counted
+// (at most a little more, where a count taken off but never added would wrap;
+// expected.memory). The outcome is the list's length.
+
+pub enum Message {
+  Build(count: Int, reply: Sender<Int>)
+}
+
+fn builder(inbox: Inbox<Message>) -> Void {
+  loop built = 0 {
+    case Process.receive(inbox) {
+      Message.Build(count, reply) -> {
+        let length = List.length(List.repeat(1, count))
+        Channel.send(reply, length)
+        built + 1
+      }
+    }
+  }
+}
+
+pub process name worker: Message
+
+pub fn main(arguments: List<Text>) -> Int {
+  let member = Process.spec(builder, 4, Duration.seconds(1))
+    |> Process.register(worker)
+    |> Supervisor.process(Supervisor.Restart.Never)
+  let root = Supervisor.start(Supervisor.policy([member], 1, Supervisor.restarts(0, Duration.seconds(30))))
+  let replies = Channel.bounded(1)
+  Process.send(worker, Message.Build(2000, replies.sender))
+  let received = Channel.receive(replies.receiver)
+  let length = case received {
+    Receive.Received(value) -> value
+    Receive.Drained -> -1
+  }
+  Supervisor.stop(root)
+  length
+}

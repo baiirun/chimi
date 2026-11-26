@@ -24,10 +24,13 @@ use std::process::Command;
 const SHARED: &[&str] = &[
     // The carriers, which hold every per-thread field: carrier 0, the others
     // carriers_create allocates and their count, and each thread's pointer to
-    // its own (a thread-local, one per thread by construction).
+    // its own (a thread-local, one per thread by construction). The count
+    // and how the carriers run are exported for the Rust allocator
+    // (chimi-runtime heap/allocator.rs), set once before carrier threads start.
     "carrier_first",
     "carrier_others",
-    "carrier_count",
+    "chimi_runtime_carrier_count",
+    "chimi_runtime_carrier_mode",
     "carrier_this_thread",
     // Heaps and constants every fiber shares.
     "main_heap",
@@ -39,7 +42,7 @@ const SHARED: &[&str] = &[
     // Whether this execution counted any native handle (an atomic flag, set
     // once and cleared before the next run); the counts and their lock live
     // in Rust (chimi-runtime handle_counts_abi.rs).
-    "handles_counted",
+    "chimi_runtime_handles_counted",
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handle_lock",
     "binding_handle_free",
@@ -58,7 +61,7 @@ const SHARED: &[&str] = &[
     "trace_lock",
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
-    "profile_rows",
+    "chimi_runtime_profile_rows",
     // Standard input, behind its lock.
     "standard_input",
     "standard_input_bytes",
@@ -80,12 +83,12 @@ const SHARED: &[&str] = &[
     "runtime_exiting",
     // The thread-local carrier's offset from the thread pointer, the same
     // on every thread; set once by a constructor before main.
-    "carrier_tls_offset",
+    "chimi_runtime_carrier_tls_offset",
     // Process-wide footprints and peaks, folded in by every carrier.
-    "process_footprint_bytes",
-    "process_peak_footprint_bytes",
-    "process_fragment_footprint_bytes",
-    "process_peak_fragment_footprint_bytes",
+    "chimi_runtime_process_footprint_bytes",
+    "chimi_runtime_process_peak_footprint_bytes",
+    "chimi_runtime_process_fragment_footprint_bytes",
+    "chimi_runtime_process_peak_fragment_footprint_bytes",
     "metrics_lock",
     "metrics_aggregate",
     // Atomic: set once by the first Metrics.runner_document.
