@@ -22,7 +22,7 @@
 
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AllocationScope, AreaRole, Carrier, ProfileRow,
@@ -45,7 +45,8 @@ unsafe extern "C" {
     fn chimi_runtime_current_carrier() -> *mut Carrier;
     /// That thread-local's offset from the thread pointer on Linux, the same
     /// on every thread; set by a constructor before main.
-    static chimi_runtime_carrier_tls_offset: AtomicIsize;
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    static chimi_runtime_carrier_tls_offset: core::sync::atomic::AtomicIsize;
     /// Whether the small-block cache keeps freed blocks: off under
     /// AddressSanitizer, so a use after free is still reported.
     static chimi_runtime_small_block_cache: bool;
