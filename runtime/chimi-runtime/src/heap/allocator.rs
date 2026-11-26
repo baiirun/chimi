@@ -12,6 +12,10 @@
 //! comes in through the `chimi_runtime_*` imports below, which is why the
 //! module builds only into the runtime archives (feature `runtime-c`).
 //!
+//! Every count wraps, as the C it replaced did: a carrier's counts are
+//! signed or unsigned deltas that another carrier's frees can carry below
+//! zero, and only their sum means anything (`heap_totals_sum`).
+//!
 //! The carrier is passed as a raw pointer and read through it: in the
 //! carrier simulation the footprint sums both carriers, the running one
 //! included, so no `&mut Carrier` may be live while it does.
@@ -211,7 +215,7 @@ unsafe fn record_peak(here: *mut Carrier, mode: u8) {
 pub unsafe fn footprint_add(here: *mut Carrier, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
-        (*here).heap_totals.footprint_bytes += bytes as i64;
+        (*here).heap_totals.footprint_bytes = (*here).heap_totals.footprint_bytes.wrapping_add(bytes as i64);
         record_peak(here, mode());
     }
 }
@@ -229,7 +233,7 @@ pub unsafe fn footprint_sub(here: *mut Carrier, bytes: usize) {
     unsafe {
         let mode = mode();
         record_peak(here, mode);
-        (*here).heap_totals.footprint_bytes -= bytes as i64;
+        (*here).heap_totals.footprint_bytes = (*here).heap_totals.footprint_bytes.wrapping_sub(bytes as i64);
         fold_footprint(here, mode);
     }
 }
@@ -259,7 +263,7 @@ pub unsafe fn fragment_footprint_add(here: *mut Carrier, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
         let mode = mode();
-        (*here).heap_totals.fragment_footprint_bytes += bytes as i64;
+        (*here).heap_totals.fragment_footprint_bytes = (*here).heap_totals.fragment_footprint_bytes.wrapping_add(bytes as i64);
         let footprint = fragment_footprint_now(here, mode);
         if footprint > (*here).heap_totals.peak_fragment_footprint_bytes {
             (*here).heap_totals.peak_fragment_footprint_bytes = footprint;
@@ -275,7 +279,7 @@ pub unsafe fn fragment_footprint_add(here: *mut Carrier, bytes: usize) {
 pub unsafe fn fragment_footprint_sub(here: *mut Carrier, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
-        (*here).heap_totals.fragment_footprint_bytes -= bytes as i64;
+        (*here).heap_totals.fragment_footprint_bytes = (*here).heap_totals.fragment_footprint_bytes.wrapping_sub(bytes as i64);
         fold_fragment_footprint(here, mode());
     }
 }
@@ -305,7 +309,7 @@ pub unsafe fn seed_process_footprint(first: *mut Carrier) {
 unsafe fn scope_add_live(scope: *mut AllocationScope, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
-        (*scope).live_bytes += bytes;
+        (*scope).live_bytes = (*scope).live_bytes.wrapping_add(bytes);
         if (*scope).live_bytes > (*scope).peak_live_bytes {
             (*scope).peak_live_bytes = (*scope).live_bytes;
         }
@@ -317,7 +321,7 @@ unsafe fn scope_add_live(scope: *mut AllocationScope, bytes: usize) {
 unsafe fn heap_add_live(heap: *mut RuntimeHeap, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
-        (*heap).live_bytes += bytes;
+        (*heap).live_bytes = (*heap).live_bytes.wrapping_add(bytes);
         if (*heap).live_bytes > (*heap).peak_live_bytes {
             (*heap).peak_live_bytes = (*heap).live_bytes;
         }
@@ -334,8 +338,8 @@ unsafe fn area_link(area: *mut AllocationArea, header: *mut AllocationHeader) {
         (*header).area = area;
         (*header).next = (*area).allocations;
         (*area).allocations = header;
-        (*area).bytes += (*header).bytes;
-        (*area).count += 1;
+        (*area).bytes = (*area).bytes.wrapping_add((*header).bytes);
+        (*area).count = (*area).count.wrapping_add(1);
     }
 }
 
@@ -442,9 +446,9 @@ pub unsafe fn allocate(here: *mut Carrier, count: usize, size: usize) -> *mut u8
             (*header).bytes = bytes;
             (*header).area = ptr::addr_of_mut!((*innermost).young);
             (*header).in_chunk = true;
-            (*innermost).pending_bytes += bytes;
-            (*innermost).pending_count += 1;
-            (*here).pending_footprint_bytes += (HEADER + bytes) as i64;
+            (*innermost).pending_bytes = (*innermost).pending_bytes.wrapping_add(bytes);
+            (*innermost).pending_count = (*innermost).pending_count.wrapping_add(1);
+            (*here).pending_footprint_bytes = (*here).pending_footprint_bytes.wrapping_add((HEADER + bytes) as i64);
             profile(heap, bytes);
             return header.add(1).cast();
         }
@@ -462,14 +466,14 @@ pub unsafe fn allocate(here: *mut Carrier, count: usize, size: usize) -> *mut u8
         let scope = (*area).scope;
         if !scope.is_null() {
             scope_add_live(scope, bytes);
-            (*scope).total_allocated_bytes += bytes;
-            (*scope).allocated_bytes_by_kind[AllocationKind::BYTES.0 as usize] += bytes;
+            (*scope).total_allocated_bytes = (*scope).total_allocated_bytes.wrapping_add(bytes);
+            (*scope).allocated_bytes_by_kind[AllocationKind::BYTES.0 as usize] = (*scope).allocated_bytes_by_kind[AllocationKind::BYTES.0 as usize].wrapping_add(bytes);
         } else if (*area).role != AreaRole::FRAGMENT {
-            (*here).unscoped_allocated_bytes += bytes as u64;
+            (*here).unscoped_allocated_bytes = (*here).unscoped_allocated_bytes.wrapping_add(bytes as u64);
         }
         profile(heap, bytes);
         if (*area).role != AreaRole::STATIC {
-            (*here).heap_totals.live_allocations += 1;
+            (*here).heap_totals.live_allocations = (*here).heap_totals.live_allocations.wrapping_add(1);
             footprint_add(here, HEADER + bytes);
             if (*area).role == AreaRole::FRAGMENT {
                 fragment_footprint_add(here, HEADER + bytes);
@@ -495,10 +499,10 @@ pub unsafe fn release(here: *mut Carrier, header: *mut AllocationHeader) {
         let area = (*header).area;
         let bytes = (*header).bytes;
         if !(*area).heap.is_null() {
-            (*(*area).heap).live_bytes -= bytes;
+            (*(*area).heap).live_bytes = (*(*area).heap).live_bytes.wrapping_sub(bytes);
         }
         if (*area).role != AreaRole::STATIC {
-            (*here).heap_totals.live_allocations -= 1;
+            (*here).heap_totals.live_allocations = (*here).heap_totals.live_allocations.wrapping_sub(1);
             footprint_sub(here, HEADER + bytes);
         }
         (*here).small_blocks.give(&mut (*here).heap_totals.cached_bytes, header.cast(), HEADER + bytes, cache_enabled());

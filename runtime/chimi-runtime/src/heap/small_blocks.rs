@@ -37,8 +37,8 @@ impl SmallBlockCache {
                 // bytes the cache owns.
                 unsafe {
                     self.lists[class] = (*block).next;
-                    self.counts[class] -= 1;
-                    *cached_bytes -= rounded as i64;
+                    self.counts[class] = self.counts[class].wrapping_sub(1);
+                    *cached_bytes = (*cached_bytes).wrapping_sub(rounded as i64);
                     ptr::write_bytes(block.cast::<u8>(), 0, rounded);
                 }
                 return block.cast();
@@ -66,8 +66,8 @@ impl SmallBlockCache {
             // grain, which holds the link.
             unsafe { (*block).next = self.lists[class] };
             self.lists[class] = block;
-            self.counts[class] += 1;
-            *cached_bytes += rounded as i64;
+            self.counts[class] = self.counts[class].wrapping_add(1);
+            *cached_bytes = (*cached_bytes).wrapping_add(rounded as i64);
             return;
         }
         // SAFETY: the caller's contract: the block came from calloc.
