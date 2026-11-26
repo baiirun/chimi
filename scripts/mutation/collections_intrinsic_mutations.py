@@ -40,8 +40,10 @@ MUTATIONS = [
     programs("Option values take the wrong constructor", STANDARD,
              "            return success(standard_value(StandardConstructor::OPTION_NONE, &[]));",
              "            return success(standard_value(StandardConstructor::OPTION_SOME, &[]));"),
-    dict(name="standard values name their fields from the next id", file=STANDARD, targets=["language"], filter="a_map_lookup_s_option_names_its_field",
+    # The field id one further on survived: in the test program it names
+    # another `value` field.
+    dict(name="standard values name their fields after the variant", file=STANDARD, targets=["language"], filter="a_map_lookup_s_option_names_its_field",
          edits=[(
              "string(*ids.add(shape.fields_offset as usize + field))",
-             "string(*ids.add(shape.fields_offset as usize + field + 1))")]),
+             "string(shape.variant_name + 0 * *ids.add(shape.fields_offset as usize + field))")]),
 ]
