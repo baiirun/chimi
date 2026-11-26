@@ -2,18 +2,24 @@
 //! step 5, phase 0), so the Rust allocator and collector of the later phases
 //! read and write the same memory as the C that is still there.
 //!
-//! [`LAYOUT`] lists every size, alignment, field offset and enum value the
-//! mirrors depend on, measured here with `size_of`, `align_of` and
-//! `offset_of!`. `runtime.c` carries the same numbers as `_Static_assert`s
-//! in a generated block ([`c_asserts`]), and the compiler's `runtime_layout`
-//! test fails when that block differs from this table. So a change to either
-//! side stops the build of the other: the test catches a Rust change, and the
-//! C compiler catches a C change against the blessed block.
+//! [`LAYOUT`] lists the numbers the mirrors depend on, measured here: each
+//! enum constant, each struct's size (and the alignment of those whose
+//! alignment matters), and each field's offset, size and, for a scalar,
+//! its class (signed or unsigned integer, `bool`, floating point).
+//! `runtime.c` carries the same numbers as `_Static_assert`s in a generated
+//! block ([`c_asserts`]), and the compiler's `runtime_layout` test fails when
+//! that block differs from this table, so a Rust change shows up in the test
+//! and a C change that moves a listed number fails the C compile.
 //!
-//! Only the fields the Rust side will touch are named; a mirror's size and
-//! alignment are still asserted, so a field added on either side is caught.
+//! Numbers cannot see everything: a constant appended to a C enum, or a field
+//! added in a struct's padding, moves none of them. So the same test also
+//! keeps a digest of each mirrored C definition and fails when one changes,
+//! which sends whoever changed it here to update the mirror.
+//!
 //! The tags are newtypes over `u32` rather than Rust enums, because C may
-//! hold any value in them.
+//! hold any value in them. The carrier's state (`Carrier`) and the fragment
+//! copier's (`FragmentCopy`) are mirrored with the phases that move their
+//! code, since both still change often.
 
 use core::ffi::{c_char, c_void};
 use core::mem::{align_of, offset_of, size_of};
@@ -118,6 +124,16 @@ impl AreaRole {
     pub const BASE: Self = Self(2);
     pub const FRAGMENT: Self = Self(3);
     pub const STATIC: Self = Self(4);
+}
+
+/// `HeapStatus`: what a collection or copy reports.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeapStatus(pub u32);
+
+impl HeapStatus {
+    pub const OK: Self = Self(0);
+    pub const FOREIGN_POINTER: Self = Self(1);
 }
 
 /// `ChimiDecimal`.
@@ -421,6 +437,27 @@ pub const SMALL_BLOCK_GRAIN: usize = 16;
 pub const SMALL_BLOCK_LIMIT: usize = 256;
 pub const SMALL_BLOCK_CACHE: usize = 4096;
 
+/// `PointerStack`: the growable stack marking and copying use instead of
+/// recursion, since both run on 64 KiB fiber stacks.
+#[repr(C)]
+pub struct PointerStack {
+    pub items: *mut *mut c_void,
+    pub length: usize,
+    pub capacity: usize,
+}
+
+/// `ProfileRow`: one node's row of `--profile-file`, counted with relaxed
+/// atomic adds.
+#[repr(C)]
+pub struct ProfileRow {
+    pub operation: *const c_char,
+    pub evaluations: u64,
+    pub allocations: u64,
+    pub allocated_bytes: u64,
+}
+
+pub const REGION_FULL_MIN_GROWTH: usize = 4 * 1024;
+pub const MARK_EPOCH_BLOCK: usize = 4096;
 pub const FRAGMENT_ROOTS: usize = 2;
 
 /// `RuntimeFragment`: its area comes first, so an adopted fragment lives on
@@ -442,13 +479,62 @@ pub enum Fact {
     Value { c: &'static str, value: usize },
     /// A field's offset and its size, so a field whose type changes inside
     /// its padding (a `uint16_t` widened to `uint32_t`) is caught too.
-    Field { ty: &'static str, field: &'static str, offset: usize, size: usize },
+    /// `class` is the field's [`Class`], so a scalar's signedness and kind
+    /// are checked as well.
+    Field { ty: &'static str, field: &'static str, offset: usize, size: usize, class: Class },
+}
+
+/// What kind of scalar a field holds, which offsets and sizes cannot tell
+/// apart (`int64_t` from `uint64_t`, `bool` from `uint8_t`, `double` from
+/// `uint64_t`). The numbers are what `CHIMI_LAYOUT_CLASS` gives in C.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// A pointer, struct, union or array: checked by offset and size only.
+    Compound = 0,
+    Signed = 1,
+    Unsigned = 2,
+    Bool = 3,
+    Float = 4,
+}
+
+/// The [`Class`] of a mirrored field's type.
+pub trait Classified {
+    const CLASS: Class;
+}
+
+macro_rules! classified {
+    ($class:ident: $($ty:ty),*) => { $(impl Classified for $ty { const CLASS: Class = Class::$class; })* };
+}
+
+classified!(Signed: i8, i16, i32, i64, isize);
+classified!(Unsigned: u8, u16, u32, u64, usize, ValueKind, CallableKind, ControlKind, AllocationKind, AreaRole, HeapStatus);
+classified!(Bool: bool);
+classified!(Float: f32, f64);
+classified!(Compound: Decimal, Capability, ListVector, TextPayload, ListPayload, RecordPayload,
+    ConstructedPayload, RangePayload, AddressPayload, ManagedPayload, HandlePayload, Payload,
+    AllocationArea);
+
+impl<T> Classified for *const T {
+    const CLASS: Class = Class::Compound;
+}
+
+impl<T> Classified for *mut T {
+    const CLASS: Class = Class::Compound;
+}
+
+impl<T, const N: usize> Classified for [T; N] {
+    const CLASS: Class = Class::Compound;
 }
 
 /// The size of the place `pointer` points at, so a field's size can be read
 /// in a constant through `&raw const`.
 const fn pointee_size<F>(_: *const F) -> usize {
     size_of::<F>()
+}
+
+/// The class of the place `pointer` points at.
+const fn pointee_class<F: Classified>(_: *const F) -> Class {
+    F::CLASS
 }
 
 macro_rules! facts {
@@ -470,6 +556,12 @@ macro_rules! facts {
                 // SAFETY: only the field's address is taken, never read, and
                 // `pointer` points into the live `place`.
                 pointee_size(unsafe { &raw const (*pointer).$($rf)+ })
+            },
+            class: {
+                let place = core::mem::MaybeUninit::<$rust>::uninit();
+                let pointer = place.as_ptr();
+                // SAFETY: as for `size`.
+                pointee_class(unsafe { &raw const (*pointer).$($rf)+ })
             },
         }
     };
@@ -555,6 +647,11 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("SMALL_BLOCK_LIMIT" SMALL_BLOCK_LIMIT)
     constant("SMALL_BLOCK_CACHE" SMALL_BLOCK_CACHE)
     constant("FRAGMENT_ROOTS" FRAGMENT_ROOTS)
+    constant("REGION_FULL_MIN_GROWTH" REGION_FULL_MIN_GROWTH)
+    constant("MARK_EPOCH_BLOCK" MARK_EPOCH_BLOCK)
+    constant("HEAP_OK" HeapStatus::OK.0)
+    constant("HEAP_FOREIGN_POINTER" HeapStatus::FOREIGN_POINTER.0)
+    constant("sizeof(HeapStatus)" size_of::<HeapStatus>())
 
     size("ChimiDecimal" Decimal)
     align("ChimiDecimal" Decimal)
@@ -614,6 +711,14 @@ pub const LAYOUT: &[Fact] = facts! {
     align("ChimiValue" Value)
     field("ChimiValue" Value, "kind", kind)
     field("ChimiValue" Value, "as", payload)
+    field("ChimiValue" Value, "as.integer", payload.integer)
+    field("ChimiValue" Value, "as.floating", payload.floating)
+    field("ChimiValue" Value, "as.boolean", payload.boolean)
+    field("ChimiValue" Value, "as.callable", payload.callable)
+    field("ChimiValue" Value, "as.map", payload.map)
+    field("ChimiValue" Value, "as.json_number", payload.json_number)
+    field("ChimiValue" Value, "as.task", payload.task)
+    field("ChimiValue" Value, "as.text", payload.text)
     field("ChimiValue" Value, "as.text.bytes", payload.text.bytes)
     field("ChimiValue" Value, "as.text.length", payload.text.length)
     field("ChimiValue" Value, "as.list.vector.root", payload.list.vector.root)
@@ -715,6 +820,16 @@ pub const LAYOUT: &[Fact] = facts! {
     field("FiberContext" FiberContext, "heap", heap)
     field("FiberContext" FiberContext, "target", target)
     size("SmallBlock" SmallBlock)
+    field("SmallBlock" SmallBlock, "next", next)
+    size("PointerStack" PointerStack)
+    field("PointerStack" PointerStack, "items", items)
+    field("PointerStack" PointerStack, "length", length)
+    field("PointerStack" PointerStack, "capacity", capacity)
+    size("ProfileRow" ProfileRow)
+    field("ProfileRow" ProfileRow, "operation", operation)
+    field("ProfileRow" ProfileRow, "evaluations", evaluations)
+    field("ProfileRow" ProfileRow, "allocations", allocations)
+    field("ProfileRow" ProfileRow, "allocated_bytes", allocated_bytes)
     size("RuntimeFragment" RuntimeFragment)
     field("RuntimeFragment" RuntimeFragment, "area", area)
     field("RuntimeFragment" RuntimeFragment, "root_count", root_count)
@@ -730,18 +845,26 @@ pub const C_END: &str = "/* END generated layout asserts. */";
 pub fn c_asserts(out: &mut impl core::fmt::Write) -> core::fmt::Result {
     writeln!(out, "{C_BEGIN}")?;
     writeln!(out, "   Regenerate with CHIMI_LAYOUT_BLESS=1 cargo test -p chimi --test runtime_layout. */")?;
+    writeln!(
+        out,
+        "#define CHIMI_LAYOUT_CLASS(x) _Generic((x), _Bool: 3, float: 4, double: 4, \\\n  default: ((__typeof__(x))-1 < (__typeof__(x))1 ? 1 : 2))"
+    )?;
     let mut check = |c: &dyn core::fmt::Display, value: usize| {
         writeln!(out, "_Static_assert({c} == {value}, \"layout: {c}\");")
     };
     for fact in LAYOUT {
         match *fact {
             Fact::Value { c, value } => check(&c, value)?,
-            Fact::Field { ty, field, offset, size } => {
+            Fact::Field { ty, field, offset, size, class } => {
                 check(&format_args!("offsetof({ty}, {field})"), offset)?;
                 check(&format_args!("sizeof((({ty} *)0)->{field})"), size)?;
+                if class != Class::Compound {
+                    check(&format_args!("CHIMI_LAYOUT_CLASS((({ty} *)0)->{field})"), class as usize)?;
+                }
             }
         }
     }
+    writeln!(out, "#undef CHIMI_LAYOUT_CLASS")?;
     writeln!(out, "{C_END}")
 }
 
