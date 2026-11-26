@@ -37,7 +37,6 @@ mod pthread_locked;
 pub mod handles;
 mod handles_abi;
 pub mod json;
-mod json_abi;
 pub mod metrics;
 mod metrics_abi;
 pub mod random;

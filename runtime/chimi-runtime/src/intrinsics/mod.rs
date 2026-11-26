@@ -3,6 +3,9 @@
 //! built from them, then each family of intrinsics. `runtime.c`'s
 //! `invoke_intrinsic` still dispatches; it calls a family's entry here.
 
+mod abi;
 pub mod collections;
-mod collections_abi;
+pub mod decimals;
+pub mod json;
 pub mod standard;
+mod text;
