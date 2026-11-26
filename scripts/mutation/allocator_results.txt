@@ -1,0 +1,19 @@
+# mutation run at 6a9de07f54796585c45e36b71560c9565fb9ae84
+# allocator_mutations.py: 10 mutants against compiler/chimi
+BASELINE ok  [cli runtime_state task_release carriers process_lab] (265s)
+KILLED       a release keeps its footprint [cli runtime_state task_release carriers process_lab] (137s)
+KILLED       a release stays a live allocation [cli runtime_state task_release carriers process_lab] (139s)
+KILLED       a freed handle keeps its count [cli runtime_state task_release carriers process_lab] (145s)
+KILLED       young bytes are not deferred to the footprint [cli runtime_state task_release carriers process_lab] (142s)
+KILLED       the peak is never raised [cli runtime_state task_release carriers process_lab] (141s)
+KILLED       several carriers never fold [cli runtime_state task_release carriers process_lab] (228s)
+KILLED       unscoped bytes are not counted [cli runtime_state task_release carriers process_lab] (220s)
+SURVIVED     a block outside the young chunks is not a heap's live bytes [cli runtime_state task_release carriers process_lab] (235s)
+KILLED       a young allocation is not profiled [cli runtime_state task_release carriers process_lab] (139s)
+KILLED       a profiled allocation counts nothing [cli runtime_state task_release carriers process_lab] (139s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+#
+# The one survivor had no test: no scenario counted a process heap's own
+# blocks. Lab scenario MF07 was added for it, and a rerun of that mutant
+# alone at 28620d09dbe32e0d78473ac4a3d7ba73d5109e66 kills it:
+KILLED       a block outside the young chunks is not a heap's live bytes [cli runtime_state task_release carriers process_lab] (219s)

@@ -1,17 +1,18 @@
-# mutation run at ac1c7ed80624042d808c46da3751c259d43ef567
+# mutation run at 6a9de07f54796585c45e36b71560c9565fb9ae84
 # carrier_peak_mutations.py: 8 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- across_carrier_threads] (97s)
-KILLED       a fall is never folded [runtime_state -- across_carrier_threads] (43s)
-KILLED       a fragment fall is never folded [runtime_state -- across_carrier_threads] (39s)
-KILLED       the report keeps the largest carrier peak [runtime_state -- across_carrier_threads] (40s)
-KILLED       a fold never raises the peak [runtime_state -- across_carrier_threads] (43s)
-SURVIVED     every change folds at once [runtime_state -- across_carrier_threads] (44s)
-KILLED       a fold forgets what it folded [runtime_state -- across_carrier_threads] (39s)
-SURVIVED     the report ignores the footprint at exit [runtime_state -- across_carrier_threads] (41s)
-KILLED       a new young chunk never folds [runtime_state -- across_carrier_threads] (45s)
+BASELINE ok  [runtime_state -- across_carrier_threads] (61s)
+KILLED       a fall is never folded [runtime_state -- across_carrier_threads] (61s)
+KILLED       a fragment fall is never folded [runtime_state -- across_carrier_threads] (63s)
+KILLED       the report keeps the largest carrier peak [runtime_state -- across_carrier_threads] (65s)
+KILLED       a fold never raises the peak [runtime_state -- across_carrier_threads] (61s)
+SURVIVED     every change folds at once [runtime_state -- across_carrier_threads] (64s)
+KILLED       a fold forgets what it folded [runtime_state -- across_carrier_threads] (64s)
+SURVIVED     the report ignores the footprint at exit [runtime_state -- across_carrier_threads] (64s)
+KILLED       a new young chunk never folds [runtime_state -- across_carrier_threads] (63s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
 #
-# The two survivors:
+# The folds are Rust since CHI-305 step 5 phase 1 (heap/allocator.rs).
+# The two survivors, as before the move:
 # - "every change folds at once" is equivalent in behaviour: folding on every
 #   change is exact, only slower (one shared atomic per allocation).
 # - "the report ignores the footprint at exit" changes the peak by less than
