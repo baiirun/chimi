@@ -64,9 +64,10 @@ MUTATIONS = [
     language("lists ignore their lengths", COMPARE,
              "                    stack.decide(order_of(left_length, right_length));",
              "                    stack.decide(0);"),
-    language("values of different kinds compare equal", COMPARE,
-             "                order = order_of((*left).kind.0, (*right).kind.0);",
-             "                order = 0;"),
+    # Not listed: values of different kinds comparing equal. Typing gives
+    # both sides one type and each type has one value kind (a Json.Value's
+    # variants are constructed values around their payloads), so the kind
+    # order only keeps the order total; it survived the language suite.
     structural("an exponent sum drops its carries", NUMBER,
                "            carry = i32::from(if subtract { digit < 0 } else { digit > 9 });",
                "            carry = 0;"),
