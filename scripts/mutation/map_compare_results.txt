@@ -1,0 +1,30 @@
+# map_compare_mutations.py: 14 mutants against compiler/chimi (2026-11-26)
+KILLED       a left-heavy node never rotates twice [cli -- native_map_removal_keeps_the_tree_balanced]
+KILLED       a right-heavy node never rotates twice [cli -- native_map_removal_keeps_the_tree_balanced]
+KILLED       rebalancing waits for a difference of three [cli -- native_map_removal_keeps_the_tree_balanced]
+KILLED       a left rotation drops the inner subtree [std_modules -- standard_]
+KILLED       removing the least node keeps it [std_modules -- standard_]
+KILLED       a lookup turns the wrong way [std_modules -- standard_]
+KILLED       entries skip right subtrees [std_modules -- standard_]
+KILLED       maps compare their keys only [std_modules -- standard_]
+KILLED       lists ignore their lengths [language]
+KILLED       an exponent sum drops its carries [cli -- native_structural_comparison_handles_deep_nesting_and_exact_json_numbers]
+KILLED       negative numbers keep the order of their magnitudes [cli -- native_structural_comparison_handles_deep_nesting_and_exact_json_numbers]
+KILLED       a longer mantissa ties with its prefix [cli -- native_structural_comparison_handles_deep_nesting_and_exact_json_numbers]
+KILLED       the decimal point does not move the exponent [cli -- native_structural_comparison_handles_deep_nesting_and_exact_json_numbers]
+KILLED       1e21 renders positionally [std_modules -- standard_]
+# result: every mutant killed
+# The first run found that std_modules' "standard_programs" filter no longer
+# ran the map and set checks (they became std-tests `test` modules); the std
+# helpers now use "standard_". The left-heavy double rotation and the rotation
+# threshold needed the new AVL invariant check in native-map-runtime.c, and the
+# mantissa-prefix rule the new 1.2 vs 1.23 case in native-structural-compare.c.
+#
+# Retargeted from runtime.c in the same PR, all killed:
+# compare_stack_mutations.py: moving to the heap drops the inline steps;
+#   moving to the heap keeps only the first inline step [language]
+# lane_fixes_mutations.py: equal prefixes compare equal [language]
+# std2_json_mutations.py: C Json.Number equality compares spelling [std_modules -- standard_]
+# std2_map_set_mutations.py: C map remove skips rebalancing on the left [cli tree fixture];
+#   C map remove of a node without a left child drops its right subtree;
+#   C map size is one short for a leaf [std_modules -- standard_]

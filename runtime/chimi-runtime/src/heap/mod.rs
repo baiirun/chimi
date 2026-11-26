@@ -1,14 +1,16 @@
 //! The heap's shared layout with `runtime.c`, the collector's oracle, and
 //! the parts that have moved to Rust: allocation, the young chunks, the
 //! regions' start and end, the collector, fragment copies, the heaps'
-//! creation and end, the capability walk, and the value cells; the list
-//! vector, the map and the intrinsics follow in the later phases of
-//! CHI-305 step 5.
+//! creation and end, the capability walk, the value cells, the list vector,
+//! and the map with structural order; the intrinsics follow in the later
+//! phases of CHI-305 step 5.
 
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod allocator;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod collector;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod compare;
 #[cfg(all(feature = "runtime-c", unix))]
 mod collector_abi;
 #[cfg(all(feature = "runtime-c", unix))]
@@ -16,9 +18,15 @@ pub mod fragment;
 #[cfg(all(feature = "runtime-c", unix))]
 mod fragment_abi;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod json_number;
+#[cfg(all(feature = "runtime-c", unix))]
 pub mod list;
 #[cfg(all(feature = "runtime-c", unix))]
 mod list_abi;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod map;
+#[cfg(all(feature = "runtime-c", unix))]
+mod map_abi;
 #[cfg(all(feature = "runtime-c", unix))]
 mod allocator_abi;
 pub mod layout;
