@@ -27,6 +27,16 @@ impl HeapText {
         self.length
     }
 
+    /// The bytes so far.
+    pub fn bytes(&self) -> &[u8] {
+        if self.data.is_null() {
+            &[]
+        } else {
+            // SAFETY: `data` holds `length` written bytes.
+            unsafe { core::slice::from_raw_parts(self.data, self.length) }
+        }
+    }
+
     /// Room for `extra` more bytes and the NUL.
     ///
     /// # Safety

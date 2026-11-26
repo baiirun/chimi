@@ -12,6 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::standard::{boolean_value, failure, shape_defect, standard_constructor_of, standard_value, success};
+use super::message::integer_spelling;
 use super::text::HeapText;
 use crate::decimal::{self, Decimal};
 use crate::heap::allocator::allocate;
@@ -400,25 +401,6 @@ unsafe fn number_to_decimal(spelling: &[u8]) -> Option<Decimal> {
         magnitude *= 10;
     }
     Decimal::new(number.negative, magnitude, scale as u32)
-}
-
-/// The decimal digits of `value`, with a `-` when negative.
-fn integer_spelling(value: i64, output: &mut [u8; 20]) -> &[u8] {
-    let mut magnitude = value.unsigned_abs();
-    let mut start = output.len();
-    loop {
-        start -= 1;
-        output[start] = b'0' + (magnitude % 10) as u8;
-        magnitude /= 10;
-        if magnitude == 0 {
-            break;
-        }
-    }
-    if value < 0 {
-        start -= 1;
-        output[start] = b'-';
-    }
-    &output[start..]
 }
 
 /// std/json's intrinsic `intrinsic` on `arguments`.

@@ -1,8 +1,10 @@
 //! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
-//! calls these for the std/map, std/set, std/json and std/decimal intrinsics.
+//! calls these for the std/map, std/set, std/json, std/decimal and std/bytes
+//! intrinsics.
 
 use core::ffi::c_void;
 
+use super::bytes::bytes_operation;
 use super::collections::{Call, map_operation, set_operation};
 use super::decimals::decimal_operation;
 use super::json::json_operation;
@@ -87,4 +89,19 @@ pub unsafe extern "C" fn chimi_intrinsic_decimal_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { decimal_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`bytes_operation`].
+///
+/// # Safety
+/// As for `bytes_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_bytes_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { bytes_operation(intrinsic, arguments(values, count), call_node) }
 }

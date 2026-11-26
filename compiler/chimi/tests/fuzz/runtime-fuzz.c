@@ -121,7 +121,7 @@ static ChimiControl *call_core(uint32_t intrinsic, ChimiValue **arguments, uint3
   return fz_checked(invoke_core_operation(intrinsic, arguments, count, 0), "core intrinsic");
 }
 static ChimiControl *call_bytes(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
-  return fz_checked(invoke_bytes_operation(intrinsic, arguments, count, 0), "bytes intrinsic");
+  return fz_checked(chimi_intrinsic_bytes_v1(intrinsic, arguments, count, 0), "bytes intrinsic");
 }
 static ChimiControl *call_json(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
   return fz_checked(chimi_intrinsic_json_v1(intrinsic, arguments, count, 0), "json intrinsic");

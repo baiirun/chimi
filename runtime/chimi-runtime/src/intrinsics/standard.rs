@@ -134,6 +134,15 @@ pub unsafe fn defect(message: &'static CStr, node: i64) -> *mut Control {
     unsafe { new_control(ControlKind::DEFECT, ptr::null_mut(), message.as_ptr(), node) }
 }
 
+/// A defect at `node` with a message that lives until the program ends.
+///
+/// # Safety
+/// Runs on a fiber that may allocate; `message` is a lasting C string.
+pub unsafe fn defect_with(message: *const c_char, node: i64) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { new_control(ControlKind::DEFECT, ptr::null_mut(), message, node) }
+}
+
 /// The defect of a standard function the compiler verified but whose
 /// arguments the runtime does not accept.
 ///
