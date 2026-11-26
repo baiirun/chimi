@@ -716,6 +716,9 @@ size_t chimi_runtime_carrier_count = 2;
    (heap/allocator.rs): 0 one carrier, 1 several carrier threads, 2 this
    simulation. */
 uint8_t chimi_runtime_carrier_mode = 2;
+/* Unused here (the simulation's `carrier` is a plain pointer), but the Rust
+   allocator names it on Linux; see the threaded build's. */
+intptr_t chimi_runtime_carrier_tls_offset;
 static Carrier *carrier = &carrier_first;
 
 static Carrier *carrier_at(size_t index) { return index == 0 ? &carrier_first : &carrier_others[index - 1]; }
@@ -760,7 +763,8 @@ static void carrier_migrate(Carrier *parked) {
 static _Thread_local Carrier *carrier_this_thread CARRIER_TLS_MODEL = &carrier_first;
 #if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
 /* Set before main, on the main thread, and read on every thread. */
-static intptr_t carrier_tls_offset;
+#define carrier_tls_offset chimi_runtime_carrier_tls_offset
+intptr_t carrier_tls_offset;
 static inline char *carrier_thread_pointer(void) {
   char *pointer;
 #if defined(__x86_64__)
@@ -907,6 +911,10 @@ static void footprint_seed_process(void) { chimi_footprint_seed_process_v1(&carr
 const bool chimi_runtime_small_block_cache = CHIMI_SMALL_BLOCK_CACHE;
 Carrier *chimi_runtime_carrier_at(size_t index);
 Carrier *chimi_runtime_carrier_at(size_t index) { return carrier_at(index); }
+/* The running carrier, for the Rust allocator where it cannot read the
+   thread-local itself (other platforms, and the simulation). */
+Carrier *chimi_runtime_current_carrier(void);
+Carrier *chimi_runtime_current_carrier(void) { return carrier; }
 
 /* scope_add_live, heap_add_live and area_link have Rust twins in the allocator
    (heap/allocator.rs); these serve the C collector and fragment code until
@@ -996,12 +1004,11 @@ static size_t young_rounded(size_t bytes) {
 /* The allocator is Rust (chimi-runtime heap/allocator.rs): `count` zeroed items
    of `size` bytes in the running fiber's area, from the innermost region's young
    chunks when they fit. It ends the program on overflow or exhausted memory. */
-void *chimi_allocate_v1(Carrier *here, size_t count, size_t size);
-/* Out of line, as the C allocate was: inlined at its two hundred call sites, the
-   carrier's thread-local read grew a small program by 13 KB. */
-__attribute__((noinline)) static void *allocate(size_t count, size_t size) {
-  return chimi_allocate_v1(carrier, count, size);
-}
+void *chimi_allocate_v1(size_t count, size_t size);
+/* It reads the running carrier itself, the way `carrier` does here: passing
+   it from an inlined wrapper grew a small program by 13 KB, and an out-of-line
+   wrapper cost a loop 4% more instructions. */
+static void *allocate(size_t count, size_t size) { return chimi_allocate_v1(count, size); }
 
 /* What the allocator needs from the C that is still here. */
 _Noreturn void chimi_runtime_allocation_overflow(void);

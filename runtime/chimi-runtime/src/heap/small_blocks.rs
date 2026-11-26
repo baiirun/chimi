@@ -9,14 +9,15 @@
 use core::ptr;
 
 pub use super::layout::SmallBlockCache;
-use super::layout::{SMALL_BLOCK_CACHE, SMALL_BLOCK_GRAIN, SMALL_BLOCK_LIMIT, SmallBlock};
+use super::layout::{SMALL_BLOCK_CACHE, SMALL_BLOCK_CLASSES, SMALL_BLOCK_GRAIN, SmallBlock};
 
 /// `bytes` rounded up to the grain, and its size class when the cache keeps
 /// blocks of that size.
 fn class_of(bytes: usize) -> (usize, Option<usize>) {
-    let rounded = bytes.div_ceil(SMALL_BLOCK_GRAIN) * SMALL_BLOCK_GRAIN;
-    let class = (1..=SMALL_BLOCK_LIMIT).contains(&rounded).then(|| rounded / SMALL_BLOCK_GRAIN - 1);
-    (rounded, class)
+    let grains = bytes.div_ceil(SMALL_BLOCK_GRAIN);
+    // Zero bytes wrap to a class past the last, as a size above the limit does.
+    let class = grains.wrapping_sub(1);
+    (grains * SMALL_BLOCK_GRAIN, (class < SMALL_BLOCK_CLASSES).then_some(class))
 }
 
 impl SmallBlockCache {

@@ -83,7 +83,7 @@ const SHARED: &[&str] = &[
     "runtime_exiting",
     // The thread-local carrier's offset from the thread pointer, the same
     // on every thread; set once by a constructor before main.
-    "carrier_tls_offset",
+    "chimi_runtime_carrier_tls_offset",
     // Process-wide footprints and peaks, folded in by every carrier.
     "chimi_runtime_process_footprint_bytes",
     "chimi_runtime_process_peak_footprint_bytes",

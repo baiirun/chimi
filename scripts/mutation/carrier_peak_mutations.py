@@ -14,32 +14,39 @@ def m(name, old, new):
                 filter="across_carrier_threads")
 
 
+ALLOCATOR = "../../runtime/chimi-runtime/src/heap/allocator.rs"
+
+
+def rust(name, old, new):
+    return dict(name=name, file=ALLOCATOR, edits=[(old, new)], targets=["runtime_state"],
+                filter="across_carrier_threads")
+
+
+# The folds moved to the Rust allocator in CHI-305 step 5 phase 1; the
+# report's merge of the process peaks stays in runtime.c.
 MUTATIONS = [
-    m("a fall is never folded",
-      "  carrier->heap_totals.footprint_bytes -= (int64_t)bytes;\n  footprint_fold(footprint_now(),",
-      "  carrier->heap_totals.footprint_bytes -= (int64_t)bytes;\n  if (0) footprint_fold(footprint_now(),"),
-    m("a fragment fall is never folded",
-      "  carrier->heap_totals.fragment_footprint_bytes -= (int64_t)bytes;\n  fragment_footprint_fold();",
-      "  carrier->heap_totals.fragment_footprint_bytes -= (int64_t)bytes;"),
+    rust("a fall is never folded",
+         "        (*here).heap_totals.footprint_bytes = (*here).heap_totals.footprint_bytes.wrapping_sub(bytes as i64);\n        fold_footprint(here, mode);",
+         "        (*here).heap_totals.footprint_bytes = (*here).heap_totals.footprint_bytes.wrapping_sub(bytes as i64);"),
+    rust("a fragment fall is never folded",
+         "        fold_fragment_footprint(here, mode());\n",
+         ""),
     m("the report keeps the largest carrier peak",
       "  if (carrier_count == 1) return;\n  int64_t peak = atomic_load_explicit",
       "  if (carrier_count >= 1) return;\n  int64_t peak = atomic_load_explicit"),
-    m("a fold never raises the peak",
-      "  while (value > high &&",
-      "  while (value > high && 0 &&"),
-    m("every change folds at once",
-      "  if (change < FOOTPRINT_FOLD_BYTES && change > -FOOTPRINT_FOLD_BYTES) return;",
-      "  if (change == 0) return;"),
-    m("a fold forgets what it folded",
-      "  *folded = now;\n  atomic_raise",
-      "  atomic_raise"),
+    rust("a fold never raises the peak",
+         "    raise(peak, process.fetch_add(change, Relaxed) + change);",
+         "    let _ = (peak, process.fetch_add(change, Relaxed));"),
+    rust("every change folds at once",
+         "    if change < FOOTPRINT_FOLD_BYTES && change > -FOOTPRINT_FOLD_BYTES {",
+         "    if change == 0 {"),
+    rust("a fold forgets what it folded",
+         "    *folded = now;\n",
+         ""),
     m("the report ignores the footprint at exit",
       "  totals->peak_footprint_bytes = peak > totals->footprint_bytes ? peak : totals->footprint_bytes;",
       "  totals->peak_footprint_bytes = peak;"),
-]
-
-MUTATIONS += [
-    m("a new young chunk never folds",
-      "    footprint_fold(footprint_now(), &carrier->folded_footprint_bytes, &process_footprint_bytes,\n                   &process_peak_footprint_bytes);\n  }",
-      "  }"),
+    rust("a new young chunk never folds",
+         "        fold_footprint(here, mode());\n    }\n}",
+         "    }\n}"),
 ]

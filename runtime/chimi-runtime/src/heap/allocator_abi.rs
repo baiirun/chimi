@@ -10,9 +10,9 @@ use super::layout::{AllocationHeader, Carrier};
 /// # Safety
 /// As for `allocate`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_allocate_v1(here: *mut Carrier, count: usize, size: usize) -> *mut u8 {
+pub unsafe extern "C" fn chimi_allocate_v1(count: usize, size: usize) -> *mut u8 {
     // SAFETY: the caller's contract.
-    unsafe { allocator::allocate(here, count, size) }
+    unsafe { allocator::allocate(count, size) }
 }
 
 /// [`allocator::release`].

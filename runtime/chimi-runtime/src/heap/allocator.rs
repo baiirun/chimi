@@ -22,7 +22,7 @@
 
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AllocationScope, AreaRole, Carrier, ProfileRow,
@@ -41,17 +41,22 @@ unsafe extern "C" {
     fn chimi_runtime_release_counted_value(value: *const Value);
     /// Carrier `index`, below `chimi_runtime_carrier_count`.
     fn chimi_runtime_carrier_at(index: usize) -> *mut Carrier;
+    /// The running carrier, read from runtime.c's thread-local.
+    fn chimi_runtime_current_carrier() -> *mut Carrier;
+    /// That thread-local's offset from the thread pointer on Linux, the same
+    /// on every thread; set by a constructor before main.
+    static chimi_runtime_carrier_tls_offset: AtomicIsize;
     /// Whether the small-block cache keeps freed blocks: off under
     /// AddressSanitizer, so a use after free is still reported.
     static chimi_runtime_small_block_cache: bool;
     /// How the carriers run: 0 when one carrier runs every fiber, so its own
     /// counts are the process's, else [`CARRIER_THREADS`] or [`SIMULATION`];
     /// set once, before any carrier thread starts.
-    static chimi_runtime_carrier_mode: u8;
+    static chimi_runtime_carrier_mode: AtomicU8;
     /// The number of carriers; set with the mode.
-    static chimi_runtime_carrier_count: usize;
+    static chimi_runtime_carrier_count: AtomicUsize;
     /// The operation profile's rows, indexed by node; null unless profiling.
-    static chimi_runtime_profile_rows: *mut ProfileRow;
+    static chimi_runtime_profile_rows: AtomicPtr<ProfileRow>;
     /// Set once a value of this execution may be a counted handle.
     static chimi_runtime_handles_counted: AtomicBool;
     /// The process-wide footprints and their peaks with several carrier
@@ -75,10 +80,13 @@ const CARRIER_THREADS: u8 = 1;
 /// so a peak check sums both.
 const SIMULATION: u8 = 2;
 
+/// The C globals below are written once on the main thread before any
+/// carrier thread starts, which orders the write before every read on those
+/// threads; they are declared as atomics, read relaxed (a plain load),
+/// because C writes them after Rust code may have run.
 fn mode() -> u8 {
-    // SAFETY: written once on the main thread before any carrier thread
-    // starts, which orders it before every read on those threads.
-    unsafe { ptr::addr_of!(chimi_runtime_carrier_mode).read() }
+    // SAFETY: a global of runtime.c.
+    unsafe { chimi_runtime_carrier_mode.load(Relaxed) }
 }
 
 fn cache_enabled() -> bool {
@@ -87,9 +95,42 @@ fn cache_enabled() -> bool {
 }
 
 fn carrier_count() -> usize {
-    // SAFETY: written once on the main thread before any carrier thread
-    // starts, which orders it before every read on those threads.
-    unsafe { ptr::addr_of!(chimi_runtime_carrier_count).read() }
+    // SAFETY: a global of runtime.c.
+    unsafe { chimi_runtime_carrier_count.load(Relaxed) }
+}
+
+/// The running carrier, outside the carrier simulation. On Linux on x86-64
+/// and AArch64 it reads `runtime.c`'s initial-exec thread-local the way
+/// `runtime.c` does, from the thread pointer plus the variable's fixed
+/// offset, so `allocate` costs no more than when it was C; elsewhere it asks
+/// `runtime.c`. It is read once per call: nothing here parks, so the fiber
+/// cannot move to another carrier meanwhile.
+#[inline(always)]
+fn running_carrier() -> *mut Carrier {
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let thread: *const u8;
+        // SAFETY: reads the thread pointer register, which every thread has.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!("mov {}, qword ptr fs:[0]", out(reg) thread, options(nostack, preserves_flags, readonly));
+            #[cfg(target_arch = "aarch64")]
+            core::arch::asm!("mrs {}, tpidr_el0", out(reg) thread, options(nostack, preserves_flags, nomem));
+        }
+        // SAFETY: the offset names runtime.c's thread-local carrier pointer,
+        // which every thread has, set before it runs anything that allocates.
+        unsafe {
+            thread
+                .offset(chimi_runtime_carrier_tls_offset.load(Relaxed))
+                .cast::<*mut Carrier>()
+                .read()
+        }
+    }
+    #[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    // SAFETY: no precondition.
+    unsafe {
+        chimi_runtime_current_carrier()
+    }
 }
 
 /// The footprint a peak check compares. With one carrier its own delta is
@@ -343,80 +384,83 @@ unsafe fn area_link(area: *mut AllocationArea, header: *mut AllocationHeader) {
     }
 }
 
-/// The area the running fiber allocates in: its override target, or its
-/// heap's innermost region's young area, or the heap's base.
-///
-/// # Safety
-/// `here` is the running carrier, and its fiber's heap is live.
-unsafe fn current_area(here: *mut Carrier) -> *mut AllocationArea {
-    // SAFETY: the caller's contract.
-    unsafe {
-        let fiber = &(*here).fiber;
-        if !fiber.target.is_null() {
-            return fiber.target;
-        }
-        let heap = fiber.heap;
-        if (*heap).innermost.is_null() {
-            ptr::addr_of_mut!((*heap).base)
-        } else {
-            ptr::addr_of_mut!((*(*heap).innermost).young)
-        }
-    }
-}
-
 /// The bytes a young chunk allocation of `bytes` takes, header included:
 /// a multiple of the grain.
 fn young_rounded(bytes: usize) -> usize {
     (HEADER + bytes).div_ceil(SMALL_BLOCK_GRAIN) * SMALL_BLOCK_GRAIN
 }
 
-/// A zeroed block of `rounded` bytes (a multiple of the grain, at most
-/// `YOUNG_CHUNK_LARGEST` plus a header) from `scope`'s chunks.
+/// Starts a new young chunk for `scope`, whose current one has no room.
 ///
 /// # Safety
 /// `here` is the running carrier and `scope` its fiber's innermost region.
-unsafe fn young_bump(here: *mut Carrier, scope: *mut AllocationScope, rounded: usize) -> *mut AllocationHeader {
+unsafe fn young_refill(here: *mut Carrier, scope: *mut AllocationScope) {
     // SAFETY: the caller's contract; a chunk is YOUNG_CHUNK_BYTES with its
     // data at the end of the record.
     unsafe {
-        if ((*scope).bump_end as usize) - ((*scope).bump as usize) < rounded {
-            let chunk = chimi_runtime_young_chunk_take();
-            if (*scope).last_chunk.is_null() {
-                (*scope).first_chunk = chunk;
-            } else {
-                (*(*scope).last_chunk).used = (*scope).bump;
-                (*(*scope).last_chunk).next = chunk;
-            }
-            (*scope).last_chunk = chunk;
-            let data = ptr::addr_of_mut!((*chunk).data).cast::<u8>();
-            (*scope).bump = data;
-            (*scope).bump_end = data.add(YOUNG_CHUNK_CAPACITY);
-            // The deferred young bytes count toward the process footprint
-            // here, once per chunk, so a long pass cannot hide them from its
-            // peak.
-            fold_footprint(here, mode());
+        let chunk = chimi_runtime_young_chunk_take();
+        if (*scope).last_chunk.is_null() {
+            (*scope).first_chunk = chunk;
+        } else {
+            (*(*scope).last_chunk).used = (*scope).bump;
+            (*(*scope).last_chunk).next = chunk;
         }
-        let header = (*scope).bump.cast::<AllocationHeader>();
-        (*scope).bump = (*scope).bump.add(rounded);
-        header
+        (*scope).last_chunk = chunk;
+        let data = ptr::addr_of_mut!((*chunk).data).cast::<u8>();
+        (*scope).bump = data;
+        (*scope).bump_end = data.add(YOUNG_CHUNK_CAPACITY);
+        // The deferred young bytes count toward the process footprint here,
+        // once per chunk, so a long pass cannot hide them from its peak.
+        fold_footprint(here, mode());
     }
 }
 
-/// Counts one allocation of `bytes` against the node being profiled, if any.
+/// Counts one allocation of `bytes` against the node being profiled, if
+/// any, and returns `result`.
 ///
 /// # Safety
-/// `heap` is the running fiber's heap.
-#[inline]
-unsafe fn profile(heap: *const RuntimeHeap, bytes: usize) {
-    // SAFETY: the rows outlive every fiber, and the node index is in range.
+/// `rows` are the profile's rows, which outlive every fiber, and `heap` is
+/// the running fiber's heap, whose node index is in range.
+#[cold]
+#[inline(never)]
+unsafe fn profile_count(rows: *mut ProfileRow, heap: *const RuntimeHeap, bytes: usize, result: *mut u8) -> *mut u8 {
+    // SAFETY: the caller's contract.
     unsafe {
-        let rows = ptr::addr_of!(chimi_runtime_profile_rows).read();
         let node = (*heap).profiled_node_plus_one;
-        if !rows.is_null() && node != 0 {
+        if node != 0 {
             let row = rows.add(node as usize - 1);
             AtomicU64::from_ptr(ptr::addr_of_mut!((*row).allocations)).fetch_add(1, Relaxed);
             AtomicU64::from_ptr(ptr::addr_of_mut!((*row).allocated_bytes)).fetch_add(bytes as u64, Relaxed);
         }
+    }
+    result
+}
+
+/// Returns `result` after counting it in the operation profile, if one
+/// runs. The count is a tail call, so the caller keeps nothing live across
+/// it and saves no registers.
+///
+/// # Safety
+/// `heap` is the running fiber's heap.
+#[inline(always)]
+unsafe fn profiled(heap: *const RuntimeHeap, bytes: usize, result: *mut u8) -> *mut u8 {
+    // SAFETY: a global of runtime.c.
+    let rows = unsafe { chimi_runtime_profile_rows.load(Relaxed) };
+    if rows.is_null() {
+        return result;
+    }
+    // SAFETY: the caller's contract.
+    unsafe { profile_count(rows, heap, bytes, result) }
+}
+
+/// `count * size`, or the end of the program when it overflows or leaves no
+/// room for the header and rounding.
+#[inline(always)]
+fn allocation_bytes(count: usize, size: usize) -> usize {
+    match count.max(1).checked_mul(size) {
+        Some(bytes) if bytes <= usize::MAX - HEADER - SMALL_BLOCK_GRAIN => bytes,
+        // SAFETY: no precondition.
+        _ => unsafe { chimi_runtime_allocation_overflow() },
     }
 }
 
@@ -426,33 +470,126 @@ unsafe fn profile(heap: *const RuntimeHeap, bytes: usize) {
 /// linked into the area. Its kind is `BYTES` until `allocation_kind` changes
 /// it. Ends the program when the size overflows or memory runs out.
 ///
+/// The young bump is the hot path: every call it makes is a tail call or
+/// cold, so it saves no registers, as the C it replaced did not.
+///
 /// # Safety
-/// `here` is the running carrier, with a live heap.
-pub unsafe fn allocate(here: *mut Carrier, count: usize, size: usize) -> *mut u8 {
-    let count = count.max(1);
-    let bytes = match count.checked_mul(size) {
-        Some(bytes) if bytes <= usize::MAX - HEADER - SMALL_BLOCK_GRAIN => bytes,
-        // SAFETY: no precondition.
-        _ => unsafe { chimi_runtime_allocation_overflow() },
-    };
+/// The running carrier's fiber has a live heap.
+#[inline(always)]
+pub unsafe fn allocate(count: usize, size: usize) -> *mut u8 {
+    let bytes = allocation_bytes(count, size);
+    if mode() == SIMULATION {
+        // SAFETY: the caller's contract.
+        return unsafe { allocate_simulated(bytes) };
+    }
+    // SAFETY: the caller's contract.
+    unsafe { allocate_in(running_carrier(), bytes) }
+}
+
+/// [`allocate`] in the carrier simulation, which keeps its running carrier
+/// in `runtime.c`.
+///
+/// # Safety
+/// As for [`allocate`].
+#[cold]
+#[inline(never)]
+unsafe fn allocate_simulated(bytes: usize) -> *mut u8 {
+    // SAFETY: the caller's contract.
+    unsafe { allocate_in(chimi_runtime_current_carrier(), bytes) }
+}
+
+/// # Safety
+/// `here` is the running carrier, whose fiber has a live heap.
+#[inline(always)]
+unsafe fn allocate_in(here: *mut Carrier, bytes: usize) -> *mut u8 {
     // SAFETY: the caller's contract covers every carrier, heap, scope and
     // area read and written below.
     unsafe {
         let fiber = &(*here).fiber;
         let heap = fiber.heap;
-        let innermost = if fiber.target.is_null() { (*heap).innermost } else { ptr::null_mut() };
-        if !innermost.is_null() && !(*innermost).links_young && bytes <= YOUNG_CHUNK_LARGEST {
-            let header = young_bump(here, innermost, young_rounded(bytes));
-            (*header).bytes = bytes;
-            (*header).area = ptr::addr_of_mut!((*innermost).young);
-            (*header).in_chunk = true;
-            (*innermost).pending_bytes = (*innermost).pending_bytes.wrapping_add(bytes);
-            (*innermost).pending_count = (*innermost).pending_count.wrapping_add(1);
-            (*here).pending_footprint_bytes = (*here).pending_footprint_bytes.wrapping_add((HEADER + bytes) as i64);
-            profile(heap, bytes);
-            return header.add(1).cast();
+        if !fiber.target.is_null() {
+            return allocate_block(here, heap, fiber.target, bytes);
         }
-        let area = current_area(here);
+        let innermost = (*heap).innermost;
+        if innermost.is_null() {
+            return allocate_block(here, heap, ptr::addr_of_mut!((*heap).base), bytes);
+        }
+        if (*innermost).links_young || bytes > YOUNG_CHUNK_LARGEST {
+            return allocate_block(here, heap, ptr::addr_of_mut!((*innermost).young), bytes);
+        }
+        let rounded = young_rounded(bytes);
+        let bump = (*innermost).bump;
+        if ((*innermost).bump_end as usize) - (bump as usize) < rounded {
+            return allocate_young_refilled(here, heap, innermost, bytes);
+        }
+        let result = young_bump(here, innermost, bump, bytes, rounded);
+        profiled(heap, bytes, result)
+    }
+}
+
+/// [`allocate_in`]'s young path once its chunk is full, out of line, once
+/// per chunk.
+///
+/// # Safety
+/// `here` is the running carrier, `heap` its fiber's heap and `innermost`
+/// that heap's innermost region, which takes young allocations of `bytes`.
+#[cold]
+#[inline(never)]
+unsafe fn allocate_young_refilled(
+    here: *mut Carrier,
+    heap: *mut RuntimeHeap,
+    innermost: *mut AllocationScope,
+    bytes: usize,
+) -> *mut u8 {
+    // SAFETY: the caller's contract; a new chunk holds the largest young
+    // allocation.
+    unsafe {
+        young_refill(here, innermost);
+        let result = young_bump(here, innermost, (*innermost).bump, bytes, young_rounded(bytes));
+        profiled(heap, bytes, result)
+    }
+}
+
+/// Takes `rounded` bytes at `bump`, the region's bump pointer, which has
+/// room for them, and counts the allocation as pending. A zeroed block:
+/// cached chunks are zero.
+///
+/// # Safety
+/// As for [`allocate_young_refilled`], with room at `bump`.
+#[inline(always)]
+unsafe fn young_bump(
+    here: *mut Carrier,
+    innermost: *mut AllocationScope,
+    bump: *mut u8,
+    bytes: usize,
+    rounded: usize,
+) -> *mut u8 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let header = bump.cast::<AllocationHeader>();
+        (*innermost).bump = bump.add(rounded);
+        (*header).bytes = bytes;
+        (*header).area = ptr::addr_of_mut!((*innermost).young);
+        (*header).in_chunk = true;
+        (*innermost).pending_bytes = (*innermost).pending_bytes.wrapping_add(bytes);
+        (*innermost).pending_count = (*innermost).pending_count.wrapping_add(1);
+        (*here).pending_footprint_bytes = (*here).pending_footprint_bytes.wrapping_add((HEADER + bytes) as i64);
+        header.add(1).cast()
+    }
+}
+
+/// [`allocate`]'s path outside the young chunks: a block of its own, linked
+/// into `area` and counted there. Out of line, so the young path saves no
+/// registers.
+///
+/// # Safety
+/// As for [`allocate`], with `here` the running carrier, `heap` its fiber's
+/// heap and `area` the area that fiber allocates in: its override target,
+/// or its heap's innermost region's young area, or the heap's base.
+#[inline(never)]
+unsafe fn allocate_block(here: *mut Carrier, heap: *mut RuntimeHeap, area: *mut AllocationArea, bytes: usize) -> *mut u8 {
+    // SAFETY: the caller's contract.
+    unsafe {
         let header = (*here).small_blocks.take(&mut (*here).heap_totals.cached_bytes, HEADER + bytes, cache_enabled())
             .cast::<AllocationHeader>();
         if header.is_null() {
@@ -471,7 +608,6 @@ pub unsafe fn allocate(here: *mut Carrier, count: usize, size: usize) -> *mut u8
         } else if (*area).role != AreaRole::FRAGMENT {
             (*here).unscoped_allocated_bytes = (*here).unscoped_allocated_bytes.wrapping_add(bytes as u64);
         }
-        profile(heap, bytes);
         if (*area).role != AreaRole::STATIC {
             (*here).heap_totals.live_allocations = (*here).heap_totals.live_allocations.wrapping_add(1);
             footprint_add(here, HEADER + bytes);
@@ -479,7 +615,7 @@ pub unsafe fn allocate(here: *mut Carrier, count: usize, size: usize) -> *mut u8
                 fragment_footprint_add(here, HEADER + bytes);
             }
         }
-        header.add(1).cast()
+        profiled(heap, bytes, header.add(1).cast())
     }
 }
 

@@ -113,8 +113,8 @@ MUTANTS = [
     ("never-queue-release", "dropped channels free their queued messages",
      "    chimi_fiber_handle_drop(key);\n    return;\n", "    return;\n", RELEASE),
     ("endpoint-free-not-counted", "dropped channels free their queued messages",
-     "    if (key) counted_handle_drop(key);\n  }\n  if (header->area->heap)",
-     "    (void)key;\n  }\n  if (header->area->heap)", RELEASE),
+     "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_drop(key);\n}",
+     "  uint64_t key = counted_handle_key(value);\n  (void)key;\n}", RELEASE),
     ("no-task-context-hook", "an unrun child's captures are freed",
      "    .release_task_context = release_task_context,\n", "", RELEASE),
     # The small-block cache is Rust since CHI-305 step 5 phase 1; its
