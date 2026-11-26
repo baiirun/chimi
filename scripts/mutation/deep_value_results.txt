@@ -24,3 +24,8 @@ KILLED       interpreter copies records, tuples, and constructed values on refer
 KILLED       constant measuring walks shared fields again [lib -- measuring_a_growing_constant] (4s)
 KILLED       native marking rescans the whole state on every pass [cli -- native_marking_work_is_linear] (16s)
 # result: every mutant killed
+#
+# CHI-305 step 5 phase 2 moved the collector to Rust; the mutants below were
+# retargeted to runtime/chimi-runtime/src/heap/collector.rs and rerun:
+# rerun at 359db3bebf45bb6abd5063d355f049bbb2a15b58
+KILLED       native marking rescans the whole state on every pass [cli -- native_marking_work_is_linear] (73s)

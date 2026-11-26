@@ -1,12 +1,11 @@
-# mutation run at df97ed775e47c4d62e962316afe96eaf2feca554
+# mutation run at 3cdf7630f11c94619f750856f14586867d58e1be
 # heap_verify_mutations.py: 7 mutants against compiler/chimi
-BASELINE ok  [../../scripts/mutation/heap-verify-harness.sh] (253s)
-KILLED       a full pass frees a marked survivor [../../scripts/mutation/heap-verify-harness.sh] (59s)
-KILLED       a sweep leaves the survivor counts behind [../../scripts/mutation/heap-verify-harness.sh] (59s)
-KILLED       a pass frees a marked young allocation [../../scripts/mutation/heap-verify-harness.sh] (62s)
+# (baseline passed in an earlier run at the same commit, 57 s)
+KILLED       a full pass frees a marked survivor [../../scripts/mutation/heap-verify-harness.sh] (57s)
+KILLED       a sweep leaves the survivor counts behind [../../scripts/mutation/heap-verify-harness.sh] (56s)
+KILLED       a pass frees a marked young allocation [../../scripts/mutation/heap-verify-harness.sh] (55s)
 KILLED       marking skips a list node's values, unchecked [../../scripts/mutation/heap-verify-harness.sh] (56s)
 KILLED       a full pass keeps unmarked list nodes [../../scripts/mutation/heap-verify-harness.sh] (55s)
-KILLED       young chunk survivors are not moved [../../scripts/mutation/heap-verify-harness.sh] (59s)
-KILLED       adopted areas are not promoted [../../scripts/mutation/heap-verify-harness.sh] (58s)
+KILLED       young chunk survivors are not moved [../../scripts/mutation/heap-verify-harness.sh] (57s)
+KILLED       adopted areas are not promoted [../../scripts/mutation/heap-verify-harness.sh] (55s)
 # result: every mutant killed
-# Each mutant is reported by the heap check itself; the forwarding check the list-node mutant would meet first is removed with it.

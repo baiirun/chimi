@@ -1,0 +1,17 @@
+# mutation run at 3cdf7630f11c94619f750856f14586867d58e1be
+# collector_mutations.py: 7 mutants against compiler/chimi
+BASELINE ok  [../../scripts/mutation/native-heap-harness.sh] (244s)
+KILLED       a minor pass rescans the old survivors [../../scripts/mutation/native-heap-harness.sh] (66s)
+KILLED       every pass after the first is full [../../scripts/mutation/native-heap-harness.sh] (155s)
+KILLED       a full pass needs no minimum growth [../../scripts/mutation/native-heap-harness.sh] (63s)
+KILLED       no pass is ever full [../../scripts/mutation/native-heap-harness.sh] (64s)
+KILLED       a region's end drops its survivors [../../scripts/mutation/native-heap-harness.sh] (62s)
+KILLED       a pass ignores a pointer into another heap [../../scripts/mutation/native-heap-harness.sh] (62s)
+SURVIVED     a pointer of the wrong kind is followed [../../scripts/mutation/native-heap-harness.sh] (63s)
+#
+# The wrong-kind survivor had no test: nothing built a value whose pointer
+# names an allocation of another kind. native-heap.c gained
+# test_a_pointer_to_the_wrong_kind_ends_the_program, and a rerun kills it:
+# rerun at 359db3bebf45bb6abd5063d355f049bbb2a15b58
+KILLED       a pointer of the wrong kind is followed [../../scripts/mutation/native-heap-harness.sh] (65s)
+# result: every mutant killed

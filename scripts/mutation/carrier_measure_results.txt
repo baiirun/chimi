@@ -23,3 +23,10 @@ KILLED       one carrier's epochs restart at every block [runtime_state -- acros
 exit 1
 # 13 of 14 killed. Survivor, kept: "the count never reaches the runner". A run on one carrier produces a report of the same shape, so no fast test can tell; the measurements themselves show it (PG04's stop grows from 15 to 49-65 µs only when the count arrives).
 # An earlier run of this list filled the disk and reported every mutant KILLED-BUILD; it was discarded.
+#
+# CHI-305 step 5 phase 2 moved the collector to Rust; the mutants below were
+# retargeted to runtime/chimi-runtime/src/heap/collector.rs and rerun:
+# rerun at 359db3bebf45bb6abd5063d355f049bbb2a15b58
+KILLED       a carrier never takes a block [runtime_state -- across_carrier_threads] (57s)
+KILLED       blocks overlap between carriers [runtime_state -- across_carrier_threads] (57s)
+KILLED       one carrier's epochs restart at every block [runtime_state -- across_carrier_threads] (58s)
