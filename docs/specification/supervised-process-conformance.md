@@ -816,8 +816,8 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 | MF03 | U10 | N `start_process` and `remove_process` cycles, for N = 100 and N = 10,000. Equal `heap_chunks_live`, and no live memberships at exit | Leaks per membership |
 | MF04 | U5 | 64 queued Int messages hold less than 256 KiB of `fragment_bytes_peak` | One 64 KiB chunk per small fragment. Coordinator decision 6 on `ts-a6b43b` requires small-fragment slabs |
 | MF05 | U3 | A program that uses tasks but no processes runs a 1,000,000-pass loop with equal peak live bytes at 10,000 passes | Loop reclamation still disabled under `CHIMI_REQUIRES_SCHEDULER` (`prog show ts-da83af`) |
-| MF07 | U5 | A process builds a 2,000-element list, one block too large for a young chunk. `process_heap_peak_value_bytes` is between 16,000 and 65,536 | A process heap that does not count its own blocks, or takes off more than it counted |
 | MF06 | U5 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a`. As built, the process kernel is the runtime variant compiled with `CHIMI_PROCESS_KERNEL`, whose `chimi_rt_process_entry` only process programs define; `chimi_fiber_abi_version` marks the scheduler archive. The scheduler's own process code is part of `libchimi_fiber.a` and is not split out | Pay-for-play linking broken |
+| MF07 | U5 | A process builds a 2,000-element list, one block too large for a young chunk. `process_heap_peak_value_bytes` is between 16,000 and 65,536 | A process heap that does not count its own blocks, or takes off more than it counted |
 
 ### Observability
 
@@ -1205,7 +1205,7 @@ scenarios pass and `CURRENT_STAGE` names it.
 | U2 | Capability checking for specs, inboxes, and managed handles, and lowering to verified Core | SP02, SP04–SP06, SF01–SF03, SF19–SF24, CO01–CO04 |
 | U3 | Per-owner heaps, regions, and fragments in `runtime.c`, with loop reclamation on in every tier. The concurrency lab stays green | CB06, MF05 |
 | U4 | Copy on transfer for `Task.start`, `Task.result`, and `Channel.send` | none |
-| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 10), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, OB01–OB03, OB05, OB07, OB08, IP01 |
+| U5 | The process kernel: `Process.spec`, `send`, `receive`, `Supervisor.start`, `start_process`, `stop`, the trace family, ABI version 5 (now 10), and the memory-report fields | MB01–MB04, MB06, MB07, MB11, RT08, SV01, SD01, SD09, CB01–CB03, CB07, MF01, MF04, MF06, MF07, OB01–OB03, OB05, OB07, OB08, IP01 |
 | U6 | Restart accounting and escalation at the root. Needs `Duration` and `--clock=virtual` from ts-f31a20 | MB05, MB10, RT01, RT02, SV03, SV04, SV11, RA01–RA05, RA08, ES01, ES05, CB08, OB04, OB06 |
 | U7 | Admission, names, removal, `Supervisor.wait`, drain on cancellation | MB08, MB09, RT03–RT07, SV02, SV05–SV08, SV12, RA06, RR01–RR04, SD08, CB04 |
 | U8 | `shutdown_within` deadlines, forced termination, and structured child tasks inside processes | RA07, RR06, SD02–SD05, SD07, CB05 |
@@ -1246,11 +1246,11 @@ changing a contract.
 | Shutdown and forced termination (SD) | 13 |
 | Signals (SG) | 3 |
 | Copy-boundary safety (CB) | 14 |
-| Memory flatness (MF) | 6 |
+| Memory flatness (MF) | 7 |
 | Observability (OB) and backend support (IP) | 9 |
 | Forcing program (FP) | 2 |
 | Performance gates (PG) | 10 |
-| **Total** | **163** |
+| **Total** | **164** |
 
 Four scenarios use C harnesses: RA06, SD04, CB06, and CB07.
 
