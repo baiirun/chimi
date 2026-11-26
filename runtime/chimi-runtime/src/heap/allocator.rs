@@ -87,7 +87,7 @@ fn mode() -> u8 {
     unsafe { chimi_runtime_carrier_mode.load(Relaxed) }
 }
 
-fn cache_enabled() -> bool {
+pub(super) fn cache_enabled() -> bool {
     // SAFETY: a constant of runtime.c.
     unsafe { chimi_runtime_small_block_cache }
 }
@@ -371,7 +371,7 @@ pub(super) unsafe fn heap_add_live(heap: *mut RuntimeHeap, bytes: usize) {
 ///
 /// # Safety
 /// `area` is live and `header` is on no list.
-unsafe fn area_link(area: *mut AllocationArea, header: *mut AllocationHeader) {
+pub(super) unsafe fn area_link(area: *mut AllocationArea, header: *mut AllocationHeader) {
     // SAFETY: the caller's contract.
     unsafe {
         (*header).area = area;

@@ -339,7 +339,7 @@ static void *carrier_thread(void *raw_index) {
     uint64_t span = begin_node(&runtime, 0, 1, "carrier_round");
     spans[index * ROUNDS + round] = span;
     for (uint32_t epoch = 0; epoch < EPOCHS_PER_ROUND; ++epoch)
-      epochs[(index * ROUNDS + round) * EPOCHS_PER_ROUND + epoch] = take_mark_epoch();
+      epochs[(index * ROUNDS + round) * EPOCHS_PER_ROUND + epoch] = chimi_take_mark_epoch_v1(carrier);
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
     ChimiSchedulerTraceEvent started = {.task = index + 1};
     emit_scheduler_event(&runtime, &started);
@@ -598,9 +598,9 @@ static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
 /* One carrier sees the epochs and span ids a single shared counter would
    give: consecutive, across a block boundary. */
 static void a_carrier_alone_takes_consecutive_ids(void) {
-  uint64_t first = take_mark_epoch();
+  uint64_t first = chimi_take_mark_epoch_v1(carrier);
   for (uint64_t taken = 1; taken < 2 * MARK_EPOCH_BLOCK; ++taken)
-    CHECK(take_mark_epoch() == first + taken, "one carrier's epochs skip after %" PRIu64, first + taken - 1);
+    CHECK(chimi_take_mark_epoch_v1(carrier) == first + taken, "one carrier's epochs skip after %" PRIu64, first + taken - 1);
   uint64_t span = take_spans(&runtime, 1);
   CHECK(take_spans(&runtime, 3) == span + 1 && take_spans(&runtime, 1) == span + 4,
         "one carrier's span ids are not consecutive");

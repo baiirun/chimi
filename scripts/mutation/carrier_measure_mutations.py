@@ -10,16 +10,18 @@ C = "runtime/native/runtime.c"
 PERFORMANCE = "src/process_lab/performance.rs"
 MOD = "src/process_lab/mod.rs"
 BIN = "src/bin/process_lab.rs"
+COLLECTOR = "../../runtime/chimi-runtime/src/heap/collector.rs"
 
 
 def lab(name, file, old, new, filter=""):
     return dict(name=name, file=file, edits=[(old, new)], targets=["process_lab"], filter=filter)
 
 
-def epoch(name, old, new):
+def epoch(name, old, new, file=C):
     # The carrier-threads fixture takes epochs and span ids on four threads
     # and checks that none repeats; the program suites cannot see a repeat.
-    return dict(name=name, file=C, edits=[(old, new)], targets=["runtime_state"],
+    # Mark epochs are the Rust collector's since CHI-305 step 5 phase 2.
+    return dict(name=name, file=file, edits=[(old, new)], targets=["runtime_state"],
                 filter="across_carrier_threads")
 
 
@@ -61,11 +63,11 @@ MUTATIONS = [
         "    if false {",
         filter="without_performance"),
     epoch("a carrier never takes a block",
-          "  if (carrier->next_epoch == carrier->end_epoch) {",
-          "  if (false) {"),
+          "        if (*here).next_epoch == (*here).end_epoch {",
+          "        if false {", COLLECTOR),
     epoch("blocks overlap between carriers",
-          "atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);",
-          "atomic_fetch_add_explicit(&next_mark_epoch, 1, memory_order_relaxed);"),
+          "            let start = NEXT_MARK_EPOCH.fetch_add(block, Relaxed);",
+          "            let start = NEXT_MARK_EPOCH.fetch_add(1, Relaxed);", COLLECTOR),
     epoch("a carrier never takes a span block",
           "  if (carrier->end_span - carrier->next_span < count) {",
           "  if (false) {"),
@@ -73,6 +75,6 @@ MUTATIONS = [
           "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);",
           "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);"),
     epoch("one carrier's epochs restart at every block",
-          "    carrier->next_epoch = start;\n",
-          "    carrier->next_epoch = start - (start > 1 ? 1 : 0);\n"),
+          "            (*here).next_epoch = start;\n",
+          "            (*here).next_epoch = start - u64::from(start > 1);\n", COLLECTOR),
 ]

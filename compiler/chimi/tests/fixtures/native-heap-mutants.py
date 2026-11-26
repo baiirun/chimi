@@ -55,25 +55,10 @@ E2E = cargo("native_concurrency_pipeline_runs", "native_task_result_can_be_read"
             "native_a_task_keeps", "native_a_queued_message", "native_child_defect", "native_channel", "native_task")
 
 MUTANTS = [
-    ("minor-pass-rescans-survivors", "pass cost independent of old survivors",
-     "  if (area->role == AREA_SURVIVOR && !carrier->collecting_full) return;\n", "", HEAP),
-    ("full-pass-every-pass", "full-pass trigger (baseline + minimum growth)",
-     "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&\n              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;",
-     "  bool full = scope->has_baseline; (void)survivors;", HEAP),
-    ("full-pass-without-minimum-growth", "full-pass trigger (baseline + minimum growth)",
-     "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&\n              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;",
-     "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline;", HEAP),
-    ("never-full-pass", "memory depends on live state, not uptime",
-     "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&\n              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;",
-     "  bool full = false; (void)survivors;", HEAP),
+    # The collector is Rust since CHI-305 step 5 phase 2: its pass-choice,
+    # marking and region-end mutants are in scripts/mutation/collector_mutations.py.
     ("adopt-into-base", "adopted messages join the innermost region",
      "  if (scope) {\n    area->role = AREA_YOUNG;", "  if (0) {\n    area->role = AREA_YOUNG;", HEAP),
-    ("region-exit-drops-survivors", "region exit hands survivors to the enclosing region",
-     "  chimi_scope_end_v1(scope);\n  return status;",
-     "  area_release_all(&scope->survivors); scope->live_bytes = 0;\n  chimi_scope_end_v1(scope);\n  return status;", HEAP),
-    ("pass-ignores-foreign-pointers", "a pointer into another heap is reported",
-     "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n",
-     "", HEAP),
     ("copy-ignores-foreign-pointers", "a pointer into another heap is reported",
      "  if (!copy_owns(copy, header->area)) {\n    copy->status = HEAP_FOREIGN_POINTER;",
      "  if (0) {\n    copy->status = HEAP_FOREIGN_POINTER;", HEAP),
