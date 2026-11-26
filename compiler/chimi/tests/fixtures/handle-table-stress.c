@@ -6,8 +6,9 @@
    table grows several times and shifts entries while the other thread probes it. A drop that removes the last
    reference while the anchor is still held would be a premature release: B
    checks that none happens, and A checks that dropping each anchor at the end is
-   the last reference. Built with ThreadSanitizer when the compiler supports it,
-   so an access outside the table's lock fails the run.
+   the last reference. The table takes its own lock in Rust; a lost update
+   there shows up as a wrong count here. Built with ThreadSanitizer when the
+   compiler supports it, which sees that lock's calls into the C library.
 
    usage: handle-table-stress     prints "ok" */
 #include "runtime.c"
@@ -63,7 +64,7 @@ static _Atomic bool producer_done;
    scheduler's). The keys here name no open handle, so these retain and drop
    them in the table directly, without counted_handle_drop's close. */
 static void table_retain(uint64_t key) { native_handle_retain(key | NATIVE_HANDLE_KEY); }
-static bool locked_drop(uint64_t key) { return native_handle_release(key | NATIVE_HANDLE_KEY); }
+static bool table_drop(uint64_t key) { return native_handle_release(key | NATIVE_HANDLE_KEY); }
 
 /* Thread `thread`'s own key number `index`, far from the anchored keys. */
 static uint64_t own_key(int thread, uint64_t index) {
@@ -75,13 +76,13 @@ static uint64_t own_key(int thread, uint64_t index) {
 static void slide_window(int thread, uint64_t index) {
   table_retain(own_key(thread, index));
   if (index >= WINDOW)
-    CHECK(locked_drop(own_key(thread, index - WINDOW)), "own key %" PRIu64 " kept a reference",
+    CHECK(table_drop(own_key(thread, index - WINDOW)), "own key %" PRIu64 " kept a reference",
           own_key(thread, index - WINDOW));
 }
 
 static void close_window(int thread, uint64_t next) {
   for (uint64_t index = next >= WINDOW ? next - WINDOW : 0; index < next; ++index)
-    CHECK(locked_drop(own_key(thread, index)), "own key %" PRIu64 " kept a reference",
+    CHECK(table_drop(own_key(thread, index)), "own key %" PRIu64 " kept a reference",
           own_key(thread, index));
 }
 
@@ -116,36 +117,27 @@ static void *consumer(void *unused) {
     }
     uint64_t key = ring[tail % 1024];
     atomic_store_explicit(&ring_tail, tail + 1, memory_order_release);
-    CHECK(!locked_drop(key), "key %" PRIu64 " reached zero while its anchor was held", key);
+    CHECK(!table_drop(key), "key %" PRIu64 " reached zero while its anchor was held", key);
     if (key % 16 == 0) slide_window(1, own++);
   }
   close_window(1, own);
   return NULL;
 }
 
-static size_t locked_len(void) {
-  pthread_mutex_lock(&handle_count_lock);
-  size_t len = chimi_handle_counts_len_v1();
-  pthread_mutex_unlock(&handle_count_lock);
-  return len;
-}
-
 int main(void) {
   /* A count left from an earlier execution is forgotten when the next starts. */
   table_retain(KEYS + 1);
   channel_endpoints_reset();
-  CHECK(locked_len() == 0, "%zu keys outlived the reset", locked_len());
+  CHECK(chimi_handle_counts_len_v1() == 0, "%zu keys outlived the reset", chimi_handle_counts_len_v1());
   for (uint64_t key = 1; key <= KEYS; ++key) table_retain(key);
   pthread_t threads[2];
   CHECK(pthread_create(&threads[0], NULL, producer, NULL) == 0, "start producer");
   CHECK(pthread_create(&threads[1], NULL, consumer, NULL) == 0, "start consumer");
   for (int index = 0; index < 2; ++index) pthread_join(threads[index], NULL);
   for (uint64_t key = 1; key <= KEYS; ++key)
-    CHECK(locked_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
-  pthread_mutex_lock(&handle_count_lock);
+    CHECK(table_drop(key), "key %" PRIu64 " kept a reference after its anchor", key);
   size_t capacity = chimi_handle_counts_capacity_v1();
-  pthread_mutex_unlock(&handle_count_lock);
-  CHECK(locked_len() == 0, "%zu keys left in the table", locked_len());
+  CHECK(chimi_handle_counts_len_v1() == 0, "%zu keys left in the table", chimi_handle_counts_len_v1());
   CHECK(capacity >= 8192, "the table grew to only %zu slots", capacity);
   puts("ok");
   return 0;

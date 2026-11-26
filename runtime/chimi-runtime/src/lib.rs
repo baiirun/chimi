@@ -27,6 +27,7 @@ mod float_abi;
 pub mod graphemes;
 pub mod handle_counts;
 mod handle_counts_abi;
+mod locked;
 pub mod handles;
 mod handles_abi;
 pub mod json;

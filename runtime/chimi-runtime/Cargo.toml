@@ -13,7 +13,8 @@ doctest = false
 # binding API from `runtime.c`, so only the runtime archives that link with it
 # turn this on: `compiler/chimi/build.rs` passes it to its nested builds of
 # the fiber and standalone archives, and nothing in the workspace enables it.
-bindings = ["dep:libc"]
+bindings = []
 
 [target.'cfg(unix)'.dependencies]
-libc = { version = "=0.2.189", default-features = false, optional = true }
+# The pthread mutex behind `Locked`, and the bindings' system calls.
+libc = { version = "=0.2.189", default-features = false }
