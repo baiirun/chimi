@@ -122,6 +122,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       uses too. What a Receiver, Completion or managed handle does when the
       walk meets it stays in `runtime.c` behind one callback, since it is a
       scheduler request; it moves with the task and channel intrinsics.
+      That closes phase 3. What `runtime.c` still has of the task and
+      process heap lifecycle is the two fiber entries, which create and end
+      the heap around `invoke` and the tracing, so they move with dispatch
+      (phase 7); and the scheduler's release hooks, which are one call into
+      the Rust fragment free each and move with the task and process
+      contexts they also free (phase 5).
    4. Values: scalar and text builders with environments, the list vector,
       and the AVL map together with structural compare (three PRs).
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,

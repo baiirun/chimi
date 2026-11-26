@@ -29,3 +29,17 @@ KILLED       native marking rescans the whole state on every pass [cli -- native
 # retargeted to runtime/chimi-runtime/src/heap/collector.rs and rerun:
 # rerun at 359db3bebf45bb6abd5063d355f049bbb2a15b58
 KILLED       native marking rescans the whole state on every pass [cli -- native_marking_work_is_linear] (73s)
+
+# CHI-305 phase 3: the capture walk moved to heap/transfer.rs; its mutants retargeted, two added
+# mutation run at 00c7882d1e80f1a7d00e061ae4023b61cff9392b
+# deep_value_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [cli -- native_capture_transfer_work_is_linear] (55s)
+BASELINE ok  [cli -- native_tasks_capture_render_encode_and_send] (2s)
+BASELINE ok  [cli -- native_] (23s)
+KILLED       native capture transfer scans the visited set linearly [cli -- native_capture_transfer_work_is_linear] (54s)
+KILLED       native capture transfer skips list elements [cli -- native_tasks_capture_render_encode_and_send] (54s)
+KILLED       native capture transfer skips closure environments [cli -- native_] (76s)
+KILLED       native capture transfer gives up after a fixed number of parts [cli -- native_tasks_capture_render_encode_and_send] (54s)
+KILLED       native capture transfer counts no probes [cli -- native_capture_transfer_work_is_linear] (54s)
+KILLED       native capture transfer leaves a captured Receiver with the parent [cli -- native_] (68s)
+# result: every mutant killed
