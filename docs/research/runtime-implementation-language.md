@@ -95,6 +95,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       thread pointer and the offset C computes. The young bump saves no
       registers (every call on it is cold or a tail call), and the block path
       is out of line with its area passed in.
+      Second PR (2026-11-26): the young chunks (take, give, the cache and
+      the poisoned reset), the pending-count flush, the chunk reset after a
+      pass, and allocation scope begin and end move to
+      `chimi-runtime/src/heap/young.rs`; `runtime.c` keeps the collector
+      that calls them once per pass. The reset's walk rounds sizes with a
+      mask, because `div_ceil` there cost the loop 2.2%.
    2. The collector: mark, forward, promote and sweep.
    3. Fragment copy, the transfer walk, and the task and process heap
       lifecycle; handle drops become Rust-to-Rust calls.

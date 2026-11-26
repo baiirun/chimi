@@ -4078,6 +4078,79 @@ fn native_scheduler_free_loop_reclaims_each_pass() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// Guards: a loop inside another loop's pass opens a nested allocation region, and
+// its end hands its counts to the outer region: the inner passes' collections stay in
+// the memory report, and the peak counts the outer pass's live bytes while the inner
+// loop runs (CHI-305). Counts are exact on one carrier; this program peaks at 22,720
+// live bytes, a nested peak left out of the outer one gives 8,640, and an outer
+// region not flushed before the inner one opens gives 18,368.
+#[test]
+fn native_nested_loop_region_counts_reach_the_outer_region() {
+    let scratch = scratch_directory("native-nested-loop-memory");
+    let executable = build_native(
+        &scratch,
+        "nested-loop",
+        concat!(
+            "import std/list as List\n",
+            "\n",
+            "fn inner(round: Int) -> Int {\n",
+            "  loop state = (0, 0) {\n",
+            "    let (pass, sum) = state\n",
+            "    case pass {\n",
+            "      30 -> break sum\n",
+            "      _ -> {\n",
+            "        let wide = List.repeat(pass + round, 400)\n",
+            "        (pass + 1, sum + List.length(wide))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "\n",
+            "pub fn main() -> Int {\n",
+            "  loop state = (0, [], 0) {\n",
+            "    let (round, kept, sum) = state\n",
+            "    case round {\n",
+            "      20 -> break sum + List.length(kept)\n",
+            "      _ -> {\n",
+            "        let small = List.repeat(round, 8)\n",
+            "        (round + 1, List.append(kept, small), sum + inner(round))\n",
+            "      }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    );
+    let memory_report = scratch.join("nested-loop-memory.json");
+    let outcome = scratch.join("nested-loop-outcome.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--carriers=1")
+        .arg("--trace=off")
+        .arg(format!("--memory-report-file={}", memory_report.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg("--")
+        .output()
+        .expect("run native nested loop with a memory report");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(outcome).unwrap(),
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":240160}\n"
+    );
+    let memory_report = std::fs::read_to_string(memory_report).unwrap();
+    let collections = json_u64_field(&memory_report, "scoped_collections");
+    assert!(collections >= 20 * 30, "only {collections} collections were reported");
+    let peak_live = json_u64_field(&memory_report, "scoped_peak_live_bytes");
+    assert!(
+        (20_000..50_000).contains(&peak_live),
+        "nested loop peaked at {peak_live} live bytes"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Guards: an integer loop with no binding runs as direct machine passes (CHI-90): it
 // opens no allocation region, so its passes leave no collections in the memory report,
 // and it still returns the runtime loop's value.
