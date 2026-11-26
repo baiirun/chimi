@@ -1193,7 +1193,9 @@ static void allocation_kind(void *value, AllocationKind kind) {
    (chimi-runtime handle_counts.rs, handle_counts_abi.rs): each call below
    takes a pthread mutex there, after the scheduler's kernel lock and
    test_log_lock, and nothing under it retains, drops, parks or runs a hook.
-   Keys are never 0. */
+   The standalone allocator can exit with it held when the map cannot grow,
+   which is safe while no atexit handler touches the counts. Keys are never
+   0. */
 #define NATIVE_HANDLE_KEY (UINT64_C(1) << 62)
 
 static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {

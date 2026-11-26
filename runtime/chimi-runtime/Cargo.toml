@@ -16,5 +16,5 @@ doctest = false
 bindings = []
 
 [target.'cfg(unix)'.dependencies]
-# The pthread mutex behind `Locked`, and the bindings' system calls.
+# The pthread mutex behind `PthreadLocked`, and the bindings' system calls.
 libc = { version = "=0.2.189", default-features = false }

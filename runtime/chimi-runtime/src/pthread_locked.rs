@@ -7,7 +7,8 @@
 //!
 //! The mutex is the platform default, so a holder that reenters the lock
 //! deadlocks instead of aborting: `with` bodies must not call back into code
-//! that takes the same lock.
+//! that takes the same lock. A pthread mutex must not move once used, so a
+//! `PthreadLocked` lives only in a `static`; it is never destroyed.
 
 use core::cell::UnsafeCell;
 
@@ -15,15 +16,16 @@ unsafe extern "C" {
     fn abort() -> !;
 }
 
-pub(crate) struct Locked<T> {
+/// Only for `static`s: see the module comment.
+pub(crate) struct PthreadLocked<T> {
     mutex: UnsafeCell<libc::pthread_mutex_t>,
     value: UnsafeCell<T>,
 }
 
 // SAFETY: the value is reached only inside `with`, while the mutex is held.
-unsafe impl<T: Send> Sync for Locked<T> {}
+unsafe impl<T: Send> Sync for PthreadLocked<T> {}
 
-impl<T> Locked<T> {
+impl<T> PthreadLocked<T> {
     pub(crate) const fn new(value: T) -> Self {
         Self { mutex: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER), value: UnsafeCell::new(value) }
     }
@@ -31,8 +33,8 @@ impl<T> Locked<T> {
     /// Runs `body` on the value with the mutex held, and aborts if the C
     /// library refuses the lock. `body` must not take this lock again.
     pub(crate) fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
-        // SAFETY: the mutex was statically initialised and is never moved
-        // while locked: a `Locked` lives in a static.
+        // SAFETY: the mutex was statically initialised and never moves: a
+        // `PthreadLocked` lives in a static.
         if unsafe { libc::pthread_mutex_lock(self.mutex.get()) } != 0 {
             // SAFETY: abort takes no arguments and never returns.
             unsafe { abort() }
@@ -60,12 +62,18 @@ mod tests {
 
     #[test]
     fn holders_on_many_threads_see_each_others_writes() {
-        static SHARED: Locked<u64> = Locked::new(0);
+        static SHARED: PthreadLocked<u64> = PthreadLocked::new(0);
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 thread::spawn(|| {
                     for _ in 0..10_000 {
-                        SHARED.with(|value| *value += 1);
+                        // An opaque read and a yield before the write, so a
+                        // missing lock loses updates.
+                        SHARED.with(|value| {
+                            let seen = core::hint::black_box(*value);
+                            thread::yield_now();
+                            *value = seen + 1;
+                        });
                     }
                 })
             })
@@ -78,7 +86,7 @@ mod tests {
 
     #[test]
     fn the_lock_is_free_again_after_a_body_panics() {
-        static SHARED: Locked<u32> = Locked::new(0);
+        static SHARED: PthreadLocked<u32> = PthreadLocked::new(0);
         let _ = thread::spawn(|| SHARED.with(|_| panic!("in the body"))).join();
         assert_eq!(SHARED.with(|value| *value), 0);
     }

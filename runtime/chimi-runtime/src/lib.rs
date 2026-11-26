@@ -26,8 +26,10 @@ pub mod float;
 mod float_abi;
 pub mod graphemes;
 pub mod handle_counts;
+#[cfg(unix)]
 mod handle_counts_abi;
-mod locked;
+#[cfg(unix)]
+mod pthread_locked;
 pub mod handles;
 mod handles_abi;
 pub mod json;

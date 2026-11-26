@@ -3,13 +3,15 @@
 //! every call takes the counts' lock, which used to be `runtime.c`'s
 //! `handle_count_lock`. It is taken after the scheduler's kernel lock and the
 //! test log lock, and nothing under it retains, drops, parks or runs a hook.
-//! A call that runs out of memory returns first and leaves the exit to C, so
-//! the lock is never held while the program ends.
+//! Growing the map can run out of memory. With the std allocator the call
+//! returns false and C exits after the lock is released; the standalone
+//! allocator exits from inside the call with the lock held, which is safe
+//! because no exit handler touches the counts.
 
 use crate::handle_counts::HandleCounts;
-use crate::locked::Locked;
+use crate::pthread_locked::PthreadLocked;
 
-static COUNTS: Locked<HandleCounts> = Locked::new(HandleCounts::new());
+static COUNTS: PthreadLocked<HandleCounts> = PthreadLocked::new(HandleCounts::new());
 
 /// Counts one more live value naming `key`; false, counting nothing, when
 /// there is no memory to grow the map.
