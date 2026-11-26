@@ -559,6 +559,12 @@ enum { SMALL_BLOCK_GRAIN = 16, SMALL_BLOCK_LIMIT = 256, SMALL_BLOCK_CACHE = 4096
 #define CHIMI_SMALL_BLOCK_CACHE 1
 #endif
 typedef struct SmallBlock { struct SmallBlock *next; } SmallBlock;
+/* One carrier's free lists, one per size class, and their lengths. The cache
+   that keeps them is Rust (chimi-runtime heap/small_blocks.rs). */
+typedef struct {
+  SmallBlock *lists[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  uint32_t counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+} SmallBlockCache;
 
 /* A growable stack of allocations, used by marking and copying so neither recurses:
    both run on 64 KiB fiber stacks. */
@@ -642,8 +648,7 @@ typedef struct {
   uint64_t copied_bytes;
   /* The foreign owner the last failed fragment_copy reached. */
   uint64_t fragment_copy_foreign_owner;
-  SmallBlock *small_blocks[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
-  uint32_t small_block_counts[SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN];
+  SmallBlockCache small_blocks;
   YoungChunk *young_chunk_cache;
   uint32_t young_chunk_cache_count;
   /* The pass in progress. Marking reaches only this region's young allocations, plus
@@ -827,41 +832,23 @@ static HeapTotals heap_totals_sum(void) {
   return sum;
 }
 
+void *chimi_small_block_take_v1(SmallBlockCache *cache, int64_t *cached_bytes, size_t bytes, bool enabled);
+void chimi_small_block_give_v1(SmallBlockCache *cache, int64_t *cached_bytes, void *block, size_t bytes,
+                               bool enabled);
+
 /* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
 static void *small_block_take(size_t bytes) {
   Carrier *const here = carrier;
-  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
-  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
-    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    SmallBlock *block = here->small_blocks[class];
-    if (block) {
-      here->small_blocks[class] = block->next;
-      --here->small_block_counts[class];
-      here->heap_totals.cached_bytes -= rounded;
-      memset(block, 0, rounded);
-      return block;
-    }
-  }
-  void *block = calloc(1, rounded);
+  void *block = chimi_small_block_take_v1(&here->small_blocks, &here->heap_totals.cached_bytes, bytes,
+                                          CHIMI_SMALL_BLOCK_CACHE);
   if (!block) exhausted_memory();
   return block;
 }
 
 static void small_block_give(void *pointer, size_t bytes) {
   Carrier *const here = carrier;
-  size_t rounded = (bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
-  if (CHIMI_SMALL_BLOCK_CACHE && rounded <= SMALL_BLOCK_LIMIT) {
-    size_t class = rounded / SMALL_BLOCK_GRAIN - 1;
-    if (here->small_block_counts[class] < SMALL_BLOCK_CACHE) {
-      SmallBlock *block = pointer;
-      block->next = here->small_blocks[class];
-      here->small_blocks[class] = block;
-      ++here->small_block_counts[class];
-      here->heap_totals.cached_bytes += rounded;
-      return;
-    }
-  }
-  free(pointer);
+  chimi_small_block_give_v1(&here->small_blocks, &here->heap_totals.cached_bytes, pointer, bytes,
+                            CHIMI_SMALL_BLOCK_CACHE);
 }
 
 static AllocationArea *current_area(void) {
@@ -1834,6 +1821,11 @@ _Static_assert(sizeof(((FiberContext *)0)->target) == 8, "layout: sizeof(((Fiber
 _Static_assert(sizeof(SmallBlock) == 8, "layout: sizeof(SmallBlock)");
 _Static_assert(offsetof(SmallBlock, next) == 0, "layout: offsetof(SmallBlock, next)");
 _Static_assert(sizeof(((SmallBlock *)0)->next) == 8, "layout: sizeof(((SmallBlock *)0)->next)");
+_Static_assert(sizeof(SmallBlockCache) == 192, "layout: sizeof(SmallBlockCache)");
+_Static_assert(offsetof(SmallBlockCache, lists) == 0, "layout: offsetof(SmallBlockCache, lists)");
+_Static_assert(sizeof(((SmallBlockCache *)0)->lists) == 128, "layout: sizeof(((SmallBlockCache *)0)->lists)");
+_Static_assert(offsetof(SmallBlockCache, counts) == 128, "layout: offsetof(SmallBlockCache, counts)");
+_Static_assert(sizeof(((SmallBlockCache *)0)->counts) == 64, "layout: sizeof(((SmallBlockCache *)0)->counts)");
 _Static_assert(sizeof(PointerStack) == 24, "layout: sizeof(PointerStack)");
 _Static_assert(offsetof(PointerStack, items) == 0, "layout: offsetof(PointerStack, items)");
 _Static_assert(sizeof(((PointerStack *)0)->items) == 8, "layout: sizeof(((PointerStack *)0)->items)");

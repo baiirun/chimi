@@ -436,6 +436,16 @@ pub struct SmallBlock {
 pub const SMALL_BLOCK_GRAIN: usize = 16;
 pub const SMALL_BLOCK_LIMIT: usize = 256;
 pub const SMALL_BLOCK_CACHE: usize = 4096;
+/// The small-block size classes: one per grain up to the limit.
+pub const SMALL_BLOCK_CLASSES: usize = SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN;
+
+/// `SmallBlockCache`: one carrier's small-block free lists, one per size
+/// class, and their lengths (the cache is `small_blocks.rs`).
+#[repr(C)]
+pub struct SmallBlockCache {
+    pub lists: [*mut SmallBlock; SMALL_BLOCK_CLASSES],
+    pub counts: [u32; SMALL_BLOCK_CLASSES],
+}
 
 /// `PointerStack`: the growable stack marking and copying use instead of
 /// recursion, since both run on 64 KiB fiber stacks.
@@ -821,6 +831,9 @@ pub const LAYOUT: &[Fact] = facts! {
     field("FiberContext" FiberContext, "target", target)
     size("SmallBlock" SmallBlock)
     field("SmallBlock" SmallBlock, "next", next)
+    size("SmallBlockCache" SmallBlockCache)
+    field("SmallBlockCache" SmallBlockCache, "lists", lists)
+    field("SmallBlockCache" SmallBlockCache, "counts", counts)
     size("PointerStack" PointerStack)
     field("PointerStack" PointerStack, "items", items)
     field("PointerStack" PointerStack, "length", length)
