@@ -94,8 +94,10 @@ impl<K: Copy + Eq, S: Copy, R: Copy + Eq> Handles<K, S, R> {
 
     /// Opens a handle of `kind` holding `state`: its slot and generation, or
     /// `None` when the table is full (the state is then still the caller's).
-    /// Running out of memory to grow it ends the program, as every runtime
-    /// allocation does (the C table returned `None` then too).
+    /// `None` too when there is no memory to grow it: without the scheduler
+    /// the allocator ends the program first, as every runtime allocation
+    /// does; with it (`chimi-fiber`'s allocator) the caller gets `None`, as
+    /// from the C table.
     pub fn open(&mut self, kind: K, state: S) -> Option<(u32, u32)> {
         let slot = match self.free {
             0 => self.grow()?,

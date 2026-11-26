@@ -1,8 +1,10 @@
-# mutation run at ed731acff28654777fda61763de58a4a97ef6c51
+# mutation run at 4c9c451cce008f68db45e2cf72c0d561cf904892
 # handle_table_mutations.py: 3 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- the_handle_table_counts_across_threads] (60s)
+BASELINE ok  [runtime_state -- the_handle_table_counts_across_threads] (160s)
 BASELINE ok  [runtime_state net] (12s)
-KILLED       retain does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (61s)
-KILLED       drop does not take the table's lock [runtime_state -- the_handle_table_counts_across_threads] (58s)
-KILLED       a drop reports the last reference one early [runtime_state net] (53s)
+KILLED       retain does not take the lock [runtime_state -- the_handle_table_counts_across_threads] (59s)
+KILLED       drop does not take the lock [runtime_state -- the_handle_table_counts_across_threads] (58s)
+KILLED       a retain is not counted [runtime_state net] (66s)
 # result: every mutant killed
+# Repeated twice more at the same commit: every mutant killed each time, 3 of 3
+# runs.

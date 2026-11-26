@@ -1189,8 +1189,8 @@ static void allocation_kind(void *value, AllocationKind kind) {
    the count alone, and the later zero finds a newer generation and does
    nothing. One table serves every carrier (parallel-scheduler.md, "Handle
    counts"): a handle copied on one carrier can be freed on another, so only
-   the total is meaningful, and retain and drop take the table's lock. The
-   table is an open-addressing map keyed by handle key; keys are never 0. */
+   the total is meaningful, and retain and drop take handle_count_lock. The
+   counts live in Rust (chimi-runtime handle_counts.rs); keys are never 0. */
 #define NATIVE_HANDLE_KEY (UINT64_C(1) << 62)
 
 static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
@@ -1198,15 +1198,16 @@ static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
 }
 
 static void native_handle_unreferenced(uint64_t key);
-typedef struct { uint64_t channel; size_t endpoints; } ChannelEndpoints;
-typedef struct {
-  pthread_mutex_t lock;
-  ChannelEndpoints *slots;
-  size_t capacity;
-  /* Written under `lock`. */
-  _Atomic size_t count;
-} HandleTable;
-static HandleTable handle_table = {.lock = PTHREAD_MUTEX_INITIALIZER};
+/* Serializes every call to the Rust counts. Taken after the scheduler's
+   kernel lock; nothing under it retains, drops, parks or runs a hook, and
+   exhausted_memory exits with it held, which is safe while no atexit handler
+   touches the counts. */
+static pthread_mutex_t handle_count_lock = PTHREAD_MUTEX_INITIALIZER;
+bool chimi_handle_counts_retain_v1(uint64_t key);
+bool chimi_handle_counts_drop_v1(uint64_t key);
+void chimi_handle_counts_reset_v1(void);
+size_t chimi_handle_counts_len_v1(void);
+size_t chimi_handle_counts_capacity_v1(void);
 
 /* Set at an execution's first retain of any counted handle, and kept until
    the next execution starts (channel_endpoints_reset). It is one flag for
@@ -1241,82 +1242,19 @@ static uint64_t counted_handle_key(const ChimiValue *value) {
   return 0;
 }
 
-static size_t channel_slot(uint64_t channel, size_t capacity) {
-  return (size_t)((channel * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & (capacity - 1);
+static void native_handle_retain(uint64_t key) {
+  pthread_mutex_lock(&handle_count_lock);
+  if (!chimi_handle_counts_retain_v1(key)) exhausted_memory();
+  pthread_mutex_unlock(&handle_count_lock);
 }
 
-/* Requires: handle_table.lock held. Nothing that runs under the lock retains,
-   drops, parks or runs a hook; exhausted_memory exits with it held, which is
-   safe while no atexit handler touches the table. */
-static void handle_table_grow(void) {
-  size_t capacity = handle_table.capacity ? handle_table.capacity * 2 : 64;
-  ChannelEndpoints *table = calloc(capacity, sizeof(*table));
-  if (!table) exhausted_memory();
-  for (size_t index = 0; index < handle_table.capacity; ++index) {
-    if (!handle_table.slots[index].channel) continue;
-    size_t slot = channel_slot(handle_table.slots[index].channel, capacity);
-    while (table[slot].channel) slot = (slot + 1) & (capacity - 1);
-    table[slot] = handle_table.slots[index];
-  }
-  free(handle_table.slots);
-  handle_table.slots = table;
-  handle_table.capacity = capacity;
-}
-
-static void handle_table_set_count(size_t count) {
-  atomic_store_explicit(&handle_table.count, count, memory_order_relaxed);
-}
-
-static void native_handle_retain(uint64_t channel) {
-  pthread_mutex_lock(&handle_table.lock);
-  size_t count = atomic_load_explicit(&handle_table.count, memory_order_relaxed);
-  if (2 * (count + 1) > handle_table.capacity) handle_table_grow();
-  ChannelEndpoints *slots = handle_table.slots;
-  size_t mask = handle_table.capacity - 1;
-  size_t slot = channel_slot(channel, handle_table.capacity);
-  while (slots[slot].channel && slots[slot].channel != channel) slot = (slot + 1) & mask;
-  if (!slots[slot].channel) {
-    slots[slot].channel = channel;
-    handle_table_set_count(count + 1);
-  }
-  ++slots[slot].endpoints;
-  pthread_mutex_unlock(&handle_table.lock);
-}
-
-/* Removes one reference to `channel`. Ensures: true exactly when this removed the
-   last one, so the caller owns the key's release. Requires: handle_table.lock.
-   No other thread can queue the same key meanwhile: once the count is zero, no
-   value names the key, so none can retain or drop it. */
-static bool handle_table_drop(uint64_t channel) {
-  ChannelEndpoints *slots = handle_table.slots;
-  if (!slots) return false;
-  size_t mask = handle_table.capacity - 1;
-  size_t slot = channel_slot(channel, handle_table.capacity);
-  while (slots[slot].channel != channel) {
-    /* An endpoint of an earlier execution's scheduler (benchmark repeats). */
-    if (!slots[slot].channel) return false;
-    slot = (slot + 1) & mask;
-  }
-  if (--slots[slot].endpoints != 0) return false;
-  /* Backward-shift deletion keeps every probe sequence unbroken. */
-  size_t hole = slot;
-  for (size_t next = (hole + 1) & mask; slots[next].channel; next = (next + 1) & mask) {
-    size_t home = channel_slot(slots[next].channel, handle_table.capacity);
-    if (((next - home) & mask) >= ((next - hole) & mask)) {
-      slots[hole] = slots[next];
-      hole = next;
-    }
-  }
-  slots[hole] = (ChannelEndpoints){0};
-  handle_table_set_count(atomic_load_explicit(&handle_table.count, memory_order_relaxed) - 1);
-  return true;
-}
-
-/* handle_table_drop under the table's lock. */
-static bool handle_table_release(uint64_t channel) {
-  pthread_mutex_lock(&handle_table.lock);
-  bool last = handle_table_drop(channel);
-  pthread_mutex_unlock(&handle_table.lock);
+/* Removes one reference to `key`. Ensures: true exactly when this removed the
+   last one, so the caller owns the key's release. No other thread can retain
+   the same key meanwhile: once the count is zero, no value names the key. */
+static bool native_handle_release(uint64_t key) {
+  pthread_mutex_lock(&handle_count_lock);
+  bool last = chimi_handle_counts_drop_v1(key);
+  pthread_mutex_unlock(&handle_count_lock);
   return last;
 }
 
@@ -1338,18 +1276,16 @@ static void counted_handle_drop(uint64_t key) {
     chimi_fiber_handle_drop(key);
     return;
   }
-  if (handle_table_release(key)) native_handle_unreferenced(key);
+  if (native_handle_release(key)) native_handle_unreferenced(key);
 }
 
 /* Each execution starts a new scheduler, whose channel and task ids start over
    (the scheduler clears its own counts). Runs before the scheduler starts, so
    no fiber holds a handle on any carrier. */
 static void channel_endpoints_reset(void) {
-  pthread_mutex_lock(&handle_table.lock);
-  if (handle_table.slots)
-    memset(handle_table.slots, 0, handle_table.capacity * sizeof(*handle_table.slots));
-  handle_table_set_count(0);
-  pthread_mutex_unlock(&handle_table.lock);
+  pthread_mutex_lock(&handle_count_lock);
+  chimi_handle_counts_reset_v1();
+  pthread_mutex_unlock(&handle_count_lock);
   atomic_store_explicit(&handles_counted, false, memory_order_relaxed);
 }
 
@@ -4700,7 +4636,7 @@ static ChimiValue *process_address_value(uint32_t kind, uint64_t target);
 static uint64_t test_log_count;
 /* Held across every operation on the logs (invoke_test_log,
    send_to_test_mailbox): a log's address travels to tasks on any carrier.
-   Nothing under it parks; it is taken before handle_table's lock. */
+   Nothing under it parks; it is taken before handle_count_lock. */
 static pthread_mutex_t test_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static ChimiValue *new_test_log(ValueKind kind) {

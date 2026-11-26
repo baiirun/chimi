@@ -1,17 +1,15 @@
-# mutation run at 6b1935989cdcf7d1b1346990c59588c1a0d0deaa
+# mutation run at 4c9c451cce008f68db45e2cf72c0d561cf904892
 # carrier_tables_mutations.py: 7 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (152s)
-KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
-KILLED       a close ignores the holders [runtime_state -- the_runtime_state_holds_across_carrier_threads] (73s)
-KILLED       the last holder does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (70s)
-SURVIVED     handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (71s)
-KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
-KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
-KILLED       a console line is written without the lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
-# result: 1 survivor, explained:
-# - handle lookups take no lock: since CHI-309 part 2 the slot table is in
-#   the Rust archive, which ThreadSanitizer does not instrument, so an
-#   unlocked read is not reported as a race. A lookup only reads, so it goes
-#   wrong only when another carrier grows the table at that moment, which no
-#   test can schedule. "making a handle takes no lock" is still caught, since
-#   concurrent opens corrupt the free list the fixture checks.
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (64s)
+KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (59s)
+KILLED       a close ignores the holders [runtime_state -- the_runtime_state_holds_across_carrier_threads] (64s)
+KILLED       the last holder does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (63s)
+KILLED       handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (63s)
+KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+KILLED       a console line is written without the lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (59s)
+# result: every mutant killed
+# Repeated twice more at the same commit (the lock mutants depend on two carriers
+# overlapping): every mutant killed each time, 3 of 3 runs. Since CHI-309 part 2
+# step 2 a Rust table aborts when two calls overlap (serialized.rs), which
+# ThreadSanitizer, blind to the Rust archive, no longer reports.

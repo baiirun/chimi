@@ -1,25 +1,28 @@
-# mutation run at 6b1935989cdcf7d1b1346990c59588c1a0d0deaa
-# binding_mutations.py: 18 mutants (17 after "a handle of another type is accepted" moved to handle_slots_mutations.py, where it is killed) against compiler/chimi
-BASELINE ok  [lib -- backend::bindings] (106s)
-KILLED       close does not bump the generation [bindings] (77s)
-KILLED       a handle ignores its generation [bindings] (77s)
-KILLED       Err loses its message [bindings] (81s)
-KILLED       ok returns the bare value [bindings] (76s)
-KILLED       a defect keeps no message [bindings] (81s)
-KILLED       bytes lose their last byte [bindings] (75s)
-SURVIVED     text stops at U+0000 [bindings] (72s)
-SURVIVED     a wait never parks [bindings] (73s)
+# mutation run at 7a83797903229031026527ef75a557a1afae083b
+# binding_mutations.py: 17 mutants against compiler/chimi
+BASELINE ok  [bindings] (74s)
+BASELINE ok  [lib -- backend::bindings] (63s)
+KILLED       close does not bump the generation [bindings] (73s)
+KILLED       a handle ignores its generation [bindings] (74s)
+KILLED       Err loses its message [bindings] (74s)
+KILLED       ok returns the bare value [bindings] (70s)
+KILLED       a defect keeps no message [bindings] (70s)
+KILLED       bytes lose their last byte [bindings] (70s)
+SURVIVED     text stops at U+0000 [bindings] (71s)
+SURVIVED     a wait never parks [bindings] (70s)
 KILLED       a wait ignores a close while parked [bindings] (117s)
-KILLED       a cancelled wait reports ready [bindings] (117s)
-KILLED       dispatch calls the first binding [bindings] (71s)
-KILLED       a symbol's binding index is off by one [bindings] (131s)
-KILLED       every package links whether reached or not [bindings] (160s)
+KILLED       a cancelled wait reports ready [bindings] (116s)
+KILLED       dispatch calls the first binding [bindings] (68s)
+KILLED       a symbol's binding index is off by one [bindings] (129s)
+KILLED       every package links whether reached or not [bindings] (156s)
 KILLED       the binding archive key ignores the sources [lib -- backend::bindings] (69s)
-KILLED       the interpreter calls a binding a success [bindings] (98s)
-KILLED       a test-only binding is allowed from main [bindings] (44s)
-KILLED       the probe's read ignores EAGAIN [bindings] (94s)
+KILLED       the interpreter calls a binding a success [bindings] (94s)
+KILLED       a test-only binding is allowed from main [bindings] (42s)
+KILLED       the probe's read ignores EAGAIN [bindings] (84s)
 # result: 2 survivors, each explained (as in the run before CHI-309 part 2):
 # - text stops at U+0000: no binding builds Text containing U+0000 (the
 #   argument side is tested).
 # - a wait never parks: equivalent. Returning READY after a wake only makes
 #   the binding retry its read, get EAGAIN, and wait again.
+# "a handle of another type is accepted" moved to handle_slots_mutations.py,
+# where it is killed.

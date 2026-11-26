@@ -114,7 +114,7 @@ function-local static, so new state gets an owner when it is added.
     A carrier takes 4,096 epochs from it at once (`take_mark_epoch`, step 3
     PR 6a): a loop pass collects, and one fetch-add per pass bounced the
     counter's cache line between carriers on every pass.
-  - The native handle-count table (`handle_table`, "Handle counts" below).
+  - The native handle-count table (`handle_count_lock` around the Rust map in `chimi-runtime` `handle_counts.rs`, "Handle counts" below).
     Channel and task counts, and their release queues, are the scheduler's
     since CHI-308.
   - Tables whose ids travel inside values, each behind its own lock: open
@@ -190,8 +190,9 @@ scheduler applies it before it serves the next request of a fiber on that
 thread, attributed to that fiber's task, or when the carrier has nothing
 ready. That replaces the release requests the C runtime issued itself before
 each request (`flush_channel_releases`) and the `take_release` hook (fiber
-ABI 32). Only native handle keys are still counted in `runtime.c`'s
-`handle_table`, until handles move (CHI-309). The rest of this section is the
+ABI 32). Native handle keys are counted in `chimi-runtime`'s
+`handle_counts.rs`, which `runtime.c` calls under `handle_count_lock`
+(CHI-309 part 2). The rest of this section is the
 design as step 2 landed it; the rules about when a retain is counted, and why
 one table rather than per-carrier counts, still hold.
 
@@ -240,7 +241,7 @@ step 3 must keep true.
 
 Native handles are counted in the same table (2026-11-20), and a handle
 whose count reaches zero is closed at once, on the carrier that dropped it,
-without a scheduler request. The binding handle table (`binding_handles`; in Rust since CHI-309,
+without a scheduler request. The binding handle table (in Rust since CHI-309,
 `runtime/chimi-runtime/src/handles.rs`) is behind `binding_handle_lock`, and one binding call at a time runs on a
 handle (step 3 PR 5c-1), so a binding's own state needs no lock.
 
@@ -423,7 +424,7 @@ four keep one carrier.
 4. **One `Mutex` around the kernel (one carrier).** The lock is held except
    while a fiber runs and while the carrier waits. This PR shows the lock
    discipline and measures its cost against the performance gates. Lock
-   order is the kernel lock first, then `handle_table`, never the reverse.
+   order is the kernel lock first, then `handle_count_lock`, never the reverse.
    The kernel state and the carrier loop become separate types here, since
    the lock is what separates them.
    - Shape (advisor review, 2026-11-21): `Scheduler` stays the kernel type,
@@ -471,7 +472,7 @@ four keep one carrier.
    Split into five PRs (advisor review, 2026-11-21), each merging with one
    carrier and behavior unchanged:
    - 5a, the C runtime safe for N threads. Carrier states are sized at
-     startup. `binding_handles` and every other table fibers touch outside
+     startup. The binding handle table and every other table fibers touch outside
      the kernel lock get a lock: open files, test mailboxes, process
      defects, profile rows, the `random` stream and the span counter. The
      memory and copy counters become signed per-carrier deltas, summed in

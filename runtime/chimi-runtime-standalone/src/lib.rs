@@ -27,6 +27,9 @@ mod shell {
     /// aborts with no message; the C runtime's is to report it and exit 70.
     fn exhausted(pointer: *mut u8) -> *mut u8 {
         if pointer.is_null() {
+            // The exit runs the console drain, which may reach the value
+            // whose call is allocating.
+            chimi_runtime::note_exiting();
             unsafe { chimi_runtime_exhausted_memory() }
         }
         pointer

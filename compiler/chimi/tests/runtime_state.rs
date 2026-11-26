@@ -39,7 +39,7 @@ const SHARED: &[&str] = &[
     // Native handle counts, one locked table for every carrier, and whether
     // this execution counted any handle (an atomic flag, set once and
     // cleared before the next run).
-    "handle_table",
+    "handle_count_lock",
     "handles_counted",
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handle_lock",
