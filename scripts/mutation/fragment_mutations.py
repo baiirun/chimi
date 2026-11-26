@@ -12,10 +12,11 @@ Results: scripts/mutation/fragment_results.txt.
 
 CRATE = "compiler/chimi"
 F = "../../runtime/chimi-runtime/src/heap/fragment.rs"
+LIST = "../../runtime/chimi-runtime/src/heap/list.rs"
 HEAP = dict(command=["../../scripts/mutation/native-heap-harness.sh"],
             expect=["check failed", "ERROR: AddressSanitizer", "runtime error:", "heap check failed"])
 WINDOW = ("        for index in 0..length {\n"
-          "            let item = chimi_runtime_list_get_v1(list, index);\n"
+          "            let item = list::get(list, index);\n"
           "            values.push(forward(here, copy, item.cast(), AllocationKind::VALUE).cast::<Value>());\n"
           "        }\n")
 
@@ -25,6 +26,8 @@ def m(name, old, new):
 
 
 MUTATIONS = [
+    dict(name="a list read ignores its window's start", file=LIST,
+         edits=[("        let index = index + window.start;\n", "        let index = index;\n")], **HEAP),
     m("adopted messages join the heap's base area, not the innermost region",
       "        if scope.is_null() {\n            (*area).role = AreaRole::BASE;",
       "        if true {\n            (*area).role = AreaRole::BASE;"),
@@ -39,7 +42,7 @@ MUTATIONS = [
       "        (*payload).start = 0;\n"
       "        (*payload).length = source.length;\n"
       "        for index in 0..source.length {\n"
-      "            let item = chimi_runtime_list_get_v1(list, index);\n"
+      "            let item = list::get(list, index);\n"
       "            values.push(forward(here, copy, item.cast(), AllocationKind::VALUE).cast::<Value>());\n"
       "        }\n"
       "        (*payload).length = window;\n"

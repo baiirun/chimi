@@ -25,6 +25,7 @@ use super::allocator::{
     allocate, cache_enabled, footprint_add, footprint_sub, fragment_footprint_add, fragment_footprint_sub,
     heap_add_live, release, scope_add_live,
 };
+use super::list;
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AreaRole, Callable, Carrier, Control, Environment, Field,
     FRAGMENT_ROOTS, HeapStatus, ListVector, MapNode, RuntimeFragment, RuntimeHeap, Value, ValueKind,
@@ -40,8 +41,6 @@ unsafe extern "C" {
     fn chimi_runtime_heap_destroyed_open() -> !;
     /// Adds the handle count a copied value holds, if it is a counted handle.
     fn chimi_runtime_retain_counted_value(value: *const Value);
-    /// Item `index` of the List `list`, inside its window.
-    fn chimi_runtime_list_get_v1(list: *const Value, index: u32) -> *mut Value;
     /// A compact vector of `values`, built in the current area.
     fn chimi_runtime_vector_from_values_v1(values: *const *mut Value, length: u32, out: *mut ListVector);
 }
@@ -319,7 +318,7 @@ unsafe fn copy_list_window(here: *mut Carrier, copy: &mut Copy, list: *mut Value
             chimi_runtime_exhausted_memory();
         }
         for index in 0..length {
-            let item = chimi_runtime_list_get_v1(list, index);
+            let item = list::get(list, index);
             values.push(forward(here, copy, item.cast(), AllocationKind::VALUE).cast::<Value>());
         }
         allocating_into(here, copy.target, || {
