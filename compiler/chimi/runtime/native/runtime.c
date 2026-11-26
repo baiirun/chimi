@@ -997,7 +997,11 @@ static size_t young_rounded(size_t bytes) {
    of `size` bytes in the running fiber's area, from the innermost region's young
    chunks when they fit. It ends the program on overflow or exhausted memory. */
 void *chimi_allocate_v1(Carrier *here, size_t count, size_t size);
-static void *allocate(size_t count, size_t size) { return chimi_allocate_v1(carrier, count, size); }
+/* Out of line, as the C allocate was: inlined at its two hundred call sites, the
+   carrier's thread-local read grew a small program by 13 KB. */
+__attribute__((noinline)) static void *allocate(size_t count, size_t size) {
+  return chimi_allocate_v1(carrier, count, size);
+}
 
 /* What the allocator needs from the C that is still here. */
 _Noreturn void chimi_runtime_allocation_overflow(void);
