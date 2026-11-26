@@ -40,5 +40,7 @@ pub use serialized::note_exiting;
 pub mod text;
 mod text_abi;
 mod text_buffer;
+pub mod timestamp;
+mod timestamp_abi;
 
 pub use text_buffer::TextBuffer;

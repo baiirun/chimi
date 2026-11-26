@@ -1,5 +1,5 @@
 /* Fuzz targets for the native runtime's parsers and text code: JSON, decimal,
-   duration, float text, metrics and text. Each target turns one input into a canonical output line
+   duration, float text, metrics, text and timestamps. Each target turns one input into a canonical output line
    and checks the target's invariants, aborting on a broken one.
 
    The output is the contract a replacement must keep: when a subsystem moves
@@ -19,8 +19,9 @@
    the C code their Rust replaced (decimal-duration-c-reference.c), as the
    text target does with its case mapping, trimming and graphemes
    (text-c-reference.c), the float target with its Float text
-   (float-c-reference.c) and the metrics target with its aggregate
-   (metrics-c-reference.c); each checks that the two agree. The runtime is
+   (float-c-reference.c), the metrics target with its aggregate
+   (metrics-c-reference.c) and the timestamp target with its text and parsing
+   (timestamp-c-reference.c); each checks that the two agree. The runtime is
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
@@ -29,6 +30,7 @@
 #include "float-c-reference.c"
 #include "metrics-c-reference.c"
 #include "text-c-reference.c"
+#include "timestamp-c-reference.c"
 
 /* Program tables: one constructor symbol per standard constructor below. */
 enum {
@@ -462,6 +464,38 @@ static void fuzz_float(const uint8_t *data, size_t size, FuzzOutput *out) {
   }
 }
 
+/* --- timestamp: print and parse --------------------------------------------- */
+/* Each eight bytes of the input as Unix nanoseconds: the text must match the C
+   reference's and parse back to the value from 1678 on. Then the input as text: both
+   parsers must agree on whether it is a timestamp and on its value. */
+static void fuzz_timestamp(const uint8_t *data, size_t size, FuzzOutput *out) {
+  for (size_t offset = 0; offset + 8 <= size; offset += 8) {
+    int64_t nanoseconds; memcpy(&nanoseconds, data + offset, sizeof(nanoseconds));
+    char want[48], printed[CHIMI_TIMESTAMP_TEXT];
+    reference_timestamp_text(nanoseconds, want);
+    timestamp_text(nanoseconds, printed);
+    FUZZ_CHECK(strcmp(want, printed) == 0, "text of %" PRId64 ": %s, the C reference %s", nanoseconds, printed, want);
+    /* Text in the years parsing accepts (1678 on) reads back; before it is rejected. */
+    int64_t back = 0;
+    bool in_range = strncmp(printed, "1677", 4) != 0;
+    FUZZ_CHECK(parse_timestamp(printed, &back) == in_range && (!in_range || back == nanoseconds),
+               "%s does not parse back to %" PRId64, printed, nanoseconds);
+    out_word(out, printed);
+    out_word(out, " ");
+  }
+  char text[64];
+  size_t length = size < sizeof(text) - 1 ? size : sizeof(text) - 1;
+  memcpy(text, data, length);
+  text[length] = '\0';
+  /* The C reference reads up to the first NUL, as from argv. */
+  int64_t want = 0, parsed = 0;
+  bool want_ok = reference_parse_timestamp(text, &want);
+  bool parsed_ok = parse_timestamp(text, &parsed);
+  FUZZ_CHECK(want_ok == parsed_ok && (!want_ok || want == parsed),
+             "parse of %s: %d %" PRId64 ", the C reference %d %" PRId64, text, parsed_ok, parsed, want_ok, want);
+  if (parsed_ok) { out_word(out, "parsed "); out_integer(out, parsed); }
+}
+
 /* --- metrics: record and write ---------------------------------------------- */
 /* Each 12 bytes of the input are one measurement: a kind, one of four names,
    a label set from two bytes, and a finite value from eight (a count's made
@@ -495,7 +529,7 @@ static void fuzz_metrics(const uint8_t *data, size_t size, FuzzOutput *out) {
 
 static const FuzzTargetEntry FUZZ_TARGETS[] = {
   {"text", fuzz_text}, {"json", fuzz_json}, {"decimal", fuzz_decimal}, {"duration", fuzz_duration},
-  {"float", fuzz_float}, {"metrics", fuzz_metrics},
+  {"float", fuzz_float}, {"metrics", fuzz_metrics}, {"timestamp", fuzz_timestamp},
 };
 
 /* Runs `target` on one input inside its own allocation scope, which frees

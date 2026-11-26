@@ -441,18 +441,9 @@ fn log_line(level: i64, message: &str, fields: &str) -> String {
 fn utc_millis(millis_since_epoch: i64) -> String {
     let seconds = millis_since_epoch.div_euclid(1000);
     let millis = millis_since_epoch.rem_euclid(1000);
-    let days = seconds.div_euclid(86_400);
-    let of_day = seconds.rem_euclid(86_400);
-    // civil_from_days (Howard Hinnant), as the native runtime's timestamp text.
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    // The calendar the native runtime's log line uses (chimi_runtime::timestamp).
+    let (date, of_day) = chimi_runtime::timestamp::civil_seconds(seconds);
+    let chimi_runtime::timestamp::Civil { year, month, day } = date;
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
         of_day / 3600,
