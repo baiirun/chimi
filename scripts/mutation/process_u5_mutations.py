@@ -62,7 +62,7 @@ MUTATIONS = [
             SEND_FREE, "      if (request.status == CHIMI_RESPONSE_UNSET) fragment_free(message);")]),
     lab("a message copy ignores sharing", FRAGMENT, "CB02",
         ["copied_values is not 21", "exceeded the 60 s run limit"], [(
-            "        let existing = copy.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
+            "        let existing = copy.table.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
             "")]),
     lab("Full is reported as Unavailable", RUNTIME, "MB02",
         [OUTCOME], [(

@@ -32,7 +32,7 @@ MUTATIONS = [
       "        if !copy.owns(area) {\n            copy.foreign(area);\n            return ptr::null_mut();\n        }\n",
       ""),
     m("a copy keeps no forwarding table",
-      "        let existing = copy.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
+      "        let existing = copy.table.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
       ""),
     m("a window's copy copies the whole vector", WINDOW,
       "        let window = (*payload).length;\n"
