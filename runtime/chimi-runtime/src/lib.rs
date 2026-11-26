@@ -5,8 +5,9 @@
 //! the allocator and panic handler, one with the scheduler links it inside
 //! `chimi-fiber`, and the compiler links it as an ordinary crate.
 //!
-//! Nothing the C ABI reaches panics on a value the runtime built; the
-//! exported functions are the only `unsafe` boundary.
+//! Nothing the C ABI reaches panics on a value the runtime built. The
+//! exported functions are the `unsafe` boundary, besides the lock and the
+//! heap layout's field-size reads (`pthread_locked`, `heap::layout`).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -26,6 +27,7 @@ pub mod float;
 mod float_abi;
 pub mod graphemes;
 pub mod handle_counts;
+pub mod heap;
 #[cfg(unix)]
 mod handle_counts_abi;
 #[cfg(unix)]

@@ -69,9 +69,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
    The generated code inlines no value layout either, so `ChimiValue` can
    change. The phases, one PR each unless noted, each within the gates
    (`scripts/runtime-gate.py`):
-   0. Prerequisites. The heap and value structs move to an internal header
-      with `#[repr(C)]` Rust mirrors whose sizes and offsets are asserted on
-      both sides; the collector gets an oracle (memory-report counters and
+   0. Prerequisites. The heap and value structs get `#[repr(C)]` Rust
+      mirrors whose sizes, offsets and scalar kinds are asserted on both
+      sides (done 2026-11-26: `chimi-runtime/src/heap/layout.rs`, and a
+      generated block of `_Static_assert`s in `runtime.c`; the structs stay
+      in `runtime.c` rather than an internal header, since a header would
+      add a build input and cache key for nothing until Rust owns them); the collector gets an oracle (memory-report counters and
       program outputs identical to the C, a verify pass after each sweep
       under ASan, poisoned reset chunks); `handle_count_lock` moves into
       Rust as a pthread mutex ThreadSanitizer still sees. Civil dates and

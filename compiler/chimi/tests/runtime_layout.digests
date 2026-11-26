@@ -1,0 +1,32 @@
+6b90a5a1487cc54c typedef enum { VALUE_VOID,
+332bb73a093e7255 typedef enum { CALL_DECLARED,
+7564e0bc2442766b typedef enum { HOST_PROCESS_UTF8_LINES,
+bef7386ec5bf8ada typedef enum { CONTROL_SUCCESS,
+8153eedc0cb815dc typedef struct { uint64_t high;
+080b054025fcb8cc typedef struct { const char *name; ChimiValue *value; }
+fa8cb28447a35b81 typedef struct { uint64_t channel;
+be2ca3e0d71f55e5 struct ListNode {
+89a817cf70dbc722 typedef struct { ListNode *root;
+faf6089936485034 struct MapNode {
+55dc8efcbdfcdbe1 typedef struct ChimiCallable {
+60d5670e7d1eb1e4 struct ChimiValue {
+f636a57768ec8ffa struct ChimiEnvironment {
+e1f844c592920c34 struct ChimiControl {
+fc106fd09352a85b typedef enum {
+cef46841cc48f0ee typedef enum { AREA_YOUNG,
+a078c6c1102e8042 struct AllocationHeader {
+1c426e4b743c85e2 enum { YOUNG_CHUNK_BYTES
+42953db9f4802114 struct AllocationArea {
+58cf04fd3226c5b3 struct AllocationScope {
+6e2251c438afd15b struct RuntimeHeap {
+62d276cd632ca34f typedef enum { HEAP_OK
+f5dc3a516fa9a1cb typedef struct {
+89115011178bcc9c enum { REGION_FULL_MIN_GROWTH
+f5a527e7ab41b810 enum { MARK_EPOCH_BLOCK
+d3a6a6bf4a2bebfb typedef struct {
+89338ab357b1a5a1 enum { SMALL_BLOCK_GRAIN
+4eb6dcded6655c89 typedef struct SmallBlock {
+9809d0777c284462 typedef struct { void **items;
+1ded8e5b28a1503f typedef struct {
+bbb4e31cf9bddf24 typedef struct {
+b272a83f9822e009 enum { FRAGMENT_ROOTS

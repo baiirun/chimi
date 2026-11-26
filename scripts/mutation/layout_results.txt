@@ -1,0 +1,10 @@
+# mutation run at b56264bf1e02f9b3b942f90f017056845d59aac6
+# layout_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [runtime_layout] (164s)
+KILLED       a value kind appended in C [runtime_layout] (50s)
+KILLED       a field added in an allocation header's padding [runtime_layout] (51s)
+KILLED       the mirror's task id is 32 bits [runtime_layout] (53s)
+KILLED       the mirror's control node is unsigned [runtime_layout] (51s)
+KILLED       the mirror's chunk flag is a byte [runtime_layout] (52s)
+KILLED       the mirror swaps two map node links [runtime_layout] (53s)
+# result: every mutant killed
