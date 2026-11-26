@@ -61,9 +61,8 @@ MUTANTS = [
     # fragment-record-reserves-64k went with the fragment code: Rust allocates the
     # record, so the enum now only fails the layout asserts. Lab mutant MF04 in
     # scripts/mutation/process_u5_mutations.py keeps "small messages cost their size".
-    ("compaction-into-current-area", "list compaction allocates in the list's own area",
-     "      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);",
-     "      list_copy_window(list, 0, list->as.list.length, NULL);", FUZZ),
+    # compaction-into-current-area moved to scripts/mutation/list_vector_mutations.py
+    # with the slice (CHI-305 step 5, phase 4).
     ("task-result-consumes", "Task.result copies without consuming",
      "  fragment_copy_into_current((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);",
      "  fragment_adopt((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);", E2E),
