@@ -11,6 +11,7 @@ backends), or a language.rs json test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 MODEL = "src/json.rs"
 STRUCTURAL = "src/execution/structural.rs"
 
@@ -76,7 +77,7 @@ MUTATIONS = [
     programs("Rust Json.Number equality compares spelling", STRUCTURAL, [(
         "crate::json::compare_numbers(left, right)",
         "left.as_bytes().cmp(right.as_bytes())")]),
-    programs("C Json.Number equality compares spelling", RUNTIME, [(
-        "order = json_number_compare(left->as.json_number, right->as.json_number); break;",
-        "{ int bytes = strcmp(left->as.json_number, right->as.json_number); order = (bytes > 0) - (bytes < 0); } break;")]),
+    programs("C Json.Number equality compares spelling", COMPARE, [(
+        "order = super::json_number::compare(c_bytes(l.json_number), c_bytes(r.json_number));",
+        "order = order_of(c_bytes(l.json_number), c_bytes(r.json_number));")]),
 ]

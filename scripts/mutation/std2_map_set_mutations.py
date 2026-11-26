@@ -15,6 +15,7 @@ backend) or the std_modules key-requirement test red. Filters other than
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+TREE = "../../runtime/chimi-runtime/src/heap/map.rs"
 EXECUTION = "src/execution.rs"
 OPERATIONS = "src/execution/map_operations.rs"
 DEBUG = "src/execution/debug.rs"
@@ -34,24 +35,24 @@ def requirements(name, file, edits):
 
 
 MUTATIONS = [
-    programs("C map remove skips rebalancing on the left", RUNTIME, [(
-        "return left == node->left ? node : map_balance(map_node(node->key, node->value, left, node->right));",
-        "return left == node->left ? node : map_node(node->key, node->value, left, node->right);")]),
+    programs("C map remove skips rebalancing on the left", TREE, [(
+        "                balance(self::node((*node).key, (*node).value, left, (*node).right))\n            };",
+        "                self::node((*node).key, (*node).value, left, (*node).right)\n            };")]),
     programs("Rust map remove skips rebalancing", EXECUTION, [(
         "        Some(Some(map_balance(map_node(\n            node.key.clone(),\n            node.value.clone(),\n            left,\n            right,\n        ))))",
         "        Some(Some(map_node(\n            node.key.clone(),\n            node.value.clone(),\n            left,\n            right,\n        )))")]),
-    programs("C map remove of a node without a left child drops its right subtree", RUNTIME, [(
-        "if (!node->left) return node->right;\n  if (!node->right) return node->left;\n  MapNode *least = NULL;",
-        "if (!node->left) return node->left;\n  if (!node->right) return node->left;\n  MapNode *least = NULL;")]),
+    programs("C map remove of a node without a left child drops its right subtree", TREE, [(
+        "        if (*node).left.is_null() {\n            return (*node).right;\n        }",
+        "        if (*node).left.is_null() {\n            return (*node).left;\n        }")]),
     programs("Rust map remove with two children takes the least of the left subtree's sibling wrongly", EXECUTION, [(
         "(None, right) => right.clone(),",
         "(None, _) => None,")]),
     programs("C Set.add replaces the held equal item instead of keeping it", RUNTIME, [(
         "return success(map_get_node(set, arguments[1]) ? arguments[0]\n                                                      : set_value(map_put_node(set, arguments[1], void_value())));",
         "return success(set_value(map_put_node(set, arguments[1], void_value())));")]),
-    programs("C map size is one short for a leaf", RUNTIME, [(
-        "return node ? 1 + map_size(node->left) + map_size(node->right) : 0;",
-        "return node ? (node->left || node->right ? 1 : 0) + map_size(node->left) + map_size(node->right) : 0;")]),
+    programs("C map size is one short for a leaf", TREE, [(
+        "unsafe { 1 + size((*node).left) + size((*node).right) }",
+        "unsafe { i64::from(!(*node).left.is_null() || !(*node).right.is_null()) + size((*node).left) + size((*node).right) }")]),
     programs("C reduce_entries visits entries in descending order", RUNTIME, [(
         "/* The native core of std/map; execution/map_operations.rs is the interpreter's. */",
         "static MapEntries reversed_entries(const MapNode *root) {\n"

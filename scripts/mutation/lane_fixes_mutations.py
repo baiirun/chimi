@@ -9,6 +9,7 @@ Each mutant must turn the named language or cli test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 NUL = "text_holding_nul_keeps_every_byte_on_both_backends"
 
 
@@ -50,9 +51,10 @@ MUTATIONS = [
     nul("text patterns compare as C strings", [(
         "text_equals(value, CHIMI_STRINGS[pattern->offset], CHIMI_STRING_LENGTHS[pattern->offset]);",
         "strcmp(value->as.text.bytes, CHIMI_STRINGS[pattern->offset]) == 0;")]),
-    nul("equal prefixes compare equal", [(
-        "        order = bytes ? (bytes > 0) - (bytes < 0) : order_of(left_length, right_length); break;",
-        "        order = (bytes > 0) - (bytes < 0); break;")]),
+    language("equal prefixes compare equal", COMPARE, [(
+        "                    order = order_of(bytes(l.text), bytes(r.text));",
+        "                    order = { let (a, b) = (bytes(l.text), bytes(r.text)); let n = a.len().min(b.len()); order_of(&a[..n], &b[..n]) };")],
+        NUL),
     # No mutant for CHIMI_INTRINSIC_TEXT_EQUAL: no source form reaches it (`==` on
     # Text goes through structural comparison, and no module binds Text.equal),
     # so a C-string version survived the first run without being observable.
