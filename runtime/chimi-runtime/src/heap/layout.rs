@@ -17,9 +17,9 @@
 //! which sends whoever changed it here to update the mirror.
 //!
 //! The tags are newtypes over `u32` rather than Rust enums, because C may
-//! hold any value in them. The carrier's state (`Carrier`) and the fragment
-//! copier's (`FragmentCopy`) are mirrored with the phases that move their
-//! code, since both still change often.
+//! hold any value in them. The carrier's state (`Carrier`) is mirrored since
+//! the allocator moved (phase 1); the fragment copier's (`FragmentCopy`)
+//! is mirrored with the phase that moves its code.
 
 use core::ffi::{c_char, c_void};
 use core::mem::{align_of, offset_of, size_of};
@@ -456,6 +456,48 @@ pub struct PointerStack {
     pub capacity: usize,
 }
 
+/// `Carrier`: everything one carrier thread mutates while it runs fibers.
+/// The allocator reads and writes the fields up to `small_blocks`; the
+/// rest are mirrored so the record's size and every offset are checked.
+#[repr(C)]
+pub struct Carrier {
+    pub fiber: FiberContext,
+    pub heap_totals: HeapTotals,
+    pub pending_footprint_bytes: i64,
+    pub folded_footprint_bytes: i64,
+    pub folded_fragment_footprint_bytes: i64,
+    pub unscoped_allocated_bytes: u64,
+    pub capture_transfer_probes: u64,
+    pub process_heap_peak_value_bytes: usize,
+    pub copy_counting: bool,
+    pub copied_values: u64,
+    pub copied_bytes: u64,
+    pub fragment_copy_foreign_owner: u64,
+    pub small_blocks: SmallBlockCache,
+    pub young_chunk_cache: *mut YoungChunk,
+    pub young_chunk_cache_count: u32,
+    pub collecting_scope: *mut AllocationScope,
+    pub collecting_full: bool,
+    pub collecting_foreign: bool,
+    pub collecting_epoch: u64,
+    pub next_epoch: u64,
+    pub end_epoch: u64,
+    pub next_span: u64,
+    pub end_span: u64,
+    pub mark_stack: PointerStack,
+    pub copy_stack: PointerStack,
+    pub copy_pending: PointerStack,
+    pub fs_read_chunk: *mut c_char,
+    pub scope_totals: ScopeTotals,
+    pub host_stack_limit: usize,
+    /// `pthread_t`, which is an integer on Linux and a pointer on Apple
+    /// platforms: one word on both, never read here, so it has no field
+    /// fact of its own (the next field's offset pins it).
+    pub thread: usize,
+    pub bound: bool,
+    pub console_lock_held: bool,
+}
+
 /// `ProfileRow`: one node's row of `--profile-file`, counted with relaxed
 /// atomic adds.
 #[repr(C)]
@@ -522,7 +564,7 @@ classified!(Bool: bool);
 classified!(Float: f32, f64);
 classified!(Compound: Decimal, Capability, ListVector, TextPayload, ListPayload, RecordPayload,
     ConstructedPayload, RangePayload, AddressPayload, ManagedPayload, HandlePayload, Payload,
-    AllocationArea);
+    AllocationArea, FiberContext, HeapTotals, ScopeTotals, SmallBlockCache, PointerStack);
 
 impl<T> Classified for *const T {
     const CLASS: Class = Class::Compound;
@@ -838,6 +880,38 @@ pub const LAYOUT: &[Fact] = facts! {
     field("PointerStack" PointerStack, "items", items)
     field("PointerStack" PointerStack, "length", length)
     field("PointerStack" PointerStack, "capacity", capacity)
+    size("Carrier" Carrier)
+    field("Carrier" Carrier, "fiber", fiber)
+    field("Carrier" Carrier, "heap_totals", heap_totals)
+    field("Carrier" Carrier, "pending_footprint_bytes", pending_footprint_bytes)
+    field("Carrier" Carrier, "folded_footprint_bytes", folded_footprint_bytes)
+    field("Carrier" Carrier, "folded_fragment_footprint_bytes", folded_fragment_footprint_bytes)
+    field("Carrier" Carrier, "unscoped_allocated_bytes", unscoped_allocated_bytes)
+    field("Carrier" Carrier, "capture_transfer_probes", capture_transfer_probes)
+    field("Carrier" Carrier, "process_heap_peak_value_bytes", process_heap_peak_value_bytes)
+    field("Carrier" Carrier, "copy_counting", copy_counting)
+    field("Carrier" Carrier, "copied_values", copied_values)
+    field("Carrier" Carrier, "copied_bytes", copied_bytes)
+    field("Carrier" Carrier, "fragment_copy_foreign_owner", fragment_copy_foreign_owner)
+    field("Carrier" Carrier, "small_blocks", small_blocks)
+    field("Carrier" Carrier, "young_chunk_cache", young_chunk_cache)
+    field("Carrier" Carrier, "young_chunk_cache_count", young_chunk_cache_count)
+    field("Carrier" Carrier, "collecting_scope", collecting_scope)
+    field("Carrier" Carrier, "collecting_full", collecting_full)
+    field("Carrier" Carrier, "collecting_foreign", collecting_foreign)
+    field("Carrier" Carrier, "collecting_epoch", collecting_epoch)
+    field("Carrier" Carrier, "next_epoch", next_epoch)
+    field("Carrier" Carrier, "end_epoch", end_epoch)
+    field("Carrier" Carrier, "next_span", next_span)
+    field("Carrier" Carrier, "end_span", end_span)
+    field("Carrier" Carrier, "mark_stack", mark_stack)
+    field("Carrier" Carrier, "copy_stack", copy_stack)
+    field("Carrier" Carrier, "copy_pending", copy_pending)
+    field("Carrier" Carrier, "fs_read_chunk", fs_read_chunk)
+    field("Carrier" Carrier, "scope_totals", scope_totals)
+    field("Carrier" Carrier, "host_stack_limit", host_stack_limit)
+    field("Carrier" Carrier, "bound", bound)
+    field("Carrier" Carrier, "console_lock_held", console_lock_held)
     size("ProfileRow" ProfileRow)
     field("ProfileRow" ProfileRow, "operation", operation)
     field("ProfileRow" ProfileRow, "evaluations", evaluations)

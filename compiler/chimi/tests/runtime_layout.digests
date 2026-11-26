@@ -29,5 +29,6 @@ d3a6a6bf4a2bebfb typedef struct {
 0bedf5d9cec789f9 typedef struct {
 9809d0777c284462 typedef struct { void **items;
 1ded8e5b28a1503f typedef struct {
+539802dd5024d2f4 typedef struct {
 bbb4e31cf9bddf24 typedef struct {
 b272a83f9822e009 enum { FRAGMENT_ROOTS

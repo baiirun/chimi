@@ -13,7 +13,10 @@ doctest = false
 # binding API from `runtime.c`, so only the runtime archives that link with it
 # turn this on: `compiler/chimi/build.rs` passes it to its nested builds of
 # the fiber and standalone archives, and nothing in the workspace enables it.
-bindings = []
+bindings = ["runtime-c"]
+# The code that imports from `runtime.c` (the allocator, `src/heap`), and so
+# links only into the runtime archives, like the bindings.
+runtime-c = []
 
 [target.'cfg(unix)'.dependencies]
 # The pthread mutex behind `PthreadLocked`, and the bindings' system calls.

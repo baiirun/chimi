@@ -56,7 +56,7 @@ if [ "$harness" = runtime-fuzz ]; then
   # one), which cannot link the coverage hooks.
   host=$(rustc -vV | sed -n 's/^host: //p')
   RUSTFLAGS=$coverage cargo rustc --quiet --manifest-path "$repo/Cargo.toml" \
-    -p chimi-runtime-standalone --lib --profile runtime-standalone --crate-type staticlib \
+    -p chimi-runtime-standalone --features runtime-c --lib --profile runtime-standalone --crate-type staticlib \
     --target "$host" --target-dir "$work/rust" ||
     { echo "fuzz-runtime: Rust runtime build failed" >&2; exit 2; }
   mkdir -p "$work/rust/objects" || exit 2

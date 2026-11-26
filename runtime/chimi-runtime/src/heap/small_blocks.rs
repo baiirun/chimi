@@ -9,7 +9,7 @@
 use core::ptr;
 
 pub use super::layout::SmallBlockCache;
-use super::layout::{SMALL_BLOCK_CACHE, SMALL_BLOCK_CLASSES as CLASSES, SMALL_BLOCK_GRAIN, SMALL_BLOCK_LIMIT, SmallBlock};
+use super::layout::{SMALL_BLOCK_CACHE, SMALL_BLOCK_GRAIN, SMALL_BLOCK_LIMIT, SmallBlock};
 
 /// `bytes` rounded up to the grain, and its size class when the cache keeps
 /// blocks of that size.
@@ -77,6 +77,7 @@ impl SmallBlockCache {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layout::SMALL_BLOCK_CLASSES as CLASSES;
     use super::*;
 
     fn empty() -> SmallBlockCache {
