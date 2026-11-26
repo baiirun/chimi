@@ -636,7 +636,9 @@ const RUNTIME_HEADER: &str = include_str!("../../runtime/native/runtime.h");
 const FIBER_RUNTIME_HEADER: &str =
     include_str!("../../../../runtime/chimi-fiber/include/chimi_fiber.h");
 /// The runtime test builds `CHIMI_TEST_RUNTIME_DEFINES` may name.
-const TEST_RUNTIME_DEFINES: [&str; 1] = ["-DCHIMI_CARRIER_SIMULATION"];
+/// `-DCHIMI_HEAP_VERIFY` checks the heap after every collection pass, as a
+/// sanitized build does anyway (chimi-runtime `heap/verify.rs`).
+const TEST_RUNTIME_DEFINES: [&str; 2] = ["-DCHIMI_CARRIER_SIMULATION", "-DCHIMI_HEAP_VERIFY"];
 /// The sanitizer sets `CHIMI_TEST_RUNTIME_SANITIZE` may name. ThreadSanitizer
 /// is not one: it cannot follow the fiber stack switches, so it runs only on
 /// the C fixtures in `tests/runtime_state.rs`.
