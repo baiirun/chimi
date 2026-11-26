@@ -1,4 +1,4 @@
-# mutation run at 3794f205767b584b050705e45b5ed92fe8d76cd0
+# mutation run at 81be35c21b080bbe1397f973c30341297bc7dcf6
 # handle_slots_mutations.py: 12 mutants against runtime/chimi-runtime
 BASELINE ok  [lib -- handles] (1s)
 KILLED       a freed slot is never reused [lib -- handles] (1s)
