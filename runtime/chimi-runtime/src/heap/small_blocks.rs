@@ -112,6 +112,23 @@ mod tests {
     }
 
     #[test]
+    fn with_the_cache_off_a_cached_block_stays_cached() {
+        let mut cache = empty();
+        let mut cached = 0;
+        unsafe {
+            let block = cache.take(&mut cached, 16, true);
+            cache.give(&mut cached, block, 16, true);
+            let fresh = cache.take(&mut cached, 16, false);
+            assert_ne!(fresh, block);
+            assert_eq!((cached, cache.counts[0]), (16, 1));
+            cache.give(&mut cached, fresh, 16, false);
+            let again = cache.take(&mut cached, 16, true);
+            assert_eq!(again, block);
+            cache.give(&mut cached, again, 16, false);
+        }
+    }
+
+    #[test]
     fn a_full_list_and_a_large_block_go_back_to_the_c_library() {
         let mut cache = empty();
         let mut cached = 0;
