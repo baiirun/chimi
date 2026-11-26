@@ -179,6 +179,59 @@ pub struct ListVector {
     pub length: u32,
 }
 
+/// `ChimiSymbol` (runtime.h): one entry of the program's symbol table.
+#[repr(C)]
+pub struct Symbol {
+    pub kind: u32,
+    pub name: u32,
+    pub function: u32,
+    pub constant: u32,
+    pub constructor: u32,
+    pub intrinsic: u32,
+    pub standard_constructor: u32,
+    pub standard_type: u32,
+    pub environment_slot: u32,
+    pub binding: u32,
+}
+
+/// `ChimiConstructor` (runtime.h): one constructor's shape.
+#[repr(C)]
+pub struct Constructor {
+    pub type_name: u32,
+    pub variant_name: u32,
+    pub fields_offset: u32,
+    pub fields_length: u32,
+    pub outcome_success: i32,
+    pub ordinal: u32,
+    pub program_exit: u32,
+}
+
+/// The `CHIMI_INTRINSIC_*` ids (runtime.h) of the intrinsics Rust serves.
+pub struct Intrinsic;
+
+impl Intrinsic {
+    pub const MAP_EMPTY: u32 = 3;
+    pub const MAP_GET: u32 = 4;
+    pub const MAP_PUT: u32 = 5;
+    pub const MAP_REMOVE: u32 = 133;
+    pub const MAP_SIZE: u32 = 134;
+    pub const MAP_REDUCE_ENTRIES: u32 = 135;
+    pub const SET_EMPTY: u32 = 136;
+    pub const SET_CONTAINS: u32 = 137;
+    pub const SET_ADD: u32 = 138;
+    pub const SET_REMOVE: u32 = 139;
+    pub const SET_SIZE: u32 = 140;
+    pub const SET_REDUCE_ITEMS: u32 = 141;
+}
+
+/// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
+pub struct StandardConstructor;
+
+impl StandardConstructor {
+    pub const OPTION_SOME: u32 = 6;
+    pub const OPTION_NONE: u32 = 7;
+}
+
 /// `MapNode`.
 #[repr(C)]
 pub struct MapNode {
@@ -731,6 +784,39 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ListVector" ListVector, "root", root)
     field("ListVector" ListVector, "tail", tail)
     field("ListVector" ListVector, "length", length)
+    size("ChimiSymbol" Symbol)
+    field("ChimiSymbol" Symbol, "kind", kind)
+    field("ChimiSymbol" Symbol, "name", name)
+    field("ChimiSymbol" Symbol, "function", function)
+    field("ChimiSymbol" Symbol, "constant", constant)
+    field("ChimiSymbol" Symbol, "constructor", constructor)
+    field("ChimiSymbol" Symbol, "intrinsic", intrinsic)
+    field("ChimiSymbol" Symbol, "standard_constructor", standard_constructor)
+    field("ChimiSymbol" Symbol, "standard_type", standard_type)
+    field("ChimiSymbol" Symbol, "environment_slot", environment_slot)
+    field("ChimiSymbol" Symbol, "binding", binding)
+    size("ChimiConstructor" Constructor)
+    field("ChimiConstructor" Constructor, "type_name", type_name)
+    field("ChimiConstructor" Constructor, "variant_name", variant_name)
+    field("ChimiConstructor" Constructor, "fields_offset", fields_offset)
+    field("ChimiConstructor" Constructor, "fields_length", fields_length)
+    field("ChimiConstructor" Constructor, "outcome_success", outcome_success)
+    field("ChimiConstructor" Constructor, "ordinal", ordinal)
+    field("ChimiConstructor" Constructor, "program_exit", program_exit)
+    constant("CHIMI_INTRINSIC_MAP_EMPTY" Intrinsic::MAP_EMPTY)
+    constant("CHIMI_INTRINSIC_MAP_GET" Intrinsic::MAP_GET)
+    constant("CHIMI_INTRINSIC_MAP_PUT" Intrinsic::MAP_PUT)
+    constant("CHIMI_INTRINSIC_MAP_REMOVE" Intrinsic::MAP_REMOVE)
+    constant("CHIMI_INTRINSIC_MAP_SIZE" Intrinsic::MAP_SIZE)
+    constant("CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES" Intrinsic::MAP_REDUCE_ENTRIES)
+    constant("CHIMI_INTRINSIC_SET_EMPTY" Intrinsic::SET_EMPTY)
+    constant("CHIMI_INTRINSIC_SET_CONTAINS" Intrinsic::SET_CONTAINS)
+    constant("CHIMI_INTRINSIC_SET_ADD" Intrinsic::SET_ADD)
+    constant("CHIMI_INTRINSIC_SET_REMOVE" Intrinsic::SET_REMOVE)
+    constant("CHIMI_INTRINSIC_SET_SIZE" Intrinsic::SET_SIZE)
+    constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
+    constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
+    constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
     size("MapNode" MapNode)
     field("MapNode" MapNode, "key", key)
     field("MapNode" MapNode, "value", value)

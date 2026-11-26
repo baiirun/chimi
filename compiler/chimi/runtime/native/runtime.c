@@ -1246,6 +1246,73 @@ _Static_assert(sizeof(((ListVector *)0)->tail) == 8, "layout: sizeof(((ListVecto
 _Static_assert(offsetof(ListVector, length) == 16, "layout: offsetof(ListVector, length)");
 _Static_assert(sizeof(((ListVector *)0)->length) == 4, "layout: sizeof(((ListVector *)0)->length)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((ListVector *)0)->length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ListVector *)0)->length)");
+_Static_assert(sizeof(ChimiSymbol) == 40, "layout: sizeof(ChimiSymbol)");
+_Static_assert(offsetof(ChimiSymbol, kind) == 0, "layout: offsetof(ChimiSymbol, kind)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->kind) == 4, "layout: sizeof(((ChimiSymbol *)0)->kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->kind)");
+_Static_assert(offsetof(ChimiSymbol, name) == 4, "layout: offsetof(ChimiSymbol, name)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->name) == 4, "layout: sizeof(((ChimiSymbol *)0)->name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->name)");
+_Static_assert(offsetof(ChimiSymbol, function) == 8, "layout: offsetof(ChimiSymbol, function)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->function) == 4, "layout: sizeof(((ChimiSymbol *)0)->function)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->function) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->function)");
+_Static_assert(offsetof(ChimiSymbol, constant) == 12, "layout: offsetof(ChimiSymbol, constant)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->constant) == 4, "layout: sizeof(((ChimiSymbol *)0)->constant)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->constant) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->constant)");
+_Static_assert(offsetof(ChimiSymbol, constructor) == 16, "layout: offsetof(ChimiSymbol, constructor)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->constructor) == 4, "layout: sizeof(((ChimiSymbol *)0)->constructor)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->constructor) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->constructor)");
+_Static_assert(offsetof(ChimiSymbol, intrinsic) == 20, "layout: offsetof(ChimiSymbol, intrinsic)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->intrinsic) == 4, "layout: sizeof(((ChimiSymbol *)0)->intrinsic)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->intrinsic) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->intrinsic)");
+_Static_assert(offsetof(ChimiSymbol, standard_constructor) == 24, "layout: offsetof(ChimiSymbol, standard_constructor)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->standard_constructor) == 4, "layout: sizeof(((ChimiSymbol *)0)->standard_constructor)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->standard_constructor) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->standard_constructor)");
+_Static_assert(offsetof(ChimiSymbol, standard_type) == 28, "layout: offsetof(ChimiSymbol, standard_type)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->standard_type) == 4, "layout: sizeof(((ChimiSymbol *)0)->standard_type)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->standard_type) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->standard_type)");
+_Static_assert(offsetof(ChimiSymbol, environment_slot) == 32, "layout: offsetof(ChimiSymbol, environment_slot)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->environment_slot) == 4, "layout: sizeof(((ChimiSymbol *)0)->environment_slot)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->environment_slot) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->environment_slot)");
+_Static_assert(offsetof(ChimiSymbol, binding) == 36, "layout: offsetof(ChimiSymbol, binding)");
+_Static_assert(sizeof(((ChimiSymbol *)0)->binding) == 4, "layout: sizeof(((ChimiSymbol *)0)->binding)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->binding) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->binding)");
+_Static_assert(sizeof(ChimiConstructor) == 28, "layout: sizeof(ChimiConstructor)");
+_Static_assert(offsetof(ChimiConstructor, type_name) == 0, "layout: offsetof(ChimiConstructor, type_name)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->type_name) == 4, "layout: sizeof(((ChimiConstructor *)0)->type_name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->type_name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->type_name)");
+_Static_assert(offsetof(ChimiConstructor, variant_name) == 4, "layout: offsetof(ChimiConstructor, variant_name)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->variant_name) == 4, "layout: sizeof(((ChimiConstructor *)0)->variant_name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->variant_name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->variant_name)");
+_Static_assert(offsetof(ChimiConstructor, fields_offset) == 8, "layout: offsetof(ChimiConstructor, fields_offset)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->fields_offset) == 4, "layout: sizeof(((ChimiConstructor *)0)->fields_offset)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->fields_offset) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->fields_offset)");
+_Static_assert(offsetof(ChimiConstructor, fields_length) == 12, "layout: offsetof(ChimiConstructor, fields_length)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->fields_length) == 4, "layout: sizeof(((ChimiConstructor *)0)->fields_length)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->fields_length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->fields_length)");
+_Static_assert(offsetof(ChimiConstructor, outcome_success) == 16, "layout: offsetof(ChimiConstructor, outcome_success)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->outcome_success) == 4, "layout: sizeof(((ChimiConstructor *)0)->outcome_success)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->outcome_success) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->outcome_success)");
+_Static_assert(offsetof(ChimiConstructor, ordinal) == 20, "layout: offsetof(ChimiConstructor, ordinal)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->ordinal) == 4, "layout: sizeof(((ChimiConstructor *)0)->ordinal)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->ordinal) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->ordinal)");
+_Static_assert(offsetof(ChimiConstructor, program_exit) == 24, "layout: offsetof(ChimiConstructor, program_exit)");
+_Static_assert(sizeof(((ChimiConstructor *)0)->program_exit) == 4, "layout: sizeof(((ChimiConstructor *)0)->program_exit)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->program_exit) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiConstructor *)0)->program_exit)");
+_Static_assert(CHIMI_INTRINSIC_MAP_EMPTY == 3, "layout: CHIMI_INTRINSIC_MAP_EMPTY");
+_Static_assert(CHIMI_INTRINSIC_MAP_GET == 4, "layout: CHIMI_INTRINSIC_MAP_GET");
+_Static_assert(CHIMI_INTRINSIC_MAP_PUT == 5, "layout: CHIMI_INTRINSIC_MAP_PUT");
+_Static_assert(CHIMI_INTRINSIC_MAP_REMOVE == 133, "layout: CHIMI_INTRINSIC_MAP_REMOVE");
+_Static_assert(CHIMI_INTRINSIC_MAP_SIZE == 134, "layout: CHIMI_INTRINSIC_MAP_SIZE");
+_Static_assert(CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES == 135, "layout: CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES");
+_Static_assert(CHIMI_INTRINSIC_SET_EMPTY == 136, "layout: CHIMI_INTRINSIC_SET_EMPTY");
+_Static_assert(CHIMI_INTRINSIC_SET_CONTAINS == 137, "layout: CHIMI_INTRINSIC_SET_CONTAINS");
+_Static_assert(CHIMI_INTRINSIC_SET_ADD == 138, "layout: CHIMI_INTRINSIC_SET_ADD");
+_Static_assert(CHIMI_INTRINSIC_SET_REMOVE == 139, "layout: CHIMI_INTRINSIC_SET_REMOVE");
+_Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZE");
+_Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
+_Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
+_Static_assert(CHIMI_CONSTRUCTOR_OPTION_NONE == 7, "layout: CHIMI_CONSTRUCTOR_OPTION_NONE");
 _Static_assert(sizeof(MapNode) == 40, "layout: sizeof(MapNode)");
 _Static_assert(offsetof(MapNode, key) == 0, "layout: offsetof(MapNode, key)");
 _Static_assert(sizeof(((MapNode *)0)->key) == 8, "layout: sizeof(((MapNode *)0)->key)");
@@ -6692,91 +6759,21 @@ static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, C
 #endif
 }
 
-/* Calls `step` with the state, starting at `initial`, then the key of each node
-   of `entries` and, when `with_value`, its value; stops at the first call that does
-   not succeed. Frees `entries`. */
-static ChimiControl *reduce_in_order(ChimiRuntime *runtime, ChimiCallable *step, ChimiValue *initial,
-                                     MapEntries entries, bool with_value, uint64_t span,
-                                     uint32_t call_node, ChimiEnvironment *environment) {
-  ChimiControl *control = success(initial);
-  for (size_t index = 0; index < entries.length; ++index) {
-    ChimiValue *step_arguments[] = {control->value, entries.nodes[index]->key, entries.nodes[index]->value};
-    control = invoke(runtime, step, step_arguments, with_value ? 3 : 2, span, call_node, environment);
-    if (control->kind != CONTROL_SUCCESS) break;
-  }
-  free(entries.nodes);
-  return control;
-}
-
-static ChimiControl *option_value(ChimiValue *found) {
-  if (!found) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-  ChimiValue *fields[] = {found};
-  return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-}
-
-/* The native core of std/map; execution/map_operations.rs is the interpreter's. */
-static ChimiControl *invoke_map_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                      ChimiValue **arguments, uint32_t argument_count,
-                                      uint64_t span, uint32_t call_node,
+/* The native cores of std/map and std/set live in
+   runtime/chimi-runtime/src/intrinsics/collections.rs. */
+ChimiControl *chimi_intrinsic_map_v1(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                     uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                     ChimiEnvironment *environment);
+ChimiControl *chimi_intrinsic_set_v1(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
+                                     uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                     ChimiEnvironment *environment);
+/* `invoke` and the shared Void, False and True, for the intrinsics in Rust. */
+ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
+                                      uint32_t argument_count, uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  if (intrinsic == CHIMI_INTRINSIC_MAP_EMPTY)
-    return argument_count == 0 ? success(map_value(NULL)) : intrinsic_shape_defect(call_node);
-  if (argument_count == 0 || arguments[0]->kind != VALUE_MAP) return intrinsic_shape_defect(call_node);
-  MapNode *map = arguments[0]->as.map;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_MAP_GET:
-      if (argument_count != 2) break;
-      return option_value(map_get_node(map, arguments[1]));
-    case CHIMI_INTRINSIC_MAP_PUT:
-      if (argument_count != 3) break;
-      return success(map_value(map_put_node(map, arguments[1], arguments[2])));
-    case CHIMI_INTRINSIC_MAP_REMOVE: {
-      if (argument_count != 2) break;
-      MapNode *removed = map_remove_node(map, arguments[1]);
-      return success(removed == map ? arguments[0] : map_value(removed));
-    }
-    case CHIMI_INTRINSIC_MAP_SIZE:
-      if (argument_count != 1) break;
-      return success(integer_value(map_size(map)));
-    case CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES:
-      if (argument_count != 3 || arguments[2]->kind != VALUE_CALLABLE) break;
-      return reduce_in_order(runtime, arguments[2]->as.callable, arguments[1], map_entries(map), true,
-                             span, call_node, environment);
-  }
-  return intrinsic_shape_defect(call_node);
+  return invoke(runtime, callable, arguments, argument_count, span, call_node, environment);
 }
-
-/* The native core of std/set: a map whose values are Void. */
-static ChimiControl *invoke_set_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                      ChimiValue **arguments, uint32_t argument_count,
-                                      uint64_t span, uint32_t call_node,
-                                      ChimiEnvironment *environment) {
-  if (intrinsic == CHIMI_INTRINSIC_SET_EMPTY)
-    return argument_count == 0 ? success(set_value(NULL)) : intrinsic_shape_defect(call_node);
-  if (argument_count == 0 || arguments[0]->kind != VALUE_SET) return intrinsic_shape_defect(call_node);
-  MapNode *set = arguments[0]->as.map;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_SET_CONTAINS:
-      if (argument_count != 2) break;
-      return success(boolean_value(map_get_node(set, arguments[1]) != NULL));
-    case CHIMI_INTRINSIC_SET_ADD:
-      if (argument_count != 2) break;
-      return success(set_value(map_put_node(set, arguments[1], void_value())));
-    case CHIMI_INTRINSIC_SET_REMOVE: {
-      if (argument_count != 2) break;
-      MapNode *removed = map_remove_node(set, arguments[1]);
-      return success(removed == set ? arguments[0] : set_value(removed));
-    }
-    case CHIMI_INTRINSIC_SET_SIZE:
-      if (argument_count != 1) break;
-      return success(integer_value(map_size(set)));
-    case CHIMI_INTRINSIC_SET_REDUCE_ITEMS:
-      if (argument_count != 3 || arguments[2]->kind != VALUE_CALLABLE) break;
-      return reduce_in_order(runtime, arguments[2]->as.callable, arguments[1], map_entries(set), false,
-                             span, call_node, environment);
-  }
-  return intrinsic_shape_defect(call_node);
-}
+ChimiValue *chimi_runtime_shared_value_v1(uint32_t index) { return shared_value(index); }
 
 /* The exact value of a JSON number as +-significant x 10^exponent, where
    `significant` (the spelling's digits, '.' skipped) has no leading or trailing
@@ -8235,9 +8232,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiEnvironment *environment) {
   if ((intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES) ||
       (intrinsic >= CHIMI_INTRINSIC_MAP_EMPTY && intrinsic <= CHIMI_INTRINSIC_MAP_PUT))
-    return invoke_map_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+    return chimi_intrinsic_map_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
-    return invoke_set_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+    return chimi_intrinsic_set_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_JSON_DECODE && intrinsic <= CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
     return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)

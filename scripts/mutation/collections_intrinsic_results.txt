@@ -1,0 +1,15 @@
+# collections_intrinsic_mutations.py: 8 mutants against compiler/chimi (2026-11-26)
+KILLED       Map.get finds nothing [std_modules -- standard_]
+KILLED       Map.remove of a held key returns the old map [std_modules -- standard_]
+KILLED       Set.contains is inverted [std_modules -- standard_]
+KILLED       Set.reduce passes each item's value too [std_modules -- standard_]
+KILLED       a reduce keeps going after a failure [std_modules -- standard_]
+KILLED       a reduce starts from its first entry's key [std_modules -- standard_]
+KILLED       Option values take the wrong constructor [std_modules -- standard_]
+KILLED       standard values name their fields after the variant [language -- a_map_lookup_s_option_names_its_field]
+# result: every mutant killed
+# The field-name mutant first read the next field id; it survived because in
+# the test program that id names another `value` field. Nothing checked a
+# native Option's field name before; the new language test pins it.
+# Retargeted in the same PR: std2_map_set_mutations.py "C reduce_entries
+# visits entries in descending order" (now in collections.rs), KILLED.

@@ -6052,6 +6052,25 @@ fn a_closure_reentered_by_its_own_argument_keeps_each_call_s_parameters() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":17");
 }
 
+// The native runtime builds this `Some` from the program's constructor
+// table, field name included (intrinsics/standard.rs).
+#[test]
+fn a_map_lookup_s_option_names_its_field_on_both_backends() {
+    let outcome = run_both(
+        "map-lookup-option",
+        concat!(
+            "import std/map as Map\n",
+            "pub fn main() -> Option<Int> {\n",
+            "  Map.get(Map.put(Map.empty(), \"one\", 1), \"one\")\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(
+        outcome,
+        "\"outcome\":\"success\",\"value\":{\"type\":\"Option\",\"variant\":\"Some\",\"fields\":{\"value\":1}}"
+    );
+}
+
 // PC-02
 #[test]
 fn a_clause_gap_names_the_missing_argument_shape() {

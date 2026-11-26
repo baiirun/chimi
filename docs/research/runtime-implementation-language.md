@@ -152,6 +152,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,
       console and stdin, each family taking its C lock with it (six to eight
       PRs).
+      First PR (2026-11-26): the program's symbol and constructor tables are
+      mirrored in `heap/layout.rs` (pinned by the layout block and digests,
+      which now read `runtime.h` too), and `intrinsics/standard.rs` builds
+      standard values and controls from them. std/map and std/set moved first
+      (`intrinsics/collections.rs`); a callback goes back through
+      `runtime.c`'s `invoke` until dispatch moves (phase 7).
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
