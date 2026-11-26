@@ -24,119 +24,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// A `--time-limit` value in the `Duration` text form (`60s`, `1m30s`); `None`
-/// unless it is positive.
 /// Whether `text` is a `--clock-start` the native runtime accepts: RFC 3339
 /// with an offset, years 1678 through 2262, and a result that fits Unix
-/// nanoseconds in an `i64`. Mirrors `parse_timestamp` in runtime.c, so a bad
-/// value is a usage error (exit 2) rather than a failure in every test.
+/// nanoseconds in an `i64`. The runtime reads it with the same
+/// `chimi_runtime::timestamp::parse`, so a bad value is a usage error (exit
+/// 2) rather than a failure in every test.
 pub fn valid_clock_start(text: &str) -> bool {
     clock_start_nanoseconds(text).is_some()
 }
 
 fn clock_start_nanoseconds(text: &str) -> Option<i64> {
-    let bytes = text.as_bytes();
-    let separator = |at: &mut usize, allowed: &[u8]| -> Option<()> {
-        let byte = *bytes.get(*at)?;
-        allowed.contains(&byte).then(|| *at += 1)
-    };
-    let number = |at: &mut usize, count: usize| -> Option<i64> {
-        let slice = bytes.get(*at..*at + count)?;
-        if !slice.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        *at += count;
-        Some(
-            slice
-                .iter()
-                .fold(0, |value, digit| value * 10 + i64::from(digit - b'0')),
-        )
-    };
-    let mut at = 0;
-    let year = number(&mut at, 4)?;
-    separator(&mut at, b"-")?;
-    let month = number(&mut at, 2)?;
-    separator(&mut at, b"-")?;
-    let day = number(&mut at, 2)?;
-    separator(&mut at, b"Tt")?;
-    let hour = number(&mut at, 2)?;
-    separator(&mut at, b":")?;
-    let minute = number(&mut at, 2)?;
-    separator(&mut at, b":")?;
-    let second = number(&mut at, 2)?;
-    let mut fraction = 0;
-    if separator(&mut at, b".").is_some() {
-        let start = at;
-        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1;
-        }
-        let count = at - start;
-        if count == 0 || count > 9 {
-            return None;
-        }
-        fraction = number(&mut { start }, count)? * 10_i64.pow(u32::try_from(9 - count).ok()?);
-    }
-    let offset = match bytes.get(at)? {
-        b'Z' | b'z' => {
-            at += 1;
-            0
-        }
-        sign @ (b'+' | b'-') => {
-            let sign = if *sign == b'-' { -1 } else { 1 };
-            at += 1;
-            let hours = number(&mut at, 2)?;
-            separator(&mut at, b":")?;
-            let minutes = number(&mut at, 2)?;
-            if hours > 23 || minutes > 59 {
-                return None;
-            }
-            sign * (hours * 3600 + minutes * 60)
-        }
-        _ => return None,
-    };
-    if at != bytes.len() {
-        return None;
-    }
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    if !(1678..=2262).contains(&year)
-        || !(1..=12).contains(&month)
-        || day < 1
-        || day > month_days[usize::try_from(month - 1).ok()?]
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
-        return None;
-    }
-    let seconds =
-        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
-    seconds.checked_mul(1_000_000_000)?.checked_add(fraction)
+    chimi_runtime::timestamp::parse(text.as_bytes())
 }
 
-/// Days since 1970-01-01 in the proleptic Gregorian calendar.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
+/// A `--time-limit` value in the `Duration` text form (`60s`, `1m30s`); `None`
+/// unless it is positive.
 pub fn parse_time_limit(text: &str) -> Option<Duration> {
     let nanoseconds = crate::duration::parse(text).ok()?;
     u64::try_from(nanoseconds)

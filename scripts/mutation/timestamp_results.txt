@@ -1,0 +1,15 @@
+# mutation run at eae136ba386ede09aba91d2b54c0cb8a1de0db24
+# timestamp_mutations.py: 12 mutants against runtime/chimi-runtime
+KILLED       the fraction keeps its trailing zeros [lib -- timestamp] (1s)
+KILLED       a time before 1970 rounds toward zero [lib -- timestamp] (1s)
+KILLED       a day before 1970 rounds toward zero [lib -- timestamp] (1s)
+KILLED       leap second 60 is accepted [lib -- timestamp] (1s)
+KILLED       the offset's sign is ignored [lib -- timestamp] (1s)
+KILLED       1677 is accepted [lib -- timestamp] (1s)
+KILLED       February 29 is accepted in every year [lib -- timestamp] (1s)
+KILLED       a short fraction is not scaled [lib -- timestamp] (1s)
+KILLED       text after the zone is accepted [lib -- timestamp] (1s)
+KILLED       an out-of-range result wraps [lib -- timestamp] (1s)
+KILLED       a lowercase t is rejected [lib -- timestamp] (1s)
+KILLED       an empty fraction is accepted [lib -- timestamp] (1s)
+# result: every mutant killed
