@@ -36,6 +36,7 @@ mod metrics_abi;
 pub mod random;
 mod random_abi;
 mod serialized;
+pub use serialized::note_exiting;
 pub mod text;
 mod text_abi;
 mod text_buffer;

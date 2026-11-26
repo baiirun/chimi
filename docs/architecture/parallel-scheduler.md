@@ -472,7 +472,7 @@ four keep one carrier.
    Split into five PRs (advisor review, 2026-11-21), each merging with one
    carrier and behavior unchanged:
    - 5a, the C runtime safe for N threads. Carrier states are sized at
-     startup. `binding_handles` and every other table fibers touch outside
+     startup. The binding handle table and every other table fibers touch outside
      the kernel lock get a lock: open files, test mailboxes, process
      defects, profile rows, the `random` stream and the span counter. The
      memory and copy counters become signed per-carrier deltas, summed in

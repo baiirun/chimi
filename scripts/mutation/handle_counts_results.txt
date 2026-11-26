@@ -1,0 +1,19 @@
+# mutation run at 81be35c21b080bbe1397f973c30341297bc7dcf6
+# handle_counts_mutations.py: 16 mutants against runtime/chimi-runtime
+KILLED       a drop reports the last reference one early [lib -- handle_counts] (1s)
+KILLED       growing loses the old entries [lib -- handle_counts] (1s)
+KILLED       removal does not shift a run back [lib -- handle_counts] (1s)
+KILLED       removal shifts an entry past its home [lib -- handle_counts] (1s)
+KILLED       an unknown key is counted [lib -- handle_counts] (1s)
+KILLED       key 0 is counted [lib -- handle_counts] (1s)
+KILLED       a reset keeps the counts [lib -- handle_counts] (1s)
+KILLED       the C reset keeps the counts [lib -- handle_counts] (1s)
+KILLED       a probe runs off the end instead of wrapping [lib -- handle_counts] (1s)
+KILLED       removal stops at the end instead of wrapping [lib -- handle_counts] (1s)
+KILLED       removal starts past the end of the last entry [lib -- handle_counts] (1s)
+KILLED       an entry is shifted back onto its own home's later run [lib -- handle_counts] (1s)
+KILLED       a reset keeps the key count [lib -- handle_counts] (1s)
+KILLED       a removal keeps the key count [lib -- handle_counts] (1s)
+KILLED       the last hole is not cleared [lib -- handle_counts] (1s)
+KILLED       the map grows only at three quarters full [lib -- handle_counts] (1s)
+# result: every mutant killed

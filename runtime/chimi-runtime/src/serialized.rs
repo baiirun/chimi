@@ -9,6 +9,12 @@
 //! a missing lock allows, and the program aborts rather than share the value.
 //! Under the lock the flag is never contended, so it costs one exchange and
 //! one store per call.
+//!
+//! One overlap is allowed: without the scheduler, the allocator ends the
+//! program from inside a call when memory runs out, and the exit handler then
+//! drains the console queues (`console_drain_all`). The allocator marks the
+//! program as ending first ([`note_exiting`]), and the failed allocation has
+//! not changed the value, so the drain may read it.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -17,13 +23,23 @@ unsafe extern "C" {
     fn abort() -> !;
 }
 
+/// Set once the program is ending from inside a call.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// Lets the exit handlers reach a value whose call the program is ending
+/// from. Only the allocator's out-of-memory exit calls it.
+pub fn note_exiting() {
+    EXITING.store(true, Ordering::Relaxed);
+}
+
 pub(crate) struct Serialized<T> {
     value: UnsafeCell<T>,
     busy: AtomicBool,
 }
 
 // SAFETY: every exported function's caller holds the one lock that
-// serializes access to the value, and `with` aborts on an overlapping call.
+// serializes access to the value, and `with` aborts on an overlapping call
+// except while the program ends from inside one.
 unsafe impl<T: Send> Sync for Serialized<T> {}
 
 impl<T> Serialized<T> {
@@ -35,7 +51,7 @@ impl<T> Serialized<T> {
     /// The caller holds the `runtime.c` lock that guards this value, and
     /// `body` does not reenter it.
     pub(crate) unsafe fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
-        if self.busy.swap(true, Ordering::Acquire) {
+        if self.busy.swap(true, Ordering::Acquire) && !EXITING.load(Ordering::Relaxed) {
             // SAFETY: abort takes no arguments and never returns.
             unsafe { abort() }
         }

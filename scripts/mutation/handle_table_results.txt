@@ -7,4 +7,4 @@ KILLED       drop does not take the lock [runtime_state -- the_handle_table_coun
 KILLED       a retain is not counted [runtime_state net] (66s)
 # result: every mutant killed
 # Repeated twice more at the same commit: every mutant killed each time, 3 of 3
-# runs. The lock mutants are caught by the Rust map's overlapping-call abort.
+# runs.
