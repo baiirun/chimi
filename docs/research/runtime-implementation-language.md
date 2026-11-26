@@ -143,6 +143,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       reads (`vector_leaf`, `list_get`) stay inline in `runtime.c` for the C
       intrinsics that walk lists, beside the Rust reader, until those
       intrinsics move (phase 5).
+      Third PR (2026-11-26): the Map tree that Set shares
+      (`heap/map.rs`), structural order (`heap/compare.rs`) and the exact
+      order and canonical text of JSON numbers (`heap/json_number.rs`), with
+      the nodes allocated in the C's order. `runtime.c` keeps one-line
+      wrappers under the old names for its intrinsics and fixtures. This
+      closes phase 4.
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,
       console and stdin, each family taking its C lock with it (six to eight
       PRs).
