@@ -2,6 +2,8 @@
 
 Run: scripts/mutation/mutate.py scripts/mutation/bump_allocation_mutations.py
 Each mutant must turn a language test or a native cli test red.
+The bump itself, the chunk reset and the dead-handle drop are Rust since
+CHI-305 step 5 phase 1; their mutants are in young_mutations.py.
 """
 
 CRATE = "compiler/chimi"
@@ -29,20 +31,11 @@ MUTATIONS = [
    [("  forward_survivors(scope, value, control);\n  reset_young_chunks(scope, !ending);\n",
      "  reset_young_chunks(scope, !ending);\n  forward_survivors(scope, value, control);\n")],
    LANGUAGE),
- m("a large allocation is bumped",
-   [("  if (innermost && !innermost->links_young && bytes <= YOUNG_CHUNK_LARGEST) {",
-     "  if (innermost && !innermost->links_young) {")], LANGUAGE),
  m("list allocations of the pass are not rewritten",
    [("  forward_marked_list(&scope->young);\n", "")], LANGUAGE),
  m("the root keeps pointing into the chunk",
    [("  if (value) *value = forward_young(*value);\n", "  if (value) (void)forward_young(*value);\n")],
    LANGUAGE),
- m("a kept chunk is not zeroed",
-   [("    memset(first->data, 0, (size_t)(first->used - first->data));\n", "")], LANGUAGE),
- m("dead channel endpoints are not dropped",
-   [("        if (is_channel_endpoint(value)) channel_endpoint_drop(value->as.capability.channel);\n      }\n    }\n  }\n  scope->live_bytes -= dead_bytes;",
-     "        (void)value;\n      }\n    }\n  }\n  scope->live_bytes -= dead_bytes;")],
-   dict(targets=["cli", "language"], filter=None)),
  m("a region never links after a pass that mostly survives",
    [("  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n",
      "  scope->links_young = false;\n")], HEAP),
@@ -50,12 +43,9 @@ MUTATIONS = [
    [("  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n",
      "  scope->links_young = scope->links_young || 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n")],
    HEAP),
- m("a pass that bumped only into its first chunk moves nothing",
-   [("  return scope->first_chunk && (scope->first_chunk->next || scope->bump != scope->first_chunk->data);\n",
-     "  return scope->first_chunk && scope->first_chunk->next;\n")], LANGUAGE),
  m("a control's cause is not rewritten",
    [("      FORWARD(((ChimiControl *)pointer)->cause);\n", "")],
    dict(targets=["cli", "language"], filter=None)),
  m("the counters of the pass are never added",
-   [("  flush_young_counts(scope);\n  carrier->collecting_scope = scope;", "  carrier->collecting_scope = scope;")], HEAP),
+   [("  flush_young_counts(scope);\n  here->collecting_scope = scope;", "  here->collecting_scope = scope;")], HEAP),
 ]

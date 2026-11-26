@@ -71,8 +71,10 @@ if it matters.
   a loop that flips between linking and bumping, a value reached twice (moved
   once), a crash message built in a loop, and the peak footprint with a child
   task.
-- `scripts/mutation/bump_allocation_mutations.py` holds 13 mutants: skipped
-  slot rewrites, a forgotten forwarding address, chunks reset before the move,
-  a large allocation bumped, a root left in the chunk, a kept chunk not zeroed,
-  dead endpoints not dropped, counters never added, and the linking switch
-  never turning on, never turning off, or skipping a pass that used one chunk.
+- `scripts/mutation/bump_allocation_mutations.py` holds 10 mutants: skipped
+  slot, list and cause rewrites, a forgotten forwarding address, chunks reset
+  before the move, a root left in the chunk, counters never added, and the linking switch
+  never turning on or never turning off. The chunk mutants (a large allocation
+  bumped, a kept chunk not zeroed, dead endpoints not dropped, a pass that
+  used one chunk) moved to `scripts/mutation/young_mutations.py` with the
+  young chunks themselves.

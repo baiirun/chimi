@@ -30,7 +30,7 @@ if not RUST_RUNTIME or not pathlib.Path(RUST_RUNTIME).is_file():
 def harness(flags, fixture, args):
     exe = SCRATCH / "mut-bin"
     def run():
-        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), RUST_RUNTIME, "-o", str(exe)],
+        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), RUST_RUNTIME, "-lm", "-lpthread", "-o", str(exe)],
                                capture_output=True)
         if build.returncode: return False, "build failed"
         out = subprocess.run([str(exe)] + args, capture_output=True, timeout=300, env=ENV)
@@ -69,8 +69,8 @@ MUTANTS = [
     ("adopt-into-base", "adopted messages join the innermost region",
      "  if (scope) {\n    area->role = AREA_YOUNG;", "  if (0) {\n    area->role = AREA_YOUNG;", HEAP),
     ("region-exit-drops-survivors", "region exit hands survivors to the enclosing region",
-     "  area_merge(parent ? &parent->young : &heap->base, &scope->survivors);",
-     "  area_release_all(&scope->survivors); scope->live_bytes = 0;", HEAP),
+     "  chimi_scope_end_v1(scope);\n  return status;",
+     "  area_release_all(&scope->survivors); scope->live_bytes = 0;\n  chimi_scope_end_v1(scope);\n  return status;", HEAP),
     ("pass-ignores-foreign-pointers", "a pointer into another heap is reported",
      "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n",
      "", HEAP),
