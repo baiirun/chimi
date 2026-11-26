@@ -26,6 +26,7 @@ pub mod float;
 mod float_abi;
 pub mod graphemes;
 pub mod handle_counts;
+pub mod heap;
 #[cfg(unix)]
 mod handle_counts_abi;
 #[cfg(unix)]
