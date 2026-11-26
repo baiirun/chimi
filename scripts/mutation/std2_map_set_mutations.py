@@ -8,8 +8,10 @@ expected files.
 Run: CARGO_BUILD_JOBS=2 scripts/mutation/mutate.py --scratch /tmp/claude-0/mscratch-map \\
          --revision 848dc2d scripts/mutation/std2_map_set_mutations.py
 Each mutant must turn a std-tests/map or std-tests/set program (either
-backend) or the std_modules key-requirement test red. Filters other than
-"standard_programs" select no program test in std_modules.
+backend) or the std_modules key-requirement test red. The filter "standard_"
+selects both the expected-outcome programs and the std-tests `test` modules
+(the map and set programs became `test` modules, which "standard_programs"
+alone no longer runs).
 """
 
 CRATE = "compiler/chimi"
@@ -25,7 +27,7 @@ MAP = "std/map.chimi"
 
 def programs(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["std_modules"],
-                filter="standard_programs")
+                filter="standard_")
 
 
 def requirements(name, file, edits):

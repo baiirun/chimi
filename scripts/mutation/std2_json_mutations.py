@@ -24,7 +24,7 @@ def std(name, file, edits):
 def programs(name, file, edits):
     # C runtime and wiring: only the std-tests programs compare backends.
     return dict(name=name, file=file, edits=edits, targets=["std_modules"],
-                filter="standard_programs")
+                filter="standard_")
 
 
 def lang(name, file, edits):

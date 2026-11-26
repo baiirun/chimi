@@ -19,7 +19,7 @@ NUMBER = HEAP + "json_number.rs"
 
 
 def programs(name, file, old, new):
-    return dict(name=name, file=file, edits=[(old, new)], targets=["std_modules"], filter="standard_programs")
+    return dict(name=name, file=file, edits=[(old, new)], targets=["std_modules"], filter="standard_")
 
 
 def balanced(name, file, old, new):

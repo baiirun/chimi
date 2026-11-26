@@ -79,7 +79,37 @@ static void test_removals_that_keep_one_path_rebalance(bool leftmost, bool ascen
   free(entries.nodes);
 }
 
+/* The AVL invariant at every node: children at most one apart in height, the
+   stored height one more than the taller child, and keys in order. Returns the
+   height. */
+static uint16_t check_avl(const MapNode *node, int64_t low, int64_t high) {
+  if (!node) return 0;
+  int64_t key = node->key->as.integer;
+  CHECK(key > low && key < high, "key %" PRId64 " out of order", key);
+  uint16_t left = check_avl(node->left, low, key), right = check_avl(node->right, key, high);
+  CHECK(left <= right + 1 && right <= left + 1, "heights %u and %u under key %" PRId64, left, right, key);
+  CHECK(node->height == 1 + (left > right ? left : right), "height %u at key %" PRId64, node->height, key);
+  return node->height;
+}
+
+/* Insertions and removals in a scrambled order reach every rotation, single and
+   double, on both sides; the invariant holds after each change. */
+static void test_scrambled_changes_keep_the_invariant(void) {
+  enum { COUNT = 512 };
+  MapNode *map = NULL;
+  for (int64_t step = 0; step < COUNT; ++step) {
+    map = map_put_node(map, integer_value((step * 197) % COUNT), void_value());
+    check_avl(map, -1, COUNT);
+  }
+  for (int64_t step = 0; step < COUNT; step += 2) {
+    map = map_remove_node(map, integer_value((step * 311) % COUNT));
+    check_avl(map, -1, COUNT);
+  }
+  CHECK(map_size(map) == COUNT / 2, "%" PRId64 " keys left", map_size(map));
+}
+
 int main(void) {
+  test_scrambled_changes_keep_the_invariant();
   for (int ascending = 0; ascending < 2; ++ascending) {
     test_removals_that_keep_one_path_rebalance(true, ascending);
     test_removals_that_keep_one_path_rebalance(false, ascending);

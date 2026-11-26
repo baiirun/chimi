@@ -63,6 +63,8 @@ int main(void) {
     {"-2", "-10", 1}, {"-1", "0", -1}, {"1e400", "1e399", 1},
     {"12345678901234567890123", "12345678901234567890124", -1},
     {"0.1", "0.09999999999999999999", 1},
+    /* Equal exponents and a shared prefix: the longer mantissa is larger. */
+    {"1.2", "1.23", -1}, {"-1.2", "-1.23", 1},
     /* Exponents beyond any machine integer stay exact and never overflow. */
     {"1e9999999999999999999", "1", 1},
     {"1e9999999999999999999", "1e9999999999999999998", 1},
