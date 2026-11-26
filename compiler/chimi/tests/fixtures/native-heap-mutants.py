@@ -30,7 +30,7 @@ if not RUST_RUNTIME or not pathlib.Path(RUST_RUNTIME).is_file():
 def harness(flags, fixture, args):
     exe = SCRATCH / "mut-bin"
     def run():
-        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), RUST_RUNTIME, "-o", str(exe)],
+        build = subprocess.run(CC + flags + [str(ROOT / f"compiler/chimi/tests/fixtures/{fixture}"), RUST_RUNTIME, "-lm", "-lpthread", "-o", str(exe)],
                                capture_output=True)
         if build.returncode: return False, "build failed"
         out = subprocess.run([str(exe)] + args, capture_output=True, timeout=300, env=ENV)
