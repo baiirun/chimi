@@ -1731,16 +1731,26 @@ static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
   return replacement;
 }
 
-static ChimiValue *new_value(ValueKind kind) {
-  ChimiValue *value = allocate(1, sizeof(*value));
-  allocation_kind(value, ALLOCATION_VALUE); value->kind = kind; return value;
-}
+/* The value cells are Rust (chimi-runtime heap/values.rs). */
+ChimiValue *chimi_value_new_v1(ValueKind kind);
+ChimiControl *chimi_control_new_v1(ControlKind kind, ChimiValue *value, const char *message, int64_t node);
+ChimiValue **chimi_value_slots_new_v1(uint32_t count);
+ChimiValue **chimi_value_slots_clone_v1(ChimiValue *const *source, uint32_t count);
+ChimiEnvironment *chimi_environment_new_v1(uint32_t local_count);
+ChimiEnvironment *chimi_environment_clone_v1(const ChimiEnvironment *source, bool locals, bool requirements);
+ChimiEnvironment *chimi_environment_capture_requirements_v1(const ChimiEnvironment *source);
+ChimiValue *chimi_value_integer_v1(ValueKind kind, int64_t raw);
+ChimiValue *chimi_value_float_v1(double raw);
+ChimiValue *chimi_value_range_v1(int64_t start, int64_t end);
+ChimiValue *chimi_value_decimal_v1(ChimiDecimal decimal);
+ChimiValue *chimi_value_pointer_v1(ValueKind kind, void *raw);
+char *chimi_bytes_copy_v1(const char *bytes, size_t length);
+ChimiValue *chimi_value_text_v1(const char *bytes, size_t length);
+ChimiValue *chimi_value_json_number_v1(const char *raw);
+
+static ChimiValue *new_value(ValueKind kind) { return chimi_value_new_v1(kind); }
 static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char *message, int64_t node) {
-  ChimiControl *control = allocate(1, sizeof(*control));
-  allocation_kind(control, ALLOCATION_CONTROL);
-  control->kind = kind; control->value = value; control->message = message; control->node = node;
-  control->cause = NULL;
-  return control;
+  return chimi_control_new_v1(kind, value, message, node);
 }
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
 static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
@@ -1848,59 +1858,23 @@ static bool parse_timestamp(const char *text, int64_t *out) {
   return chimi_timestamp_parse_v1(text, strlen(text), out);
 }
 
-static ChimiValue **new_value_slots(uint32_t count) {
-  if (count == 0) return NULL;
-  ChimiValue **slots = allocate(count, sizeof(*slots));
-  allocation_kind(slots, ALLOCATION_VALUE_POINTERS);
-  return slots;
-}
+static ChimiValue **new_value_slots(uint32_t count) { return chimi_value_slots_new_v1(count); }
 static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
-  ChimiValue **slots = new_value_slots(count);
-  if (count != 0) memcpy(slots, source, count * sizeof(*slots));
-  return slots;
+  return chimi_value_slots_clone_v1(source, count);
 }
-static ChimiEnvironment *new_environment(uint32_t local_count) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->local_count = local_count;
-  environment->locals = new_value_slots(local_count);
-  environment->requirements = new_value_slots(CHIMI_REQUIREMENT_SLOT_COUNT);
-  return environment;
-}
+static ChimiEnvironment *new_environment(uint32_t local_count) { return chimi_environment_new_v1(local_count); }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->local_count = source->local_count;
-  environment->locals = clone_value_slots(source->locals, source->local_count);
-  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
-  return environment;
+  return chimi_environment_clone_v1(source, true, true);
 }
-// Locals and requirements are independently immutable outside the boundaries
-// that bind them. Copy only the table a boundary mutates; precise marking keeps
-// the other table alive through the shared environment pointer.
+/* A boundary copies only the table it changes (see clone_environment in values.rs). */
 static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->local_count = source->local_count;
-  environment->locals = clone_value_slots(source->locals, source->local_count);
-  environment->requirements = source->requirements;
-  return environment;
+  return chimi_environment_clone_v1(source, true, false);
 }
 static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *source) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_FRAME_ENVIRONMENT);
-  environment->local_count = source->local_count;
-  environment->locals = source->locals;
-  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
-  return environment;
+  return chimi_environment_clone_v1(source, false, true);
 }
 static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-  environment->local_count = 0;
-  environment->locals = NULL;
-  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
-  return environment;
+  return chimi_environment_capture_requirements_v1(source);
 }
 static ChimiEnvironment *capture_closure_environment(const ChimiEnvironment *source,
                                                      const ChimiNode *node) {
@@ -2448,10 +2422,8 @@ static ChimiControl *finish_node(ChimiRuntime *runtime, uint32_t node, uint64_t 
   return control;
 }
 
-static ChimiValue *integer_value(int64_t raw) { ChimiValue *v = new_value(VALUE_INTEGER); v->as.integer = raw; return v; }
-static ChimiValue *range_value(int64_t start, int64_t end) {
-  ChimiValue *v = new_value(VALUE_RANGE); v->as.range.start = start; v->as.range.end = end; return v;
-}
+static ChimiValue *integer_value(int64_t raw) { return chimi_value_integer_v1(VALUE_INTEGER, raw); }
+static ChimiValue *range_value(int64_t start, int64_t end) { return chimi_value_range_v1(start, end); }
 /* Void, True and False are each one shared value in the static area, because values
    never change after construction and conditions and effects produce them on almost
    every pass. Static values are never collected, copied or freed. decode_constants
@@ -2472,19 +2444,9 @@ static ChimiValue *shared_value(uint32_t index) {
   return shared_values[index];
 }
 static ChimiValue *void_value(void) { return shared_value(0); }
-static char *copy_text(const char *raw) {
-  size_t length = strlen(raw);
-  char *copy = allocate(length + 1, 1);
-  memcpy(copy, raw, length);
-  return copy;
-}
-static ChimiValue *text_from_bytes(const char *bytes, size_t length) {
-  char *raw = allocate(length + 1, 1);
-  /* A binding may pass NULL for no bytes, and memcpy from NULL is undefined. */
-  if (length) memcpy(raw, bytes, length);
-  raw[length] = '\0';
-  ChimiValue *v = new_value(VALUE_TEXT); v->as.text.bytes = raw; v->as.text.length = length; return v;
-}
+static char *copy_text(const char *raw) { return chimi_bytes_copy_v1(raw, strlen(raw)); }
+/* A binding may pass NULL for no bytes. */
+static ChimiValue *text_from_bytes(const char *bytes, size_t length) { return chimi_value_text_v1(bytes, length); }
 static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; }
 /* Text from a C string, which cannot hold U+0000: a path, a message, a number. */
 static ChimiValue *text_value(const char *raw) { return text_from_bytes(raw, strlen(raw)); }
@@ -2501,7 +2463,7 @@ static const char *text_find(const char *text, size_t length, const char *needle
   return memmem(text, length, needle, width);
 }
 static ChimiValue *boolean_value(bool raw) { return shared_value(raw ? 2 : 1); }
-static ChimiValue *float_value(double raw) { ChimiValue *v = new_value(VALUE_FLOAT); v->as.floating = raw; return v; }
+static ChimiValue *float_value(double raw) { return chimi_value_float_v1(raw); }
 
 /* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
    message for message, because both execution paths must report identical outcomes. */
@@ -2627,9 +2589,7 @@ static bool decimal_make(bool negative, DecimalMagnitude magnitude, uint32_t sca
   return chimi_decimal_new_v1(negative, (uint64_t)(magnitude >> 64), (uint64_t)magnitude, scale, output);
 }
 static Decimal decimal_of(const ChimiValue *value) { return value->as.decimal; }
-static ChimiValue *decimal_value(Decimal decimal) {
-  ChimiValue *v = new_value(VALUE_DECIMAL); v->as.decimal = decimal; return v;
-}
+static ChimiValue *decimal_value(Decimal decimal) { return chimi_value_decimal_v1(decimal); }
 /* Numeric order, -1, 0 or 1, out of line so chimi_value_compare's frame keeps no
    by-value decimals. */
 __attribute__((noinline)) static int decimal_order(const ChimiValue *left, const ChimiValue *right) {
@@ -2664,10 +2624,10 @@ __attribute__((noinline)) static ChimiControl *decimal_arithmetic(uint32_t opera
   return defect(numeric_message("decimal overflow in `%s`: %s %s %s needs more than 38 digits or scale 38",
                                 symbol, left_text, symbol, right_text), node);
 }
-static ChimiValue *callable_value(ChimiCallable *raw) { ChimiValue *v = new_value(VALUE_CALLABLE); v->as.callable = raw; return v; }
-static ChimiValue *map_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_MAP); v->as.map = raw; return v; }
-static ChimiValue *set_value(MapNode *raw) { ChimiValue *v = new_value(VALUE_SET); v->as.map = raw; return v; }
-static ChimiValue *json_number_value(const char *raw) { ChimiValue *v = new_value(VALUE_JSON_NUMBER); v->as.json_number = copy_text(raw); return v; }
+static ChimiValue *callable_value(ChimiCallable *raw) { return chimi_value_pointer_v1(VALUE_CALLABLE, raw); }
+static ChimiValue *map_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_MAP, raw); }
+static ChimiValue *set_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_SET, raw); }
+static ChimiValue *json_number_value(const char *raw) { return chimi_value_json_number_v1(raw); }
 static ChimiValue *task_value(uint64_t raw) {
   ChimiValue *v = new_value(VALUE_TASK);
   v->as.task = raw;
@@ -5704,9 +5664,7 @@ static const int64_t DURATION_UNITS[6] = {
 static const char *const DURATION_CONSTRUCTORS[6] = {
   "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"
 };
-static ChimiValue *duration_value(int64_t nanoseconds) {
-  ChimiValue *v = new_value(VALUE_DURATION); v->as.integer = nanoseconds; return v;
-}
+static ChimiValue *duration_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_DURATION, nanoseconds); }
 
 size_t chimi_duration_text_v1(int64_t nanoseconds, char *out);
 uint32_t chimi_duration_parse_v1(const char *text, size_t length, int64_t *out);
@@ -7503,12 +7461,8 @@ static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t in
 
    `Task.timeout` and `Task.deadline` read and wait on the execution time source, not
    on a bound provider: a scope's deadline is a scheduler timer. */
-static ChimiValue *instant_value(int64_t nanoseconds) {
-  ChimiValue *v = new_value(VALUE_INSTANT); v->as.integer = nanoseconds; return v;
-}
-static ChimiValue *timestamp_value(int64_t nanoseconds) {
-  ChimiValue *v = new_value(VALUE_TIMESTAMP); v->as.integer = nanoseconds; return v;
-}
+static ChimiValue *instant_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_INSTANT, nanoseconds); }
+static ChimiValue *timestamp_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_TIMESTAMP, nanoseconds); }
 static ChimiValue *clock_host_value(HostFunction function) {
   ChimiCallable *callable = allocate(1, sizeof(*callable));
   allocation_kind(callable, ALLOCATION_CALLABLE);
