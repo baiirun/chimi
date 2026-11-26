@@ -54,13 +54,50 @@ Each step is one or more PRs. The size and speed gates hold for every step.
    and the handle slots (part 2) have moved. `BindingCall`'s argument
    readers and value and result builders stay C for now: each reads
    `ChimiValue` or allocates on the C heap, so they move with it in step 5.
-5. **Heap, collector and dispatch, together.** The allocator, young chunks,
-   bump regions, marking, copy and transfer, and the `invoke_*` dispatch move
-   as one unit, so allocation still inlines into the intrinsics that call it.
-   Moving them apart would put a cross-language call on every allocation. This
-   step is gated hardest: `loop-bind`, the map-building loop and the HTTP
-   benchmark within 2% of C. If it misses and the gap cannot be closed, the
-   measurement goes in the table above as the reason the code stays C.
+   The native handle counts moved too (part 2, step 2).
+5. **Heap, collector, values, intrinsics and dispatch, bottom-up**
+   (planned 2026-11-26, CHI-305; inventory in
+   [runtime-c-inventory.md](runtime-c-inventory.md)). The first plan moved
+   them as one unit so that allocation would keep inlining into the
+   intrinsics. It does not inline today: built with the runtime's flags
+   (`-std=c11 -O2`), `allocate`, `new_value` and `new_control` are
+   out-of-line functions with over 200 call sites, so a Rust `allocate`
+   swaps a direct C call for a direct cross-language call in the same
+   static link. Cross-language LTO is rejected: it needs a clang and lld
+   matching rustc's LLVM on every machine that links a program, which
+   Apple's clang cannot promise, for a cost the measurement says is absent.
+   The generated code inlines no value layout either, so `ChimiValue` can
+   change. The phases, one PR each unless noted, each within the gates
+   (`scripts/runtime-gate.py`):
+   0. Prerequisites. The heap and value structs move to an internal header
+      with `#[repr(C)]` Rust mirrors whose sizes and offsets are asserted on
+      both sides; the collector gets an oracle (memory-report counters and
+      program outputs identical to the C, a verify pass after each sweep
+      under ASan, poisoned reset chunks); `handle_count_lock` moves into
+      Rust as a pthread mutex ThreadSanitizer still sees. Civil dates and
+      timestamps move as a missed step 2 leaf.
+   1. The allocator: small blocks, areas and footprint, then young chunks,
+      `allocate` and allocation scopes (two PRs). Watch the thread-local
+      carrier read, which C does with an initial-exec access.
+   2. The collector: mark, forward, promote and sweep.
+   3. Fragment copy, the transfer walk, and the task and process heap
+      lifecycle; handle drops become Rust-to-Rust calls.
+   4. Values: scalar and text builders with environments, the list vector,
+      and the AVL map together with structural compare (three PRs).
+   5. Intrinsics by family, pure ones first, then task, select, clock, fs,
+      console and stdin, each family taking its C lock with it (six to eight
+      PRs).
+   6. The binding argument readers and value and result builders.
+   7. Dispatch: telemetry emission, then the node helpers with `run_node`,
+      `invoke` and the loop passes in one PR (splitting them would put a
+      cross-language call on every node), then match.
+   8. Startup, CLI parsing, signals and reports.
+   Soundness in Rust: collection runs only at pass boundaries and scope
+   ends, with explicit roots, so values carry a pass lifetime that a
+   collection ends, allocation goes through a context that owns the target
+   heap, and a parked fiber reloads its carrier from that context. If a
+   phase misses the 2% gate and the gap cannot be closed, the measurement
+   goes in the table above as the reason that code stays C.
 6. **Delete `runtime.c`.** `runtime.h` becomes the generated or hand-kept C
    view of the Rust ABI that the code generator targets.
 
