@@ -5,6 +5,7 @@
    after runtime.c and uses its constants; the code is the shipped code with
    its names prefixed. */
 
+#define REFERENCE_DECIMAL_MAX_SCALE 38u
 typedef unsigned __int128 ReferenceDecimalMagnitude;
 typedef struct { bool negative; ReferenceDecimalMagnitude magnitude; uint32_t scale; } ReferenceDecimal;
 typedef enum { REFERENCE_DECIMAL_REMAINDER_ZERO, REFERENCE_DECIMAL_BELOW_HALF, REFERENCE_DECIMAL_HALF, REFERENCE_DECIMAL_ABOVE_HALF } ReferenceDecimalRemainder;
@@ -15,7 +16,7 @@ typedef enum { REFERENCE_ROUND_TOWARD_ZERO, REFERENCE_ROUND_AWAY_FROM_ZERO, REFE
 
 /* 10^exponent, or false when it exceeds the magnitude type (from 10^39). */
 static bool reference_decimal_power(uint32_t exponent, ReferenceDecimalMagnitude *output) {
-  if (exponent > DECIMAL_MAX_SCALE) return false;
+  if (exponent > REFERENCE_DECIMAL_MAX_SCALE) return false;
   ReferenceDecimalMagnitude power = 1;
   for (uint32_t i = 0; i < exponent; ++i) power *= 10;
   *output = power;
@@ -23,11 +24,11 @@ static bool reference_decimal_power(uint32_t exponent, ReferenceDecimalMagnitude
 }
 
 static ReferenceDecimalMagnitude reference_decimal_max_magnitude(void) {
-  ReferenceDecimalMagnitude power = 0; reference_decimal_power(DECIMAL_MAX_SCALE, &power); return power - 1;
+  ReferenceDecimalMagnitude power = 0; reference_decimal_power(REFERENCE_DECIMAL_MAX_SCALE, &power); return power - 1;
 }
 
 static bool reference_decimal_make(bool negative, ReferenceDecimalMagnitude magnitude, uint32_t scale, ReferenceDecimal *output) {
-  if (magnitude > reference_decimal_max_magnitude() || scale > DECIMAL_MAX_SCALE) return false;
+  if (magnitude > reference_decimal_max_magnitude() || scale > REFERENCE_DECIMAL_MAX_SCALE) return false;
   *output = (ReferenceDecimal){negative && magnitude != 0, magnitude, scale};
   return true;
 }
@@ -180,7 +181,7 @@ static bool reference_decimal_parse(const char *text, ReferenceDecimal *output) 
     magnitude = magnitude * 10 + digit;
     if (point) ++fraction; else ++whole;
   }
-  if (whole == 0 || (point && fraction == 0) || fraction > DECIMAL_MAX_SCALE) return false;
+  if (whole == 0 || (point && fraction == 0) || fraction > REFERENCE_DECIMAL_MAX_SCALE) return false;
   return reference_decimal_make(negative, magnitude, (uint32_t)fraction, output);
 }
 

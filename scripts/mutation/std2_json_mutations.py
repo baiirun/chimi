@@ -11,6 +11,7 @@ backends), or a language.rs json test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 MODEL = "src/json.rs"
 STRUCTURAL = "src/execution/structural.rs"
@@ -35,30 +36,25 @@ MUTATIONS = [
     std("Rust number_to_int reads the spelling (1.0 is NotInteger)", MODEL, [(
         "    if number.exponent < 0 {\n        return Err(NumberConversionError::NotInteger);",
         "    if text.contains('.') || number.exponent < 0 {\n        return Err(NumberConversionError::NotInteger);")]),
-    programs("C number_to_int reads the spelling (1.0 is NotInteger)", RUNTIME, [(
-        "if (number.exponent < 0) { *not_integer = true; return false; }",
-        "if (number.exponent < 0 || strchr(text, '.')) { *not_integer = true; return false; }")]),
-    programs("C number_to_int rejects Int min (no extra magnitude for negatives)", RUNTIME, [(
-        "(unsigned __int128)INT64_MAX + (number.negative ? 1u : 0u)",
-        "(unsigned __int128)INT64_MAX")]),
+    programs('native number_to_int reads the spelling (1.0 is NotInteger)', JSON_INTRINSICS, [('if number.exponent < 0 {\n        return Err(NotInt::NotInteger);',
+        "if number.exponent < 0 || spelling.contains(&b'.') {\n        return Err(NotInt::NotInteger);")]),
+    programs('native number_to_int rejects Int min (no extra magnitude for negatives)', JSON_INTRINSICS, [('i64::MAX as u128 + u128::from(number.negative)',
+        'i64::MAX as u128')]),
     std("Rust number_to_int calls a 19-digit integer OutOfRange", MODEL, [(
         "if length + number.exponent > 19 {",
         "if length + number.exponent > 18 {")]),
     std("Rust number_to_decimal drops the written scale", MODEL, [(
         "    let scale = number\n        .written_scale\n        .max(0)",
         "    let scale = (-number.exponent)\n        .max(0)")]),
-    programs("C number_to_decimal accepts 39 fraction digits", RUNTIME, [(
-        "|| -number.exponent > max_scale) return false;",
-        "|| -number.exponent > max_scale + 1) return false;")]),
-    programs("C exponent sign ignored", RUNTIME, [(
-        "written_negative = *cursor == '-'; if",
-        "written_negative = false; if")]),
+    programs('native number_to_decimal accepts 39 fraction digits', JSON_INTRINSICS, [('|| -number.exponent > max_scale {',
+        '|| -number.exponent > max_scale + 1 {')]),
+    programs('native exponent sign ignored', JSON_INTRINSICS, [("Some((b'-', rest)) => (true, rest),\n            Some((b'+', rest)) => (false, rest),",
+        "Some((b'-', rest)) => (false, rest),\n            Some((b'+', rest)) => (false, rest),")]),
     programs("Rust encode escapes DEL", MODEL, [(
         "character if character < '\\u{20}' => {",
         "character if character < '\\u{20}' || character == '\\u{7f}' => {")]),
-    programs("C encode escapes DEL", RUNTIME, [(
-        "        if (*cursor < 0x20) {\n          char escaped[7]; snprintf(escaped, sizeof(escaped), \"\\\\u%04x\", *cursor);",
-        "        if (*cursor < 0x20 || *cursor == 0x7f) {\n          char escaped[7]; snprintf(escaped, sizeof(escaped), \"\\\\u%04x\", *cursor);")]),
+    programs('native encode escapes DEL', JSON_INTRINSICS, [('0..0x20 => output.push_bytes(',
+        '0..0x20 | 0x7f => output.push_bytes(')]),
     std("Rust decode accepts a duplicate key", MODEL, [(
         "if !names.insert(name.clone()) {",
         "if !names.insert(name.clone()) && false {")]),
