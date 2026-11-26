@@ -811,11 +811,12 @@ outcome, a dynamic member, a stop); FP01 adds the same check at U10.
 
 | ID | Unlock | Scenario | Rejects |
 | --- | --- | --- | --- |
-| MF01 | U5 | One process receives N Int messages in batches of 64, for N = 10,000 and N = 1,000,000. `process_heap_peak_value_bytes` and `heap_chunks_live` at exit are equal for both N | Memory that grows with uptime |
+| MF01 | U5 | One process receives N Int messages in batches of 64, for N = 10,000 and N = 1,000,000. `process_heap_peak_value_bytes` and `heap_chunks_live` at exit are equal for both N, and the peak and `unscoped_allocated_bytes` are at least 4 KiB | Memory that grows with uptime |
 | MF02 | U10 | N restart cycles, for N = 100 and N = 10,000, with the window rolled by virtual sleeps. `heap_chunks_live` and `fragments_live` at exit are equal | Leaks per restart |
 | MF03 | U10 | N `start_process` and `remove_process` cycles, for N = 100 and N = 10,000. Equal `heap_chunks_live`, and no live memberships at exit | Leaks per membership |
 | MF04 | U5 | 64 queued Int messages hold less than 256 KiB of `fragment_bytes_peak` | One 64 KiB chunk per small fragment. Coordinator decision 6 on `ts-a6b43b` requires small-fragment slabs |
 | MF05 | U3 | A program that uses tasks but no processes runs a 1,000,000-pass loop with equal peak live bytes at 10,000 passes | Loop reclamation still disabled under `CHIMI_REQUIRES_SCHEDULER` (`prog show ts-da83af`) |
+| MF07 | U5 | A process builds a 2,000-element list, one block too large for a young chunk. `process_heap_peak_value_bytes` is between 16,000 and 65,536 | A process heap that does not count its own blocks, or takes off more than it counted |
 | MF06 | U5 | Build three programs: no concurrency, tasks only, and processes. Only the process program links process-kernel symbols, and only the last two link `libchimi_fiber.a`. As built, the process kernel is the runtime variant compiled with `CHIMI_PROCESS_KERNEL`, whose `chimi_rt_process_entry` only process programs define; `chimi_fiber_abi_version` marks the scheduler archive. The scheduler's own process code is part of `libchimi_fiber.a` and is not split out | Pay-for-play linking broken |
 
 ### Observability
