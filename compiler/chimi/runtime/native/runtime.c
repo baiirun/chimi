@@ -542,6 +542,10 @@ static void exhausted_memory(void) { fputs("Chimi runtime exhausted memory\n", s
 /* The same end for the Rust runtime archive's allocator (chimi-runtime-standalone). */
 _Noreturn void chimi_runtime_exhausted_memory(void);
 _Noreturn void chimi_runtime_exhausted_memory(void) { exhausted_memory(); runtime_exit(70); }
+_Noreturn void chimi_runtime_list_length_overflow(void);
+_Noreturn void chimi_runtime_list_length_overflow(void) {
+  fputs("Chimi runtime list length overflow\n", stderr); runtime_exit(70);
+}
 
 /* Freed blocks of up to SMALL_BLOCK_LIMIT bytes are kept on per-size free lists and
    reused, because a message or a pass allocates and frees many small blocks and the
@@ -1894,18 +1898,14 @@ static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
-static ListNode *list_node(uint32_t height, uint32_t count) {
-  ListNode *node = allocate(1, sizeof(*node) + (size_t)count * sizeof(node->slots[0]));
-  allocation_kind(node, ALLOCATION_LIST_NODE);
-  node->height = height; node->count = count;
-  return node;
-}
-static ListNode *list_node_copy(const ListNode *source, uint32_t count) {
-  ListNode *node = list_node(source->height, count);
-  uint32_t kept = source->count < count ? source->count : count;
-  memcpy(node->slots, source->slots, kept * sizeof(node->slots[0]));
-  return node;
-}
+/* The list vector's builders are Rust (chimi-runtime heap/list.rs); the reads
+   below stay here, inline, for the C intrinsics that walk lists. */
+ListVector chimi_list_vector_set_v1(ListVector vector, uint32_t index, ChimiValue *item);
+ListVector chimi_list_vector_from_values_v1(ChimiValue *const *values, uint32_t length);
+ChimiValue *chimi_list_value_v1(ListVector vector, uint32_t start, uint32_t length);
+ChimiValue *chimi_list_push_v1(const ChimiValue *list, ChimiValue *item);
+ChimiValue *chimi_list_slice_v1(Carrier *here, ChimiValue *list, uint32_t from, uint32_t to);
+
 /* Index of the first element stored in the tail rather than the trie. */
 static uint32_t vector_tail_offset(uint32_t length) {
   return length == 0 ? 0 : ((length - 1) >> LIST_BITS) << LIST_BITS;
@@ -1918,96 +1918,14 @@ static ListNode *vector_leaf(ListVector vector, uint32_t index) {
     node = node->slots[(index >> (height * LIST_BITS)) & LIST_MASK];
   return node;
 }
-static ListNode *vector_new_path(uint32_t height, ListNode *leaf) {
-  if (height == 0) return leaf;
-  ListNode *node = list_node(height, 1);
-  node->slots[0] = vector_new_path(height - 1, leaf);
-  return node;
-}
-/* Copies the path to the leaf that starts at element `first_index` and attaches `leaf`. */
-static ListNode *vector_push_leaf(const ListNode *node, uint32_t first_index, ListNode *leaf) {
-  uint32_t slot = (first_index >> (node->height * LIST_BITS)) & LIST_MASK;
-  ListNode *copy = list_node_copy(node, slot + 1);
-  if (node->height == 1) copy->slots[slot] = leaf;
-  else if (slot < node->count) copy->slots[slot] = vector_push_leaf(node->slots[slot], first_index, leaf);
-  else copy->slots[slot] = vector_new_path(node->height - 1, leaf);
-  return copy;
-}
-/* Amortized O(1): copies at most one 32-slot tail plus one root-to-leaf path. */
-static ListVector vector_push(ListVector vector, ChimiValue *item) {
-  if (vector.length == UINT32_MAX) { fputs("Chimi runtime list length overflow\n", stderr); runtime_exit(70); }
-  uint32_t tail_length = vector.length - vector_tail_offset(vector.length);
-  if (vector.length == 0 || tail_length < LIST_WIDTH) {
-    ListNode *next = vector.length == 0 ? list_node(0, 1) : list_node_copy(vector.tail, tail_length + 1);
-    next->slots[tail_length] = item;
-    return (ListVector){vector.root, next, vector.length + 1};
-  }
-  ListNode *root = vector.root;
-  uint32_t first_index = vector.length - LIST_WIDTH;
-  if (!root) {
-    root = vector_new_path(1, vector.tail);
-  } else if ((uint64_t)(first_index >> LIST_BITS) == (uint64_t)1 << (root->height * LIST_BITS)) {
-    ListNode *grown = list_node(root->height + 1, 2);
-    grown->slots[0] = root; grown->slots[1] = vector_new_path(root->height, vector.tail);
-    root = grown;
-  } else {
-    root = vector_push_leaf(root, first_index, vector.tail);
-  }
-  ListNode *next = list_node(0, 1);
-  next->slots[0] = item;
-  return (ListVector){root, next, vector.length + 1};
-}
-static ListNode *vector_set_node(const ListNode *node, uint32_t index, ChimiValue *item) {
-  ListNode *copy = list_node_copy(node, node->count);
-  if (node->height == 0) copy->slots[index & LIST_MASK] = item;
-  else {
-    uint32_t slot = (index >> (node->height * LIST_BITS)) & LIST_MASK;
-    copy->slots[slot] = vector_set_node(node->slots[slot], index, item);
-  }
-  return copy;
-}
-/* O(log32 n): copies the path to element `index`, which must exist. */
 static ListVector vector_set(ListVector vector, uint32_t index, ChimiValue *item) {
-  if (index >= vector_tail_offset(vector.length))
-    return (ListVector){vector.root, vector_set_node(vector.tail, index, item), vector.length};
-  return (ListVector){vector_set_node(vector.root, index, item), vector.tail, vector.length};
+  return chimi_list_vector_set_v1(vector, index, item);
 }
-/* Builds a vector from `length` values in O(length) without intermediate versions. */
 static ListVector vector_from_values(ChimiValue *const *values, uint32_t length) {
-  if (length == 0) return (ListVector){NULL, NULL, 0};
-  uint32_t tail_offset = vector_tail_offset(length);
-  ListNode *tail = list_node(0, length - tail_offset);
-  memcpy(tail->slots, values + tail_offset, tail->count * sizeof(tail->slots[0]));
-  uint32_t level_count = tail_offset >> LIST_BITS;
-  if (level_count == 0) return (ListVector){NULL, tail, length};
-  ListNode **level = malloc(level_count * sizeof(*level));
-  if (!level) { fputs("Chimi runtime exhausted memory\n", stderr); runtime_exit(70); }
-  for (uint32_t index = 0; index < level_count; ++index) {
-    level[index] = list_node(0, LIST_WIDTH);
-    memcpy(level[index]->slots, values + ((size_t)index << LIST_BITS), sizeof(level[index]->slots[0]) * LIST_WIDTH);
-  }
-  uint32_t height = 0;
-  while (level_count > 1 || height == 0) {
-    ++height;
-    uint32_t parent_count = (level_count + LIST_MASK) >> LIST_BITS;
-    for (uint32_t parent = 0; parent < parent_count; ++parent) {
-      uint32_t first = parent << LIST_BITS;
-      uint32_t count = level_count - first < LIST_WIDTH ? level_count - first : LIST_WIDTH;
-      ListNode *node = list_node(height, count);
-      memcpy(node->slots, level + first, count * sizeof(node->slots[0]));
-      level[parent] = node;
-    }
-    level_count = parent_count;
-  }
-  ListNode *root = level[0];
-  free(level);
-  return (ListVector){root, tail, length};
+  return chimi_list_vector_from_values_v1(values, length);
 }
-
 static ChimiValue *list_value(ListVector vector, uint32_t start, uint32_t length) {
-  ChimiValue *value = new_value(VALUE_LIST);
-  value->as.list.vector = vector; value->as.list.start = start; value->as.list.length = length;
-  return value;
+  return chimi_list_value_v1(vector, start, length);
 }
 static ChimiValue *list_from_values(ChimiValue *const *values, uint32_t length) {
   return list_value(vector_from_values(values, length), 0, length);
@@ -2018,78 +1936,12 @@ static ChimiValue *list_get(const ChimiValue *list, uint32_t index) {
   index += list->as.list.start;
   return vector_leaf(list->as.list.vector, index)->slots[index & LIST_MASK];
 }
-/* Returns a new list with `item` appended; `list` is unchanged. A window that
-   ends before its vector does writes slot `end` into a path copy instead, so
-   the shared vector every other window sees is untouched. */
-static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) {
-  ListVector vector = list->as.list.vector;
-  uint32_t end = list->as.list.start + list->as.list.length;
-  vector = end == vector.length ? vector_push(vector, item) : vector_set(vector, end, item);
-  return list_value(vector, list->as.list.start, list->as.list.length + 1);
-}
-/* Copies elements [from, from + length) of `list` into a fresh vector allocated in
-   `area`, or in the current area when `area` is NULL. */
-static ListVector list_copy_window(const ChimiValue *list, uint32_t from, uint32_t length,
-                                   AllocationArea *area) {
-  Carrier *const here = carrier;
-  ChimiValue **values = malloc((size_t)length * sizeof(*values));
-  if (!values) exhausted_memory();
-  for (uint32_t index = 0; index < length; ++index) values[index] = list_get(list, from + index);
-  AllocationArea *previous = here->fiber.target;
-  if (area) here->fiber.target = area;
-  ListVector copy = vector_from_values(values, length);
-  here->fiber.target = previous;
-  free(values);
-  return copy;
-}
-/* A window shorter than 1/LIST_RETAINED_FRACTION of its vector is copied. */
-enum { LIST_RETAINED_FRACTION = 4 };
-static bool list_retains_too_much(uint32_t window, uint32_t vector) {
-  return (uint64_t)window * LIST_RETAINED_FRACTION < vector;
-}
-/* True when `list` is a module constant and carriers run on threads. Compacting it
-   would rewrite a value other threads read, and allocate in the static area while
-   they run. The simulation's carriers share one thread, so it compacts as one
-   carrier does. decode_constant builds every list constant whole, and a whole
-   list is never compacted, so today this guards only a constant built as a
-   window of a longer vector. */
-static bool list_shared_across_threads(const ChimiValue *list) {
-#ifdef CHIMI_CARRIER_SIMULATION
-  (void)list;
-  return false;
-#else
-  return carrier_count > 1 && allocation_header(list)->area->role == AREA_STATIC;
-#endif
-}
-/* Window [from, to) of `list`, or NULL when the range is reversed or past the end.
-   The window shares the vector in O(1) unless it is shorter than a quarter of it,
-   so a small window does not keep a large vector alive. Then `list` itself is
-   compacted first: it adopts a fresh vector holding exactly its elements, and the
-   window shares that. Values are immutable, so swapping the representation is
-   unobservable, and every later window of `list` shares the compact vector instead
-   of copying again; a window shorter than a quarter of `list` itself is copied on
-   its own. Draining n elements one at a time copies fewer than n/3 in total
-   (n/4 + n/16 + ...), because each copy of m elements follows at least 3m dropped
-   ones. The interpreter's PersistentList::slice applies the same rule.
-
-   The compact vector is allocated in the area that holds `list`, so `list` never
-   points into a younger area: a survivor's new vector is itself a survivor. The
-   in-place update is safe because a heap value belongs to one fiber, which does not
-   switch inside list_slice. A module constant is the exception: when carriers run
-   on threads, every carrier may read it at once, so its window is copied instead
-   (list_shared_across_threads). */
+/* A new list with `item` appended; `list` is unchanged. */
+static ChimiValue *list_push(const ChimiValue *list, ChimiValue *item) { return chimi_list_push_v1(list, item); }
+/* Window [from, to) of `list`, or NULL when the range is reversed or past the end;
+   a short window of a long vector compacts or copies (see slice in list.rs). */
 static ChimiValue *list_slice(ChimiValue *list, uint32_t from, uint32_t to) {
-  if (from > to || to > list->as.list.length) return NULL;
-  if (from == to) return list_value((ListVector){NULL, NULL, 0}, 0, 0);
-  uint32_t length = to - from;
-  if (list_retains_too_much(length, list->as.list.vector.length)) {
-    if (list_retains_too_much(length, list->as.list.length) || list_shared_across_threads(list))
-      return list_value(list_copy_window(list, from, length, NULL), 0, length);
-    list->as.list.vector =
-      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);
-    list->as.list.start = 0;
-  }
-  return list_value(list->as.list.vector, list->as.list.start + from, length);
+  return chimi_list_slice_v1(carrier, list, from, to);
 }
 
 static void allocation_graph_inconsistent(void) {
@@ -2182,11 +2034,7 @@ static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **valu
 /* Fragments: copies for a transfer between owners, in Rust (heap/fragment.rs). A
    copy keeps sharing, rebuilds each List window as a compact vector, shares static
    constants, and reports HEAP_FOREIGN_POINTER instead of following a pointer out
-   of its source. These are the list builders it calls back. */
-void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out);
-void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out) {
-  *out = vector_from_values(values, length);
-}
+   of its source. */
 
 HeapStatus chimi_fragment_copy_v1(Carrier *here, void *const *roots, const AllocationKind *kinds, uint32_t count,
                                   RuntimeFragment **out);

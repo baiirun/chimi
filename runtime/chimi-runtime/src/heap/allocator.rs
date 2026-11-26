@@ -87,6 +87,12 @@ fn mode() -> u8 {
     unsafe { chimi_runtime_carrier_mode.load(Relaxed) }
 }
 
+/// Whether several carriers run on threads, so a value in the static area
+/// may be read by more than one at once.
+pub(super) fn carriers_on_threads() -> bool {
+    mode() == CARRIER_THREADS
+}
+
 pub(super) fn cache_enabled() -> bool {
     // SAFETY: a constant of runtime.c.
     unsafe { chimi_runtime_small_block_cache }

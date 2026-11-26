@@ -136,6 +136,13 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       builders became one-line calls into it. A call frame's environment
       now takes one call into Rust where the C made three into the
       allocator, which is most of loop-bind's 8.7%.
+      Second PR (2026-11-26): the list vector's builders (push, set, build
+      from values, append to a window, window copies and slicing with its
+      compaction and shared-constant rule) in `chimi-runtime/src/heap/list.rs`,
+      with the C recursions as loops that allocate in the same order. The
+      reads (`vector_leaf`, `list_get`) stay inline in `runtime.c` for the C
+      intrinsics that walk lists, beside the Rust reader, until those
+      intrinsics move (phase 5).
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,
       console and stdin, each family taking its C lock with it (six to eight
       PRs).

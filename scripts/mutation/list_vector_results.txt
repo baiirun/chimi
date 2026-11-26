@@ -1,0 +1,22 @@
+BASELINE ok  [native_list_fuzz] (67s)
+BASELINE ok  [cli -- native_list_is_a_persistent_vector] (4s)
+KILLED       list compaction allocates in the current area, not the list's own [native_list_fuzz] (58s)
+KILLED       a push writes over the tail's last element [native_list_fuzz] (57s)
+KILLED       a grown root drops its old subtree [native_list_fuzz] (57s)
+KILLED       a copied path has one slot too few [native_list_fuzz] (57s)
+KILLED       a set writes the shared node instead of a copy [native_list_fuzz] (58s)
+KILLED       an append to a short window pushes past the vector's end [native_list_fuzz] (57s)
+SURVIVED     a slice never compacts [native_list_fuzz] (64s)
+SURVIVED     a rebuilt vector keeps one level too few [cli -- native_list_is_a_persistent_vector] (57s)
+KILLED       a rebuilt vector's leaves start one element late [cli -- native_list_is_a_persistent_vector] (55s)
+#
+# Review follow-up: the fuzz compares values only, so 'a slice never compacts'
+# moved to the persistent-vector fixture, which bounds retained bytes; 'a
+# rebuilt vector keeps one level too few' is unobservable (every operation
+# handles a lone leaf as the root) and was replaced:
+# mutation run at 34a9023735aaa1f9498d26b8674808c0edda6206
+BASELINE ok  [cli -- native_list_is_a_persistent_vector] (56s)
+BASELINE ok  [native_list_fuzz] (11s)
+KILLED       a slice never compacts [cli -- native_list_is_a_persistent_vector] (56s)
+KILLED       a rebuilt vector's inner nodes all have height 1 [native_list_fuzz] (57s)
+# result: every listed mutant killed

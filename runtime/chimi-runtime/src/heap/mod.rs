@@ -18,6 +18,8 @@ mod fragment_abi;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod list;
 #[cfg(all(feature = "runtime-c", unix))]
+mod list_abi;
+#[cfg(all(feature = "runtime-c", unix))]
 mod allocator_abi;
 pub mod layout;
 #[cfg(unix)]

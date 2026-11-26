@@ -21,3 +21,14 @@ so exactly two is left to 5d-4's flag tests and 5e), removing the
 simulation branch (the simulation suite never slices a constant built as a
 window), and testing `area->heap == NULL` for the static role (equivalent,
 since list_slice never sees a fragment's value).
+
+# CHI-305 phase 4: the slice moved to heap/list.rs; retargeted there
+# shared_constant_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [runtime_state] (57s)
+KILLED       a shared constant is compacted [runtime_state] (57s)
+KILLED       a constant is shared on one carrier too [runtime_state] (58s)
+KILLED       no constant is shared [runtime_state] (60s)
+KILLED       every list is shared on threads [runtime_state] (58s)
+KILLED       a shared constant's window is shared, not copied [runtime_state] (59s)
+KILLED       every constant's window is copied on threads, however long [runtime_state] (59s)
+# result: every mutant killed
