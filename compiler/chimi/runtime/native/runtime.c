@@ -1920,7 +1920,6 @@ static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
-
 static ListNode *list_node(uint32_t height, uint32_t count) {
   ListNode *node = allocate(1, sizeof(*node) + (size_t)count * sizeof(node->slots[0]));
   allocation_kind(node, ALLOCATION_LIST_NODE);

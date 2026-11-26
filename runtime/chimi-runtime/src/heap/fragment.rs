@@ -25,11 +25,11 @@ use super::allocator::{
     allocate, cache_enabled, footprint_add, footprint_sub, fragment_footprint_add, fragment_footprint_sub,
     heap_add_live, release, scope_add_live,
 };
-use super::list;
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AreaRole, Callable, Carrier, Control, Environment, Field,
     FRAGMENT_ROOTS, HeapStatus, ListVector, MapNode, RuntimeFragment, RuntimeHeap, Value, ValueKind,
 };
+use super::list;
 
 unsafe extern "C" {
     /// Prints "Chimi runtime exhausted memory" and exits 70.
