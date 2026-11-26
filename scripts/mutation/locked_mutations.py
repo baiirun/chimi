@@ -9,7 +9,6 @@ Results: scripts/mutation/locked_results.txt.
 
 CRATE = "runtime/chimi-runtime"
 LOCKED = "src/locked.rs"
-ABI = "src/handle_counts_abi.rs"
 
 
 def m(name, file, old, new):
