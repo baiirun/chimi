@@ -23,11 +23,14 @@ Usage, from anywhere inside the repository:
 Options: --runs N (default 3), --work DIR (default a temporary directory).
 This checkout's compiler is `cargo build --release -p chimi`.
 
-Exit status: 0 when every gate holds, 1 when one fails, 2 on a failed build or
-bad usage. Needs valgrind and strip.
+Exit status: 0 when every gate holds, 1 when one fails, 2 when a build or a
+measurement fails or on bad usage. Needs valgrind and strip. The size gate
+applies on Linux x86-64, where its baseline was measured. A temporary --work
+directory is kept, and its path is printed, so the programs can be inspected.
 """
 
 import argparse
+import platform
 import shutil
 import statistics
 import subprocess
@@ -43,12 +46,21 @@ SPEED_PROGRAMS = ["loop-bind", "map-loop", "http"]
 RUNNER_ARGUMENTS = ["--chimi-runner", "--clock=real", "--trace=off", "--carriers=1", "--"]
 
 
+def fail(message):
+    """Ends with status 2: the gate could not be measured."""
+    print(f"runtime-gate: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
 def run(command, cwd=None, capture=False):
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=capture)
+    try:
+        result = subprocess.run(command, cwd=cwd, text=True, capture_output=capture)
+    except OSError as error:
+        fail(f"cannot run {command[0]}: {error}")
     if result.returncode != 0:
         if capture:
             sys.stderr.write(result.stdout + result.stderr)
-        sys.exit(f"runtime-gate: failed: {' '.join(map(str, command))}")
+        fail(f"failed: {' '.join(map(str, command))}")
     return result
 
 
@@ -66,7 +78,9 @@ def base_compiler(repository: Path, revision: str, work: Path) -> Path:
         shutil.copy2(built, kept)
         return kept
     finally:
-        run(["git", "-C", repository, "worktree", "remove", "--force", checkout])
+        # Not through run(): a failed removal must not hide a failed build.
+        subprocess.run(["git", "-C", repository, "worktree", "remove", "--force", checkout],
+                       capture_output=True)
 
 
 def build_programs(compiler: Path, sources: Path, out: Path) -> None:
@@ -76,15 +90,18 @@ def build_programs(compiler: Path, sources: Path, out: Path) -> None:
 
 
 def instructions(executable: Path) -> int:
-    result = subprocess.run(
-        ["valgrind", "--tool=callgrind", "--callgrind-out-file=/dev/null", executable, *RUNNER_ARGUMENTS],
-        text=True, capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            ["valgrind", "--tool=callgrind", "--callgrind-out-file=/dev/null", executable, *RUNNER_ARGUMENTS],
+            text=True, capture_output=True,
+        )
+    except OSError as error:
+        fail(f"cannot run valgrind: {error}")
     for line in result.stderr.splitlines():
         if "Collected :" in line:
             return int(line.rsplit(":", 1)[1])
     sys.stderr.write(result.stderr)
-    sys.exit(f"runtime-gate: no instruction count for {executable}")
+    fail(f"no instruction count for {executable}")
 
 
 def stripped_size(executable: Path, work: Path) -> int:
@@ -106,8 +123,11 @@ def main() -> int:
 
     repository = Path(run(["git", "rev-parse", "--show-toplevel"], capture=True).stdout.strip())
     sources = repository / "benchmarks" / "runtime-gate"
-    work = arguments.work or Path(tempfile.mkdtemp(prefix="runtime-gate-"))
+    # Absolute, since programs build with their output directory as cwd and
+    # git resolves worktree paths against the repository.
+    work = (arguments.work or Path(tempfile.mkdtemp(prefix="runtime-gate-"))).resolve()
     work.mkdir(parents=True, exist_ok=True)
+    print(f"runtime-gate: working in {work}", file=sys.stderr)
 
     base = arguments.base_compiler or base_compiler(repository, arguments.base_rev, work)
     new = build_compiler(repository)
@@ -131,8 +151,15 @@ def main() -> int:
 
     sizes = {side: stripped_size(work / f"{side}-programs" / "hello", work) for side in ("base", "new")}
     growth = sizes["new"] - SIZE_BASELINE
-    holds = growth <= SIZE_LIMIT
+    # The baseline was measured on Linux x86-64; elsewhere only the change
+    # against the base is shown.
+    measured_here = platform.system() == "Linux" and platform.machine() == "x86_64"
+    holds = growth <= SIZE_LIMIT or not measured_here
     failed |= not holds
+    if not measured_here:
+        print(f"{'hello':<10} {sizes['base']:>15,} {sizes['new']:>15,} {sizes['new'] - sizes['base']:>+8,}  "
+              "not gated (the baseline is Linux x86-64)")
+        return 1 if failed else 0
     print(f"{'hello':<10} {sizes['base']:>15,} {sizes['new']:>15,} {sizes['new'] - sizes['base']:>+8,}  "
           f"{'ok' if holds else 'FAIL'} (stripped bytes; {growth:+,} over the step-1 baseline "
           f"{SIZE_BASELINE:,}, at most +{SIZE_LIMIT:,})")
