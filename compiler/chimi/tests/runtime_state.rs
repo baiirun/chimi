@@ -34,7 +34,6 @@ const SHARED: &[&str] = &[
     "carrier_this_thread",
     // Heaps and constants every fiber shares.
     "main_heap",
-    "next_heap_owner",
     "static_area",
     "shared_values",
     "constant_values",

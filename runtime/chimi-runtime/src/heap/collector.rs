@@ -30,10 +30,11 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use super::allocator::{area_link, cache_enabled, footprint_sub, release};
+use super::allocator::{area_link, cache_enabled, release};
+use super::fragment::area_free;
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AllocationScope, AreaRole, Callable, Carrier, Control,
-    Environment, Field, HeapStatus, ListNode, MARK_EPOCH_BLOCK, MapNode, PointerStack, REGION_FULL_MIN_GROWTH, RuntimeFragment, Value,
+    Environment, Field, HeapStatus, ListNode, MARK_EPOCH_BLOCK, MapNode, PointerStack, REGION_FULL_MIN_GROWTH, Value,
     ValueKind,
 };
 use super::young;
@@ -84,7 +85,7 @@ fn header_of(payload: *mut c_void) -> *mut AllocationHeader {
 /// # Safety
 /// `stack` is a live stack whose items came from the C library.
 #[inline]
-unsafe fn push(stack: *mut PointerStack, pointer: *mut c_void) {
+pub(super) unsafe fn push(stack: *mut PointerStack, pointer: *mut c_void) {
     // SAFETY: the caller's contract; the new capacity is checked.
     unsafe {
         if (*stack).length == (*stack).capacity {
@@ -107,7 +108,7 @@ unsafe fn push(stack: *mut PointerStack, pointer: *mut c_void) {
 /// # Safety
 /// `stack` is live.
 #[inline]
-unsafe fn pop(stack: *mut PointerStack) -> Option<*mut c_void> {
+pub(super) unsafe fn pop(stack: *mut PointerStack) -> Option<*mut c_void> {
     // SAFETY: the caller's contract.
     unsafe {
         if (*stack).length == 0 {
@@ -443,21 +444,6 @@ unsafe fn sweep_survivors(here: *mut Carrier, scope: *mut AllocationScope) {
             (*scope).live_bytes = (*scope).live_bytes.wrapping_sub((*header).bytes);
             free(here, header);
         }
-    }
-}
-
-/// Frees an emptied adopted area, which is the record of the fragment it
-/// came from.
-///
-/// # Safety
-/// `here` is the running carrier and `area` an empty adopted area.
-unsafe fn area_free(here: *mut Carrier, area: *mut AllocationArea) {
-    // SAFETY: the caller's contract; the area is a RuntimeFragment's first
-    // member, allocated as a small block of the record's size.
-    unsafe {
-        let bytes = size_of::<RuntimeFragment>();
-        footprint_sub(here, bytes);
-        (*here).small_blocks.give(&mut (*here).heap_totals.cached_bytes, area.cast(), bytes, cache_enabled());
     }
 }
 

@@ -496,8 +496,8 @@ typedef struct {
 enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
-/* Heap owners are unique across the process; any carrier creates heaps. */
-static _Atomic uint64_t next_heap_owner = 2;
+/* Heap owners are unique across the process; any carrier creates heaps, taking
+   ids from one counter (heap/fragment.rs). */
 static AllocationArea static_area = {.role = AREA_STATIC};
 /* Mark epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
@@ -1118,6 +1118,14 @@ void chimi_runtime_release_counted_value(const ChimiValue *value) {
   if (key) counted_handle_drop(key);
 }
 
+/* Adds the count a copied value holds when it is a counted handle; the Rust
+   fragment copy (heap/fragment.rs) calls it for every value it copies. */
+void chimi_runtime_retain_counted_value(const ChimiValue *value);
+void chimi_runtime_retain_counted_value(const ChimiValue *value) {
+  uint64_t key = counted_handle_key(value);
+  if (key) counted_handle_retain(key);
+}
+
 /* Frees one allocation that its area has already unlinked (the Rust allocator's
    release, heap/allocator.rs). */
 void chimi_release_allocation_v1(Carrier *here, AllocationHeader *header);
@@ -1128,16 +1136,10 @@ static void release_allocation(AllocationHeader *header) {
   chimi_release_allocation_v1(carrier, header);
 }
 
-/* Frees every allocation of `area`, leaving it empty. O(allocations). */
-static void area_release_all(AllocationArea *area) {
-  while (area->allocations) {
-    AllocationHeader *header = area->allocations;
-    area->allocations = header->next;
-    release_allocation(header);
-  }
-  area->bytes = 0;
-  area->count = 0;
-}
+/* Frees every allocation of `area`, leaving it empty. O(allocations). Rust
+   (heap/fragment.rs), as are fragments and the heaps' creation and end. */
+void chimi_area_release_all_v1(Carrier *here, AllocationArea *area);
+static void area_release_all(AllocationArea *area) { chimi_area_release_all_v1(carrier, area); }
 
 /* A fragment's record. Its area is the first member, so once the area is adopted
    the record lives on as that area and is freed with it (area_free). */
@@ -1752,34 +1754,20 @@ _Static_assert(sizeof(((RuntimeFragment *)0)->roots) == 16, "layout: sizeof(((Ru
 /* END generated layout asserts. */
 
 /* Frees an emptied adopted area, which is the record of the fragment it came from. */
-static void area_free(AllocationArea *area) {
-  footprint_sub(sizeof(RuntimeFragment));
-  small_block_give(area, sizeof(RuntimeFragment));
-}
+void chimi_area_free_v1(Carrier *here, AllocationArea *area);
+static void area_free(AllocationArea *area) { chimi_area_free_v1(carrier, area); }
 
-static RuntimeHeap *heap_create(void) {
-  RuntimeHeap *heap = calloc(1, sizeof(*heap));
-  if (!heap) exhausted_memory();
-  heap->owner = atomic_fetch_add_explicit(&next_heap_owner, 1, memory_order_relaxed);
-  heap->base.role = AREA_BASE;
-  heap->base.heap = heap;
-  ++carrier->heap_totals.live_heaps;
-  return heap;
-}
+RuntimeHeap *chimi_heap_create_v1(Carrier *here);
+void chimi_heap_destroy_v1(Carrier *here, RuntimeHeap *heap);
+/* A new, empty heap with a fresh owner id. */
+static RuntimeHeap *heap_create(void) { return chimi_heap_create_v1(carrier); }
 
 /* Requires: no region of `heap` is open. Frees every allocation the heap owns,
    adopted fragments included, without touching any other heap. */
-static void heap_destroy(RuntimeHeap *heap) {
-  if (heap->innermost) { fputs("Chimi runtime destroyed a heap with an open region\n", stderr); runtime_exit(70); }
-  area_release_all(&heap->base);
-  while (heap->adopted) {
-    AllocationArea *area = heap->adopted;
-    heap->adopted = area->next;
-    area_release_all(area);
-    area_free(area);
-  }
-  free(heap);
-  --carrier->heap_totals.live_heaps;
+static void heap_destroy(RuntimeHeap *heap) { chimi_heap_destroy_v1(carrier, heap); }
+void chimi_runtime_heap_destroyed_open(void);
+void chimi_runtime_heap_destroyed_open(void) {
+  fputs("Chimi runtime destroyed a heap with an open region\n", stderr); runtime_exit(70);
 }
 
 static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
@@ -2264,352 +2252,50 @@ static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **valu
   return chimi_scope_finish_v1(carrier, scope, value, control);
 }
 
-/* Fragments: copies for a transfer between owners. A copy keeps sharing through a
-   forwarding table, so it is linear in distinct allocations, and it rebuilds each
-   List window as a compact vector, so sending a short slice of a long list copies
-   only the slice. Static constants are shared, not copied. */
-enum { COPY_INLINE_SLOTS = 16 };
-typedef struct {
-  /* The copy's source: every allocation of `source_heap`, or of `source_area`. */
-  RuntimeHeap *source_heap;
-  const AllocationArea *source_area;
-  AllocationArea *target;
-  void **keys;
-  void **copies;
-  size_t capacity;
-  size_t count;
-  HeapStatus status;
-  /* The owner of the first foreign allocation reached (0 for a fragment's). */
-  uint64_t foreign_owner;
-  /* Small messages fit the inline table, so copying one allocates nothing else. */
-  void *inline_keys[COPY_INLINE_SLOTS];
-  void *inline_copies[COPY_INLINE_SLOTS];
-} FragmentCopy;
-
-
-static void copy_foreign(FragmentCopy *copy, const AllocationArea *area) {
-  if (copy->status == HEAP_OK) copy->foreign_owner = area->heap ? area->heap->owner : 0;
-  copy->status = HEAP_FOREIGN_POINTER;
+/* Fragments: copies for a transfer between owners, in Rust (heap/fragment.rs). A
+   copy keeps sharing, rebuilds each List window as a compact vector, shares static
+   constants, and reports HEAP_FOREIGN_POINTER instead of following a pointer out
+   of its source. These are the list builders it calls back. */
+ChimiValue *chimi_runtime_list_get_v1(const ChimiValue *list, uint32_t index);
+ChimiValue *chimi_runtime_list_get_v1(const ChimiValue *list, uint32_t index) { return list_get(list, index); }
+void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out);
+void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out) {
+  *out = vector_from_values(values, length);
 }
 
-static size_t pointer_slot(const void *pointer, size_t capacity) {
-  uint64_t hash = (uint64_t)(uintptr_t)pointer * UINT64_C(0x9E3779B97F4A7C15);
-  return (size_t)(hash >> 20) & (capacity - 1);
-}
-
-static void copy_table_insert(FragmentCopy *copy, void *key, void *value) {
-  if (2 * (copy->count + 1) > copy->capacity) {
-    size_t capacity = copy->capacity * 2;
-    void **keys = calloc(capacity, sizeof(*keys));
-    void **copies = calloc(capacity, sizeof(*copies));
-    if (!keys || !copies) exhausted_memory();
-    for (size_t index = 0; index < copy->capacity; ++index) {
-      if (!copy->keys[index]) continue;
-      size_t slot = pointer_slot(copy->keys[index], capacity);
-      while (keys[slot]) slot = (slot + 1) & (capacity - 1);
-      keys[slot] = copy->keys[index];
-      copies[slot] = copy->copies[index];
-    }
-    if (copy->keys != copy->inline_keys) {
-      free(copy->keys);
-      free(copy->copies);
-    }
-    copy->keys = keys;
-    copy->copies = copies;
-    copy->capacity = capacity;
-  }
-  size_t slot = pointer_slot(key, copy->capacity);
-  while (copy->keys[slot]) slot = (slot + 1) & (copy->capacity - 1);
-  copy->keys[slot] = key;
-  copy->copies[slot] = value;
-  ++copy->count;
-}
-
-static void *copy_table_find(const FragmentCopy *copy, const void *key) {
-  size_t slot = pointer_slot(key, copy->capacity);
-  while (copy->keys[slot]) {
-    if (copy->keys[slot] == key) return copy->copies[slot];
-    slot = (slot + 1) & (copy->capacity - 1);
-  }
-  return NULL;
-}
-
-static bool copy_owns(const FragmentCopy *copy, const AllocationArea *area) {
-  return copy->source_area ? area == copy->source_area : area->heap == copy->source_heap;
-}
-
-/* The copy of `pointer`, made on first sight and queued for copy_scan. */
-static void *copy_forward(FragmentCopy *copy, void *pointer, AllocationKind kind) {
-  Carrier *const here = carrier;
-  if (!pointer) return NULL;
-  AllocationHeader *header = allocation_header(pointer);
-  if (header->kind != kind) allocation_graph_inconsistent();
-  if (header->area->role == AREA_STATIC) return pointer;
-  if (!copy_owns(copy, header->area) && copy->status == HEAP_OK)
-    copy->foreign_owner = header->area->heap ? header->area->heap->owner : 0;
-  if (!copy_owns(copy, header->area)) {
-    copy->status = HEAP_FOREIGN_POINTER;
-    return NULL;
-  }
-  void *existing = copy_table_find(copy, pointer);
-  if (existing) return existing;
-  AllocationArea *previous = here->fiber.target;
-  here->fiber.target = copy->target;
-  void *duplicate = allocate(header->bytes, 1);
-  here->fiber.target = previous;
-  allocation_kind(duplicate, kind);
-  memcpy(duplicate, pointer, header->bytes);
-  if (here->copy_counting) {
-    here->copied_bytes += header->bytes;
-    if (kind == ALLOCATION_VALUE) ++here->copied_values;
-  }
-  if (kind == ALLOCATION_VALUE) {
-    uint64_t key = counted_handle_key(duplicate);
-    if (key) counted_handle_retain(key);
-  }
-  copy_table_insert(copy, pointer, duplicate);
-  pointer_stack_push(&here->copy_pending, duplicate);
-  return duplicate;
-}
-
-static void copy_list_window(FragmentCopy *copy, ChimiValue *list) {
-  Carrier *const here = carrier;
-  ListVector source = list->as.list.vector;
-  AllocationHeader *root = allocation_header(source.root), *tail = allocation_header(source.tail);
-  if ((root && root->area->role != AREA_STATIC && !copy_owns(copy, root->area)) ||
-      (tail && tail->area->role != AREA_STATIC && !copy_owns(copy, tail->area))) {
-    copy_foreign(copy, root && !copy_owns(copy, root->area) ? root->area : tail->area);
-    list->as.list.vector = (ListVector){NULL, NULL, 0};
-    list->as.list.start = list->as.list.length = 0;
-    return;
-  }
-  uint32_t length = list->as.list.length;
-  ChimiValue **values = malloc(((size_t)length + 1) * sizeof(*values));
-  if (!values) exhausted_memory();
-  for (uint32_t index = 0; index < length; ++index)
-    values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);
-  AllocationArea *previous = here->fiber.target;
-  here->fiber.target = copy->target;
-  list->as.list.vector = vector_from_values(values, length);
-  here->fiber.target = previous;
-  list->as.list.start = 0;
-  free(values);
-}
-
-/* Redirects the pointers of a fresh duplicate from its source's graph to copies. */
-static void copy_scan(FragmentCopy *copy, void *duplicate) {
-  AllocationHeader *header = allocation_header(duplicate);
-  switch (header->kind) {
-    case ALLOCATION_VALUE: {
-      ChimiValue *value = duplicate;
-      switch (value->kind) {
-        case VALUE_TEXT:
-        case VALUE_BYTES:
-          value->as.text.bytes = copy_forward(copy, (void *)value->as.text.bytes, ALLOCATION_BYTES); break;
-        case VALUE_JSON_NUMBER:
-          value->as.json_number = copy_forward(copy, (void *)value->as.json_number, ALLOCATION_BYTES);
-          break;
-        case VALUE_LIST: copy_list_window(copy, value); break;
-        case VALUE_RECORD:
-        case VALUE_CAUSE:
-        case VALUE_TUPLE:
-          value->as.record.fields = copy_forward(copy, value->as.record.fields, ALLOCATION_FIELDS);
-          break;
-        case VALUE_CONSTRUCTED:
-          value->as.constructed.fields =
-            copy_forward(copy, value->as.constructed.fields, ALLOCATION_FIELDS);
-          break;
-        case VALUE_CALLABLE:
-          value->as.callable = copy_forward(copy, value->as.callable, ALLOCATION_CALLABLE); break;
-        case VALUE_MAP:
-        case VALUE_SET: value->as.map = copy_forward(copy, value->as.map, ALLOCATION_MAP_NODE); break;
-        case VALUE_TASK:
-        case VALUE_CHANNEL_SENDER:
-        case VALUE_CHANNEL_RECEIVER:
-        case VALUE_CHANNEL_COMPLETION:
-        case VALUE_VOID:
-        case VALUE_INTEGER:
-        case VALUE_FLOAT:
-        case VALUE_BOOLEAN:
-        case VALUE_RANGE:
-        case VALUE_DURATION:
-        case VALUE_INSTANT:
-        case VALUE_TIMESTAMP:
-        case VALUE_DECIMAL:
-        case VALUE_PROCESS_ADDRESS:
-        case VALUE_PROCESS_INBOX:
-        case VALUE_SUPERVISOR_RUNNING:
-        case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR:
-        case VALUE_TEST_RECORDER:
-        case VALUE_TEST_SCRIPT:
-        case VALUE_TEST_MAILBOX: break;
-        case VALUE_NATIVE_HANDLE: break;
-      }
-      break;
-    }
-    case ALLOCATION_FIELDS: {
-      RuntimeField *fields = duplicate;
-      size_t length = header->bytes / sizeof(*fields);
-      for (size_t index = 0; index < length; ++index)
-        fields[index].value = copy_forward(copy, fields[index].value, ALLOCATION_VALUE);
-      break;
-    }
-    case ALLOCATION_VALUE_POINTERS: {
-      ChimiValue **values = duplicate;
-      size_t length = header->bytes / sizeof(*values);
-      for (size_t index = 0; index < length; ++index)
-        values[index] = copy_forward(copy, values[index], ALLOCATION_VALUE);
-      break;
-    }
-    case ALLOCATION_ENVIRONMENT: {
-      ChimiEnvironment *environment = duplicate;
-      environment->locals = copy_forward(copy, environment->locals, ALLOCATION_VALUE_POINTERS);
-      environment->requirements =
-        copy_forward(copy, environment->requirements, ALLOCATION_VALUE_POINTERS);
-      break;
-    }
-    case ALLOCATION_CALLABLE: {
-      ChimiCallable *callable = duplicate;
-      callable->environment = copy_forward(copy, callable->environment, ALLOCATION_ENVIRONMENT);
-      callable->inner = copy_forward(copy, callable->inner, ALLOCATION_CALLABLE);
-      break;
-    }
-    case ALLOCATION_MAP_NODE: {
-      MapNode *node = duplicate;
-      node->key = copy_forward(copy, node->key, ALLOCATION_VALUE);
-      node->value = copy_forward(copy, node->value, ALLOCATION_VALUE);
-      node->left = copy_forward(copy, node->left, ALLOCATION_MAP_NODE);
-      node->right = copy_forward(copy, node->right, ALLOCATION_MAP_NODE);
-      break;
-    }
-    case ALLOCATION_CONTROL: {
-      ChimiControl *control = duplicate;
-      control->value = copy_forward(copy, control->value, ALLOCATION_VALUE);
-      control->cause = copy_forward(copy, control->cause, ALLOCATION_VALUE);
-      break;
-    }
-    case ALLOCATION_BYTES: break;
-    case ALLOCATION_LIST_NODE:
-    case ALLOCATION_FRAME_ENVIRONMENT:
-    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
-  }
-}
-
-/* Copies the graphs under `roots` into `target`, writing the copied roots to `out`. */
-static HeapStatus copy_graph(FragmentCopy *copy, void *const *roots, const AllocationKind *kinds,
-                             uint32_t count, void **out) {
-  Carrier *const here = carrier;
-  memset(copy->inline_keys, 0, sizeof(copy->inline_keys));
-  copy->keys = copy->inline_keys;
-  copy->copies = copy->inline_copies;
-  copy->capacity = COPY_INLINE_SLOTS;
-  for (uint32_t index = 0; index < count; ++index)
-    out[index] = copy_forward(copy, roots[index], kinds[index]);
-  while (here->copy_pending.length) copy_scan(copy, here->copy_pending.items[--here->copy_pending.length]);
-  if (copy->keys != copy->inline_keys) {
-    free(copy->keys);
-    free(copy->copies);
-  }
-  return copy->status;
-}
-
-static size_t fragment_footprint(const RuntimeFragment *fragment) {
-  return sizeof(*fragment) + fragment->area.bytes +
-         fragment->area.count * sizeof(AllocationHeader);
-}
+HeapStatus chimi_fragment_copy_v1(Carrier *here, void *const *roots, const AllocationKind *kinds, uint32_t count,
+                                  RuntimeFragment **out);
+void chimi_fragment_adopt_v1(Carrier *here, RuntimeFragment *fragment, void **roots);
+void chimi_fragment_copy_into_current_v1(Carrier *here, const RuntimeFragment *fragment, void **roots);
+RuntimeFragment *chimi_fragment_duplicate_v1(Carrier *here, const RuntimeFragment *source);
+void chimi_fragment_free_v1(Carrier *here, RuntimeFragment *fragment);
 
 /* Transfer boundary. Requires: the current heap owns every value under `roots`, or
    they are static. Ensures: a detached fragment holding one copy of the graph.
    Returns HEAP_FOREIGN_POINTER, and no fragment, if the graph leaves the heap. */
 static HeapStatus fragment_copy(void *const *roots, const AllocationKind *kinds, uint32_t count,
                                 RuntimeFragment **out) {
-  Carrier *const here = carrier;
-  if (count > FRAGMENT_ROOTS) abort();
-  RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
-  fragment->area.role = AREA_FRAGMENT;
-  fragment->root_count = count;
-  ++here->heap_totals.live_fragments;
-  footprint_add(sizeof(*fragment));
-  fragment_footprint_add(sizeof(*fragment));
-  FragmentCopy copy = {.source_heap = here->fiber.heap, .target = &fragment->area};
-  HeapStatus status = copy_graph(&copy, roots, kinds, count, fragment->roots);
-  if (status != HEAP_OK) {
-    here->fragment_copy_foreign_owner = copy.foreign_owner;
-    fragment_footprint_sub(fragment_footprint(fragment));
-    area_release_all(&fragment->area);
-    --here->heap_totals.live_fragments;
-    area_free(&fragment->area);
-    *out = NULL;
-    return status;
-  }
-  *out = fragment;
-  return HEAP_OK;
+  return chimi_fragment_copy_v1(carrier, roots, kinds, count, out);
 }
 
 /* Hands the fragment's allocations to the current heap's innermost region (or its
    base area) in O(1), without copying, and writes its roots to `roots`. Consumes it. */
-static void fragment_adopt(RuntimeFragment *fragment, void **roots) {
-  Carrier *const here = carrier;
-  for (uint32_t index = 0; index < fragment->root_count; ++index) roots[index] = fragment->roots[index];
-  fragment_footprint_sub(fragment_footprint(fragment));
-  --here->heap_totals.live_fragments;
-  AllocationArea *area = &fragment->area;
-  RuntimeHeap *heap = here->fiber.heap;
-  AllocationScope *scope = heap->innermost;
-  area->heap = heap;
-  heap_add_live(heap, area->bytes);
-  if (scope) {
-    area->role = AREA_YOUNG;
-    area->scope = scope;
-    area->next = scope->adopted;
-    scope->adopted = area;
-    scope_add_live(scope, area->bytes);
-  } else {
-    area->role = AREA_BASE;
-    area->next = heap->adopted;
-    heap->adopted = area;
-    here->unscoped_allocated_bytes += area->bytes;
-  }
-}
+static void fragment_adopt(RuntimeFragment *fragment, void **roots) { chimi_fragment_adopt_v1(carrier, fragment, roots); }
 
 /* Copies the fragment's graph into the current area, keeping sharing, and leaves the
    fragment intact, so it can be copied again (Task.result). O(fragment). */
 static void fragment_copy_into_current(const RuntimeFragment *fragment, void **roots) {
-  AllocationKind kinds[FRAGMENT_ROOTS];
-  for (uint32_t index = 0; index < fragment->root_count; ++index)
-    kinds[index] = allocation_header(fragment->roots[index])->kind;
-  FragmentCopy copy = {.source_area = &fragment->area, .target = current_area()};
-  if (copy_graph(&copy, fragment->roots, kinds, fragment->root_count, roots) != HEAP_OK)
-    allocation_graph_inconsistent();
+  chimi_fragment_copy_into_current_v1(carrier, fragment, roots);
 }
 
 /* A second detached copy of an unadopted fragment, for another broadcast or watch
    subscription. O(fragment). */
 static RuntimeFragment *fragment_duplicate(const RuntimeFragment *source) {
-  RuntimeFragment *fragment = small_block_take(sizeof(*fragment));
-  fragment->area.role = AREA_FRAGMENT;
-  fragment->root_count = source->root_count;
-  ++carrier->heap_totals.live_fragments;
-  footprint_add(sizeof(*fragment));
-  fragment_footprint_add(sizeof(*fragment));
-  AllocationKind kinds[FRAGMENT_ROOTS];
-  for (uint32_t index = 0; index < source->root_count; ++index)
-    kinds[index] = allocation_header(source->roots[index])->kind;
-  FragmentCopy copy = {.source_area = &source->area, .target = &fragment->area};
-  if (copy_graph(&copy, source->roots, kinds, source->root_count, fragment->roots) != HEAP_OK)
-    allocation_graph_inconsistent();
-  return fragment;
+  return chimi_fragment_duplicate_v1(carrier, source);
 }
 
 /* Discards an unadopted fragment, for example a message handed back to its sender. */
-static void fragment_free(RuntimeFragment *fragment) {
-  fragment_footprint_sub(fragment_footprint(fragment));
-  --carrier->heap_totals.live_fragments;
-  area_release_all(&fragment->area);
-  area_free(&fragment->area);
-}
+static void fragment_free(RuntimeFragment *fragment) { chimi_fragment_free_v1(carrier, fragment); }
 
 /* The trace label (`<module path>.<identifier>`) of a scheduler name id, which is the
    `process name` symbol's index plus 1; NULL for an id that names none. */
