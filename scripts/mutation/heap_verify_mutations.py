@@ -14,8 +14,8 @@ R = "runtime/native/runtime.c"
 CHECK = dict(command=["../../scripts/mutation/heap-verify-harness.sh"], expect=["heap check failed"])
 
 
-def m(name, old, new):
-    return dict(name=name, file=R, edits=[(old, new)], **CHECK)
+def m(name, old, new, **overrides):
+    return dict(name=name, file=R, edits=[(old, new)], **{**CHECK, **overrides})
 
 
 MUTATIONS = [
@@ -30,7 +30,10 @@ MUTATIONS = [
       "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_LIST_NODE) {\n      area_link(&scope->survivors, header);"),
     m("marking skips a list node's values",
       "      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);",
-      "      for (uint32_t index = 0; index < node->count && kind != ALLOCATION_VALUE; ++index)\n        mark_push(node->slots[index], kind);"),
+      "      for (uint32_t index = 0; index < node->count && kind != ALLOCATION_VALUE; ++index)\n        mark_push(node->slots[index], kind);",
+      # The collector's own forwarding check meets an unmarked chunk value
+      # first and ends the program before the heap check runs.
+      expect=["heap check failed", "allocation graph is inconsistent"]),
     m("young chunk survivors are not moved",
       "  forward_survivors(scope, value, control);\n  reset_young_chunks(scope, !ending);",
       "  reset_young_chunks(scope, !ending);"),
