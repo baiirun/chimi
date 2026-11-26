@@ -5,7 +5,8 @@
 //! - The generated block of `_Static_assert`s in `runtime.c` must be exactly
 //!   what the Rust table renders, so a Rust change shows up here, and a C
 //!   change that moves a listed number fails the C compile.
-//! - Each mirrored C definition must match its digest in
+//! - Each mirrored C definition (in `runtime.c`, or `runtime.h` for the
+//!   program tables) must match its digest in
 //!   `tests/runtime_layout.digests`, so a change the numbers cannot see (an
 //!   enum constant appended, a field added in padding) fails here too, and
 //!   points at the mirror to update.
@@ -17,6 +18,7 @@
 use chimi_runtime::heap::layout::{C_BEGIN, C_END, c_asserts};
 
 const RUNTIME: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/runtime/native/runtime.c");
+const HEADER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/runtime/native/runtime.h");
 const DIGESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/runtime_layout.digests");
 
 /// The mirrored C definitions: each starts at `start` and ends at the first
@@ -56,6 +58,9 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  FiberContext fiber;", "} Carrier;"),
     ("typedef struct {\n  size_t total_allocated_bytes;", "} ScopeTotals;"),
     ("enum { FRAGMENT_ROOTS", "} RuntimeFragment;"),
+    // runtime.h
+    ("typedef struct {\n  uint32_t kind;\n  uint32_t name;\n  uint32_t function;", "} ChimiSymbol;"),
+    ("typedef struct {\n  uint32_t type_name;\n  uint32_t variant_name;", "} ChimiConstructor;"),
 ];
 
 /// The text before the block, the block itself (both marker lines
@@ -91,7 +96,7 @@ fn digests(source: &str) -> String {
     let mut lines = String::new();
     for &(start, end) in DEFINITIONS {
         let found = source.matches(start).count();
-        assert_eq!(found, 1, "runtime.c should have exactly one definition starting {start:?}, has {found}");
+        assert_eq!(found, 1, "runtime.c and runtime.h should have exactly one definition starting {start:?}, has {found}");
         let from = source.find(start).unwrap();
         let to = source[from..].find(end).unwrap_or_else(|| panic!("no {end:?} after {start:?}")) + from + end.len();
         let first = start.lines().next().unwrap();
@@ -123,7 +128,8 @@ fn runtime_c_asserts_the_mirrored_layout() {
 
 #[test]
 fn the_mirrored_c_definitions_are_unchanged() {
-    let source = std::fs::read_to_string(RUNTIME).expect("read runtime.c");
+    let source = std::fs::read_to_string(RUNTIME).expect("read runtime.c")
+        + &std::fs::read_to_string(HEADER).expect("read runtime.h");
     let actual = digests(&source);
     if blessing() {
         std::fs::write(DIGESTS, &actual).expect("write the digests");

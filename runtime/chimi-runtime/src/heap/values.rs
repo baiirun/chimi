@@ -27,7 +27,7 @@ unsafe extern "C" {
 /// # Safety
 /// The running carrier's fiber has a live heap.
 #[inline(always)]
-unsafe fn allocate_kind<T>(count: usize, kind: AllocationKind) -> *mut T {
+pub(crate) unsafe fn allocate_kind<T>(count: usize, kind: AllocationKind) -> *mut T {
     // SAFETY: the caller's contract.
     unsafe {
         let payload = allocate(count, size_of::<T>());
