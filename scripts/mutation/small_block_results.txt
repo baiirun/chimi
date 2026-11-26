@@ -1,5 +1,6 @@
+# mutation run at 3f4b3788d008a6a1d993e879fd87392b741ed8e4
 # small_block_mutations.py: 7 mutants against runtime/chimi-runtime
-BASELINE ok  [lib -- small_blocks] (1s)
+BASELINE ok  [lib -- small_blocks] (4s)
 KILLED       a reused block is not zeroed [lib -- small_blocks] (1s)
 KILLED       a full list keeps taking blocks [lib -- small_blocks] (1s)
 KILLED       a cached block is not counted [lib -- small_blocks] (1s)
