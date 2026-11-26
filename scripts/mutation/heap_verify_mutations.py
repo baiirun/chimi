@@ -1,5 +1,6 @@
 """Collector bugs the heap check (chimi-runtime heap/verify.rs, CHI-305 step
-5 phase 0) must catch on its own: the native heap fixture runs with the check
+5 phase 0) must catch on its own: the native heap fixture, whose values are
+lists of integers, runs with the check
 on and without AddressSanitizer, so a mutant is killed only when the check
 reports it. That is the guard the collector keeps once it moves to Rust,
 which the sanitizer does not instrument.
@@ -20,16 +21,16 @@ def m(name, old, new):
 MUTATIONS = [
     m("a full pass frees a marked survivor",
       "    if (header->mark_epoch == carrier->collecting_epoch) {\n      link = &header->next;\n      continue;\n    }",
-      "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_MAP_NODE) {\n      link = &header->next;\n      continue;\n    }"),
+      "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_LIST_NODE) {\n      link = &header->next;\n      continue;\n    }"),
     m("a sweep leaves the survivor counts behind",
       "    *link = header->next;\n    area->bytes -= header->bytes;",
       "    *link = header->next;"),
     m("a pass frees a marked young allocation",
       "    if (header->mark_epoch == carrier->collecting_epoch) {\n      area_link(&scope->survivors, header);",
-      "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_FIELDS) {\n      area_link(&scope->survivors, header);"),
-    m("marking skips a map node's children",
-      "      mark_push(node->left, ALLOCATION_MAP_NODE);\n      mark_push(node->right, ALLOCATION_MAP_NODE);\n      break;\n    }\n    case ALLOCATION_CONTROL:\n      mark_push(",
-      "      break;\n    }\n    case ALLOCATION_CONTROL:\n      mark_push("),
+      "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_LIST_NODE) {\n      area_link(&scope->survivors, header);"),
+    m("marking skips a list node's values",
+      "      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);",
+      "      for (uint32_t index = 0; index < node->count && kind != ALLOCATION_VALUE; ++index)\n        mark_push(node->slots[index], kind);"),
     m("young chunk survivors are not moved",
       "  forward_survivors(scope, value, control);\n  reset_young_chunks(scope, !ending);",
       "  reset_young_chunks(scope, !ending);"),
