@@ -938,67 +938,38 @@ static void area_link(AllocationArea *area, AllocationHeader *header) {
 }
 
 
-static YoungChunk *young_chunk_take(void) {
-  Carrier *const here = carrier;
-  YoungChunk *chunk = here->young_chunk_cache;
-  if (chunk) {
-    here->young_chunk_cache = chunk->next;
-    --here->young_chunk_cache_count;
-  } else {
-    chunk = calloc(1, YOUNG_CHUNK_BYTES);
-    if (!chunk) exhausted_memory();
-  }
-  chunk->next = NULL;
-  chunk->used = chunk->data;
-  return chunk;
-}
+/* The young chunks and the regions' start and end are Rust (chimi-runtime
+   heap/young.rs): its per-carrier cache of empty chunks, the deferred counts of a
+   pass's chunk allocations (flush_young_counts), the reset of a region's chunks
+   at a pass boundary (reset_young_chunks), and a region's start and the end of
+   its accounting. */
+void chimi_young_flush_counts_v1(Carrier *here, AllocationScope *scope);
+bool chimi_young_chunks_used_v1(const AllocationScope *scope);
+void chimi_young_reset_chunks_v1(Carrier *here, AllocationScope *scope, bool keep_first);
+void chimi_scope_begin_v1(Carrier *here, AllocationScope *scope);
+void chimi_scope_end_v1(AllocationScope *scope);
+
+/* Adds the chunk allocations made since the last call to the memory counters. */
+static void flush_young_counts(AllocationScope *scope) { chimi_young_flush_counts_v1(carrier, scope); }
 
 /* CHIMI_POISON_YOUNG_CHUNKS is a checking build: every pass boundary frees its
    chunks after filling them with a pattern, so a pointer kept across the boundary
    reads garbage, or fails as a use after free under AddressSanitizer. */
-/* Requires: `chunk->used` marks the end of its allocations. Cached chunks are
-   zero, so a bump needs no zeroing of its own. */
-static void young_chunk_give(YoungChunk *chunk) {
-  Carrier *const here = carrier;
 #ifdef CHIMI_POISON_YOUNG_CHUNKS
-  memset(chunk->data, 0xdb, YOUNG_CHUNK_CAPACITY);
-  free(chunk);
-  return;
+const bool chimi_runtime_poison_young_chunks = true;
+#else
+const bool chimi_runtime_poison_young_chunks = false;
 #endif
-  if (here->young_chunk_cache_count < YOUNG_CHUNK_CACHE) {
-    memset(chunk->data, 0, (size_t)(chunk->used - chunk->data));
-    chunk->next = here->young_chunk_cache;
-    here->young_chunk_cache = chunk;
-    ++here->young_chunk_cache_count;
-    return;
-  }
-  free(chunk);
-}
-
-/* Adds the chunk allocations made since the last call to the memory counters. A
-   pass only adds to its scope's and heap's counters until its boundary, so
-   deferring the additions to the boundary (or to a nested region's start) leaves
-   those peaks the same. The global footprint can fall mid-pass, so its peak
-   counts the deferred bytes through pending_footprint_bytes. */
-static void flush_young_counts(AllocationScope *scope) {
-  Carrier *const here = carrier;
-  size_t bytes = scope->pending_bytes, count = scope->pending_count;
-  if (count == 0) return;
-  scope->pending_bytes = 0;
-  scope->pending_count = 0;
-  scope->young.bytes += bytes;
-  scope->young.count += count;
-  heap_add_live(scope->heap, bytes);
-  scope_add_live(scope, bytes);
-  scope->total_allocated_bytes += bytes;
-  scope->allocated_bytes_by_kind[ALLOCATION_BYTES] += bytes;
-  here->heap_totals.live_allocations += count;
-  here->pending_footprint_bytes -= count * sizeof(AllocationHeader) + bytes;
-  footprint_add(count * sizeof(AllocationHeader) + bytes);
-}
-
-static size_t young_rounded(size_t bytes) {
-  return (sizeof(AllocationHeader) + bytes + SMALL_BLOCK_GRAIN - 1) / SMALL_BLOCK_GRAIN * SMALL_BLOCK_GRAIN;
+const bool chimi_runtime_heap_verify = CHIMI_HEAP_VERIFY;
+void chimi_runtime_heap_verify_chunk(const unsigned char *data, const unsigned char *used);
+void chimi_runtime_heap_verify_chunk(const unsigned char *data, const unsigned char *used) {
+#if CHIMI_HEAP_VERIFY
+  pointer_stack_push(&heap_verify_chunks, (void *)data);
+  pointer_stack_push(&heap_verify_chunks, (void *)used);
+#else
+  (void)data;
+  (void)used;
+#endif
 }
 
 /* The allocator is Rust (chimi-runtime heap/allocator.rs): `count` zeroed items
@@ -1015,8 +986,6 @@ _Noreturn void chimi_runtime_allocation_overflow(void);
 _Noreturn void chimi_runtime_allocation_overflow(void) {
   fputs("Chimi runtime allocation overflow\n", stderr); runtime_exit(70);
 }
-YoungChunk *chimi_runtime_young_chunk_take(void);
-YoungChunk *chimi_runtime_young_chunk_take(void) { return young_chunk_take(); }
 
 static AllocationHeader *allocation_header(const void *value) {
   return value ? (AllocationHeader *)value - 1 : NULL;
@@ -1180,23 +1149,6 @@ static void area_release_all(AllocationArea *area) {
   }
   area->bytes = 0;
   area->count = 0;
-}
-
-/* Moves every allocation of `source` into `target`. O(allocations of `source`). */
-static void area_merge(AllocationArea *target, AllocationArea *source) {
-  if (!source->allocations) return;
-  AllocationHeader *last = NULL;
-  for (AllocationHeader *header = source->allocations; header; header = header->next) {
-    header->area = target;
-    last = header;
-  }
-  last->next = target->allocations;
-  target->allocations = source->allocations;
-  target->bytes += source->bytes;
-  target->count += source->count;
-  source->allocations = NULL;
-  source->bytes = 0;
-  source->count = 0;
 }
 
 /* A fragment's record. Its area is the first member, so once the area is adopted
@@ -2471,9 +2423,7 @@ static void forward_marked_list(AllocationArea *area) {
 }
 
 /* Whether this pass of `scope` has bumped an allocation into its chunks. */
-static bool young_chunks_used(const AllocationScope *scope) {
-  return scope->first_chunk && (scope->first_chunk->next || scope->bump != scope->first_chunk->data);
-}
+static bool young_chunks_used(const AllocationScope *scope) { return chimi_young_chunks_used_v1(scope); }
 
 /* Moves what the roots reach out of `scope`'s chunks and updates the roots. */
 static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiControl **control) {
@@ -2489,65 +2439,10 @@ static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiC
 /* Releases the chunk allocations of this pass that were not moved, and empties the
    chunks for the next pass, keeping the first one. Requires flush_young_counts. */
 static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
-  YoungChunk *first = scope->first_chunk;
-  if (!first || (keep_first && !young_chunks_used(scope))) return;
-  scope->last_chunk->used = scope->bump;
-  size_t dead_bytes = 0, dead_count = 0;
-  for (YoungChunk *chunk = first; chunk; chunk = chunk->next) {
-#if CHIMI_HEAP_VERIFY
-    pointer_stack_push(&heap_verify_chunks, chunk->data);
-    pointer_stack_push(&heap_verify_chunks, chunk->used);
-#endif
-    for (unsigned char *cursor = chunk->data; cursor < chunk->used;) {
-      AllocationHeader *header = (AllocationHeader *)cursor;
-      cursor += young_rounded(header->bytes);
-      if (header->next) continue;
-      dead_bytes += header->bytes;
-      ++dead_count;
-      if (handles_live() && header->kind == ALLOCATION_VALUE) {
-        uint64_t key = counted_handle_key((ChimiValue *)(header + 1));
-        if (key) counted_handle_drop(key);
-      }
-    }
-  }
-  scope->live_bytes -= dead_bytes;
-  scope->heap->live_bytes -= dead_bytes;
-  carrier->heap_totals.live_allocations -= dead_count;
-  footprint_sub(dead_count * sizeof(AllocationHeader) + dead_bytes);
-  YoungChunk *rest = first->next;
-#ifdef CHIMI_POISON_YOUNG_CHUNKS
-  keep_first = false;
-#endif
-  if (keep_first) {
-    memset(first->data, 0, (size_t)(first->used - first->data));
-    first->next = NULL;
-    first->used = first->data;
-    scope->last_chunk = first;
-    scope->bump = first->data;
-    scope->bump_end = first->data + YOUNG_CHUNK_CAPACITY;
-  } else {
-    young_chunk_give(first);
-    scope->first_chunk = scope->last_chunk = NULL;
-    scope->bump = scope->bump_end = NULL;
-  }
-  while (rest) {
-    YoungChunk *next = rest->next;
-    young_chunk_give(rest);
-    rest = next;
-  }
+  chimi_young_reset_chunks_v1(carrier, scope, keep_first);
 }
 
-static void allocation_scope_begin(AllocationScope *scope) {
-  memset(scope, 0, sizeof(*scope));
-  RuntimeHeap *heap = carrier->fiber.heap;
-  /* The enclosing region's peak must count what its pass has allocated so far. */
-  if (heap->innermost) flush_young_counts(heap->innermost);
-  scope->heap = heap;
-  scope->parent = heap->innermost;
-  scope->young = (AllocationArea){.role = AREA_YOUNG, .heap = heap, .scope = scope};
-  scope->survivors = (AllocationArea){.role = AREA_SURVIVOR, .heap = heap, .scope = scope};
-  heap->innermost = scope;
-}
+static void allocation_scope_begin(AllocationScope *scope) { chimi_scope_begin_v1(carrier, scope); }
 
 /* Moves the marked allocations of a young `area` to the survivors and frees the rest. */
 static void promote_marked(AllocationScope *scope, AllocationArea *area) {
@@ -2679,21 +2574,7 @@ static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue **
 static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **value,
                                        ChimiControl **control) {
   HeapStatus status = allocation_scope_sweep(scope, value, control, true, true);
-  RuntimeHeap *heap = scope->heap;
-  AllocationScope *parent = scope->parent;
-  heap->innermost = parent;
-  area_merge(parent ? &parent->young : &heap->base, &scope->survivors);
-  if (!parent) return status;
-  size_t nested_peak = parent->live_bytes + scope->peak_live_bytes;
-  if (nested_peak > parent->peak_live_bytes) parent->peak_live_bytes = nested_peak;
-  parent->live_bytes += scope->live_bytes;
-  parent->total_allocated_bytes += scope->total_allocated_bytes;
-  for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-    parent->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
-  parent->collections += scope->collections;
-  parent->full_collections += scope->full_collections;
-  parent->scanned_allocations += scope->scanned_allocations;
-  parent->promoted_bytes += scope->promoted_bytes;
+  chimi_scope_end_v1(scope);
   return status;
 }
 

@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, 
 
 use super::layout::{
     AllocationArea, AllocationHeader, AllocationKind, AllocationScope, AreaRole, Carrier, ProfileRow,
-    RuntimeHeap, SMALL_BLOCK_GRAIN, Value, YOUNG_CHUNK_CAPACITY, YOUNG_CHUNK_LARGEST, YoungChunk,
+    RuntimeHeap, SMALL_BLOCK_GRAIN, Value, YOUNG_CHUNK_CAPACITY, YOUNG_CHUNK_LARGEST,
 };
 
 unsafe extern "C" {
@@ -34,9 +34,6 @@ unsafe extern "C" {
     fn chimi_runtime_exhausted_memory() -> !;
     /// Prints "Chimi runtime allocation overflow" and exits 70.
     fn chimi_runtime_allocation_overflow() -> !;
-    /// An empty young chunk from the running carrier's cache or the C
-    /// library; never null.
-    fn chimi_runtime_young_chunk_take() -> *mut YoungChunk;
     /// Drops the handle count a freed value holds, if it is a counted handle.
     fn chimi_runtime_release_counted_value(value: *const Value);
     /// Carrier `index`, below `chimi_runtime_carrier_count`.
@@ -348,7 +345,7 @@ pub unsafe fn seed_process_footprint(first: *mut Carrier) {
 
 /// # Safety
 /// `scope` is live.
-unsafe fn scope_add_live(scope: *mut AllocationScope, bytes: usize) {
+pub(super) unsafe fn scope_add_live(scope: *mut AllocationScope, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
         (*scope).live_bytes = (*scope).live_bytes.wrapping_add(bytes);
@@ -360,7 +357,7 @@ unsafe fn scope_add_live(scope: *mut AllocationScope, bytes: usize) {
 
 /// # Safety
 /// `heap` is live.
-unsafe fn heap_add_live(heap: *mut RuntimeHeap, bytes: usize) {
+pub(super) unsafe fn heap_add_live(heap: *mut RuntimeHeap, bytes: usize) {
     // SAFETY: the caller's contract.
     unsafe {
         (*heap).live_bytes = (*heap).live_bytes.wrapping_add(bytes);
@@ -385,12 +382,6 @@ unsafe fn area_link(area: *mut AllocationArea, header: *mut AllocationHeader) {
     }
 }
 
-/// The bytes a young chunk allocation of `bytes` takes, header included:
-/// a multiple of the grain.
-fn young_rounded(bytes: usize) -> usize {
-    (HEADER + bytes).div_ceil(SMALL_BLOCK_GRAIN) * SMALL_BLOCK_GRAIN
-}
-
 /// Starts a new young chunk for `scope`, whose current one has no room.
 ///
 /// # Safety
@@ -399,7 +390,7 @@ unsafe fn young_refill(here: *mut Carrier, scope: *mut AllocationScope) {
     // SAFETY: the caller's contract; a chunk is YOUNG_CHUNK_BYTES with its
     // data at the end of the record.
     unsafe {
-        let chunk = chimi_runtime_young_chunk_take();
+        let chunk = super::young::chunk_take(here);
         if (*scope).last_chunk.is_null() {
             (*scope).first_chunk = chunk;
         } else {
@@ -518,7 +509,7 @@ unsafe fn allocate_in(here: *mut Carrier, bytes: usize) -> *mut u8 {
         if (*innermost).links_young || bytes > YOUNG_CHUNK_LARGEST {
             return allocate_block(here, heap, ptr::addr_of_mut!((*innermost).young), bytes);
         }
-        let rounded = young_rounded(bytes);
+        let rounded = super::young::rounded(bytes);
         let bump = (*innermost).bump;
         if ((*innermost).bump_end as usize) - (bump as usize) < rounded {
             return allocate_young_refilled(here, heap, innermost, bytes);
@@ -546,7 +537,7 @@ unsafe fn allocate_young_refilled(
     // allocation.
     unsafe {
         young_refill(here, innermost);
-        let result = young_bump(here, innermost, (*innermost).bump, bytes, young_rounded(bytes));
+        let result = young_bump(here, innermost, (*innermost).bump, bytes, super::young::rounded(bytes));
         profiled(heap, bytes, result)
     }
 }
