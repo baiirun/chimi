@@ -211,7 +211,7 @@ impl Copy {
 ///
 /// # Safety
 /// `payload` is a live allocation.
-unsafe fn set_kind(payload: *mut c_void, kind: AllocationKind) {
+pub(super) unsafe fn set_kind(payload: *mut c_void, kind: AllocationKind) {
     // SAFETY: the caller's contract.
     unsafe {
         let header = header_of(payload);
