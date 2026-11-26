@@ -1,12 +1,14 @@
 //! Timestamps: Unix nanoseconds in an `i64`, read and written as RFC 3339 UTC
 //! text by the proleptic Gregorian calendar (Howard Hinnant's day
 //! algorithms). The native runtime prints `Clock.timestamp_to_text` and the
-//! `Debug` form with [`text`] and reads `--clock-start` with [`parse`]; the
+//! `Debug` form with [`text`], stamps std/log lines with [`civil_seconds`] and
+//! [`push_date_time`], and reads `--clock-start` with [`parse`]; the
 //! compiler's test runner checks `--clock-start` with the same [`parse`].
 
 use crate::TextBuffer;
 
-/// `2262-04-11T23:47:16.854775807Z` is the longest text.
+/// The longest text, `2262-04-11T23:47:16.854775807Z`, is 30 bytes; 32
+/// leaves headroom.
 pub const TEXT_BYTES: usize = 32;
 pub type TimestampText = TextBuffer<TEXT_BYTES>;
 
@@ -51,7 +53,8 @@ pub fn civil_seconds(seconds: i64) -> (Civil, i64) {
 }
 
 /// Writes `2026-11-10T09:30:00`, the date and time of day without a fraction
-/// or zone.
+/// or zone. Years are printed for 0 through 9999 and beyond; a year before 0,
+/// which no `i64` of nanoseconds or real clock reading reaches, prints as 0000.
 pub fn push_date_time(text: &mut TimestampText, date: Civil, of_day: i64) {
     let digits = |value: i64| u128::try_from(value).unwrap_or(0);
     text.push_digits(digits(date.year), 4);
