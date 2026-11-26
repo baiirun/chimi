@@ -18,6 +18,7 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 TREE = "../../runtime/chimi-runtime/src/heap/map.rs"
+COLLECTIONS = "../../runtime/chimi-runtime/src/intrinsics/collections.rs"
 EXECUTION = "src/execution.rs"
 OPERATIONS = "src/execution/map_operations.rs"
 DEBUG = "src/execution/debug.rs"
@@ -57,18 +58,9 @@ MUTATIONS = [
     programs("C map size is one short for a leaf", TREE, [(
         "unsafe { 1 + size((*node).left) + size((*node).right) }",
         "unsafe { i64::from(!(*node).left.is_null() || !(*node).right.is_null()) + size((*node).left) + size((*node).right) }")]),
-    programs("C reduce_entries visits entries in descending order", RUNTIME, [(
-        "/* The native core of std/map; execution/map_operations.rs is the interpreter's. */",
-        "static MapEntries reversed_entries(const MapNode *root) {\n"
-        "  MapEntries e = map_entries(root);\n"
-        "  for (size_t i = 0; i < e.length / 2; ++i) {\n"
-        "    const MapNode *t = e.nodes[i]; e.nodes[i] = e.nodes[e.length - 1 - i]; e.nodes[e.length - 1 - i] = t;\n"
-        "  }\n"
-        "  return e;\n"
-        "}\n"
-        "/* The native core of std/map; execution/map_operations.rs is the interpreter's. */"),
-        ("arguments[1], map_entries(map), true,",
-         "arguments[1], reversed_entries(map), true,")]),
+    programs("C reduce_entries visits entries in descending order", COLLECTIONS, [(
+        "        let entries = map::entries(root);\n",
+        "        let mut entries = map::entries(root);\n        entries.reverse();\n")]),
     programs("Map.merge lets the base win over overrides", MAP, [(
         "reduce_entries(overrides, map, put)",
         "reduce_entries(map, overrides, put)")]),

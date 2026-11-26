@@ -1,6 +1,8 @@
 //! The program's symbol and constructor tables, which the compiler emits as
 //! C data, and the standard values built from them: `Option`, and the
-//! controls every intrinsic returns.
+//! controls every intrinsic returns. `runtime.c` keeps its own
+//! `standard_value` and `intrinsic_shape_defect` for the intrinsics still in
+//! C, so a change to either belongs in both until those move.
 
 use core::ffi::{CStr, c_char};
 use core::ptr;
