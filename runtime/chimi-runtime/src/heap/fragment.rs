@@ -15,7 +15,6 @@
 //! its base area) in O(1), and the record then lives on as that area until
 //! the collector or the heap's destruction frees it.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -72,19 +71,16 @@ enum Source {
     Area(*const AllocationArea),
 }
 
-/// One copy of a graph: its source, its target, and the forwarding table
-/// from each source allocation to its copy (open addressing, at most half
-/// full).
-struct Copy {
-    source: Source,
-    target: *mut AllocationArea,
-    keys: Vec<*mut c_void>,
-    copies: Vec<*mut c_void>,
+/// The forwarding table from each source allocation to its copy: open
+/// addressing, at most half full. Small messages fit the inline slots, so
+/// copying one allocates nothing besides the copy.
+struct Table {
+    inline_keys: [*mut c_void; INLINE_SLOTS],
+    inline_copies: [*mut c_void; INLINE_SLOTS],
+    /// Once the inline slots are outgrown: the keys, then the copies.
+    spilled: Vec<*mut c_void>,
+    capacity: usize,
     count: usize,
-    status: HeapStatus,
-    /// The owner of the first foreign allocation reached (0 for a
-    /// fragment's).
-    foreign_owner: u64,
 }
 
 fn slot_of(pointer: *const c_void, capacity: usize) -> usize {
@@ -92,25 +88,45 @@ fn slot_of(pointer: *const c_void, capacity: usize) -> usize {
     (hash >> 20) as usize & (capacity - 1)
 }
 
-impl Copy {
-    fn new(source: Source, target: *mut AllocationArea) -> Self {
+impl Table {
+    fn new() -> Self {
         Self {
-            source,
-            target,
-            keys: vec![ptr::null_mut(); INLINE_SLOTS],
-            copies: vec![ptr::null_mut(); INLINE_SLOTS],
+            inline_keys: [ptr::null_mut(); INLINE_SLOTS],
+            inline_copies: [ptr::null_mut(); INLINE_SLOTS],
+            spilled: Vec::new(),
+            capacity: INLINE_SLOTS,
             count: 0,
-            status: HeapStatus::OK,
-            foreign_owner: 0,
+        }
+    }
+
+    fn slots(&self) -> (&[*mut c_void], &[*mut c_void]) {
+        if self.spilled.is_empty() {
+            (&self.inline_keys, &self.inline_copies)
+        } else {
+            self.spilled.split_at(self.capacity)
+        }
+    }
+
+    fn slots_mut(&mut self) -> (&mut [*mut c_void], &mut [*mut c_void]) {
+        if self.spilled.is_empty() {
+            (&mut self.inline_keys, &mut self.inline_copies)
+        } else {
+            self.spilled.split_at_mut(self.capacity)
         }
     }
 
     fn insert(&mut self, key: *mut c_void, value: *mut c_void) {
-        if 2 * (self.count + 1) > self.keys.len() {
-            let capacity = self.keys.len() * 2;
-            let mut keys: Vec<*mut c_void> = vec![ptr::null_mut(); capacity];
-            let mut copies = vec![ptr::null_mut(); capacity];
-            for (old, copy) in self.keys.iter().zip(&self.copies) {
+        if 2 * (self.count + 1) > self.capacity {
+            let capacity = self.capacity * 2;
+            let mut spilled: Vec<*mut c_void> = Vec::new();
+            if spilled.try_reserve_exact(2 * capacity).is_err() {
+                // SAFETY: a function of runtime.c that does not return.
+                unsafe { chimi_runtime_exhausted_memory() }
+            }
+            spilled.resize(2 * capacity, ptr::null_mut());
+            let (keys, copies) = spilled.split_at_mut(capacity);
+            let (old_keys, old_copies) = self.slots();
+            for (old, copy) in old_keys.iter().zip(old_copies) {
                 if old.is_null() {
                     continue;
                 }
@@ -121,29 +137,47 @@ impl Copy {
                 keys[slot] = *old;
                 copies[slot] = *copy;
             }
-            self.keys = keys;
-            self.copies = copies;
+            self.spilled = spilled;
+            self.capacity = capacity;
         }
-        let capacity = self.keys.len();
+        let capacity = self.capacity;
+        let (keys, copies) = self.slots_mut();
         let mut slot = slot_of(key, capacity);
-        while !self.keys[slot].is_null() {
+        while !keys[slot].is_null() {
             slot = (slot + 1) & (capacity - 1);
         }
-        self.keys[slot] = key;
-        self.copies[slot] = value;
+        keys[slot] = key;
+        copies[slot] = value;
         self.count += 1;
     }
 
     fn find(&self, key: *const c_void) -> *mut c_void {
-        let capacity = self.keys.len();
-        let mut slot = slot_of(key, capacity);
-        while !self.keys[slot].is_null() {
-            if self.keys[slot].cast_const() == key {
-                return self.copies[slot];
+        let (keys, copies) = self.slots();
+        let mut slot = slot_of(key, self.capacity);
+        while !keys[slot].is_null() {
+            if keys[slot].cast_const() == key {
+                return copies[slot];
             }
-            slot = (slot + 1) & (capacity - 1);
+            slot = (slot + 1) & (self.capacity - 1);
         }
         ptr::null_mut()
+    }
+}
+
+/// One copy of a graph: its source, its target, and its forwarding table.
+struct Copy {
+    source: Source,
+    target: *mut AllocationArea,
+    table: Table,
+    status: HeapStatus,
+    /// The owner of the first foreign allocation reached (0 for a
+    /// fragment's).
+    foreign_owner: u64,
+}
+
+impl Copy {
+    fn new(source: Source, target: *mut AllocationArea) -> Self {
+        Self { source, target, table: Table::new(), status: HeapStatus::OK, foreign_owner: 0 }
     }
 
     /// Whether the copy may read `area`.
@@ -232,7 +266,7 @@ unsafe fn forward(here: *mut Carrier, copy: &mut Copy, pointer: *mut c_void, kin
             copy.foreign(area);
             return ptr::null_mut();
         }
-        let existing = copy.find(pointer);
+        let existing = copy.table.find(pointer);
         if !existing.is_null() {
             return existing;
         }
@@ -249,7 +283,7 @@ unsafe fn forward(here: *mut Carrier, copy: &mut Copy, pointer: *mut c_void, kin
         if kind == AllocationKind::VALUE {
             chimi_runtime_retain_counted_value(duplicate.cast());
         }
-        copy.insert(pointer, duplicate);
+        copy.table.insert(pointer, duplicate);
         super::collector::push(&raw mut (*here).copy_pending, duplicate);
         duplicate
     }

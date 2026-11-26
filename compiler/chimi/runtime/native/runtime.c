@@ -489,15 +489,15 @@ typedef struct {
   int64_t fragment_footprint_bytes;
   int64_t peak_fragment_footprint_bytes;
   int64_t live_heaps;
-  /* Freed small blocks kept for reuse (see small_block_take); not live. */
+  /* Freed small blocks kept for reuse (heap/small_blocks.rs); not live. */
   int64_t cached_bytes;
 } HeapTotals;
 
 enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 
+/* The main heap is owner 1; heap owners are unique across the process, and any
+   carrier creates heaps, taking ids from one counter (heap/fragment.rs). */
 static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
-/* Heap owners are unique across the process; any carrier creates heaps, taking
-   ids from one counter (heap/fragment.rs). */
 static AllocationArea static_area = {.role = AREA_STATIC};
 /* Mark epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
@@ -670,7 +670,7 @@ typedef struct {
   uint64_t end_span;
   PointerStack mark_stack;
   PointerStack copy_stack;
-  /* Copies that copy_scan still has to redirect. Copying never yields, so one stack,
+  /* Copies that the fragment copy (heap/fragment.rs) still has to redirect. Copying never yields, so one stack,
      kept between copies, serves every heap. */
   PointerStack copy_pending;
   /* fs_read's buffer: read(2) fills it and the bytes are copied out before any
@@ -846,25 +846,6 @@ static HeapTotals heap_totals_sum(void) {
   return sum;
 }
 
-void *chimi_small_block_take_v1(SmallBlockCache *cache, int64_t *cached_bytes, size_t bytes, bool enabled);
-void chimi_small_block_give_v1(SmallBlockCache *cache, int64_t *cached_bytes, void *block, size_t bytes,
-                               bool enabled);
-
-/* A zeroed block of at least `bytes` bytes, to be returned with small_block_give. */
-static void *small_block_take(size_t bytes) {
-  Carrier *const here = carrier;
-  void *block = chimi_small_block_take_v1(&here->small_blocks, &here->heap_totals.cached_bytes, bytes,
-                                          CHIMI_SMALL_BLOCK_CACHE);
-  if (!block) exhausted_memory();
-  return block;
-}
-
-static void small_block_give(void *pointer, size_t bytes) {
-  Carrier *const here = carrier;
-  chimi_small_block_give_v1(&here->small_blocks, &here->heap_totals.cached_bytes, pointer, bytes,
-                            CHIMI_SMALL_BLOCK_CACHE);
-}
-
 static AllocationArea *current_area(void) {
   Carrier *const here = carrier;
   if (here->fiber.target) return here->fiber.target;
@@ -916,18 +897,6 @@ Carrier *chimi_runtime_carrier_at(size_t index) { return carrier_at(index); }
 Carrier *chimi_runtime_current_carrier(void);
 Carrier *chimi_runtime_current_carrier(void) { return carrier; }
 
-/* scope_add_live and heap_add_live have Rust twins in the allocator
-   (heap/allocator.rs); these serve the fragment code until it moves too
-   (phase 3). */
-static void scope_add_live(AllocationScope *scope, size_t bytes) {
-  scope->live_bytes += bytes;
-  if (scope->live_bytes > scope->peak_live_bytes) scope->peak_live_bytes = scope->live_bytes;
-}
-
-static void heap_add_live(RuntimeHeap *heap, size_t bytes) {
-  heap->live_bytes += bytes;
-  if (heap->live_bytes > heap->peak_live_bytes) heap->peak_live_bytes = heap->live_bytes;
-}
 
 
 /* The young chunks and the regions' start and end are Rust (chimi-runtime
@@ -995,8 +964,8 @@ static void allocation_kind(void *value, AllocationKind kind) {
    reference to its handle, in whichever heap or fragment it is allocated, so a
    copy in transit (a message, a task's captures or result) counts while the
    scheduler holds it. channel_capability_value, task_value and
-   native_handle_value create these values, copy_forward is the only thing that
-   copies them, and release_allocation the only thing that frees them; those
+   native_handle_value create these values, the fragment copy is the only thing
+   that copies them, and the allocator's release the only thing that frees them; those
    keep the counts (counted_handle_retain, counted_handle_drop).
 
    Channel and task keys are counted by the scheduler (chimi_fiber_handle_retain
@@ -1126,23 +1095,8 @@ void chimi_runtime_retain_counted_value(const ChimiValue *value) {
   if (key) counted_handle_retain(key);
 }
 
-/* Frees one allocation that its area has already unlinked (the Rust allocator's
-   release, heap/allocator.rs). */
-void chimi_release_allocation_v1(Carrier *here, AllocationHeader *header);
-static void release_allocation(AllocationHeader *header) {
-#if CHIMI_HEAP_VERIFY
-  if (carrier->collecting_scope) pointer_stack_push(&heap_verify_freed, header + 1);
-#endif
-  chimi_release_allocation_v1(carrier, header);
-}
-
-/* Frees every allocation of `area`, leaving it empty. O(allocations). Rust
-   (heap/fragment.rs), as are fragments and the heaps' creation and end. */
-void chimi_area_release_all_v1(Carrier *here, AllocationArea *area);
-static void area_release_all(AllocationArea *area) { chimi_area_release_all_v1(carrier, area); }
-
 /* A fragment's record. Its area is the first member, so once the area is adopted
-   the record lives on as that area and is freed with it (area_free). */
+   the record lives on as that area and is freed with it (heap/fragment.rs). */
 enum { FRAGMENT_ROOTS = 2 };
 typedef struct RuntimeFragment {
   AllocationArea area;
@@ -1753,10 +1707,7 @@ _Static_assert(sizeof(((RuntimeFragment *)0)->roots) == 16, "layout: sizeof(((Ru
 #undef CHIMI_LAYOUT_CLASS
 /* END generated layout asserts. */
 
-/* Frees an emptied adopted area, which is the record of the fragment it came from. */
-void chimi_area_free_v1(Carrier *here, AllocationArea *area);
-static void area_free(AllocationArea *area) { chimi_area_free_v1(carrier, area); }
-
+/* Heaps, fragments and freeing a whole area are Rust (heap/fragment.rs). */
 RuntimeHeap *chimi_heap_create_v1(Carrier *here);
 void chimi_heap_destroy_v1(Carrier *here, RuntimeHeap *heap);
 /* A new, empty heap with a fresh owner id. */
@@ -1765,8 +1716,8 @@ static RuntimeHeap *heap_create(void) { return chimi_heap_create_v1(carrier); }
 /* Requires: no region of `heap` is open. Frees every allocation the heap owns,
    adopted fragments included, without touching any other heap. */
 static void heap_destroy(RuntimeHeap *heap) { chimi_heap_destroy_v1(carrier, heap); }
-void chimi_runtime_heap_destroyed_open(void);
-void chimi_runtime_heap_destroyed_open(void) {
+_Noreturn void chimi_runtime_heap_destroyed_open(void);
+_Noreturn void chimi_runtime_heap_destroyed_open(void) {
   fputs("Chimi runtime destroyed a heap with an open region\n", stderr); runtime_exit(70);
 }
 

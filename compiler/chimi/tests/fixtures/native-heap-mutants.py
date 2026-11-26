@@ -58,8 +58,9 @@ MUTANTS = [
     # The collector is Rust since CHI-305 step 5 phase 2, and fragments and the
     # heaps' lifecycle since phase 3: their mutants are in
     # scripts/mutation/collector_mutations.py and fragment_mutations.py.
-    ("fragment-record-reserves-64k", "small messages cost their size (ts-df67fb)",
-     "enum { FRAGMENT_ROOTS = 2 };", "enum { FRAGMENT_ROOTS = 8192 };", HEAP),
+    # fragment-record-reserves-64k went with the fragment code: Rust allocates the
+    # record, so the enum now only fails the layout asserts. Lab mutant MF04 in
+    # scripts/mutation/process_u5_mutations.py keeps "small messages cost their size".
     ("compaction-into-current-area", "list compaction allocates in the list's own area",
      "      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);",
      "      list_copy_window(list, 0, list->as.list.length, NULL);", FUZZ),
