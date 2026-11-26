@@ -1,0 +1,10 @@
+# small_block_mutations.py: 7 mutants against runtime/chimi-runtime
+BASELINE ok  [lib -- small_blocks] (1s)
+KILLED       a reused block is not zeroed [lib -- small_blocks] (1s)
+KILLED       a full list keeps taking blocks [lib -- small_blocks] (1s)
+KILLED       a cached block is not counted [lib -- small_blocks] (1s)
+KILLED       a taken block stays counted [lib -- small_blocks] (1s)
+KILLED       the largest class is not cached [lib -- small_blocks] (1s)
+KILLED       sizes are not rounded to the grain [lib -- small_blocks] (1s)
+KILLED       the cache is used when it is off [lib -- small_blocks] (1s)
+# result: every mutant killed

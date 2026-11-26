@@ -759,7 +759,7 @@ restores the file. Every mutant was killed. One kill is a timeout.
 | A message crosses as a copy | the fragment carries the sender's value | `native_a_queued_message_survives_the_senders_later_passes` |
 | The heap follows the resumed fiber | no restore in `scheduler_request` | `native_task_result_preserves_expected_failure_values` and others |
 | Loops reclaim under the scheduler | skip passes when the scheduler is linked | `native_concurrency_pipeline_runs_in_flat_memory` |
-| Reused small blocks are zeroed | drop the `memset` | `native-heap.c` without AddressSanitizer |
+| Reused small blocks are zeroed | drop the zeroing (Rust since CHI-305 step 5 phase 1, mutated in `scripts/mutation/small_block_mutations.py`) | `heap::small_blocks` unit tests |
 | A channel is released at its last endpoint reference | release at one remaining reference | `native_a_receiver_that_outlives_its_sender_still_receives_the_queued_message` |
 | An endpoint copy in transit is a reference | `copy_forward` does not count | `native_children_keep_using_a_channel_whose_creator_dropped_its_endpoints` |
 | Dropped channels free their queued messages | never queue the release; frees do not count | `native_dropping_a_channel_frees_its_queued_messages` |
