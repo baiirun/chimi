@@ -20,19 +20,20 @@ def m(name, edits, selection):
     return dict(name=name, file=C, edits=edits, **selection)
 
 
+FORWARD = "    unsafe { each_child(payload, |slot, _| *slot = forward(here, *slot)) }"
+FORWARD_SKIPPING = ("    unsafe {{\n"
+                    "        let skipped = (*header_of(payload)).kind == {};\n"
+                    "        each_child(payload, |slot, _| if !skipped {{ *slot = forward(here, *slot) }})\n"
+                    "    }}")
 LINKS = "        (*scope).links_young = promoted.wrapping_mul(4) > young_bytes;\n"
 
 MUTATIONS = [
- m("a list node's slots are not visited",
-   [("                for index in 0..(*node).count as usize {\n                    visit(slots.add(index), kind);\n                }\n", "")],
-   LANGUAGE),
- m("a record's fields are not visited",
-   [("                    visit(slot!((*fields.add(index)).value), Kind::VALUE);\n", "")],
-   LANGUAGE),
- m("forwarding leaves the values a pass moved behind",
-   [("    unsafe { each_child(payload, |slot, _| *slot = forward(here, *slot)) }",
-     "    unsafe { each_child(payload, |slot, kind| if kind != AllocationKind::VALUE { *slot = forward(here, *slot) }) }")],
-   LANGUAGE),
+ # Marking and forwarding share one walk (each_child), so a forwarding-only
+ # bug is planted in forwarding's visitor, filtered by the parent's kind.
+ m("a list node's slots are not rewritten",
+   [(FORWARD, FORWARD_SKIPPING.format("AllocationKind::LIST_NODE"))], LANGUAGE),
+ m("a record's fields are not rewritten",
+   [(FORWARD, FORWARD_SKIPPING.format("AllocationKind::FIELDS"))], LANGUAGE),
  m("a value moved twice gets two copies",
    [("        if !(*header).next.is_null() {\n            return (*header).next.add(1).cast();\n        }\n", "")], HEAP),
  m("chunks are reset before the survivors move",
@@ -49,6 +50,8 @@ MUTATIONS = [
  m("a region that links never bumps again",
    [(LINKS, "        (*scope).links_young = (*scope).links_young || promoted.wrapping_mul(4) > young_bytes;\n")],
    HEAP),
+ # Marking and forwarding both skip the cause: a control holds two values,
+ # which one visitor cannot tell apart.
  m("a control's cause is not visited",
    [("                visit(slot!((*control).cause), Kind::VALUE);\n", "")],
    dict(targets=["cli", "language"], filter=None)),

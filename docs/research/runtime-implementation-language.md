@@ -101,7 +101,13 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `chimi-runtime/src/heap/young.rs`; `runtime.c` keeps the collector
       that calls them once per pass. The reset's walk rounds sizes with a
       mask, because `div_ceil` there cost the loop 2.2%.
-   2. The collector: mark, forward, promote and sweep.
+   2. The collector: mark, forward, promote and sweep. Done (2026-11-26) in
+      `chimi-runtime/src/heap/collector.rs`, with the process-wide mark
+      epoch counter. Marking and forwarding share one walk over each
+      allocation's pointers, so they cannot drift apart. `runtime.c` keeps
+      the heap check's bookkeeping, which the collector calls only in a
+      checking build, and the C test harnesses call the pass and the epoch
+      through the same ABI.
    3. Fragment copy, the transfer walk, and the task and process heap
       lifecycle; handle drops become Rust-to-Rust calls.
    4. Values: scalar and text builders with environments, the list vector,

@@ -935,6 +935,9 @@ static void heap_add_live(RuntimeHeap *heap, size_t bytes) {
    pass's chunk allocations, the reset of a region's chunks at a pass boundary,
    and a region's start and the end of its accounting. */
 void chimi_scope_begin_v1(Carrier *here, AllocationScope *scope);
+/* Adds the chunk allocations made since the last call to the memory counters; the
+   collector calls it, and so does the list harness. */
+void chimi_young_flush_counts_v1(Carrier *here, AllocationScope *scope);
 static void allocation_scope_begin(AllocationScope *scope) { chimi_scope_begin_v1(carrier, scope); }
 
 /* CHIMI_POISON_YOUNG_CHUNKS is a checking build: every pass boundary frees its

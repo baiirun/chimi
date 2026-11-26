@@ -77,8 +77,9 @@ fn header_of(payload: *mut c_void) -> *mut AllocationHeader {
     payload.cast::<AllocationHeader>().wrapping_sub(1)
 }
 
-/// Pushes `pointer` on `stack`, growing it with the C library as
-/// `runtime.c`'s `pointer_stack_push` does, since both free it.
+/// Pushes `pointer` on `stack`, growing it with the C library's `realloc`
+/// as `runtime.c`'s `pointer_stack_push` does, since both grow the same
+/// stacks.
 ///
 /// # Safety
 /// `stack` is a live stack whose items came from the C library.
