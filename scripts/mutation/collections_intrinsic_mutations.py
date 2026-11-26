@@ -40,7 +40,8 @@ MUTATIONS = [
     programs("Option values take the wrong constructor", STANDARD,
              "            return success(standard_value(StandardConstructor::OPTION_NONE, &[]));",
              "            return success(standard_value(StandardConstructor::OPTION_SOME, &[]));"),
-    programs("standard values name their fields from the next id", STANDARD,
+    dict(name="standard values name their fields from the next id", file=STANDARD, targets=["language"], filter="a_map_lookup_s_option_names_its_field",
+         edits=[(
              "string(*ids.add(shape.fields_offset as usize + field))",
-             "string(*ids.add(shape.fields_offset as usize + field + 1))"),
+             "string(*ids.add(shape.fields_offset as usize + field + 1))")]),
 ]
