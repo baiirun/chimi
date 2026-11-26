@@ -1,0 +1,30 @@
+# mutation run at 00c51b58d7ad2e680318d0761f301468f63ea16a
+# value_cells_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [../../scripts/mutation/native-heap-harness.sh] (68s)
+BASELINE ok  [language] (29s)
+KILLED       a value keeps the BYTES allocation kind [../../scripts/mutation/native-heap-harness.sh] (59s)
+SURVIVED     a value table is counted as one value [../../scripts/mutation/native-heap-harness.sh] (59s)
+SURVIVED     a frame environment is counted as a captured one [../../scripts/mutation/native-heap-harness.sh] (62s)
+SURVIVED     a frame copy shares the locals it should copy [language] (79s)
+KILLED       a frame copy drops the requirements it shares [language] (68s)
+SURVIVED     a captured closure loses its requirements [language] (81s)
+KILLED       every 64-bit value is an Int [language] (79s)
+KILLED       a range's end is its start [language] (81s)
+KILLED       a text copy drops its last byte [language] (72s)
+KILLED       a text's length counts its terminator [language] (71s)
+KILLED       a control keeps no node [language] (71s)
+#
+# Review follow-up: the value-table mutant moved to the language suite, the
+# frame-environment one was dropped (unobservable: the memory report sums the
+# two environment kinds and no walk reaches a frame environment), the
+# language suite gained a_closure_reentered_by_its_own_argument_keeps_each_call_s_parameters,
+# and the requirements mutant was tried against the native task tests:
+# mutation run at 60c10ea80b84f30a65e388de9a727b9fd880c10b
+# value_cells_mutations.py: 3 mutants against compiler/chimi
+BASELINE ok  [language] (85s)
+BASELINE ok  [cli -- native_] (22s)
+KILLED       a value table is counted as one value [language] (81s)
+KILLED       a frame copy shares the locals it should copy [language] (81s)
+SURVIVED     a captured closure loses its requirements [cli -- native_] (78s)
+# The requirements survivor is unobservable (see the list's comment) and is
+# no longer listed; every listed mutant is killed.

@@ -130,6 +130,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       contexts they also free (phase 5).
    4. Values: scalar and text builders with environments, the list vector,
       and the AVL map together with structural compare (three PRs).
+      First PR (2026-11-26): values, controls, value tables, environments
+      and the scalar and text builders, in `chimi-runtime/src/heap/values.rs`,
+      allocating in the order and with the kinds the C did. `runtime.c`'s
+      builders became one-line calls into it. A call frame's environment
+      now takes one call into Rust where the C made three into the
+      allocator, which is most of loop-bind's 8.7%.
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,
       console and stdin, each family taking its C lock with it (six to eight
       PRs).

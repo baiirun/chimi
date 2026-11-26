@@ -41,12 +41,14 @@ MUTATIONS = [
     language("a frame copy drops the requirements it shares",
              "        } else {\n            (*source).requirements\n        };",
              "        } else {\n            ptr::null_mut()\n        };"),
-    # Task.start runs the child with the captured requirements as its calling
-    # environment, so the native task tests reach this one.
-    dict(name="a captured closure loses its requirements", file=V, edits=[(
-        "        (*captured).requirements = clone_value_slots((*source).requirements, requirement_slots());",
-        "        (*captured).requirements = new_value_slots(requirement_slots());")],
-         targets=["cli"], filter="native_"),
+    # Not listed: captured requirements left empty. They are the calling
+    # environment of a function value and of a started task's first call, and
+    # a call takes each requirement from the calling environment only when it
+    # has one; the callee's own environment already holds every requirement
+    # its body reads (closures copy the whole frame, declared functions keep
+    # a snapshot, and `using` fixes providers in a wrapping closure), so an
+    # empty table changes nothing. The language and native task suites both
+    # let it survive (scripts/mutation/value_cells_results.txt).
     language("every 64-bit value is an Int",
              "        let value = new_value(kind);\n        (*value).payload.integer = raw;",
              "        let value = new_value(ValueKind::INTEGER);\n        (*value).payload.integer = raw;"),
