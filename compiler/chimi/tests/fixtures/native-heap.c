@@ -616,6 +616,30 @@ static void measure_messages(void) {
   heap_destroy(sender);
 }
 
+/* A pass checks the kind of every allocation it reaches, so a value whose
+   pointer names an allocation of another kind (a broken invariant, such as a
+   value pointing to a frame environment) ends the program instead of being
+   walked as the wrong layout. Run in a child, which must exit 70. */
+static void test_a_pointer_to_the_wrong_kind_ends_the_program(void) {
+  fflush(NULL);
+  pid_t child = fork();
+  CHECK(child >= 0, "fork failed");
+  if (child == 0) {
+    if (!freopen("/dev/null", "w", stderr)) _exit(1);
+    AllocationScope region;
+    allocation_scope_begin(&region);
+    ChimiValue *text = new_value(VALUE_TEXT);
+    text->as.text.bytes = (const char *)int_value(7);
+    text->as.text.length = 1;
+    allocation_scope_collect(&region, &text, NULL);
+    _exit(0);
+  }
+  int status = 0;
+  CHECK(waitpid(child, &status, 0) == child, "waitpid failed");
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 70,
+        "a pass walked a pointer to the wrong kind (status %d)", status);
+}
+
 int main(int argc, char **argv) {
   test_pass_cost_does_not_grow_with_state_that_already_survived();
   test_a_million_passes_keep_peak_memory_flat();
@@ -631,6 +655,7 @@ int main(int argc, char **argv) {
   test_regions_fragments_and_passes_compose();
   test_a_pass_boundary_moves_shared_values_once();
   test_a_region_links_after_a_pass_that_mostly_survives();
+  test_a_pointer_to_the_wrong_kind_ends_the_program();
   if (argc > 1 && strcmp(argv[1], "measure") == 0) measure_messages();
   puts("ok");
   return 0;
