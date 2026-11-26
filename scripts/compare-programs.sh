@@ -32,7 +32,8 @@
 # _ms, or named elapsed*, duration*, timestamp, time) are replaced with 0 so
 # recordings compare across machines and runs, and numeric ids and source
 # offsets in telemetry are replaced with 0 so recordings survive compiler
-# renumbering.
+# renumbering. The memory reports' capture_transfer_probes, which depends on
+# allocation addresses, is replaced with 0.
 set -u
 
 usage() { sed -n '7,9p' "$0" | sed 's/^# *//' >&2; exit 2; }
@@ -93,6 +94,12 @@ done
 for file in *.json *.jsonl *.txt; do
   sed -E 's/("([a-z_]*_(ns|us|ms)|elapsed[a-z_]*|duration[a-z_]*|timestamp|time)":)[0-9.]+/\10/g' \
     "$file" > "$file.normalized" && mv "$file.normalized" "$file"
+done
+# The capture transfer's probe count depends on where the C library put the
+# values it hashes by address, which differs between machines and allocators,
+# so it is replaced with 0 too; tests/cli.rs bounds it instead.
+for file in *.memory.json; do
+  sed -E 's/("capture_transfer_probes":)[0-9]+/\10/' "$file" > "$file.normalized" && mv "$file.normalized" "$file"
 done
 # Trace events also carry compiler-internal numbering (symbol, node, origin,
 # semantic, and span ids, and source offsets) that shifts whenever the compiler
