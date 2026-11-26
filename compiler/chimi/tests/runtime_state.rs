@@ -36,10 +36,9 @@ const SHARED: &[&str] = &[
     "static_area",
     "shared_values",
     "constant_values",
-    // Native handle counts, one locked table for every carrier, and whether
-    // this execution counted any handle (an atomic flag, set once and
-    // cleared before the next run).
-    "handle_count_lock",
+    // Whether this execution counted any native handle (an atomic flag, set
+    // once and cleared before the next run); the counts and their lock live
+    // in Rust (chimi-runtime handle_counts_abi.rs).
     "handles_counted",
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handle_lock",

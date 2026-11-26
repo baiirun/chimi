@@ -1,7 +1,8 @@
-//! State that only the holder of one of `runtime.c`'s locks touches. This
-//! `no_std` crate has no operating system lock of its own, and a spin lock
-//! built on atomics would hide the calls' ordering from ThreadSanitizer, so
-//! the C side holds a pthread mutex around every call that reaches it.
+//! State that only the holder of one of `runtime.c`'s locks touches. A spin
+//! lock built on atomics would hide the calls' ordering from ThreadSanitizer,
+//! so the C side holds a pthread mutex around every call that reaches it.
+//! State that Rust code reaches on its own takes a pthread mutex here instead
+//! ([`crate::pthread_locked`]).
 //!
 //! ThreadSanitizer cannot see inside this crate, so a call made without the
 //! lock would race unseen. Each value therefore keeps a busy flag that a call

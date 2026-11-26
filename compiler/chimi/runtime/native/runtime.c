@@ -1189,8 +1189,13 @@ static void allocation_kind(void *value, AllocationKind kind) {
    the count alone, and the later zero finds a newer generation and does
    nothing. One table serves every carrier (parallel-scheduler.md, "Handle
    counts"): a handle copied on one carrier can be freed on another, so only
-   the total is meaningful, and retain and drop take handle_count_lock. The
-   counts live in Rust (chimi-runtime handle_counts.rs); keys are never 0. */
+   the total is meaningful. The counts and their lock live in Rust
+   (chimi-runtime handle_counts.rs, handle_counts_abi.rs): each call below
+   takes a pthread mutex there, after the scheduler's kernel lock and
+   test_log_lock, and nothing under it retains, drops, parks or runs a hook.
+   The standalone allocator can exit with it held when the map cannot grow,
+   which is safe while no atexit handler touches the counts. Keys are never
+   0. */
 #define NATIVE_HANDLE_KEY (UINT64_C(1) << 62)
 
 static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
@@ -1198,11 +1203,6 @@ static uint64_t native_handle_key(uint32_t slot, uint32_t generation) {
 }
 
 static void native_handle_unreferenced(uint64_t key);
-/* Serializes every call to the Rust counts. Taken after the scheduler's
-   kernel lock; nothing under it retains, drops, parks or runs a hook, and
-   exhausted_memory exits with it held, which is safe while no atexit handler
-   touches the counts. */
-static pthread_mutex_t handle_count_lock = PTHREAD_MUTEX_INITIALIZER;
 bool chimi_handle_counts_retain_v1(uint64_t key);
 bool chimi_handle_counts_drop_v1(uint64_t key);
 void chimi_handle_counts_reset_v1(void);
@@ -1243,19 +1243,14 @@ static uint64_t counted_handle_key(const ChimiValue *value) {
 }
 
 static void native_handle_retain(uint64_t key) {
-  pthread_mutex_lock(&handle_count_lock);
   if (!chimi_handle_counts_retain_v1(key)) exhausted_memory();
-  pthread_mutex_unlock(&handle_count_lock);
 }
 
 /* Removes one reference to `key`. Ensures: true exactly when this removed the
    last one, so the caller owns the key's release. No other thread can retain
    the same key meanwhile: once the count is zero, no value names the key. */
 static bool native_handle_release(uint64_t key) {
-  pthread_mutex_lock(&handle_count_lock);
-  bool last = chimi_handle_counts_drop_v1(key);
-  pthread_mutex_unlock(&handle_count_lock);
-  return last;
+  return chimi_handle_counts_drop_v1(key);
 }
 
 static bool is_native_handle_key(uint64_t key) {
@@ -1283,9 +1278,7 @@ static void counted_handle_drop(uint64_t key) {
    (the scheduler clears its own counts). Runs before the scheduler starts, so
    no fiber holds a handle on any carrier. */
 static void channel_endpoints_reset(void) {
-  pthread_mutex_lock(&handle_count_lock);
   chimi_handle_counts_reset_v1();
-  pthread_mutex_unlock(&handle_count_lock);
   atomic_store_explicit(&handles_counted, false, memory_order_relaxed);
 }
 
@@ -4559,7 +4552,7 @@ static ChimiValue *process_address_value(uint32_t kind, uint64_t target);
 static uint64_t test_log_count;
 /* Held across every operation on the logs (invoke_test_log,
    send_to_test_mailbox): a log's address travels to tasks on any carrier.
-   Nothing under it parks; it is taken before handle_count_lock. */
+   Nothing under it parks; it is taken before the handle counts' lock. */
 static pthread_mutex_t test_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static ChimiValue *new_test_log(ValueKind kind) {

@@ -1,10 +1,10 @@
-# mutation run at 4c9c451cce008f68db45e2cf72c0d561cf904892
-# handle_table_mutations.py: 3 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- the_handle_table_counts_across_threads] (160s)
-BASELINE ok  [runtime_state net] (12s)
-KILLED       retain does not take the lock [runtime_state -- the_handle_table_counts_across_threads] (59s)
-KILLED       drop does not take the lock [runtime_state -- the_handle_table_counts_across_threads] (58s)
+# mutation run at 0138c06445773406a8fbc053bfec478e68ded9c3
+# handle_table_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_handle_table_counts_across_threads] (147s)
+BASELINE ok  [runtime_state net] (10s)
+KILLED       the counts are reached without the lock [runtime_state -- the_handle_table_counts_across_threads] (59s)
+KILLED       a granted lock aborts [runtime_state -- the_handle_table_counts_across_threads] (58s)
+TIMEOUT      the lock is never released [runtime_state -- the_handle_table_counts_across_threads] (655s)
 KILLED       a retain is not counted [runtime_state net] (66s)
 # result: every mutant killed
-# Repeated twice more at the same commit: every mutant killed each time, 3 of 3
-# runs.
+# The never-released mutant deadlocks the fixture, so it ends as TIMEOUT.
