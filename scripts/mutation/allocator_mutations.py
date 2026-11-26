@@ -1,7 +1,7 @@
 """Mutants of the allocator's per-allocation paths in Rust (CHI-305 step 5,
 phase 1; runtime/chimi-runtime/src/heap/allocator.rs): allocate, release,
 and the live-byte and footprint accounting they keep. They are caught by the
-memory-report, flatness, handle-release and carrier tests, which run the
+memory-report, flatness, handle-release, carrier and process-lab tests, which run the
 real runtime archive.
 
 Run: scripts/mutation/mutate.py scripts/mutation/allocator_mutations.py
@@ -10,7 +10,7 @@ Results: scripts/mutation/allocator_results.txt.
 
 CRATE = "compiler/chimi"
 ALLOCATOR = "../../runtime/chimi-runtime/src/heap/allocator.rs"
-TARGETS = ["cli", "runtime_state", "task_release", "carriers"]
+TARGETS = ["cli", "runtime_state", "task_release", "carriers", "process_lab"]
 
 
 def m(name, old, new):
@@ -25,7 +25,7 @@ MUTATIONS = [
     m("a freed handle keeps its count",
       "            chimi_runtime_release_counted_value(header.add(1).cast());\n", ""),
     m("young bytes are not deferred to the footprint",
-      "            (*here).pending_footprint_bytes = (*here).pending_footprint_bytes.wrapping_add((HEADER + bytes) as i64);\n",
+      "        (*here).pending_footprint_bytes = (*here).pending_footprint_bytes.wrapping_add((HEADER + bytes) as i64);\n",
       ""),
     m("the peak is never raised",
       "            (*here).heap_totals.peak_footprint_bytes = footprint;\n", ""),
@@ -35,7 +35,9 @@ MUTATIONS = [
       "            (*here).unscoped_allocated_bytes = (*here).unscoped_allocated_bytes.wrapping_add(bytes as u64);\n", ""),
     m("a block outside the young chunks is not a heap's live bytes",
       "            heap_add_live((*area).heap, bytes);\n", ""),
-    m("an allocation is not profiled",
-      "            profile(heap, bytes);\n            return header.add(1).cast();",
-      "            return header.add(1).cast();"),
+    m("a young allocation is not profiled",
+      "        let result = young_bump(here, innermost, bump, bytes, rounded);\n        profiled(heap, bytes, result)",
+      "        young_bump(here, innermost, bump, bytes, rounded)"),
+    m("a profiled allocation counts nothing",
+      "        if node != 0 {\n            let row", "        if node == u32::MAX {\n            let row"),
 ]

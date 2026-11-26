@@ -255,12 +255,15 @@ observability fixtures use it). One assertion per line over the
 ```text
 equal scoped_peak_live_bytes
 at_most scoped_peak_live_bytes 7168
+at_least process_heap_peak_value_bytes 4096
 exactly copied_values 21
 ```
 
 `equal <field>` requires the top-level integer field to have the same value
 in every run. `at_most <field> <limit>` requires it to be at most `limit` in
-every run. `exactly <field> <value>` requires it to be `value` in every run
+every run. `at_least <field> <limit>` requires it to be at least `limit`
+in every run (MF01, whose `equal` checks also hold when a count is never
+kept and reads 0). `exactly <field> <value>` requires it to be `value` in every run
 (U5 decision, for CB02, CB03, and OB01, whose counts are exact). Equality across sizes proves that memory does not grow with
 uptime, but it also accepts reclamation in batches of k passes. MF05
 therefore also bounds its peak below two passes' allocations on top of the
