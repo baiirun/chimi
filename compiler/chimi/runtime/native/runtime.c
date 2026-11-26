@@ -2637,6 +2637,28 @@ static uint64_t take_mark_epoch(void) {
   return here->next_epoch++;
 }
 
+/* CHIMI_HEAP_VERIFY is a checking build, on by default under AddressSanitizer:
+   after every pass the Rust oracle (chimi-runtime heap/verify.rs) reads the
+   region again through the layout mirrors and ends the program if the pass
+   left the young generation non-empty, miscounted the survivors, or freed
+   something still reachable. */
+/* The small-block cache is off exactly under AddressSanitizer. */
+#if !defined(CHIMI_HEAP_VERIFY) && !CHIMI_SMALL_BLOCK_CACHE
+#define CHIMI_HEAP_VERIFY 1
+#endif
+#ifdef CHIMI_HEAP_VERIFY
+uint32_t chimi_heap_verify_v1(const AllocationScope *scope, const ChimiValue *value,
+                              const ChimiControl *control, uint64_t epoch, bool full);
+const char *chimi_heap_verify_message_v1(uint32_t code);
+static void heap_verify(const AllocationScope *scope, ChimiValue **value, ChimiControl **control,
+                        uint64_t epoch, bool full) {
+  uint32_t code = chimi_heap_verify_v1(scope, value ? *value : NULL, control ? *control : NULL, epoch, full);
+  if (code == 0) return;
+  fprintf(stderr, "Chimi runtime heap check failed: %s\n", chimi_heap_verify_message_v1(code));
+  abort();
+}
+#endif
+
 static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
                                          ChimiControl **control, bool full, bool ending) {
   Carrier *const here = carrier;
@@ -2666,6 +2688,9 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
   }
   here->collecting_scope = NULL;
   ++scope->collections;
+#ifdef CHIMI_HEAP_VERIFY
+  heap_verify(scope, value, control, here->collecting_epoch, full);
+#endif
   return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }
 
