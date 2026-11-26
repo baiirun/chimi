@@ -20,8 +20,9 @@
    the profile and the recorder saw every call, the random draws are the
    seeded stream's, and the closed handle reads as closed. Built with
    ThreadSanitizer when the compiler supports it, so an access outside the
-   locks fails the run. Last, every thread slices one module constant,
-   which must not be compacted under the others.
+   locks fails the run (in the C; the Rust runtime archive is not
+   instrumented). Last, every thread slices one module constant, which must
+   not be compacted under the others.
 
    Three single-threaded checks come first: a close during a read leaves the
    descriptor open until the read gives it back, a module constant compacts
@@ -649,7 +650,9 @@ static void *slice_thread(void *raw_index) {
    Each window of the constant is a copy in the slicing carrier's heap, and
    the constant keeps its vector, while the carrier's own list compacts.
    Compacting the constant would rewrite it, and allocate in the static area,
-   under the other threads, which ThreadSanitizer reports. */
+   under the other threads. The slice is Rust, which ThreadSanitizer does not
+   see, so the checks below catch that: the constant keeps its vector, and
+   each window of it is a copy. */
 static void slicing_a_shared_constant_from_every_thread(void) {
   shared_constant = constant_window();
   shared_whole = shared_constant_whole();

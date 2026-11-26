@@ -23,6 +23,11 @@ def vector(name, old, new):
                 filter="native_list_is_a_persistent_vector")
 
 
+# The fuzz compares values only, so a mutant that keeps values right but
+# retains or copies too much goes to the persistent-vector fixture, which
+# bounds live bytes and the cost of dropping elements.
+
+
 MUTATIONS = [
     fuzz("list compaction allocates in the current area, not the list's own",
          "            (*list).payload.list.vector = copy_window(here, list, 0, window.length, area);",
@@ -42,12 +47,15 @@ MUTATIONS = [
     fuzz("an append to a short window pushes past the vector's end",
          "        let vector = if end == window.vector.length { push(window.vector, item) } else { set(window.vector, end, item) };",
          "        let vector = push(window.vector, item);"),
-    fuzz("a slice never compacts",
+    vector("a slice never compacts",
          "        if retains_too_much(length, window.vector.length) {",
          "        if false {"),
-    vector("a rebuilt vector keeps one level too few",
-           "        while level_count > 1 || height == 0 {",
-           "        while level_count > 1 {"),
+    # Not listed: building a 33-64 element vector with its one leaf as the
+    # root. Every read, write, push and walk handles that shape, so only one
+    # 16-byte node differs.
+    fuzz("a rebuilt vector's inner nodes all have height 1",
+           "            height += 1;\n",
+           "            height = 1;\n"),
     vector("a rebuilt vector's leaves start one element late",
            "            ptr::copy_nonoverlapping(values.add(index << LIST_BITS).cast(), slots(leaf), WIDTH as usize);",
            "            ptr::copy_nonoverlapping(values.add((index << LIST_BITS) + 1).cast(), slots(leaf), WIDTH as usize - 1);"),

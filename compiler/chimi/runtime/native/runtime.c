@@ -2034,7 +2034,7 @@ static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **valu
 /* Fragments: copies for a transfer between owners, in Rust (heap/fragment.rs). A
    copy keeps sharing, rebuilds each List window as a compact vector, shares static
    constants, and reports HEAP_FOREIGN_POINTER instead of following a pointer out
-   of its source. These are the list builders it calls back. */
+   of its source. */
 
 HeapStatus chimi_fragment_copy_v1(Carrier *here, void *const *roots, const AllocationKind *kinds, uint32_t count,
                                   RuntimeFragment **out);
