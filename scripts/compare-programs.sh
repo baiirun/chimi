@@ -22,6 +22,11 @@
 #                         the summarizer under --trace=full, with its own telemetry
 #   cp.*, cp-{trace,outcome}.jsonl
 #                         programs/concurrency-pipeline under --trace=full
+#   *.memory.json         the runtime memory report of each run above, and of
+#                         benchmarks/memory-report/heap-mix.chimi and the gate's
+#                         loop-bind and map-loop: allocation, collection and
+#                         footprint counters that must stay the same while the
+#                         heap and collector move from C to Rust (CHI-305 step 5)
 #
 # Every run uses a fixed --execution-id. Timing fields (keys ending in _ns, _us,
 # _ms, or named elapsed*, duration*, timestamp, time) are replaced with 0 so
@@ -54,6 +59,9 @@ build() {
 build --root programs/chimi-trace-summary app/main -o "$bin/trace-summary"
 build prototypes/golden/valid/dependencies_and_execution.chimi -o "$bin/checkout"
 build --root programs/concurrency-pipeline app/main -o "$bin/concurrency-pipeline"
+build benchmarks/memory-report/heap-mix.chimi -o "$bin/heap-mix"
+build benchmarks/runtime-gate/loop-bind.chimi -o "$bin/loop-bind"
+build benchmarks/runtime-gate/map-loop.chimi -o "$bin/map-loop"
 
 # Traced runs name one carrier: a program takes a carrier per core by
 # default, and events from several carriers interleave from run to run.
@@ -66,16 +74,23 @@ run() {
 
 cd "$out" || exit 2
 run checkout "$bin/checkout" --chimi-runner --carriers=1 --trace=boundaries --execution-id=fixed \
-  --telemetry-file=checkout.trace.jsonl --outcome-file=checkout.outcome.jsonl --
+  --telemetry-file=checkout.trace.jsonl --outcome-file=checkout.outcome.jsonl \
+  --memory-report-file=checkout.memory.json --
 cat checkout.trace.jsonl checkout.outcome.jsonl > checkout.execution.jsonl
 run summary "$bin/trace-summary" checkout.execution.jsonl
 run summary-stdin sh -c '"$1" - < checkout.execution.jsonl' sh "$bin/trace-summary"
 run summary-full "$bin/trace-summary" --chimi-runner --carriers=1 --trace=full --execution-id=fixed \
-  --telemetry-file=summary.trace.jsonl --outcome-file=summary.outcome.jsonl -- checkout.execution.jsonl
+  --telemetry-file=summary.trace.jsonl --outcome-file=summary.outcome.jsonl \
+  --memory-report-file=summary-full.memory.json -- checkout.execution.jsonl
 run cp "$bin/concurrency-pipeline" --chimi-runner --carriers=1 --trace=full --execution-id=concurrency-pipeline \
-  --telemetry-file=cp-trace.jsonl --outcome-file=cp-outcome.jsonl --
+  --telemetry-file=cp-trace.jsonl --outcome-file=cp-outcome.jsonl \
+  --memory-report-file=cp.memory.json --
+for program in heap-mix loop-bind map-loop; do
+  run "$program" "$bin/$program" --chimi-runner --carriers=1 --trace=off \
+    --memory-report-file="$program.memory.json" --
+done
 
-for file in *.jsonl *.txt; do
+for file in *.json *.jsonl *.txt; do
   sed -E 's/("([a-z_]*_(ns|us|ms)|elapsed[a-z_]*|duration[a-z_]*|timestamp|time)":)[0-9.]+/\10/g' \
     "$file" > "$file.normalized" && mv "$file.normalized" "$file"
 done
