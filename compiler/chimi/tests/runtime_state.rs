@@ -35,7 +35,6 @@ const SHARED: &[&str] = &[
     // Heaps and constants every fiber shares.
     "main_heap",
     "next_heap_owner",
-    "next_mark_epoch",
     "static_area",
     "shared_values",
     "constant_values",

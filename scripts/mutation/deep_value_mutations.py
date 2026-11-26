@@ -175,11 +175,13 @@ MUTATIONS = [
     ),
     dict(
         name="native marking rescans the whole state on every pass",
-        file=RUNTIME,
+        # The collector is Rust since CHI-305 step 5 phase 2.
+        file="../../runtime/chimi-runtime/src/heap/collector.rs",
         edits=[(
-            "  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&\n"
-            "              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;",
-            "  bool full = true; (void)survivors;",
+            "        let full = (*scope).has_baseline\n"
+            "            && survivors >= baseline.wrapping_mul(2)\n"
+            "            && survivors.wrapping_sub(baseline) >= REGION_FULL_MIN_GROWTH;\n",
+            "        let full = true;\n        let _ = (survivors, baseline);\n",
         )],
         targets=["cli"],
         filter="native_marking_work_is_linear",

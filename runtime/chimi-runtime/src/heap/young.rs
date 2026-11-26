@@ -8,8 +8,8 @@
 //! counts are added once, at the pass boundary or when a nested region
 //! starts ([`flush_counts`]). At the boundary the collector moves what is
 //! still reachable out of the chunks, and [`reset_chunks`] frees the rest
-//! and empties the chunks for the next pass. The collector itself (mark,
-//! forward, promote, sweep) is still `runtime.c`'s.
+//! and empties the chunks for the next pass ([`super::collector`] runs the
+//! pass).
 //!
 //! As in [`super::allocator`], every count wraps, and the carrier is passed
 //! as a raw pointer.

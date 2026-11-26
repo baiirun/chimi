@@ -3,49 +3,59 @@
 Run: scripts/mutation/mutate.py scripts/mutation/bump_allocation_mutations.py
 Each mutant must turn a language test or a native cli test red.
 The bump itself, the chunk reset and the dead-handle drop are Rust since
-CHI-305 step 5 phase 1; their mutants are in young_mutations.py.
+CHI-305 step 5 phase 1; their mutants are in young_mutations.py. The
+collector, whose forwarding these mutate, is Rust since phase 2
+(runtime/chimi-runtime/src/heap/collector.rs).
 """
 
 CRATE = "compiler/chimi"
 
-R = "runtime/native/runtime.c"
+C = "../../runtime/chimi-runtime/src/heap/collector.rs"
 
 LANGUAGE = dict(targets=["language"], filter=None)
 HEAP = dict(targets=["cli"], filter="native_")
 
 
 def m(name, edits, selection):
-    return dict(name=name, file=R, edits=edits, **selection)
+    return dict(name=name, file=C, edits=edits, **selection)
 
+
+FORWARD = "    unsafe { each_child(payload, |slot, _| *slot = forward(here, *slot)) }"
+FORWARD_SKIPPING = ("    unsafe {{\n"
+                    "        let skipped = (*header_of(payload)).kind == {};\n"
+                    "        each_child(payload, |slot, _| if !skipped {{ *slot = forward(here, *slot) }})\n"
+                    "    }}")
+LINKS = "        (*scope).links_young = promoted.wrapping_mul(4) > young_bytes;\n"
 
 MUTATIONS = [
+ # Marking and forwarding share one walk (each_child), so a forwarding-only
+ # bug is planted in forwarding's visitor, filtered by the parent's kind.
  m("a list node's slots are not rewritten",
-   [("      for (uint32_t index = 0; index < node->count; ++index) FORWARD(node->slots[index]);\n", "")],
-   LANGUAGE),
+   [(FORWARD, FORWARD_SKIPPING.format("AllocationKind::LIST_NODE"))], LANGUAGE),
  m("a record's fields are not rewritten",
-   [("      for (size_t index = 0; index < length; ++index) FORWARD(fields[index].value);\n", "")],
-   LANGUAGE),
+   [(FORWARD, FORWARD_SKIPPING.format("AllocationKind::FIELDS"))], LANGUAGE),
  m("a value moved twice gets two copies",
-   [("  if (header->next) return header->next + 1;\n", "")], HEAP),
+   [("        if !(*header).next.is_null() {\n            return (*header).next.add(1).cast();\n        }\n", "")], HEAP),
  m("chunks are reset before the survivors move",
-   [("  forward_survivors(scope, value, control);\n  reset_young_chunks(scope, !ending);\n",
-     "  reset_young_chunks(scope, !ending);\n  forward_survivors(scope, value, control);\n")],
+   [("        forward_survivors(here, scope, value, control);\n        young::reset_chunks(here, scope, !ending);\n",
+     "        young::reset_chunks(here, scope, !ending);\n        forward_survivors(here, scope, value, control);\n")],
    LANGUAGE),
  m("list allocations of the pass are not rewritten",
-   [("  forward_marked_list(&scope->young);\n", "")], LANGUAGE),
+   [("        forward_marked_list(here, &raw mut (*scope).young);\n", "")], LANGUAGE),
  m("the root keeps pointing into the chunk",
-   [("  if (value) *value = forward_young(*value);\n", "  if (value) (void)forward_young(*value);\n")],
+   [("            *value = forward(here, (*value).cast()).cast();\n", "            let _ = forward(here, (*value).cast());\n")],
    LANGUAGE),
  m("a region never links after a pass that mostly survives",
-   [("  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n",
-     "  scope->links_young = false;\n")], HEAP),
+   [(LINKS, "        (*scope).links_young = false;\n        let _ = (promoted, young_bytes);\n")], HEAP),
  m("a region that links never bumps again",
-   [("  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n",
-     "  scope->links_young = scope->links_young || 4 * (scope->promoted_bytes - promoted_before) > young_bytes;\n")],
+   [(LINKS, "        (*scope).links_young = (*scope).links_young || promoted.wrapping_mul(4) > young_bytes;\n")],
    HEAP),
- m("a control's cause is not rewritten",
-   [("      FORWARD(((ChimiControl *)pointer)->cause);\n", "")],
+ # Marking and forwarding both skip the cause: a control holds two values,
+ # which one visitor cannot tell apart.
+ m("a control's cause is not visited",
+   [("                visit(slot!((*control).cause), Kind::VALUE);\n", "")],
    dict(targets=["cli", "language"], filter=None)),
  m("the counters of the pass are never added",
-   [("  flush_young_counts(scope);\n  here->collecting_scope = scope;", "  here->collecting_scope = scope;")], HEAP),
+   [("        young::flush_counts(here, scope);\n        (*here).collecting_scope = scope;",
+     "        (*here).collecting_scope = scope;")], HEAP),
 ]

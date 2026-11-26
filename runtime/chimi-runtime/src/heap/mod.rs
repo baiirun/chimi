@@ -1,10 +1,14 @@
 //! The heap's shared layout with `runtime.c`, the collector's oracle, and
-//! the parts of the allocator that have moved to Rust: allocation, the
-//! young chunks and the regions' start and end; the collector follows in
-//! the later phases of CHI-305 step 5.
+//! the parts that have moved to Rust: allocation, the young chunks, the
+//! regions' start and end, and the collector; fragment copies and the
+//! values follow in the later phases of CHI-305 step 5.
 
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod allocator;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod collector;
+#[cfg(all(feature = "runtime-c", unix))]
+mod collector_abi;
 #[cfg(all(feature = "runtime-c", unix))]
 mod allocator_abi;
 pub mod layout;

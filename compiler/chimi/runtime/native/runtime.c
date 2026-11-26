@@ -366,7 +366,7 @@ struct ChimiRuntime {
      check the kind of every allocation they reach, so a violation aborts.
 
    A pass boundary moves the young chunk allocations that the roots reach into
-   survivor blocks (forward_survivors) and rewrites the roots, which are passed by
+   survivor blocks (heap/collector.rs) and rewrites the roots, which are passed by
    address. So across allocation_scope_collect or allocation_scope_end, a C frame may
    keep a pointer to a value of that region's current pass only through those roots;
    everything older never moves. The runtime switches the current heap around every scheduler request
@@ -435,7 +435,7 @@ struct AllocationScope {
   unsigned char *bump;
   unsigned char *bump_end;
   /* Payload bytes and count of the chunk allocations not yet added to the memory
-     counters (see flush_young_counts). */
+     counters (see heap/young.rs, flush_counts). */
   size_t pending_bytes;
   size_t pending_count;
   /* Most of the last pass's young bytes survived it. Moving survivors out of the
@@ -499,11 +499,11 @@ static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = 
 /* Heap owners are unique across the process; any carrier creates heaps. */
 static _Atomic uint64_t next_heap_owner = 2;
 static AllocationArea static_area = {.role = AREA_STATIC};
-/* Epochs are unique across the process, not per carrier or per heap, so an
+/* Mark epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
-   that a later pass reuses (parallel-scheduler.md, "Runtime state by owner"). */
-static _Atomic uint64_t next_mark_epoch = 1;
-/* Epochs a carrier takes from next_mark_epoch at once. A loop pass collects,
+   that a later pass reuses (parallel-scheduler.md, "Runtime state by owner");
+   the collector (heap/collector.rs) takes them from one process-wide counter.
+   Epochs a carrier takes from that counter at once. A loop pass collects,
    so one atomic add per pass made the counter's cache line bounce between
    carriers on every pass: a counting loop ran 1.7 times faster on four
    carriers instead of close to four (step 3 PR 6). One carrier alone takes
@@ -660,7 +660,7 @@ typedef struct {
   bool collecting_foreign;
   uint64_t collecting_epoch;
   /* This carrier's unused mark epochs, [next_epoch, end_epoch): taken from
-     next_mark_epoch a block at a time (take_mark_epoch). */
+     the process-wide counter a block at a time (heap/collector.rs). */
   uint64_t next_epoch;
   uint64_t end_epoch;
   /* This carrier's unused span ids, [next_span, end_span), taken from the
@@ -879,7 +879,7 @@ static AllocationArea *current_area(void) {
    largest folded sum. Young allocations are checked once per chunk
    (young_bump), not per allocation, hence the chunk in the slack. One
    atomic add per 64 KiB of change, instead of one per allocation, keeps the
-   carriers off one cache line (as take_mark_epoch). */
+   carriers off one cache line (as the mark epochs). */
 enum { FOOTPRINT_FOLD_BYTES = 64 * 1024, FOOTPRINT_FOLD_SLACK = FOOTPRINT_FOLD_BYTES + YOUNG_CHUNK_BYTES };
 #define process_footprint_bytes chimi_runtime_process_footprint_bytes
 #define process_peak_footprint_bytes chimi_runtime_process_peak_footprint_bytes
@@ -916,9 +916,9 @@ Carrier *chimi_runtime_carrier_at(size_t index) { return carrier_at(index); }
 Carrier *chimi_runtime_current_carrier(void);
 Carrier *chimi_runtime_current_carrier(void) { return carrier; }
 
-/* scope_add_live, heap_add_live and area_link have Rust twins in the allocator
-   (heap/allocator.rs); these serve the C collector and fragment code until
-   they move too (phases 2 and 3). */
+/* scope_add_live and heap_add_live have Rust twins in the allocator
+   (heap/allocator.rs); these serve the fragment code until it moves too
+   (phase 3). */
 static void scope_add_live(AllocationScope *scope, size_t bytes) {
   scope->live_bytes += bytes;
   if (scope->live_bytes > scope->peak_live_bytes) scope->peak_live_bytes = scope->live_bytes;
@@ -929,28 +929,16 @@ static void heap_add_live(RuntimeHeap *heap, size_t bytes) {
   if (heap->live_bytes > heap->peak_live_bytes) heap->peak_live_bytes = heap->live_bytes;
 }
 
-static void area_link(AllocationArea *area, AllocationHeader *header) {
-  header->area = area;
-  header->next = area->allocations;
-  area->allocations = header;
-  area->bytes += header->bytes;
-  ++area->count;
-}
-
 
 /* The young chunks and the regions' start and end are Rust (chimi-runtime
    heap/young.rs): its per-carrier cache of empty chunks, the deferred counts of a
-   pass's chunk allocations (flush_young_counts), the reset of a region's chunks
-   at a pass boundary (reset_young_chunks), and a region's start and the end of
-   its accounting. */
-void chimi_young_flush_counts_v1(Carrier *here, AllocationScope *scope);
-bool chimi_young_chunks_used_v1(const AllocationScope *scope);
-void chimi_young_reset_chunks_v1(Carrier *here, AllocationScope *scope, bool keep_first);
+   pass's chunk allocations, the reset of a region's chunks at a pass boundary,
+   and a region's start and the end of its accounting. */
 void chimi_scope_begin_v1(Carrier *here, AllocationScope *scope);
-void chimi_scope_end_v1(AllocationScope *scope);
-
-/* Adds the chunk allocations made since the last call to the memory counters. */
-static void flush_young_counts(AllocationScope *scope) { chimi_young_flush_counts_v1(carrier, scope); }
+/* Adds the chunk allocations made since the last call to the memory counters; the
+   collector calls it, and so does the list harness. */
+void chimi_young_flush_counts_v1(Carrier *here, AllocationScope *scope);
+static void allocation_scope_begin(AllocationScope *scope) { chimi_scope_begin_v1(carrier, scope); }
 
 /* CHIMI_POISON_YOUNG_CHUNKS is a checking build: every pass boundary frees its
    chunks after filling them with a pattern, so a pointer kept across the boundary
@@ -2205,301 +2193,16 @@ static void pointer_stack_push(PointerStack *stack, void *pointer) {
 }
 
 
-static void mark_push(void *pointer, AllocationKind kind) {
-  Carrier *const here = carrier;
-  if (!pointer) return;
-  AllocationHeader *header = allocation_header(pointer);
-  if (header->kind != kind) allocation_graph_inconsistent();
-  AllocationArea *area = header->area;
-  if (area->scope != here->collecting_scope) {
-    if (area->heap != here->collecting_scope->heap && area->role != AREA_STATIC) here->collecting_foreign = true;
-    return;
-  }
-  if (area->role == AREA_SURVIVOR && !here->collecting_full) return;
-  if (header->mark_epoch == here->collecting_epoch) return;
-  header->mark_epoch = here->collecting_epoch;
-  ++here->collecting_scope->scanned_allocations;
-  pointer_stack_push(&here->mark_stack, pointer);
+/* The collector is Rust (heap/collector.rs): a pass marks from the roots passed
+   by address, moves the marked young chunk allocations into survivor blocks and
+   rewrites the roots, frees what it did not reach, and on a full pass sweeps the
+   survivors too. These are what it calls back. */
+void chimi_runtime_allocation_graph_inconsistent(void);
+void chimi_runtime_allocation_graph_inconsistent(void) { allocation_graph_inconsistent(); }
+void chimi_runtime_mark_epochs_exhausted(void);
+void chimi_runtime_mark_epochs_exhausted(void) {
+  fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
 }
-
-static void mark_children(void *pointer) {
-  AllocationHeader *header = allocation_header(pointer);
-  switch (header->kind) {
-    case ALLOCATION_VALUE: {
-      ChimiValue *value = pointer;
-      switch (value->kind) {
-        case VALUE_TEXT:
-        case VALUE_BYTES: mark_push((void *)value->as.text.bytes, ALLOCATION_BYTES); break;
-        case VALUE_JSON_NUMBER: mark_push((void *)value->as.json_number, ALLOCATION_BYTES); break;
-        case VALUE_LIST:
-          mark_push(value->as.list.vector.root, ALLOCATION_LIST_NODE);
-          mark_push(value->as.list.vector.tail, ALLOCATION_LIST_NODE);
-          break;
-        case VALUE_RECORD:
-        case VALUE_TUPLE:
-        case VALUE_CAUSE: mark_push(value->as.record.fields, ALLOCATION_FIELDS); break;
-        case VALUE_CONSTRUCTED: mark_push(value->as.constructed.fields, ALLOCATION_FIELDS); break;
-        case VALUE_CALLABLE: mark_push(value->as.callable, ALLOCATION_CALLABLE); break;
-        case VALUE_MAP:
-        case VALUE_SET: mark_push(value->as.map, ALLOCATION_MAP_NODE); break;
-        case VALUE_TASK:
-        case VALUE_CHANNEL_SENDER:
-        case VALUE_CHANNEL_RECEIVER:
-        case VALUE_CHANNEL_COMPLETION:
-        case VALUE_VOID:
-        case VALUE_INTEGER:
-        case VALUE_FLOAT:
-        case VALUE_BOOLEAN:
-        case VALUE_RANGE:
-        case VALUE_DURATION:
-        case VALUE_INSTANT:
-        case VALUE_TIMESTAMP:
-        case VALUE_DECIMAL:
-        case VALUE_PROCESS_ADDRESS:
-        case VALUE_PROCESS_INBOX:
-        case VALUE_SUPERVISOR_RUNNING:
-        case VALUE_MANAGED_PROCESS:
-        case VALUE_MANAGED_SUPERVISOR:
-        case VALUE_PROCESS_MONITOR:
-        case VALUE_TEST_RECORDER:
-        case VALUE_TEST_SCRIPT:
-        case VALUE_TEST_MAILBOX: break;
-        case VALUE_NATIVE_HANDLE: break;
-      }
-      break;
-    }
-    case ALLOCATION_LIST_NODE: {
-      ListNode *node = pointer;
-      AllocationKind kind = node->height == 0 ? ALLOCATION_VALUE : ALLOCATION_LIST_NODE;
-      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);
-      break;
-    }
-    case ALLOCATION_FIELDS: {
-      RuntimeField *fields = pointer;
-      size_t length = header->bytes / sizeof(*fields);
-      for (size_t index = 0; index < length; ++index) mark_push(fields[index].value, ALLOCATION_VALUE);
-      break;
-    }
-    case ALLOCATION_VALUE_POINTERS: {
-      ChimiValue **values = pointer;
-      size_t length = header->bytes / sizeof(*values);
-      for (size_t index = 0; index < length; ++index) mark_push(values[index], ALLOCATION_VALUE);
-      break;
-    }
-    case ALLOCATION_ENVIRONMENT: {
-      ChimiEnvironment *environment = pointer;
-      mark_push(environment->locals, ALLOCATION_VALUE_POINTERS);
-      mark_push(environment->requirements, ALLOCATION_VALUE_POINTERS);
-      break;
-    }
-    case ALLOCATION_CALLABLE: {
-      ChimiCallable *callable = pointer;
-      mark_push(callable->environment, ALLOCATION_ENVIRONMENT);
-      mark_push(callable->inner, ALLOCATION_CALLABLE);
-      break;
-    }
-    case ALLOCATION_MAP_NODE: {
-      MapNode *node = pointer;
-      mark_push(node->key, ALLOCATION_VALUE);
-      mark_push(node->value, ALLOCATION_VALUE);
-      mark_push(node->left, ALLOCATION_MAP_NODE);
-      mark_push(node->right, ALLOCATION_MAP_NODE);
-      break;
-    }
-    case ALLOCATION_CONTROL:
-      mark_push(((ChimiControl *)pointer)->value, ALLOCATION_VALUE);
-      mark_push(((ChimiControl *)pointer)->cause, ALLOCATION_VALUE);
-      break;
-    case ALLOCATION_BYTES: break;
-    case ALLOCATION_FRAME_ENVIRONMENT:
-    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
-  }
-}
-
-/* Moving the survivors of a pass out of its chunks (see YoungChunk). After marking,
-   the collector copies each marked chunk allocation it reaches into a survivor
-   block and leaves the copy's address in the old header, then rewrites every
-   pointer the copies and the marked list allocations hold. Only this region's
-   chunk allocations move: everything else a pass reaches is older than the pass
-   or in a list, and nothing older points into a chunk. */
-
-static void *forward_young(void *pointer) {
-  Carrier *const here = carrier;
-  if (!pointer) return NULL;
-  AllocationHeader *header = allocation_header(pointer);
-  if (!header->in_chunk || header->area->scope != here->collecting_scope) return pointer;
-  if (header->next) return header->next + 1;
-  if (header->mark_epoch != here->collecting_epoch) allocation_graph_inconsistent();
-  size_t total = sizeof(*header) + header->bytes;
-  AllocationHeader *copy = small_block_take(total);
-  memcpy(copy, header, total);
-  copy->in_chunk = false;
-  area_link(&here->collecting_scope->survivors, copy);
-  here->collecting_scope->promoted_bytes += copy->bytes;
-  header->next = copy;
-  pointer_stack_push(&here->copy_stack, copy + 1);
-  return copy + 1;
-}
-
-#define FORWARD(slot) ((slot) = (void *)forward_young((void *)(slot)))
-
-/* Rewrites the pointers `pointer` holds to the copies of moved allocations. It
-   follows the same pointers as mark_children. */
-static void forward_children(void *pointer) {
-  AllocationHeader *header = allocation_header(pointer);
-  switch (header->kind) {
-    case ALLOCATION_VALUE: {
-      ChimiValue *value = pointer;
-      switch (value->kind) {
-        case VALUE_TEXT:
-        case VALUE_BYTES: FORWARD(value->as.text.bytes); break;
-        case VALUE_JSON_NUMBER: FORWARD(value->as.json_number); break;
-        case VALUE_LIST:
-          FORWARD(value->as.list.vector.root);
-          FORWARD(value->as.list.vector.tail);
-          break;
-        case VALUE_RECORD:
-        case VALUE_TUPLE:
-        case VALUE_CAUSE: FORWARD(value->as.record.fields); break;
-        case VALUE_CONSTRUCTED: FORWARD(value->as.constructed.fields); break;
-        case VALUE_CALLABLE: FORWARD(value->as.callable); break;
-        case VALUE_MAP:
-        case VALUE_SET: FORWARD(value->as.map); break;
-        default: break;
-      }
-      break;
-    }
-    case ALLOCATION_LIST_NODE: {
-      ListNode *node = pointer;
-      for (uint32_t index = 0; index < node->count; ++index) FORWARD(node->slots[index]);
-      break;
-    }
-    case ALLOCATION_FIELDS: {
-      RuntimeField *fields = pointer;
-      size_t length = header->bytes / sizeof(*fields);
-      for (size_t index = 0; index < length; ++index) FORWARD(fields[index].value);
-      break;
-    }
-    case ALLOCATION_VALUE_POINTERS: {
-      ChimiValue **values = pointer;
-      size_t length = header->bytes / sizeof(*values);
-      for (size_t index = 0; index < length; ++index) FORWARD(values[index]);
-      break;
-    }
-    case ALLOCATION_ENVIRONMENT: {
-      ChimiEnvironment *environment = pointer;
-      FORWARD(environment->locals);
-      FORWARD(environment->requirements);
-      break;
-    }
-    case ALLOCATION_CALLABLE: {
-      ChimiCallable *callable = pointer;
-      FORWARD(callable->environment);
-      FORWARD(callable->inner);
-      break;
-    }
-    case ALLOCATION_MAP_NODE: {
-      MapNode *node = pointer;
-      FORWARD(node->key);
-      FORWARD(node->value);
-      FORWARD(node->left);
-      FORWARD(node->right);
-      break;
-    }
-    case ALLOCATION_CONTROL:
-      FORWARD(((ChimiControl *)pointer)->value);
-      FORWARD(((ChimiControl *)pointer)->cause);
-      break;
-    case ALLOCATION_BYTES: break;
-    case ALLOCATION_FRAME_ENVIRONMENT:
-    case ALLOCATION_KIND_COUNT: allocation_graph_inconsistent();
-  }
-}
-#undef FORWARD
-
-static void forward_marked_list(AllocationArea *area) {
-  for (AllocationHeader *header = area->allocations; header; header = header->next)
-    if (header->mark_epoch == carrier->collecting_epoch) forward_children(header + 1);
-}
-
-/* Whether this pass of `scope` has bumped an allocation into its chunks. */
-static bool young_chunks_used(const AllocationScope *scope) { return chimi_young_chunks_used_v1(scope); }
-
-/* Moves what the roots reach out of `scope`'s chunks and updates the roots. */
-static void forward_survivors(AllocationScope *scope, ChimiValue **value, ChimiControl **control) {
-  Carrier *const here = carrier;
-  if (!young_chunks_used(scope)) return;
-  if (value) *value = forward_young(*value);
-  if (control) *control = forward_young(*control);
-  forward_marked_list(&scope->young);
-  for (AllocationArea *area = scope->adopted; area; area = area->next) forward_marked_list(area);
-  while (here->copy_stack.length) forward_children(here->copy_stack.items[--here->copy_stack.length]);
-}
-
-/* Releases the chunk allocations of this pass that were not moved, and empties the
-   chunks for the next pass, keeping the first one. Requires flush_young_counts. */
-static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
-  chimi_young_reset_chunks_v1(carrier, scope, keep_first);
-}
-
-static void allocation_scope_begin(AllocationScope *scope) { chimi_scope_begin_v1(carrier, scope); }
-
-/* Moves the marked allocations of a young `area` to the survivors and frees the rest. */
-static void promote_marked(AllocationScope *scope, AllocationArea *area) {
-  AllocationHeader *header = area->allocations;
-  while (header) {
-    AllocationHeader *next = header->next;
-    if (header->mark_epoch == carrier->collecting_epoch) {
-      area_link(&scope->survivors, header);
-      scope->promoted_bytes += header->bytes;
-    } else {
-      scope->live_bytes -= header->bytes;
-      release_allocation(header);
-    }
-    header = next;
-  }
-  area->allocations = NULL;
-  area->bytes = 0;
-  area->count = 0;
-}
-
-/* Frees the survivors that this full pass did not mark. */
-static void sweep_survivors(AllocationScope *scope) {
-  AllocationArea *area = &scope->survivors;
-  AllocationHeader **link = &area->allocations;
-  while (*link) {
-    AllocationHeader *header = *link;
-    if (header->mark_epoch == carrier->collecting_epoch) {
-      link = &header->next;
-      continue;
-    }
-    *link = header->next;
-    area->bytes -= header->bytes;
-    --area->count;
-    scope->live_bytes -= header->bytes;
-    release_allocation(header);
-  }
-}
-
-/* One pass over `scope`, keeping what `value` and `control` reach. A minor pass
-   costs O(allocations since the last pass): it marks young allocations only and
-   promotes the marked ones. A full pass also marks and sweeps the survivors.
-   Returns HEAP_FOREIGN_POINTER, after collecting as usual, when a root reaches a
-   value in another heap or in a fragment. */
-/* A mark epoch no pass on any carrier has used. */
-static uint64_t take_mark_epoch(void) {
-  Carrier *const here = carrier;
-  if (here->next_epoch == here->end_epoch) {
-    uint64_t start = atomic_fetch_add_explicit(&next_mark_epoch, MARK_EPOCH_BLOCK, memory_order_relaxed);
-    if (start > UINT64_MAX - MARK_EPOCH_BLOCK) {
-      fputs("Chimi runtime allocation mark epoch exhausted\n", stderr); runtime_exit(70);
-    }
-    here->next_epoch = start;
-    here->end_epoch = start + MARK_EPOCH_BLOCK;
-  }
-  return here->next_epoch++;
-}
-
 
 #if CHIMI_HEAP_VERIFY
 uint32_t chimi_heap_verify_v1(const AllocationScope *scope, const ChimiValue *value,
@@ -2507,75 +2210,58 @@ uint32_t chimi_heap_verify_v1(const AllocationScope *scope, const ChimiValue *va
                               size_t promoted, void *const *freed, size_t freed_count,
                               void *const *chunks, size_t chunk_bounds);
 const char *chimi_heap_verify_message_v1(uint32_t code);
-static void heap_verify(const AllocationScope *scope, ChimiValue **value, ChimiControl **control,
-                        uint64_t epoch, bool full, size_t promoted) {
-  uint32_t code = chimi_heap_verify_v1(scope, value ? *value : NULL, control ? *control : NULL, epoch, full,
-                                       promoted, heap_verify_freed.items, heap_verify_freed.length,
-                                       heap_verify_chunks.items, heap_verify_chunks.length);
+#endif
+/* The collector's oracle after a pass, in a checking build (CHIMI_HEAP_VERIFY);
+   the collector calls these only then. */
+void chimi_runtime_heap_verify_freed(void *payload);
+void chimi_runtime_heap_verify_freed(void *payload) {
+#if CHIMI_HEAP_VERIFY
+  pointer_stack_push(&heap_verify_freed, payload);
+#else
+  (void)payload;
+#endif
+}
+void chimi_runtime_heap_verify_pass(const AllocationScope *scope, const ChimiValue *value,
+                                    const ChimiControl *control, uint64_t epoch, bool full, size_t promoted);
+void chimi_runtime_heap_verify_pass(const AllocationScope *scope, const ChimiValue *value,
+                                    const ChimiControl *control, uint64_t epoch, bool full, size_t promoted) {
+#if CHIMI_HEAP_VERIFY
+  uint32_t code = chimi_heap_verify_v1(scope, value, control, epoch, full, promoted, heap_verify_freed.items,
+                                       heap_verify_freed.length, heap_verify_chunks.items,
+                                       heap_verify_chunks.length);
   heap_verify_freed.length = 0;
   heap_verify_chunks.length = 0;
   if (code == 0) return;
   fprintf(stderr, "Chimi runtime heap check failed: %s\n", chimi_heap_verify_message_v1(code));
   abort();
-}
+#else
+  (void)scope, (void)value, (void)control, (void)epoch, (void)full, (void)promoted;
 #endif
-
-static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **value,
-                                         ChimiControl **control, bool full, bool ending) {
-  Carrier *const here = carrier;
-  here->collecting_epoch = take_mark_epoch();
-  flush_young_counts(scope);
-  here->collecting_scope = scope;
-  here->collecting_full = full;
-  here->collecting_foreign = false;
-  mark_push(value ? *value : NULL, ALLOCATION_VALUE);
-  mark_push(control ? *control : NULL, ALLOCATION_CONTROL);
-  while (here->mark_stack.length) mark_children(here->mark_stack.items[--here->mark_stack.length]);
-  bool foreign = here->collecting_foreign;
-  size_t young_bytes = scope->young.bytes, promoted_before = scope->promoted_bytes;
-  forward_survivors(scope, value, control);
-  reset_young_chunks(scope, !ending);
-  promote_marked(scope, &scope->young);
-  scope->links_young = 4 * (scope->promoted_bytes - promoted_before) > young_bytes;
-  while (scope->adopted) {
-    AllocationArea *area = scope->adopted;
-    scope->adopted = area->next;
-    promote_marked(scope, area);
-    area_free(area);
-  }
-  if (full) {
-    sweep_survivors(scope);
-    ++scope->full_collections;
-  }
-  here->collecting_scope = NULL;
-  ++scope->collections;
-#if CHIMI_HEAP_VERIFY
-  heap_verify(scope, value, control, here->collecting_epoch, full, scope->promoted_bytes - promoted_before);
-#endif
-  return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }
 
-/* A pass boundary: chooses a minor or a full pass (see full_baseline). */
+HeapStatus chimi_scope_collect_v1(Carrier *here, AllocationScope *scope, ChimiValue **value,
+                                  ChimiControl **control);
+HeapStatus chimi_scope_finish_v1(Carrier *here, AllocationScope *scope, ChimiValue **value,
+                                 ChimiControl **control);
+/* One pass of a chosen kind, and a fresh mark epoch: for the C test harnesses. */
+HeapStatus chimi_scope_sweep_v1(Carrier *here, AllocationScope *scope, ChimiValue **value,
+                                ChimiControl **control, bool full, bool ending);
+uint64_t chimi_take_mark_epoch_v1(Carrier *here);
+
+/* A pass boundary: a minor pass, or a full one once the survivors have doubled
+   since the last full pass (see full_baseline). Returns HEAP_FOREIGN_POINTER,
+   after collecting as usual, when a root reaches a value in another heap or in
+   a fragment. */
 static HeapStatus allocation_scope_collect(AllocationScope *scope, ChimiValue **value,
                                            ChimiControl **control) {
-  size_t survivors = scope->survivors.bytes;
-  bool full = scope->has_baseline && survivors >= 2 * scope->full_baseline &&
-              survivors - scope->full_baseline >= REGION_FULL_MIN_GROWTH;
-  HeapStatus status = allocation_scope_sweep(scope, value, control, full, false);
-  if (full || (!scope->has_baseline && scope->survivors.bytes != 0)) {
-    scope->has_baseline = true;
-    scope->full_baseline = scope->survivors.bytes;
-  }
-  return status;
+  return chimi_scope_collect_v1(carrier, scope, value, control);
 }
 
 /* Region exit: a full pass keeps what `value` and `control` reach, and the survivors
    join the enclosing region's young generation, or the heap's base area. */
 static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **value,
                                        ChimiControl **control) {
-  HeapStatus status = allocation_scope_sweep(scope, value, control, true, true);
-  chimi_scope_end_v1(scope);
-  return status;
+  return chimi_scope_finish_v1(carrier, scope, value, control);
 }
 
 /* Fragments: copies for a transfer between owners. A copy keeps sharing through a

@@ -131,7 +131,7 @@ static void measure_accumulation(uint32_t length, double *allocated_per_element,
          "live_bytes_per_element=%.1f\n",
          length, elapsed / length, *allocated_per_element, *live_per_element);
   /* A full pass, because a minor one never revisits the list once it survived. */
-  allocation_scope_sweep(&scope, NULL, NULL, true, false);
+  chimi_scope_sweep_v1(carrier, &scope, NULL, NULL, true, false);
   CHECK(scope.live_bytes == 0, "dropped list left %zu live bytes", scope.live_bytes);
   allocation_scope_end(&scope, NULL, NULL);
 }
@@ -154,7 +154,7 @@ static void test_collection_keeps_shared_old_version(void) {
   ChimiValue *old = push_sequence(list_from_values(NULL, 0), 5000, 0);
   ChimiValue *newer = push_sequence(old, 5000, 5000);
   /* A pass adds its chunk allocations to the counters at its boundary. */
-  flush_young_counts(&scope);
+  chimi_young_flush_counts_v1(carrier, &scope);
   size_t before = scope.live_bytes;
   allocation_scope_collect(&scope, &old, NULL);
   CHECK(scope.live_bytes < before, "collecting the newer version freed nothing");
@@ -266,7 +266,7 @@ static void test_drop_front_is_constant_cost(void) {
     rest = list_slice(rest, 1, list_length(rest));
   }
   CHECK(list_length(rest) == 0, "drained");
-  flush_young_counts(&scope);
+  chimi_young_flush_counts_v1(carrier, &scope);
   double per_step = (double)scope.total_allocated_bytes / length;
   printf("drop_front length=%u allocated_bytes_per_step=%.1f\n", length, per_step);
   /* One header per step, plus copies of under length / 3 slots of one pointer each,
