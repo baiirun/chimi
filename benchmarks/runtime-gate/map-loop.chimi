@@ -1,0 +1,11 @@
+import std/map as Map
+
+pub fn main() -> Int {
+  loop state = (0, Map.empty()) {
+    let (count, table) = state
+    case count {
+      50000 -> break Map.size(table)
+      _ -> (count + 1, Map.put(table, count % 1000, count))
+    }
+  }
+}

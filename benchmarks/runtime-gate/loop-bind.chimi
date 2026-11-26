@@ -1,0 +1,11 @@
+pub fn main() -> Int {
+  loop count = 0 {
+    case count {
+      500000 -> break count
+      _ -> {
+        let next = count + 1
+        next
+      }
+    }
+  }
+}

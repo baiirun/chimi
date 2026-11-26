@@ -1,0 +1,37 @@
+import std/bytes as Bytes
+import std/clock.{Clock}
+import std/http as Http
+import std/http.{Method, Request, Response}
+import std/io.{Console}
+import std/net as Net
+import std/net.{Network}
+import std/task as Task
+import std/int as Int
+
+fn handle(request: Request) -> Response {
+  Http.text(200, "hello")
+}
+
+fn client(base: Text, count: Int) -> Int needs { network: Network, clock: Clock } {
+  loop sent = 0 {
+    case sent == count {
+      True -> break sent
+      False -> {
+        let reply = Http.send(Method.Get, "${base}/x", [], Bytes.empty(), Http.client_defaults)
+        sent + Http.status(reply) / 200
+      }
+    }
+  }
+}
+
+pub fn main() -> Void needs { network: Network, clock: Clock, console: Console } {
+  let listener = Net.listen("127.0.0.1", 0)
+  let port = Net.port(Net.listener_address(listener))
+  let server = Task.start(fn() { Http.serve(listener, Http.defaults, handle) })
+  let base = "http://127.0.0.1:${port}"
+  let first = Task.start(fn() { client(base, 150) })
+  let second = Task.start(fn() { client(base, 150) })
+  let total = Task.result(first) + Task.result(second)
+  Net.close_listener(listener)
+  console.write_line(Int.to_text(total))
+}
