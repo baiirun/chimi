@@ -52,14 +52,18 @@ if [ "$harness" = runtime-fuzz ]; then
   coverage="$coverage -Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
   coverage="$coverage -Cllvm-args=-sanitizer-coverage-pc-table"
   coverage="$coverage -Cllvm-args=-sanitizer-coverage-trace-compares"
+  # An explicit --target keeps RUSTFLAGS off the build scripts (libc has
+  # one), which cannot link the coverage hooks.
+  host=$(rustc -vV | sed -n 's/^host: //p')
   RUSTFLAGS=$coverage cargo rustc --quiet --manifest-path "$repo/Cargo.toml" \
     -p chimi-runtime-standalone --lib --profile runtime-standalone --crate-type staticlib \
-    --target-dir "$work/rust" || { echo "fuzz-runtime: Rust runtime build failed" >&2; exit 2; }
+    --target "$host" --target-dir "$work/rust" ||
+    { echo "fuzz-runtime: Rust runtime build failed" >&2; exit 2; }
   mkdir -p "$work/rust/objects" || exit 2
-  member=$(cd "$work/rust/objects" && ar t ../runtime-standalone/libchimi_runtime_standalone.a |
+  member=$(cd "$work/rust/objects" && ar t "../$host/runtime-standalone/libchimi_runtime_standalone.a" |
     grep '^chimi_runtime_standalone-') || exit 2
   (cd "$work/rust/objects" && rm -f libchimi_runtime_standalone.a &&
-    ar x ../runtime-standalone/libchimi_runtime_standalone.a "$member" &&
+    ar x "../$host/runtime-standalone/libchimi_runtime_standalone.a" "$member" &&
     ar rcs libchimi_runtime_standalone.a "$member") || exit 2
   rust_runtime="$work/rust/objects/libchimi_runtime_standalone.a"
   archives=$rust_runtime
