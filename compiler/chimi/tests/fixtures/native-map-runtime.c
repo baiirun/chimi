@@ -93,23 +93,27 @@ static uint16_t check_avl(const MapNode *node, int64_t low, int64_t high) {
 }
 
 /* Insertions and removals in a scrambled order reach every rotation, single and
-   double, on both sides; the invariant holds after each change. */
-static void test_scrambled_changes_keep_the_invariant(void) {
+   double, on both sides (the mirrored order swaps the sides); the invariant
+   holds after each change. */
+static void test_scrambled_changes_keep_the_invariant(bool mirrored) {
   enum { COUNT = 512 };
   MapNode *map = NULL;
   for (int64_t step = 0; step < COUNT; ++step) {
-    map = map_put_node(map, integer_value((step * 197) % COUNT), void_value());
+    int64_t key = (step * 197) % COUNT;
+    map = map_put_node(map, integer_value(mirrored ? COUNT - 1 - key : key), void_value());
     check_avl(map, -1, COUNT);
   }
   for (int64_t step = 0; step < COUNT; step += 2) {
-    map = map_remove_node(map, integer_value((step * 311) % COUNT));
+    int64_t key = (step * 311) % COUNT;
+    map = map_remove_node(map, integer_value(mirrored ? COUNT - 1 - key : key));
     check_avl(map, -1, COUNT);
   }
   CHECK(map_size(map) == COUNT / 2, "%" PRId64 " keys left", map_size(map));
 }
 
 int main(void) {
-  test_scrambled_changes_keep_the_invariant();
+  test_scrambled_changes_keep_the_invariant(false);
+  test_scrambled_changes_keep_the_invariant(true);
   for (int ascending = 0; ascending < 2; ++ascending) {
     test_removals_that_keep_one_path_rebalance(true, ascending);
     test_removals_that_keep_one_path_rebalance(false, ascending);

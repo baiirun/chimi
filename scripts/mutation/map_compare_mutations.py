@@ -1,7 +1,7 @@
 """Mutants of the Map tree and structural order in Rust (CHI-305 step 5,
 phase 4, third PR; runtime/chimi-runtime/src/heap/map.rs, compare.rs and
 json_number.rs). They are caught by the std map, set and json programs
-(std_modules) and the white-box fixtures native-map-runtime.c and
+(std_modules), the language suite, and the white-box fixtures native-map-runtime.c and
 native-structural-compare.c (tests/cli.rs). Older mutants of the same code,
 retargeted from runtime.c, are in std2_map_set_mutations.py,
 std2_json_mutations.py, compare_stack_mutations.py and
@@ -20,6 +20,10 @@ NUMBER = HEAP + "json_number.rs"
 
 def programs(name, file, old, new):
     return dict(name=name, file=file, edits=[(old, new)], targets=["std_modules"], filter="standard_")
+
+
+def language(name, file, old, new):
+    return dict(name=name, file=file, edits=[(old, new)], targets=["language"], filter="")
 
 
 def balanced(name, file, old, new):
@@ -57,10 +61,10 @@ MUTATIONS = [
     programs("maps compare their keys only", COMPARE,
              "                        stack.push((*left_node).value, (*right_node).value, 0);\n",
              ""),
-    programs("lists ignore their lengths", COMPARE,
+    language("lists ignore their lengths", COMPARE,
              "                    stack.decide(order_of(left_length, right_length));",
              "                    stack.decide(0);"),
-    programs("values of different kinds compare equal", COMPARE,
+    language("values of different kinds compare equal", COMPARE,
              "                order = order_of((*left).kind.0, (*right).kind.0);",
              "                order = 0;"),
     structural("an exponent sum drops its carries", NUMBER,

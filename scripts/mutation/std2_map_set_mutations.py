@@ -37,7 +37,9 @@ def requirements(name, file, edits):
 
 
 MUTATIONS = [
-    programs("C map remove skips rebalancing on the left", TREE, [(
+    # Rebalancing changes no value, so the tree fixture checks it.
+    dict(name="C map remove skips rebalancing on the left", file=TREE, targets=["cli"],
+         filter="native_map_removal_keeps_the_tree_balanced", edits=[(
         "                balance(self::node((*node).key, (*node).value, left, (*node).right))\n            };",
         "                self::node((*node).key, (*node).value, left, (*node).right)\n            };")]),
     programs("Rust map remove skips rebalancing", EXECUTION, [(
