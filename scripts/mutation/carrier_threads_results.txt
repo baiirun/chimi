@@ -13,3 +13,10 @@ KILLED       a carrier thread does not bind its carrier [runtime_state -- the_ru
 KILLED       a task on an unbound thread runs [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
 KILLED       carriers_create leaves the count at one [runtime_state -- the_runtime_state_holds_across_carrier_threads] (52s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# CHI-305 phase 3: retargeted to heap/fragment.rs
+# mutation run at a1379c9a140be25d54f8523628d2efd12575cb6b
+# carrier_threads_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
+KILLED       heap owners come from a plain counter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (64s)
+# result: every mutant killed

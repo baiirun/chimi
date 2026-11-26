@@ -109,6 +109,8 @@ static int64_t shared_file;
 static _Atomic int64_t closed_reads;
 /* Per thread, then per round. */
 static uint64_t spans[THREADS * ROUNDS];
+/* The owner id of a heap each round creates and destroys: unique across carriers. */
+static uint64_t owners[THREADS * ROUNDS];
 /* Three mark epochs per round, so each thread takes more than one block. */
 enum { EPOCHS_PER_ROUND = 3 };
 static uint64_t epochs[THREADS * ROUNDS * EPOCHS_PER_ROUND];
@@ -338,6 +340,9 @@ static void *carrier_thread(void *raw_index) {
     }
     uint64_t span = begin_node(&runtime, 0, 1, "carrier_round");
     spans[index * ROUNDS + round] = span;
+    RuntimeHeap *scratch = heap_create();
+    owners[index * ROUNDS + round] = scratch->owner;
+    heap_destroy(scratch);
     for (uint32_t epoch = 0; epoch < EPOCHS_PER_ROUND; ++epoch)
       epochs[(index * ROUNDS + round) * EPOCHS_PER_ROUND + epoch] = chimi_take_mark_epoch_v1(carrier);
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
@@ -834,6 +839,10 @@ int main(void) {
 
   /* Several carriers take span ids and mark epochs in blocks, so they are
      unique but not dense. */
+  qsort(owners, THREADS * ROUNDS, sizeof(uint64_t), compare_words);
+  CHECK(owners[0] >= 2, "heap owner %" PRIu64 " is below 2", owners[0]);
+  for (size_t index = 1; index < THREADS * ROUNDS; ++index)
+    CHECK(owners[index] != owners[index - 1], "heap owner %" PRIu64 " taken twice", owners[index]);
   qsort(spans, THREADS * ROUNDS, sizeof(uint64_t), compare_words);
   CHECK(spans[0] >= 2, "span id %" PRIu64 " is below 2", spans[0]);
   for (size_t index = 1; index < THREADS * ROUNDS; ++index)

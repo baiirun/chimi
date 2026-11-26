@@ -13,8 +13,11 @@ CRATE = "compiler/chimi"
 R = "runtime/native/runtime.c"
 
 
-def m(name, edits):
-    return dict(name=name, file=R, edits=edits, targets=["runtime_state"],
+FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
+
+
+def m(name, edits, file=R):
+    return dict(name=name, file=file, edits=edits, targets=["runtime_state"],
                 filter="the_runtime_state_holds_across_carrier_threads")
 
 
@@ -56,9 +59,11 @@ MUTATIONS = [
     m("profile counts are plain adds", [(
         "static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }",
         "static void profile_count(uint64_t *field, uint64_t by) { *field += by; }")]),
+    # Heap owners are taken in Rust since CHI-305 step 5 phase 3.
     m("heap owners come from a plain counter", [(
-        "  heap->owner = atomic_fetch_add_explicit(&next_heap_owner, 1, memory_order_relaxed);",
-        "  heap->owner = (*(uint64_t *)&next_heap_owner)++;")]),
+        "        (*heap).owner = NEXT_HEAP_OWNER.fetch_add(1, Relaxed);",
+        "        (*heap).owner = NEXT_HEAP_OWNER.load(Relaxed);\n"
+        "        NEXT_HEAP_OWNER.store((*heap).owner + 1, Relaxed);")], FRAGMENT),
     m("the sum skips carrier 0", [(
         "  HeapTotals sum = {0};\n  for (size_t index = 0; index < carrier_count; ++index) {",
         "  HeapTotals sum = {0};\n  for (size_t index = 1; index < carrier_count; ++index) {")]),

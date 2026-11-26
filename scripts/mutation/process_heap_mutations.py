@@ -32,11 +32,13 @@ FOREIGN_MARK = (
     "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n"
     "    return;\n"
 )
+# The fragment copy is Rust since CHI-305 step 5 phase 3.
+FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
 FOREIGN_COPY = (
-    "  if (!copy_owns(copy, header->area)) {\n"
-    "    copy->status = HEAP_FOREIGN_POINTER;\n"
-    "    return NULL;\n"
-    "  }"
+    "        if !copy.owns(area) {\n"
+    "            copy.foreign(area);\n"
+    "            return ptr::null_mut();\n"
+    "        }\n"
 )
 
 LOOP_PASS = "      if (allocation_scope_collect(&passes, state, NULL) != HEAP_OK) {"
@@ -58,12 +60,12 @@ MUTATIONS = [
         FOREIGN_MARK,
         "    if (area->heap != carrier->collecting_scope->heap && area->role != AREA_STATIC) carrier->collecting_foreign = true;\n"
         "    if (area->heap == carrier->collecting_scope->heap || area->role == AREA_STATIC) return;\n")]),
-    lab("a fragment copy ignores foreign pointers", RUNTIME, "CB06",
+    lab("a fragment copy ignores foreign pointers", FRAGMENT, "CB06",
         ["a fragment copy accepted a pointer into another heap", "the copy followed a foreign pointer"], [(
-        FOREIGN_COPY, "  (void)copy_owns;")]),
-    lab("a fragment copy reports and then follows foreign pointers", RUNTIME, "CB06",
+        FOREIGN_COPY, "")]),
+    lab("a fragment copy reports and then follows foreign pointers", FRAGMENT, "CB06",
         ["the copy followed a foreign pointer"], [(
-        FOREIGN_COPY, "  if (!copy_owns(copy, header->area)) copy->status = HEAP_FOREIGN_POINTER;")]),
+        FOREIGN_COPY, "        if !copy.owns(area) {\n            copy.foreign(area);\n        }\n")]),
     # MF05: loops reclaim every pass when the scheduler is linked (ts-da83af).
     lab("loop passes skipped under CHIMI_REQUIRES_SCHEDULER", RUNTIME, "MF05",
         ["scoped_peak_live_bytes differs"], [(LOOP_PASS,

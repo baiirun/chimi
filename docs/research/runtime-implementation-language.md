@@ -110,6 +110,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       through the same ABI.
    3. Fragment copy, the transfer walk, and the task and process heap
       lifecycle; handle drops become Rust-to-Rust calls.
+      First PR (2026-11-26): fragment copy, adoption, duplication and free,
+      and heap creation and end, in `chimi-runtime/src/heap/fragment.rs`,
+      with the heap owner counter. A copy's forwarding table keeps its
+      first 16 entries inline, so the common small message allocates no
+      table. `runtime.c` keeps the transfer walk and the task and process
+      heap lifecycle, which call fragments through the same ABI.
    4. Values: scalar and text builders with environments, the list vector,
       and the AVL map together with structural compare (three PRs).
    5. Intrinsics by family, pure ones first, then task, select, clock, fs,
