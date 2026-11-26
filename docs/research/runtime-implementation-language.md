@@ -83,7 +83,14 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       timestamps move as a missed step 2 leaf.
    1. The allocator: small blocks, areas and footprint, then young chunks,
       `allocate` and allocation scopes (two PRs). Watch the thread-local
-      carrier read, which C does with an initial-exec access.
+      carrier read, which C does with an initial-exec access. First PR
+      (2026-11-26): `allocate`, `release_allocation`, the footprint and the
+      small-block cache move together, in `chimi-runtime/src/heap/allocator.rs`,
+      with a `Carrier` mirror; C passes the carrier it read. The cache alone
+      failed the gate (the map loop +4.6%, from a cross-language call on every
+      allocation and free), so a piece moves only with the callers that call it
+      per allocation. C keeps `allocate` out of line: inlined, the carrier read
+      at its 200 call sites grew a small program by 13 KB.
    2. The collector: mark, forward, promote and sweep.
    3. Fragment copy, the transfer walk, and the task and process heap
       lifecycle; handle drops become Rust-to-Rust calls.
