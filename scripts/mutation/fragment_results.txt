@@ -30,3 +30,11 @@ STALE        CB02: a message copy ignores sharing: edit text occurs 0 times in .
 KILLED       MF01: received messages join the heap's base area [cargo run --quiet --bin chimi-process-lab -- --scenario MF01 --through U5] (59s)
 KILLED       MF04: each small fragment costs a 64 KiB chunk [cargo run --quiet --bin chimi-process-lab -- --scenario MF04 --through U5] (56s)
 KILLED       CB02: a message copy ignores sharing [cargo run --quiet --bin chimi-process-lab -- --scenario CB02 --through U5] (112s)
+
+# CHI-305 phase 3, second PR: list reads moved to heap/list.rs
+# mutation run at 221c8cb90689f4e87633acfc6a9d89cb38791435
+# fragment_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [../../scripts/mutation/native-heap-harness.sh] (61s)
+KILLED       a list read ignores its window's start [../../scripts/mutation/native-heap-harness.sh] (61s)
+KILLED       a window's copy copies the whole vector [../../scripts/mutation/native-heap-harness.sh] (58s)
+# result: every mutant killed

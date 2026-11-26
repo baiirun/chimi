@@ -439,6 +439,9 @@ pub const SMALL_BLOCK_CACHE: usize = 4096;
 /// The small-block size classes: one per grain up to the limit.
 pub const SMALL_BLOCK_CLASSES: usize = SMALL_BLOCK_LIMIT / SMALL_BLOCK_GRAIN;
 
+/// `LIST_BITS`: a list vector's trie is `1 << LIST_BITS` wide.
+pub const LIST_BITS: u32 = 5;
+
 /// `SmallBlockCache`: one carrier's small-block free lists, one per size
 /// class, and their lengths (the cache is `small_blocks.rs`).
 #[repr(C)]
@@ -624,6 +627,7 @@ macro_rules! facts {
 
 /// Every number the mirrors and `runtime.c` share.
 pub const LAYOUT: &[Fact] = facts! {
+    constant("LIST_BITS" LIST_BITS)
     constant("VALUE_VOID" ValueKind::VOID.0)
     constant("VALUE_INTEGER" ValueKind::INTEGER.0)
     constant("VALUE_FLOAT" ValueKind::FLOAT.0)

@@ -13,6 +13,7 @@ CRATE = "compiler/chimi"
 EXECUTION = "src/execution.rs"
 TEARDOWN = "src/execution/teardown.rs"
 RUNTIME = "runtime/native/runtime.c"
+TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
 
 
 def lib(name, file, edits):
@@ -25,6 +26,10 @@ def language(name, edits, filter):
 
 def native(name, edits, filter):
     return dict(name=name, file=RUNTIME, edits=edits, targets=["cli"], filter=filter)
+
+
+def transfer(name, edits, filter):
+    return dict(name=name, file=TRANSFER, edits=edits, targets=["cli"], filter=filter)
 
 
 # Copies a value's records, tuples, and constructed values on every reference, as
@@ -123,26 +128,34 @@ MUTATIONS = [
         "        json_step(steps, JSON_STEP_KEY, entries.nodes[index]);\n"
         "        json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);",
     )], "json_encode_writes_a_deeply_nested_value"),
-    native("native capture transfer scans the visited set linearly", [(
-        "  uint64_t hash = (uint64_t)(uintptr_t)pointer * UINT64_C(0x9e3779b97f4a7c15);\n"
-        "  return (size_t)(hash >> (64 - __builtin_ctzll((unsigned long long)capacity)));",
-        "  (void)pointer; (void)capacity;\n"
-        "  return 0;",
+    # The walk is Rust since CHI-305 step 5, phase 3 (heap/transfer.rs).
+    transfer("native capture transfer scans the visited set linearly", [(
+        "    let hash = (pointer as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);\n"
+        "    (hash >> (64 - capacity.trailing_zeros())) as usize",
+        "    let _ = (pointer, capacity);\n"
+        "    0",
     )], "native_capture_transfer_work_is_linear"),
-    native("native capture transfer skips list elements", [(
-        "      for (uint32_t index = list_length(value); index-- > 0;)\n"
-        "        transfer_push(transfer, TRANSFER_VALUE, list_get(value, index));",
-        "      (void)list_get;",
+    transfer("native capture transfer skips list elements", [(
+        "                    pending.push(Part::Value, list::get(value, index));",
+        "                    let _ = list::get(value, index);",
     )], "native_tasks_capture_render_encode_and_send"),
-    native("native capture transfer skips closure environments", [(
-        "      transfer_push(transfer, TRANSFER_ENVIRONMENT, callable->environment);",
-        "      (void)callable->environment;",
+    transfer("native capture transfer skips closure environments", [(
+        "                pending.push(Part::Environment, (*callable).environment);",
+        "                let _ = (*callable).environment;",
     )], "native_"),
-    native("native capture transfer gives up after a fixed number of parts", [(
-        "    TransferPart part = transfer->pending[--transfer->pending_length];",
-        "    TransferPart part = transfer->pending[--transfer->pending_length];\n"
-        "    if (transfer->visited_count > 4096) { transferred = false; break; }",
+    transfer("native capture transfer gives up after a fixed number of parts", [(
+        "        let Some((part, pointer)) = pending.0.pop() else { break };",
+        "        let Some((part, pointer)) = pending.0.pop() else { break };\n"
+        "        if visited.count > 4096 { transferred = false; break; }",
     )], "native_tasks_capture_render_encode_and_send"),
+    native("native capture transfer counts no probes", [(
+        "  carrier->capture_transfer_probes += probes;",
+        "  (void)probes;",
+    )], "native_capture_transfer_work_is_linear"),
+    native("native capture transfer leaves a captured Receiver with the parent", [(
+        "      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);",
+        "      return true;",
+    )], "native_"),
     dict(
         name="interpreter copies records, tuples, and constructed values on reference",
         file=EXECUTION,

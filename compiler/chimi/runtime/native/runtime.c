@@ -1108,10 +1108,14 @@ typedef struct RuntimeFragment {
    heap/layout.rs) for the allocator and collector moving there (CHI-305 step
    5). These asserts hold the C side to the mirror's numbers; the
    runtime_layout test holds the mirror to these lines. */
+/* A list vector's trie width (mirrored in chimi-runtime heap/layout.rs). */
+enum { LIST_BITS = 5, LIST_WIDTH = 1 << LIST_BITS, LIST_MASK = LIST_WIDTH - 1 };
+
 /* BEGIN generated layout asserts: chimi-runtime heap/layout.rs LAYOUT.
    Regenerate with CHIMI_LAYOUT_BLESS=1 cargo test -p chimi --test runtime_layout. */
 #define CHIMI_LAYOUT_CLASS(x) _Generic((x), _Bool: 3, float: 4, double: 4, \
   default: ((__typeof__(x))-1 < (__typeof__(x))1 ? 1 : 2))
+_Static_assert(LIST_BITS == 5, "layout: LIST_BITS");
 _Static_assert(VALUE_VOID == 0, "layout: VALUE_VOID");
 _Static_assert(VALUE_INTEGER == 1, "layout: VALUE_INTEGER");
 _Static_assert(VALUE_FLOAT == 2, "layout: VALUE_FLOAT");
@@ -1916,8 +1920,6 @@ static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
-enum { LIST_BITS = 5, LIST_WIDTH = 1 << LIST_BITS, LIST_MASK = LIST_WIDTH - 1 };
-
 static ListNode *list_node(uint32_t height, uint32_t count) {
   ListNode *node = allocate(1, sizeof(*node) + (size_t)count * sizeof(node->slots[0]));
   allocation_kind(node, ALLOCATION_LIST_NODE);
@@ -2207,8 +2209,6 @@ static HeapStatus allocation_scope_end(AllocationScope *scope, ChimiValue **valu
    copy keeps sharing, rebuilds each List window as a compact vector, shares static
    constants, and reports HEAP_FOREIGN_POINTER instead of following a pointer out
    of its source. These are the list builders it calls back. */
-ChimiValue *chimi_runtime_list_get_v1(const ChimiValue *list, uint32_t index);
-ChimiValue *chimi_runtime_list_get_v1(const ChimiValue *list, uint32_t index) { return list_get(list, index); }
 void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out);
 void chimi_runtime_vector_from_values_v1(ChimiValue *const *values, uint32_t length, ListVector *out) {
   *out = vector_from_values(values, length);
@@ -2737,30 +2737,15 @@ static ChimiFiberCommand scheduler_request(void *request) {
   return command;
 }
 
-/* Capability transfer for Task.start: walks the child's copy of its captures and
-   moves every Receiver and Completion it holds to the child. The walk keeps its own
-   stack, so a capture of any nesting depth costs heap, not the parent fiber's
-   stack. A part reachable twice (shared after the copy) is visited once, where a
-   recursive pre-order walk would first reach it: `visited` is an open-addressing
-   set of the parts already walked, so the walk is linear in the references it
-   follows. Map keys are not walked: typing admits no capability in a
-   key. */
-typedef enum {
-  TRANSFER_VALUE, TRANSFER_ENVIRONMENT, TRANSFER_CALLABLE, TRANSFER_MAP_NODE
-} TransferPartKind;
-typedef struct { TransferPartKind kind; void *pointer; } TransferPart;
+/* Capability transfer for Task.start and the sends: the walk over the value graph
+   is Rust (chimi-runtime heap/transfer.rs) and calls back here for each Receiver,
+   Completion and managed handle it meets. For a transfer, `child` takes each
+   Receiver and Completion; when collecting for a send, each capability found is
+   recorded with the sender's token, and its copy in the message takes the
+   in-flight token (ChimiCarriedCapability). */
 typedef struct {
-  const void **visited;
-  size_t visited_count;
-  size_t visited_capacity;
-  TransferPart *pending;
-  size_t pending_length;
-  size_t pending_capacity;
   uint64_t child;
   bool cancelled;
-  /* Collecting for a send instead of transferring: each capability found is
-     recorded here with the sender's token, and its copy in the message takes
-     the in-flight token (ChimiCarriedCapability). */
   bool collect;
   ChimiCarriedCapability *carried;
   size_t carried_count;
@@ -2770,55 +2755,8 @@ typedef struct {
   size_t managed_count;
 } CapabilityTransfer;
 
-
-/* Fibonacci hashing: the top bits of the product, for a power-of-two capacity. */
-static size_t transfer_slot(const void *pointer, size_t capacity) {
-  uint64_t hash = (uint64_t)(uintptr_t)pointer * UINT64_C(0x9e3779b97f4a7c15);
-  return (size_t)(hash >> (64 - __builtin_ctzll((unsigned long long)capacity)));
-}
-
-/* Adds `pointer` to the visited set; false when it was already there. */
-static bool transfer_visit(CapabilityTransfer *transfer, const void *pointer) {
-  if (2 * (transfer->visited_count + 1) > transfer->visited_capacity) {
-    size_t capacity = transfer->visited_capacity ? transfer->visited_capacity * 2 : 64;
-    const void **visited = calloc(capacity, sizeof(*visited));
-    if (!visited) exhausted_memory();
-    for (size_t index = 0; index < transfer->visited_capacity; ++index) {
-      const void *entry = transfer->visited[index];
-      if (!entry) continue;
-      size_t slot = transfer_slot(entry, capacity);
-      while (visited[slot]) slot = (slot + 1) & (capacity - 1);
-      visited[slot] = entry;
-    }
-    free(transfer->visited);
-    transfer->visited = visited;
-    transfer->visited_capacity = capacity;
-  }
-  size_t slot = transfer_slot(pointer, transfer->visited_capacity);
-  for (;;) {
-    ++carrier->capture_transfer_probes;
-    if (transfer->visited[slot] == pointer) return false;
-    if (!transfer->visited[slot]) break;
-    slot = (slot + 1) & (transfer->visited_capacity - 1);
-  }
-  transfer->visited[slot] = pointer;
-  ++transfer->visited_count;
-  return true;
-}
-
-/* Queues a part. Parts pop last-pushed first, so a container pushes its parts last
-   to first and the walk visits them in order. */
-static void transfer_push(CapabilityTransfer *transfer, TransferPartKind kind, void *pointer) {
-  if (!pointer) return;
-  if (transfer->pending_length == transfer->pending_capacity) {
-    size_t capacity = transfer->pending_capacity ? transfer->pending_capacity * 2 : 64;
-    TransferPart *pending = realloc(transfer->pending, capacity * sizeof(*pending));
-    if (!pending) exhausted_memory();
-    transfer->pending = pending;
-    transfer->pending_capacity = capacity;
-  }
-  transfer->pending[transfer->pending_length++] = (TransferPart){kind, pointer};
-}
+bool chimi_transfer_captures_v1(CapabilityTransfer *transfer, ChimiValue *root, uint64_t *probes);
+bool chimi_runtime_transfer_capability_v1(CapabilityTransfer *transfer, ChimiValue *value);
 
 static void collect_carried_capability(CapabilityTransfer *transfer, ChimiValue *value,
                                        uint32_t capability) {
@@ -2869,104 +2807,31 @@ static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValu
   "channel capability violation: " function " cannot hold a managed process or "         \
   "supervisor handle, because every subscriber gets a copy"
 
-/* Queues a value's parts, or transfers it when it is a capability the child takes. */
-static bool transfer_captured_value(CapabilityTransfer *transfer, ChimiValue *value) {
+/* Called by the walk for each capability value it meets. False when a transfer
+   request fails, or when the parent is cancelled meanwhile (`cancelled` is then
+   set); the walk then stops. */
+bool chimi_runtime_transfer_capability_v1(CapabilityTransfer *transfer, ChimiValue *value) {
   switch (value->kind) {
     case VALUE_CHANNEL_RECEIVER:
-      return transfer_captured_capability(
-        transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);
+      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);
     case VALUE_CHANNEL_COMPLETION:
-      return transfer_captured_capability(
-        transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION);
-    case VALUE_LIST:
-      for (uint32_t index = list_length(value); index-- > 0;)
-        transfer_push(transfer, TRANSFER_VALUE, list_get(value, index));
-      return true;
-    case VALUE_RECORD:
-    case VALUE_CAUSE:
-    case VALUE_TUPLE:
-      for (uint32_t index = value->as.record.length; index-- > 0;)
-        transfer_push(transfer, TRANSFER_VALUE, value->as.record.fields[index].value);
-      return true;
-    case VALUE_CONSTRUCTED:
-      for (uint32_t index = value->as.constructed.length; index-- > 0;)
-        transfer_push(transfer, TRANSFER_VALUE, value->as.constructed.fields[index].value);
-      return true;
-    case VALUE_CALLABLE: transfer_push(transfer, TRANSFER_CALLABLE, value->as.callable); return true;
-    case VALUE_MAP:
-    case VALUE_SET: transfer_push(transfer, TRANSFER_MAP_NODE, value->as.map); return true;
-    case VALUE_VOID:
-    case VALUE_INTEGER:
-    case VALUE_FLOAT:
-    case VALUE_TEXT:
-    case VALUE_BYTES:
-    case VALUE_BOOLEAN:
-    case VALUE_RANGE:
-    case VALUE_DURATION:
-    case VALUE_INSTANT:
-    case VALUE_TIMESTAMP:
-    case VALUE_DECIMAL:
-    case VALUE_JSON_NUMBER:
-    case VALUE_TASK:
-    case VALUE_CHANNEL_SENDER:
-    case VALUE_PROCESS_ADDRESS:
-    case VALUE_PROCESS_INBOX:
-    case VALUE_SUPERVISOR_RUNNING:
-    case VALUE_PROCESS_MONITOR:
-    case VALUE_TEST_RECORDER:
-    case VALUE_TEST_SCRIPT:
-    case VALUE_TEST_MAILBOX: return true;
-    case VALUE_NATIVE_HANDLE: return true;
+      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION);
     case VALUE_MANAGED_PROCESS:
     case VALUE_MANAGED_SUPERVISOR:
       if (transfer->collect) ++transfer->managed_count;
       return true;
-  }
-  return false;
-}
-
-static void transfer_captured_part(CapabilityTransfer *transfer, TransferPart part) {
-  switch (part.kind) {
-    case TRANSFER_VALUE: break;
-    case TRANSFER_ENVIRONMENT: {
-      ChimiEnvironment *environment = part.pointer;
-      if (environment->requirements)
-        for (uint32_t slot = CHIMI_REQUIREMENT_SLOT_COUNT; slot-- > 0;)
-          transfer_push(transfer, TRANSFER_VALUE, environment->requirements[slot]);
-      if (environment->locals)
-        for (uint32_t slot = environment->local_count; slot-- > 0;)
-          transfer_push(transfer, TRANSFER_VALUE, environment->locals[slot]);
-      return;
-    }
-    case TRANSFER_CALLABLE: {
-      ChimiCallable *callable = part.pointer;
-      transfer_push(transfer, TRANSFER_CALLABLE, callable->inner);
-      transfer_push(transfer, TRANSFER_ENVIRONMENT, callable->environment);
-      return;
-    }
-    case TRANSFER_MAP_NODE: {
-      MapNode *node = part.pointer;
-      transfer_push(transfer, TRANSFER_MAP_NODE, node->right);
-      transfer_push(transfer, TRANSFER_MAP_NODE, node->left);
-      transfer_push(transfer, TRANSFER_VALUE, node->value);
-      return;
-    }
+    default: return false;
   }
 }
 
 /* Transfers every capability reachable from `root`. False when a transfer request
-   fails, or when the parent is cancelled meanwhile (`cancelled` is then set). */
+   fails, or when the parent is cancelled meanwhile (`cancelled` is then set). The
+   walk's probes count on the carrier it ends on, since a transfer request can move
+   the task to another carrier. */
 static bool transfer_captures(CapabilityTransfer *transfer, ChimiValue *root) {
-  transfer_push(transfer, TRANSFER_VALUE, root);
-  bool transferred = true;
-  while (transferred && transfer->pending_length) {
-    TransferPart part = transfer->pending[--transfer->pending_length];
-    if (!transfer_visit(transfer, part.pointer)) continue;
-    if (part.kind == TRANSFER_VALUE) transferred = transfer_captured_value(transfer, part.pointer);
-    else transfer_captured_part(transfer, part);
-  }
-  free(transfer->visited);
-  free(transfer->pending);
+  uint64_t probes = 0;
+  bool transferred = chimi_transfer_captures_v1(transfer, root, &probes);
+  carrier->capture_transfer_probes += probes;
   return transferred;
 }
 

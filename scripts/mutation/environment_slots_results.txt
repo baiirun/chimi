@@ -12,3 +12,10 @@ KILLED       a task capture skips the environment's locals [cli -- native_tasks_
 EXIT 1
 # The surviving mutant is equivalent (see the list's docstring) and was removed
 # from the list; the other 4 are killed.
+
+# CHI-305 phase 3: retargeted to heap/transfer.rs
+# mutation run at 221c8cb90689f4e87633acfc6a9d89cb38791435
+# environment_slots_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (62s)
+KILLED       a task capture skips the environment's locals [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (57s)
+# result: every mutant killed

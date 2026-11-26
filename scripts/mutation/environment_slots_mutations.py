@@ -13,6 +13,7 @@ equivalent mutant, in the first run).
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
 DATA = "src/backend/program_data.rs"
 CLOSURES = "a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends"
 
@@ -37,8 +38,9 @@ MUTATIONS = [
         "      callable->local_count = function->local_count;\n"
         "      callable->environment = capture_requirements(environment);",
         "      callable->environment = capture_requirements(environment);")]),
-    dict(name="a task capture skips the environment's locals", file=RUNTIME, edits=[(
-        "        for (uint32_t slot = environment->local_count; slot-- > 0;)",
-        "        for (uint32_t slot = 0; slot-- > 0;)")],
+    # The capture walk is Rust since CHI-305 step 5, phase 3.
+    dict(name="a task capture skips the environment's locals", file=TRANSFER, edits=[(
+        "                    for slot in (0..(*environment).local_count as usize).rev() {",
+        "                    for slot in (0..0usize).rev() {")],
         targets=["cli"], filter="native_tasks_capture_render_encode_and_send_deeply_nested_values"),
 ]
