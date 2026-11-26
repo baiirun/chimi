@@ -19,8 +19,8 @@ MUTATIONS = [
         "  if (value->kind == VALUE_TASK) return value->as.task | CHIMI_TASK_HANDLE_KEY;\n",
         "")]),
     handle("a copied task handle is not retained", [(
-        "    uint64_t key = counted_handle_key(duplicate);\n    if (key) counted_handle_retain(key);",
-        "    uint64_t key = counted_handle_key(duplicate);\n    if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_retain(key);")]),
+        "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_retain(key);\n}",
+        "  uint64_t key = counted_handle_key(value);\n  if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_retain(key);\n}")]),
     handle("a freed allocation keeps its task handle counted", [(
         "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_drop(key);\n}",
         "  uint64_t key = counted_handle_key(value);\n  if (key && !(key & CHIMI_TASK_HANDLE_KEY)) counted_handle_drop(key);\n}")]),

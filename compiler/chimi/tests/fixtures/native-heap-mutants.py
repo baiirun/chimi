@@ -55,24 +55,11 @@ E2E = cargo("native_concurrency_pipeline_runs", "native_task_result_can_be_read"
             "native_a_task_keeps", "native_a_queued_message", "native_child_defect", "native_channel", "native_task")
 
 MUTANTS = [
-    # The collector is Rust since CHI-305 step 5 phase 2: its pass-choice,
-    # marking and region-end mutants are in scripts/mutation/collector_mutations.py.
-    ("adopt-into-base", "adopted messages join the innermost region",
-     "  if (scope) {\n    area->role = AREA_YOUNG;", "  if (0) {\n    area->role = AREA_YOUNG;", HEAP),
-    ("copy-ignores-foreign-pointers", "a pointer into another heap is reported",
-     "  if (!copy_owns(copy, header->area)) {\n    copy->status = HEAP_FOREIGN_POINTER;",
-     "  if (0) {\n    copy->status = HEAP_FOREIGN_POINTER;", HEAP),
-    ("copy-without-forwarding-table", "a copy preserves sharing",
-     "  void *existing = copy_table_find(copy, pointer);", "  void *existing = NULL;", HEAP),
-    ("copy-whole-vector-of-a-window", "a window copy rebuilds only the window",
-     "  uint32_t length = list->as.list.length;\n  ChimiValue **values = malloc(((size_t)length + 1) * sizeof(*values));\n  if (!values) exhausted_memory();\n  for (uint32_t index = 0; index < length; ++index)\n    values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);",
-     "  uint32_t length = list->as.list.length;\n  uint32_t whole = source.length, start = list->as.list.start;\n  ChimiValue **values = malloc(((size_t)whole + 1) * sizeof(*values));\n  if (!values) exhausted_memory();\n  list->as.list.start = 0; list->as.list.length = whole;\n  for (uint32_t index = 0; index < whole; ++index)\n    values[index] = copy_forward(copy, list_get(list, index), ALLOCATION_VALUE);\n  list->as.list.length = length; length = whole; (void)start;",
-     HEAP),
+    # The collector is Rust since CHI-305 step 5 phase 2, and fragments and the
+    # heaps' lifecycle since phase 3: their mutants are in
+    # scripts/mutation/collector_mutations.py and fragment_mutations.py.
     ("fragment-record-reserves-64k", "small messages cost their size (ts-df67fb)",
      "enum { FRAGMENT_ROOTS = 2 };", "enum { FRAGMENT_ROOTS = 8192 };", HEAP),
-    ("heap-destroy-skips-adopted", "teardown frees every allocation",
-     "  while (heap->adopted) {\n    AllocationArea *area = heap->adopted;\n    heap->adopted = area->next;\n    area_release_all(area);\n    area_free(area);\n  }",
-     "  heap->adopted = NULL;", HEAP),
     ("compaction-into-current-area", "list compaction allocates in the list's own area",
      "      list_copy_window(list, 0, list->as.list.length, allocation_header(list)->area);",
      "      list_copy_window(list, 0, list->as.list.length, NULL);", FUZZ),
@@ -94,7 +81,8 @@ MUTANTS = [
     # The channel counts moved to the scheduler in CHI-308 step 1
     # (scripts/mutation/handle_count_mutations.py mutates them there).
     ("endpoint-copy-not-counted", "an endpoint copy in transit is a reference",
-     "    if (key) counted_handle_retain(key);\n", "    (void)key;\n", RELEASE),
+     "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_retain(key);\n}",
+     "  uint64_t key = counted_handle_key(value);\n  (void)key;\n}", RELEASE),
     ("never-queue-release", "dropped channels free their queued messages",
      "    chimi_fiber_handle_drop(key);\n    return;\n", "    return;\n", RELEASE),
     ("endpoint-free-not-counted", "dropped channels free their queued messages",

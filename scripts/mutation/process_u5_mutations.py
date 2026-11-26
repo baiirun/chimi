@@ -16,6 +16,8 @@ CRATE = "compiler/chimi"
 RUNTIME = "runtime/native/runtime.c"
 NATIVE = "src/backend/native.rs"
 TYPING = "src/typing.rs"
+# The fragment copy and adoption are Rust since CHI-305 step 5 phase 3.
+FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
 FIXTURE = "src/process_lab/fixture.rs"
 PROCESSES = "src/execution/processes.rs"
 
@@ -58,9 +60,9 @@ MUTATIONS = [
     lab("a refused message is never freed", RUNTIME, "CB03",
         ["fragments_live is not 0"], [(
             SEND_FREE, "      if (request.status == CHIMI_RESPONSE_UNSET) fragment_free(message);")]),
-    lab("a message copy ignores sharing", RUNTIME, "CB02",
+    lab("a message copy ignores sharing", FRAGMENT, "CB02",
         ["copied_values is not 21", "exceeded the 60 s run limit"], [(
-            "  void *existing = copy_table_find(copy, pointer);\n  if (existing) return existing;\n",
+            "        let existing = copy.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
             "")]),
     lab("Full is reported as Unavailable", RUNTIME, "MB02",
         [OUTCOME], [(
@@ -93,16 +95,16 @@ MUTATIONS = [
             "fragment_copy_foreign_owner, carrier->fiber.heap->owner),",
             "current_heap->owner, carrier->fiber.heap->owner),")]),
     # Adopted messages join the receiver's region, so its heap stays flat.
-    lab("received messages join the heap's base area", RUNTIME, "MF01",
+    lab("received messages join the heap's base area", FRAGMENT, "MF01",
         ["process_heap_peak_value_bytes differs", "heap_chunks_live differs"], [(
-            "  heap_add_live(heap, area->bytes);\n  if (scope) {",
-            "  heap_add_live(heap, area->bytes);\n  if (scope && false) {")]),
-    lab("each small fragment costs a 64 KiB chunk", RUNTIME, "MF04",
+            "        if scope.is_null() {\n            (*area).role = AreaRole::BASE;",
+            "        if true {\n            (*area).role = AreaRole::BASE;")]),
+    lab("each small fragment costs a 64 KiB chunk", FRAGMENT, "MF04",
         ["fragment_bytes_peak exceeds"], [(
-            "  footprint_add(sizeof(*fragment));\n  fragment_footprint_add(sizeof(*fragment));",
-            "  footprint_add(sizeof(*fragment));\n  fragment_footprint_add(sizeof(*fragment) + 65536);"),
-            ("  return sizeof(*fragment) + fragment->area.bytes +",
-             "  return 65536 + sizeof(*fragment) + fragment->area.bytes +")]),
+            "        footprint_add(here, bytes);\n        fragment_footprint_add(here, bytes);",
+            "        footprint_add(here, bytes);\n        fragment_footprint_add(here, bytes + 65536);"),
+            ("        size_of::<RuntimeFragment>()\n            + (*fragment).area.bytes",
+             "        65536 + size_of::<RuntimeFragment>()\n            + (*fragment).area.bytes")]),
     # Trace family 3: identities, labels, and modes.
     lab("the incarnation is written from the task field", RUNTIME, "OB07",
         [TRANSCRIPT, "in its task field", "has a null incarnation_id"], [(
