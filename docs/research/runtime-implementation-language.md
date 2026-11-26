@@ -74,9 +74,11 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       sides (done 2026-11-26: `chimi-runtime/src/heap/layout.rs`, and a
       generated block of `_Static_assert`s in `runtime.c`; the structs stay
       in `runtime.c` rather than an internal header, since a header would
-      add a build input and cache key for nothing until Rust owns them); the collector gets an oracle (memory-report counters and
-      program outputs identical to the C, a verify pass after each sweep
-      under ASan, poisoned reset chunks); `handle_count_lock` moves into
+      add a build input and cache key for nothing until Rust owns them); the collector gets an oracle (done 2026-11-26: memory reports
+      and program outputs compared with the base branch by
+      `scripts/compare-programs.sh`, the heap check
+      `chimi-runtime/src/heap/verify.rs` after every pass under ASan, and
+      the existing poisoned reset chunks); `handle_count_lock` moves into
       Rust as a pthread mutex ThreadSanitizer still sees. Civil dates and
       timestamps move as a missed step 2 leaf.
    1. The allocator: small blocks, areas and footprint, then young chunks,

@@ -1,0 +1,47 @@
+import std/list as List
+import std/map as Map
+import std/task as Task
+import std/text as Text
+
+// Allocates every kind the collector handles (lists, text, records, maps,
+// closures, a task's heap) and keeps a growing part of it alive, so minor
+// passes, full passes and region ends all run. Its memory report is a
+// baseline for moving the collector to Rust (CHI-305 step 5).
+
+fn batch(round: Int) -> List<{ name: Text, size: Int }> {
+  List.repeat(round, 40)
+    |> List.enumerate()
+    |> List.map(fn(entry: (Int, Int)) -> { name: Text, size: Int } {
+      let (index, base) = entry
+      { name: Text.repeat("ab", (index + base) % 9), size: index * base }
+    })
+}
+
+fn total(items: List<{ name: Text, size: Int }>) -> Int {
+  List.reduce(items, 0, fn(sum: Int, item: { name: Text, size: Int }) -> Int { sum + item.size })
+}
+
+fn rounds(count: Int) -> Int {
+  loop state = (0, [], Map.empty()) {
+    let (round, kept, table) = state
+    case round {
+      _ if round == count -> break List.count(kept, fn(item: { name: Text, size: Int }) -> Bool { item.size > 0 }) + Map.size(table)
+      _ -> {
+        let items = batch(round)
+        let large = List.filter(items, fn(item: { name: Text, size: Int }) -> Bool { item.size % 5 == 0 })
+        let joined = Text.join(List.map(List.take(items, 4), fn(item: { name: Text, size: Int }) -> Text { item.name }), "-")
+        let next_kept = case round % 50 {
+          0 -> []
+          _ -> List.append(kept, List.take(large, 2))
+        }
+        (round + 1, next_kept, Map.put(table, round % 97, (joined, total(large))))
+      }
+    }
+  }
+}
+
+pub fn main() -> Int {
+  let child = Task.start(fn() -> Int { rounds(300) })
+  let here = rounds(700)
+  here + Task.result(child)
+}
