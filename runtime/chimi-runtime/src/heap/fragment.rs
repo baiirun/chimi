@@ -41,8 +41,6 @@ unsafe extern "C" {
     fn chimi_runtime_heap_destroyed_open() -> !;
     /// Adds the handle count a copied value holds, if it is a counted handle.
     fn chimi_runtime_retain_counted_value(value: *const Value);
-    /// A compact vector of `values`, built in the current area.
-    fn chimi_runtime_vector_from_values_v1(values: *const *mut Value, length: u32, out: *mut ListVector);
 }
 
 /// The next owner id a new heap takes; the main heap is owner 1.
@@ -230,7 +228,7 @@ pub(super) unsafe fn set_kind(payload: *mut c_void, kind: AllocationKind) {
 ///
 /// # Safety
 /// `here` is the running carrier and `target` a live area.
-unsafe fn allocating_into<T>(here: *mut Carrier, target: *mut AllocationArea, body: impl FnOnce() -> T) -> T {
+pub(super) unsafe fn allocating_into<T>(here: *mut Carrier, target: *mut AllocationArea, body: impl FnOnce() -> T) -> T {
     // SAFETY: the caller's contract.
     unsafe {
         let previous = (*here).fiber.target;
@@ -321,9 +319,7 @@ unsafe fn copy_list_window(here: *mut Carrier, copy: &mut Copy, list: *mut Value
             let item = list::get(list, index);
             values.push(forward(here, copy, item.cast(), AllocationKind::VALUE).cast::<Value>());
         }
-        allocating_into(here, copy.target, || {
-            chimi_runtime_vector_from_values_v1(values.as_ptr(), length, &raw mut (*payload).vector)
-        });
+        (*payload).vector = allocating_into(here, copy.target, || list::from_values(values.as_ptr(), length));
         (*payload).start = 0;
     }
 }
