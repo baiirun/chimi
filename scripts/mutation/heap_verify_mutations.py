@@ -28,12 +28,20 @@ MUTATIONS = [
     m("a pass frees a marked young allocation",
       "    if (header->mark_epoch == carrier->collecting_epoch) {\n      area_link(&scope->survivors, header);",
       "    if (header->mark_epoch == carrier->collecting_epoch && header->kind != ALLOCATION_LIST_NODE) {\n      area_link(&scope->survivors, header);"),
-    m("marking skips a list node's values",
-      "      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);",
-      "      for (uint32_t index = 0; index < node->count && kind != ALLOCATION_VALUE; ++index)\n        mark_push(node->slots[index], kind);",
-      # The collector's own forwarding check meets an unmarked chunk value
-      # first and ends the program before the heap check runs.
-      expect=["heap check failed", "allocation graph is inconsistent"]),
+    dict(name="marking skips a list node's values, unchecked", file=R, **CHECK, edits=[
+        ("      for (uint32_t index = 0; index < node->count; ++index) mark_push(node->slots[index], kind);",
+         "      for (uint32_t index = 0; index < node->count && kind != ALLOCATION_VALUE; ++index)\n"
+         "        mark_push(node->slots[index], kind);"),
+        # The collector's own forwarding check would meet the unmarked chunk
+        # value first; without it the heap check has to catch the bug.
+        ("  if (header->mark_epoch != here->collecting_epoch) allocation_graph_inconsistent();\n"
+         "  size_t total = sizeof(*header) + header->bytes;",
+         "  size_t total = sizeof(*header) + header->bytes;"),
+    ]),
+    m("a full pass keeps unmarked list nodes",
+      "    if (header->mark_epoch == carrier->collecting_epoch) {\n      link = &header->next;\n      continue;\n    }",
+      "    if (header->mark_epoch == carrier->collecting_epoch || header->kind == ALLOCATION_LIST_NODE) {\n"
+      "      link = &header->next;\n      continue;\n    }"),
     m("young chunk survivors are not moved",
       "  forward_survivors(scope, value, control);\n  reset_young_chunks(scope, !ending);",
       "  reset_young_chunks(scope, !ending);"),

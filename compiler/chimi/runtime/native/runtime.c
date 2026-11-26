@@ -564,6 +564,22 @@ typedef struct SmallBlock { struct SmallBlock *next; } SmallBlock;
    both run on 64 KiB fiber stacks. */
 typedef struct { void **items; size_t length; size_t capacity; } PointerStack;
 
+/* CHIMI_HEAP_VERIFY is a checking build, on by default under AddressSanitizer
+   (where the small-block cache is off) and off with -DCHIMI_HEAP_VERIFY=0:
+   after every pass the Rust oracle (chimi-runtime heap/verify.rs) reads the
+   region again through the layout mirrors and ends the program if the pass
+   left the young generation non-empty, miscounted the survivors or the
+   promotions, kept garbage in a full pass, or freed something still
+   reachable. What a pass frees is recorded by address, so the check never
+   reads a freed block. */
+#ifndef CHIMI_HEAP_VERIFY
+#define CHIMI_HEAP_VERIFY (!CHIMI_SMALL_BLOCK_CACHE)
+#endif
+#if CHIMI_HEAP_VERIFY
+static _Thread_local PointerStack heap_verify_freed, heap_verify_chunks;
+static void pointer_stack_push(PointerStack *stack, void *pointer);
+#endif
+
 /* The state of the fiber that is running: the heap it allocates in and, when set, the
    area allocate() uses instead of that heap's innermost one (static constants,
    fragment copies, and list_slice's in-place compaction). It belongs to the fiber,
@@ -1293,6 +1309,9 @@ static void release_allocation(AllocationHeader *header) {
     --carrier->heap_totals.live_allocations;
     footprint_sub(sizeof(*header) + header->bytes);
   }
+#if CHIMI_HEAP_VERIFY
+  if (carrier->collecting_scope) pointer_stack_push(&heap_verify_freed, header + 1);
+#endif
   small_block_give(header, sizeof(*header) + header->bytes);
 }
 
@@ -2530,6 +2549,10 @@ static void reset_young_chunks(AllocationScope *scope, bool keep_first) {
   scope->last_chunk->used = scope->bump;
   size_t dead_bytes = 0, dead_count = 0;
   for (YoungChunk *chunk = first; chunk; chunk = chunk->next) {
+#if CHIMI_HEAP_VERIFY
+    pointer_stack_push(&heap_verify_chunks, chunk->data);
+    pointer_stack_push(&heap_verify_chunks, chunk->used);
+#endif
     for (unsigned char *cursor = chunk->data; cursor < chunk->used;) {
       AllocationHeader *header = (AllocationHeader *)cursor;
       cursor += young_rounded(header->bytes);
@@ -2637,22 +2660,20 @@ static uint64_t take_mark_epoch(void) {
   return here->next_epoch++;
 }
 
-/* CHIMI_HEAP_VERIFY is a checking build, on by default under AddressSanitizer:
-   after every pass the Rust oracle (chimi-runtime heap/verify.rs) reads the
-   region again through the layout mirrors and ends the program if the pass
-   left the young generation non-empty, miscounted the survivors, or freed
-   something still reachable. */
-/* The small-block cache is off exactly under AddressSanitizer. */
-#if !defined(CHIMI_HEAP_VERIFY) && !CHIMI_SMALL_BLOCK_CACHE
-#define CHIMI_HEAP_VERIFY 1
-#endif
-#ifdef CHIMI_HEAP_VERIFY
+
+#if CHIMI_HEAP_VERIFY
 uint32_t chimi_heap_verify_v1(const AllocationScope *scope, const ChimiValue *value,
-                              const ChimiControl *control, uint64_t epoch, bool full);
+                              const ChimiControl *control, uint64_t epoch, bool full,
+                              size_t promoted, void *const *freed, size_t freed_count,
+                              void *const *chunks, size_t chunk_bounds);
 const char *chimi_heap_verify_message_v1(uint32_t code);
 static void heap_verify(const AllocationScope *scope, ChimiValue **value, ChimiControl **control,
-                        uint64_t epoch, bool full) {
-  uint32_t code = chimi_heap_verify_v1(scope, value ? *value : NULL, control ? *control : NULL, epoch, full);
+                        uint64_t epoch, bool full, size_t promoted) {
+  uint32_t code = chimi_heap_verify_v1(scope, value ? *value : NULL, control ? *control : NULL, epoch, full,
+                                       promoted, heap_verify_freed.items, heap_verify_freed.length,
+                                       heap_verify_chunks.items, heap_verify_chunks.length);
+  heap_verify_freed.length = 0;
+  heap_verify_chunks.length = 0;
   if (code == 0) return;
   fprintf(stderr, "Chimi runtime heap check failed: %s\n", chimi_heap_verify_message_v1(code));
   abort();
@@ -2688,8 +2709,8 @@ static HeapStatus allocation_scope_sweep(AllocationScope *scope, ChimiValue **va
   }
   here->collecting_scope = NULL;
   ++scope->collections;
-#ifdef CHIMI_HEAP_VERIFY
-  heap_verify(scope, value, control, here->collecting_epoch, full);
+#if CHIMI_HEAP_VERIFY
+  heap_verify(scope, value, control, here->collecting_epoch, full, scope->promoted_bytes - promoted_before);
 #endif
   return foreign ? HEAP_FOREIGN_POINTER : HEAP_OK;
 }

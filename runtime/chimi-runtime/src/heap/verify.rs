@@ -7,9 +7,15 @@
 //!
 //! `runtime.c` calls it after every pass in a checking build
 //! (`CHIMI_HEAP_VERIFY`, on by default under AddressSanitizer). A minor pass
-//! checks what it promoted, so the check costs what the pass did; a full pass
-//! or a region's end checks every survivor and that each pointer into the
-//! region names a survivor.
+//! checks what it promoted, and that this is all it promoted, so the check
+//! costs what the pass did; a full pass or a region's end checks every
+//! survivor, that each was marked, and that each pointer into the region
+//! names a survivor.
+//!
+//! The pass tells the check, by address, what it freed and which young
+//! chunks it emptied, so a pointer to either is reported without reading
+//! the memory it names; a target's header is read only once the pointer is
+//! known to name live memory.
 //!
 //! What a pointer from a survivor may name, besides another survivor of the
 //! same region: an allocation of an enclosing region or of the heap's base
@@ -48,6 +54,27 @@ pub enum Failure {
     PointsToFreed = 7,
     /// An allocation still sits in a young chunk after the pass.
     StillInChunk = 8,
+    /// A full pass kept a survivor it did not mark.
+    KeptUnmarked = 9,
+    /// The allocations a minor pass marked do not add up to what it
+    /// promoted.
+    PromotionsWrong = 10,
+}
+
+impl Failure {
+    /// Every failure, for turning a code back into one.
+    pub const ALL: [Self; 10] = [
+        Self::YoungNotEmpty,
+        Self::BadSurvivorHeader,
+        Self::SurvivorCountsWrong,
+        Self::WrongKind,
+        Self::PointsIntoYoung,
+        Self::PointsIntoEndedRegion,
+        Self::PointsToFreed,
+        Self::StillInChunk,
+        Self::KeptUnmarked,
+        Self::PromotionsWrong,
+    ];
 }
 
 impl Failure {
@@ -61,8 +88,25 @@ impl Failure {
             Self::PointsIntoEndedRegion => c"a pointer names a region that has ended",
             Self::PointsToFreed => c"a pointer names an allocation the pass freed",
             Self::StillInChunk => c"an allocation is still in a young chunk after the pass",
+            Self::KeptUnmarked => c"a full pass kept an allocation it did not mark",
+            Self::PromotionsWrong => c"the allocations a minor pass marked do not match what it promoted",
         }
     }
+}
+
+/// What one pass did, as `runtime.c` reports it.
+pub struct Pass<'a> {
+    /// The pass's mark epoch.
+    pub epoch: u64,
+    /// Whether it marked and swept the survivors too.
+    pub full: bool,
+    /// The bytes it moved to the survivors.
+    pub promoted: usize,
+    /// The payload addresses of the allocations it freed, sorted.
+    pub freed: &'a [usize],
+    /// The address ranges, start inclusive and end exclusive, of the young
+    /// chunks it emptied.
+    pub young_chunks: &'a [(usize, usize)],
 }
 
 /// The header in front of an allocation's payload.
@@ -73,6 +117,7 @@ fn header_of(payload: *const u8) -> *const AllocationHeader {
 struct Check<'a> {
     scope: &'a AllocationScope,
     heap: *const RuntimeHeap,
+    pass: &'a Pass<'a>,
     /// Payload addresses of the region's survivors, sorted; filled only for a
     /// full check.
     survivors: Option<Vec<usize>>,
@@ -112,23 +157,40 @@ impl Check<'_> {
         if payload.is_null() {
             return Ok(());
         }
-        // SAFETY: the caller's contract.
-        let header = unsafe { &*header_of(payload) };
-        if header.kind != expected {
+        let address = payload as usize;
+        if self.pass.freed.binary_search(&address).is_ok() {
+            return Err(Failure::PointsToFreed);
+        }
+        if self.pass.young_chunks.iter().any(|&(start, end)| (start..end).contains(&address)) {
+            return Err(Failure::PointsIntoYoung);
+        }
+        // Each field is read on its own through the raw pointer, so a bug
+        // that left a stale header (an `in_chunk` byte that is no bool, say)
+        // gives a report rather than undefined behavior.
+        // SAFETY: the caller's contract; the pointer names no memory this
+        // pass freed or emptied.
+        let (kind, area, in_chunk) = unsafe {
+            let header = header_of(payload);
+            (
+                ptr::addr_of!((*header).kind).read(),
+                ptr::addr_of!((*header).area).read().cast_const(),
+                ptr::addr_of!((*header).in_chunk).cast::<u8>().read() != 0,
+            )
+        };
+        if kind != expected {
             return Err(Failure::WrongKind);
         }
-        let area = header.area.cast_const();
-        if ptr::eq(area, &self.scope.young) {
+        if area.is_null() || ptr::eq(area, &self.scope.young) {
             return Err(Failure::PointsIntoYoung);
         }
         if ptr::eq(area, &self.scope.survivors) {
-            if header.in_chunk {
+            if in_chunk {
                 return Err(Failure::StillInChunk);
             }
             let missing = self
                 .survivors
                 .as_ref()
-                .is_some_and(|survivors| survivors.binary_search(&(payload as usize)).is_err());
+                .is_some_and(|survivors| survivors.binary_search(&address).is_err());
             return if missing { Err(Failure::PointsToFreed) } else { Ok(()) };
         }
         // SAFETY: the caller's contract covers the ancestors and the heap.
@@ -139,9 +201,9 @@ impl Check<'_> {
         // of another heap (which the pass reports as foreign), or a region
         // of this heap that has ended.
         // SAFETY: the caller's contract.
-        let other = unsafe { &*area };
-        let ended = ptr::eq(other.heap.cast_const(), self.heap)
-            && (other.role == AreaRole::YOUNG || other.role == AreaRole::SURVIVOR);
+        let (heap, role) =
+            unsafe { (ptr::addr_of!((*area).heap).read().cast_const(), ptr::addr_of!((*area).role).read()) };
+        let ended = ptr::eq(heap, self.heap) && (role == AreaRole::YOUNG || role == AreaRole::SURVIVOR);
         if ended { Err(Failure::PointsIntoEndedRegion) } else { Ok(()) }
     }
 
@@ -246,11 +308,11 @@ unsafe fn in_list(mut next: *mut AllocationArea, area: *const AllocationArea) ->
     false
 }
 
-/// Checks `scope` right after a pass that ran with mark epoch `epoch` and
-/// kept what `value` and `control` reach. `full` checks every survivor, the
-/// survivor counts, and that every pointer into the region names a survivor;
-/// otherwise only the allocations this pass promoted, which lead the
-/// survivor list.
+/// Checks `scope` right after `pass`, which kept what `value` and `control`
+/// reach. A full pass checks every survivor, the survivor counts, that each
+/// survivor was marked, and that every pointer into the region names a
+/// survivor; a minor pass checks the allocations it promoted, which lead the
+/// survivor list, and that they add up to `pass.promoted`.
 ///
 /// # Safety
 /// `scope` is the region the pass just collected, with its ancestors and
@@ -259,8 +321,7 @@ pub unsafe fn verify(
     scope: *const AllocationScope,
     value: *const Value,
     control: *const Control,
-    epoch: u64,
-    full: bool,
+    pass: &Pass<'_>,
 ) -> Result<(), Failure> {
     // SAFETY: the caller's contract covers every read below.
     unsafe {
@@ -276,17 +337,24 @@ pub unsafe fn verify(
         let (mut bytes, mut count) = (0usize, 0usize);
         let mut header = scope.survivors.allocations.cast_const();
         while let Some(current) = header.as_ref() {
+            // More links than the area counts: a cycle, or a wrong count.
+            if count == scope.survivors.count {
+                return Err(Failure::SurvivorCountsWrong);
+            }
             if !ptr::eq(current.area, survivors_area) || current.kind.0 as usize >= AllocationKind::COUNT {
                 return Err(Failure::BadSurvivorHeader);
             }
-            if current.in_chunk {
+            if ptr::addr_of!(current.in_chunk).cast::<u8>().read() != 0 {
                 return Err(Failure::StillInChunk);
             }
-            // A minor pass links what it promotes to the front of the list,
-            // marked with its epoch, so it checks that prefix and stops:
-            // walking every survivor on every pass would make the check
-            // cost far more than the pass.
-            if !full && current.mark_epoch != epoch {
+            if current.mark_epoch != pass.epoch {
+                if pass.full {
+                    return Err(Failure::KeptUnmarked);
+                }
+                // A minor pass links what it promotes to the front of the
+                // list, marked with its epoch, so it checks that prefix and
+                // stops: walking every survivor on every pass would make the
+                // check cost far more than the pass.
                 break;
             }
             bytes += current.bytes;
@@ -294,16 +362,20 @@ pub unsafe fn verify(
             payloads.push(header.add(1).cast::<u8>());
             header = current.next;
         }
-        if full && (bytes != scope.survivors.bytes || count != scope.survivors.count) {
-            return Err(Failure::SurvivorCountsWrong);
+        if pass.full {
+            if bytes != scope.survivors.bytes || count != scope.survivors.count {
+                return Err(Failure::SurvivorCountsWrong);
+            }
+        } else if bytes != pass.promoted {
+            return Err(Failure::PromotionsWrong);
         }
         let mut sorted = None;
-        if full {
+        if pass.full {
             let mut addresses: Vec<usize> = payloads.iter().map(|payload| *payload as usize).collect();
             addresses.sort_unstable();
             sorted = Some(addresses);
         }
-        let check = Check { scope, heap: scope.heap, survivors: sorted };
+        let check = Check { scope, heap: scope.heap, pass, survivors: sorted };
         check.child(value.cast(), AllocationKind::VALUE)?;
         check.child(control.cast(), AllocationKind::CONTROL)?;
         for payload in payloads {
