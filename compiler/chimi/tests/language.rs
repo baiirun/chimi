@@ -6035,6 +6035,23 @@ fn a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":451");
 }
 
+// A closure called again before an earlier call of it returns: each call
+// binds its parameters in a copy of the closure's environment, so the inner
+// call's `n` does not replace the outer call's.
+#[test]
+fn a_closure_reentered_by_its_own_argument_keeps_each_call_s_parameters() {
+    let outcome = run_both(
+        "closure-reentered",
+        concat!(
+            "pub fn main() -> Int {\n",
+            "  let step = fn(g: fn(Int) -> Int, n: Int) -> Int { g(n) + n }\n",
+            "  step(fn(m) { step(fn(k) { k }, m + 1) }, 5)\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":17");
+}
+
 // PC-02
 #[test]
 fn a_clause_gap_names_the_missing_argument_shape() {

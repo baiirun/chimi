@@ -29,21 +29,24 @@ MUTATIONS = [
     heap("a value keeps the BYTES allocation kind",
          "        let value = allocate_kind::<Value>(1, AllocationKind::VALUE);",
          "        let value = allocate_kind::<Value>(1, AllocationKind::BYTES);"),
-    heap("a value table is counted as one value",
+    language("a value table is counted as one value",
          "    unsafe { allocate_kind::<*mut Value>(count as usize, AllocationKind::VALUE_POINTERS) }",
          "    unsafe { allocate_kind::<*mut Value>(count as usize, AllocationKind::VALUE) }"),
-    heap("a frame environment is counted as a captured one",
-         "        let frame = environment(AllocationKind::FRAME_ENVIRONMENT, local_count, ptr::null_mut(), ptr::null_mut());",
-         "        let frame = environment(AllocationKind::ENVIRONMENT, local_count, ptr::null_mut(), ptr::null_mut());"),
+    # Not listed: a frame environment counted as a captured one. No walk ever
+    # reaches a frame environment in a correct program, and the memory report
+    # sums the two kinds, so nothing can observe it.
     language("a frame copy shares the locals it should copy",
              "        (*frame).locals = if locals { clone_value_slots((*source).locals, count) } else { (*source).locals };",
              "        (*frame).locals = (*source).locals;"),
     language("a frame copy drops the requirements it shares",
              "        } else {\n            (*source).requirements\n        };",
              "        } else {\n            ptr::null_mut()\n        };"),
-    language("a captured closure loses its requirements",
-             "        (*captured).requirements = clone_value_slots((*source).requirements, requirement_slots());",
-             "        (*captured).requirements = new_value_slots(requirement_slots());"),
+    # Task.start runs the child with the captured requirements as its calling
+    # environment, so the native task tests reach this one.
+    dict(name="a captured closure loses its requirements", file=V, edits=[(
+        "        (*captured).requirements = clone_value_slots((*source).requirements, requirement_slots());",
+        "        (*captured).requirements = new_value_slots(requirement_slots());")],
+         targets=["cli"], filter="native_"),
     language("every 64-bit value is an Int",
              "        let value = new_value(kind);\n        (*value).payload.integer = raw;",
              "        let value = new_value(ValueKind::INTEGER);\n        (*value).payload.integer = raw;"),
