@@ -1,6 +1,6 @@
 """Mutants of the process kernel's message-free requests in Rust (CHI-305
 step 5, phase 7, tenth PR): `Process.receive` and its monitor notices, and
-`Supervisor.wait`'s escalation. (g27, managed_copy and process_u7 hold the
+what it makes of a notice. (g27, managed_copy and process_u7 hold the
 retargeted mutants of own address, mailbox counts and removal.)
 
 Run: scripts/mutation/mutate.py scripts/mutation/process_kernel_mutations.py
@@ -14,6 +14,10 @@ Left out, because no test outside a leak checker can see them:
 - A receive cancelled after its message arrived that keeps the message. The
   fragment then leaks, which only LeakSanitizer reports, and the race needs a
   cancel landing between delivery and resumption.
+- `Supervisor.wait` answering a failed request where its supervisor
+  escalated. A root escalation ends the program with the scheduler's own
+  `Supervisor.RestartLimitExceeded` defect (lab ES01), so the waiter's defect
+  is never the one reported.
 """
 
 CRATE = "compiler/chimi"
@@ -34,9 +38,4 @@ MUTATIONS = [
         "                    StandardConstructor::DOWN_RETURNED + (request.down - Scheduler::DOWN_RETURNED),",
         "                    StandardConstructor::DOWN_RETURNED,",
     )]),
-    dict(name="an escalated wait reports a failed request", file=PROCESS_KERNEL, edits=[(
-        "                if !stop && request.status == Scheduler::RESPONSE_DEFECTED {",
-        "                if false {",
-    )], command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--", "--scenario", "ES01"],
-        expect=["ES01"]),
 ]

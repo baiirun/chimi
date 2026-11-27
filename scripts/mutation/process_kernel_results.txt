@@ -3,7 +3,24 @@
 BASELINE ok  [process_lab cli] (256s)
 KILLED       a monitor notice is returned as the message [process_lab cli] (162s)
 KILLED       every notice is Down.Returned [process_lab cli] (163s)
-SURVIVED     a forced receive is a defect [process_lab cli] (160s)
-SURVIVED     a cancelled receive keeps its message [process_lab cli] (161s)
-SURVIVED     an escalated wait reports a failed request [process_lab cli] (161s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# result: every mutant kept is killed. Three survivors (a forced receive as a defect,
+# a cancelled receive keeping its message, an escalated wait's failed request) are
+# left out as unobservable; the script's docstring gives each reason. The wait
+# mutant also survived lab ES01 alone.
+
+# Retargeted runtime.c mutants, now on intrinsics/process_kernel.rs and processes.rs
+# mutation run at 7c468099638e5fc708c98a6913fca22279ceb15c
+KILLED       capacity reports the backlog [cargo run --quiet --bin chimi-process-lab -- --scenario MB13] (55s)
+KILLED       the own address routes by name [cargo run --quiet --bin chimi-process-lab -- --scenario MB12] (58s)
+# result: every mutant killed
+# mutation run at 7c468099638e5fc708c98a6913fca22279ceb15c
+KILLED       a second remove keeps the generic message [channel_variants -- managed] (57s)
+# result: every mutant killed
+# mutation run at 7c468099638e5fc708c98a6913fca22279ceb15c
+KILLED       MB10: Process.spec accepts a computed zero capacity [cargo run --quiet --bin chimi-process-lab -- --scenario MB10 --through U6] (53s)
+KILLED       SV11: Supervisor.policy accepts members over capacity [cargo run --quiet --bin chimi-process-lab -- --scenario SV11 --through U6] (53s)
+# result: every mutant killed
+# mutation run at 7c468099638e5fc708c98a6913fca22279ceb15c
+KILLED       RT07: a second register replaces the name [cargo run --quiet --bin chimi-process-lab -- --scenario RT07 --through U7] (53s)
+KILLED       SV12: the foreign-owner defect names one supervisor [cargo run --quiet --bin chimi-process-lab -- --scenario SV12 --through U7] (54s)
+# result: every mutant killed
