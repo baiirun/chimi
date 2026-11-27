@@ -47,9 +47,9 @@ MUTATIONS = [
     std("native unwrap_or_fail fails on Some", CORE_INTRINSICS, [(
         "if option.length == 1 {",
         "if option.length == 0 {")], filter="standard_"),
-    std("native Debug.crash drops the caller's message", RUNTIME, [(
-        "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);",
-        "      return defect(\"Debug.crash\", call_node);")], filter="standard_programs"),
+    std("native Debug.crash drops the caller's message", CORE_INTRINSICS, [(
+        "defect_with(lasting_message(bytes_of(arguments[0])), node)",
+        "defect(c\"Debug.crash\", node)")], filter="standard_"),
     # Chimi source of the modules.
     std("Text.lines keeps a final empty line", TEXT, [(
         "    [..most, \"\"] -> most\n",
