@@ -1,0 +1,13 @@
+# mutation run at 52df101fea5e19ab720167fbeaf64e0eb11201b2
+# processes_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [cli -- native_process_data_constructors] (154s)
+KILLED       the supervisor constructors go to C [cli -- native_process_data_constructors] (59s)
+KILLED       a spec accepts a zero capacity [cli -- native_process_data_constructors] (56s)
+KILLED       a handoff spec accepts a negative shutdown [cli -- native_process_data_constructors] (55s)  (after the test gained pick 8)
+KILLED       a restart window of zero is accepted [cli -- native_process_data_constructors] (55s)
+KILLED       a negative restart limit is accepted [cli -- native_process_data_constructors] (56s)
+KILLED       a policy reports its member count as the capacity [cli -- native_process_data_constructors] (56s)
+KILLED       members equal to capacity are refused [cli -- native_process_data_constructors] (54s)  (after the test gained pick 9)
+KILLED       a named spec can be registered again [cli -- native_process_data_constructors] (55s)
+KILLED       a duration defect reports the integer [cli -- native_process_data_constructors] (55s)
+# result: every mutant killed

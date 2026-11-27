@@ -1854,6 +1854,13 @@ _Static_assert(CHIMI_INTRINSIC_SELECT_AFTER == 79, "layout: CHIMI_INTRINSIC_SELE
 _Static_assert(CHIMI_INTRINSIC_SELECT_AT == 80, "layout: CHIMI_INTRINSIC_SELECT_AT");
 _Static_assert(CHIMI_INTRINSIC_SELECT_FIRST == 81, "layout: CHIMI_INTRINSIC_SELECT_FIRST");
 _Static_assert(CHIMI_INTRINSIC_SELECT_WATCH == 90, "layout: CHIMI_INTRINSIC_SELECT_WATCH");
+_Static_assert(CHIMI_INTRINSIC_PROCESS_SPEC == 91, "layout: CHIMI_INTRINSIC_PROCESS_SPEC");
+_Static_assert(CHIMI_INTRINSIC_PROCESS_REGISTER == 92, "layout: CHIMI_INTRINSIC_PROCESS_REGISTER");
+_Static_assert(CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC == 100, "layout: CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_PROCESS == 101, "layout: CHIMI_INTRINSIC_SUPERVISOR_PROCESS");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR == 102, "layout: CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_POLICY == 103, "layout: CHIMI_INTRINSIC_SUPERVISOR_POLICY");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_RESTARTS == 104, "layout: CHIMI_INTRINSIC_SUPERVISOR_RESTARTS");
 _Static_assert(CHIMI_INTRINSIC_TASK_ALL == 73, "layout: CHIMI_INTRINSIC_TASK_ALL");
 _Static_assert(CHIMI_INTRINSIC_TASK_RESULTS == 74, "layout: CHIMI_INTRINSIC_TASK_RESULTS");
 _Static_assert(CHIMI_INTRINSIC_TASK_RACE == 75, "layout: CHIMI_INTRINSIC_TASK_RACE");
@@ -2858,7 +2865,9 @@ static ChimiValue *float_value(double raw) { return chimi_value_float_v1(raw); }
 /* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
    message for message, because both execution paths must report identical outcomes. */
 
-/* A defect message that outlives the collector: a defect ends its unit of work. */
+#if CHIMI_PROCESS_KERNEL
+/* A defect message that outlives the collector: a defect ends its unit of work.
+   Only the process kernel still formats one here. */
 static const char *numeric_message(const char *format, ...) {
   va_list arguments; va_start(arguments, format);
   char *message = malloc(256);
@@ -2866,6 +2875,7 @@ static const char *numeric_message(const char *format, ...) {
   vsnprintf(message, 256, format, arguments); va_end(arguments);
   return message;
 }
+#endif
 
 /* Canonical Float text (chimi_runtime::float, which the interpreter prints
    with too): the shortest digits that parse back to the same value, positional
@@ -4683,8 +4693,8 @@ const char *chimi_runtime_node_location_v1(int64_t node) {
      receiver adopts it) or frees it through release_message; a refused one stays
      with the sender, which frees it and returns its own original value.
 
-   The data constructors are pure and always compiled. The operations that talk to
-   the scheduler need the process kernel, which only process programs link: their
+   The data constructors are Rust (chimi-runtime intrinsics/processes.rs). The
+   operations that talk to the scheduler need the process kernel, which only process programs link: their
    runtime is built with CHIMI_PROCESS_KERNEL (pay-for-play, lab scenario MF06). */
 
 static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
@@ -4694,16 +4704,7 @@ static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
   return value;
 }
 
-/* A record with `count` fields, whose names are given in ascending order. */
-static ChimiValue *process_record(const char *const *names, ChimiValue **values, uint32_t count) {
-  ChimiValue *value = new_value(VALUE_RECORD);
-  value->as.record.length = count;
-  value->as.record.fields = allocate(count, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  for (uint32_t index = 0; index < count; ++index)
-    value->as.record.fields[index] = (RuntimeField){names[index], values[index]};
-  return value;
-}
+#if CHIMI_PROCESS_KERNEL
 
 /* The field `name` of a process record, or NULL. */
 static ChimiValue *process_field(const ChimiValue *record, const char *name) {
@@ -4712,117 +4713,6 @@ static ChimiValue *process_field(const ChimiValue *record, const char *name) {
     if (strcmp(record->as.record.fields[index].name, name) == 0) return record->as.record.fields[index].value;
   return NULL;
 }
-
-static ChimiControl *process_range_defect(const char *format, int64_t value, int64_t node) {
-  return defect(numeric_message(format, value), node);
-}
-
-static ChimiControl *process_duration_defect(const char *format, int64_t nanoseconds, int64_t node) {
-  char text[32];
-  duration_text(nanoseconds, text);
-  return defect(numeric_message(format, text), node);
-}
-
-/* Process.spec, register, Supervisor.process, supervisor, policy, and restarts. The
-   range defects match the interpreter's (process-and-supervisor-static-contracts.md). */
-static ChimiControl *invoke_process_data(uint32_t intrinsic, ChimiValue **arguments,
-                                         uint32_t argument_count, uint32_t call_node) {
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_PROCESS_SPEC: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_CALLABLE ||
-          arguments[1]->kind != VALUE_INTEGER || arguments[2]->kind != VALUE_DURATION)
-        return intrinsic_shape_defect(call_node);
-      if (arguments[1]->as.integer < 1)
-        return process_range_defect("Process.spec: mailbox capacity must be at least 1, got %" PRId64,
-                                    arguments[1]->as.integer, call_node);
-      if (arguments[2]->as.integer < 0)
-        return process_duration_defect("Process.spec: shutdown_within must be at least zero, got %s",
-                                       arguments[2]->as.integer, call_node);
-      static const char *const names[] = {"body", "capacity", "name", "shutdown_within"};
-      ChimiValue *values[] = {arguments[0], arguments[1],
-                              standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0), arguments[2]};
-      if (!values[2]) return intrinsic_shape_defect(call_node);
-      return success(process_record(names, values, 4));
-    }
-    /* A spec record with `handoff` set, as the interpreter builds it. It has no
-       name: Process.register takes only a Process.Spec. */
-    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_CALLABLE ||
-          arguments[1]->kind != VALUE_INTEGER || arguments[2]->kind != VALUE_DURATION)
-        return intrinsic_shape_defect(call_node);
-      if (arguments[1]->as.integer < 1)
-        return process_range_defect(
-          "Process.handoff_spec: mailbox capacity must be at least 1, got %" PRId64,
-          arguments[1]->as.integer, call_node);
-      if (arguments[2]->as.integer < 0)
-        return process_duration_defect(
-          "Process.handoff_spec: shutdown_within must be at least zero, got %s",
-          arguments[2]->as.integer, call_node);
-      static const char *const names[] = {"body", "capacity", "handoff", "name", "shutdown_within"};
-      ChimiValue *values[] = {arguments[0], arguments[1], boolean_value(true),
-                              standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0), arguments[2]};
-      if (!values[3]) return intrinsic_shape_defect(call_node);
-      return success(process_record(names, values, 5));
-    }
-    case CHIMI_INTRINSIC_PROCESS_REGISTER: {
-      if (argument_count != 2 || arguments[1]->kind != VALUE_PROCESS_ADDRESS)
-        return intrinsic_shape_defect(call_node);
-      ChimiValue *name = process_field(arguments[0], "name");
-      if (!name || name->kind != VALUE_CONSTRUCTED) return intrinsic_shape_defect(call_node);
-      if (name->as.constructed.length != 0)
-        return defect("Process.register: spec already has a name", call_node);
-      static const char *const names[] = {"body", "capacity", "name", "shutdown_within"};
-      ChimiValue *some[] = {arguments[1]};
-      ChimiValue *values[] = {process_field(arguments[0], "body"), process_field(arguments[0], "capacity"),
-                              standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, some, 1),
-                              process_field(arguments[0], "shutdown_within")};
-      for (uint32_t index = 0; index < 4; ++index)
-        if (!values[index]) return intrinsic_shape_defect(call_node);
-      return success(process_record(names, values, 4));
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_PROCESS: {
-      if (argument_count != 2) return intrinsic_shape_defect(call_node);
-      static const char *const names[] = {"restart", "spec"};
-      ChimiValue *values[] = {arguments[1], arguments[0]};
-      return success(process_record(names, values, 2));
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR: {
-      if (argument_count != 2) return intrinsic_shape_defect(call_node);
-      static const char *const names[] = {"policy", "restart"};
-      return success(process_record(names, arguments, 2));
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_POLICY: {
-      if (argument_count != 3 || arguments[0]->kind != VALUE_LIST || arguments[1]->kind != VALUE_INTEGER)
-        return intrinsic_shape_defect(call_node);
-      int64_t capacity = arguments[1]->as.integer;
-      if (capacity < 1)
-        return process_range_defect("Supervisor.policy: capacity must be at least 1, got %" PRId64,
-                                    capacity, call_node);
-      if ((int64_t)list_length(arguments[0]) > capacity)
-        return defect(numeric_message("Supervisor.policy: members must not exceed capacity %" PRId64
-                                      ", got %" PRIu32, capacity, list_length(arguments[0])),
-                      call_node);
-      static const char *const names[] = {"capacity", "members", "restarts"};
-      ChimiValue *values[] = {arguments[1], arguments[0], arguments[2]};
-      return success(process_record(names, values, 3));
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_RESTARTS: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_DURATION)
-        return intrinsic_shape_defect(call_node);
-      if (arguments[0]->as.integer < 0)
-        return process_range_defect("Supervisor.restarts: restart limit must be at least 0, got %" PRId64,
-                                    arguments[0]->as.integer, call_node);
-      if (arguments[1]->as.integer <= 0)
-        return process_duration_defect("Supervisor.restarts: restart window must be positive, got %s",
-                                       arguments[1]->as.integer, call_node);
-      static const char *const names[] = {"limit", "window"};
-      return success(process_record(names, arguments, 2));
-    }
-  }
-  return intrinsic_shape_defect(call_node);
-}
-
-#if CHIMI_PROCESS_KERNEL
 
 static ChimiValue *managed_value(ValueKind kind, uint64_t supervisor, uint64_t membership) {
   ChimiValue *value = new_value(kind);
@@ -5358,20 +5248,13 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
 static ChimiControl *invoke_process(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                     uint32_t argument_count, uint64_t span, uint32_t call_node,
                                     ChimiEnvironment *environment) {
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_PROCESS_SPEC:
-    case CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC:
-    case CHIMI_INTRINSIC_PROCESS_REGISTER:
-    case CHIMI_INTRINSIC_SUPERVISOR_PROCESS:
-    case CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR:
-    case CHIMI_INTRINSIC_SUPERVISOR_POLICY:
-    case CHIMI_INTRINSIC_SUPERVISOR_RESTARTS:
-      return invoke_process_data(intrinsic, arguments, argument_count, call_node);
-  }
 #if CHIMI_PROCESS_KERNEL
   return invoke_process_kernel(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
 #else
   (void)runtime;
+  (void)intrinsic;
+  (void)arguments;
+  (void)argument_count;
   (void)span;
   (void)environment;
   /* The compiler links the process runtime into every program that reaches one. */

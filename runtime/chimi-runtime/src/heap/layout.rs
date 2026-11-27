@@ -688,6 +688,13 @@ impl Intrinsic {
     pub const SELECT_AT: u32 = 80;
     pub const SELECT_FIRST: u32 = 81;
     pub const SELECT_WATCH: u32 = 90;
+    pub const PROCESS_SPEC: u32 = 91;
+    pub const PROCESS_REGISTER: u32 = 92;
+    pub const PROCESS_HANDOFF_SPEC: u32 = 100;
+    pub const SUPERVISOR_PROCESS: u32 = 101;
+    pub const SUPERVISOR_SUPERVISOR: u32 = 102;
+    pub const SUPERVISOR_POLICY: u32 = 103;
+    pub const SUPERVISOR_RESTARTS: u32 = 104;
     pub const TASK_ALL: u32 = 73;
     pub const TASK_RESULTS: u32 = 74;
     pub const TASK_RACE: u32 = 75;
@@ -1687,6 +1694,13 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SELECT_AT" Intrinsic::SELECT_AT)
     constant("CHIMI_INTRINSIC_SELECT_FIRST" Intrinsic::SELECT_FIRST)
     constant("CHIMI_INTRINSIC_SELECT_WATCH" Intrinsic::SELECT_WATCH)
+    constant("CHIMI_INTRINSIC_PROCESS_SPEC" Intrinsic::PROCESS_SPEC)
+    constant("CHIMI_INTRINSIC_PROCESS_REGISTER" Intrinsic::PROCESS_REGISTER)
+    constant("CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC" Intrinsic::PROCESS_HANDOFF_SPEC)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_PROCESS" Intrinsic::SUPERVISOR_PROCESS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR" Intrinsic::SUPERVISOR_SUPERVISOR)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_POLICY" Intrinsic::SUPERVISOR_POLICY)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_RESTARTS" Intrinsic::SUPERVISOR_RESTARTS)
     constant("CHIMI_INTRINSIC_TASK_ALL" Intrinsic::TASK_ALL)
     constant("CHIMI_INTRINSIC_TASK_RESULTS" Intrinsic::TASK_RESULTS)
     constant("CHIMI_INTRINSIC_TASK_RACE" Intrinsic::TASK_RACE)
