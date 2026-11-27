@@ -21,7 +21,7 @@ MUTATIONS = [
     mutant("a send to a closed channel reads as aborted", CHANNELS, [(
         "standard_value(StandardConstructor::CHANNEL_SEND_CLOSED, &[value])",
         "standard_value(StandardConstructor::CHANNEL_SEND_ABORTED, &[value])",
-    )]),
+    )], targets=("cli",), filter="native_channel_"),
     mutant("a drained receiver reads as aborted", CHANNELS, [(
         "return success(standard_value(StandardConstructor::CHANNEL_DRAINED, &[]));",
         "return failure(standard_value(StandardConstructor::CHANNEL_ABORTED, &[]));",
@@ -33,7 +33,7 @@ MUTATIONS = [
     mutant("a defected task's result is a request failure", CHANNELS, [(
         "                    Scheduler::RESPONSE_DEFECTED if request.value > 0 => return chimi_runtime_task_reply_v1(request.value),\n",
         "",
-    )]),
+    )], targets=("testing", "cli", "task_release", "resources")),
     mutant("a channel's completion and receiver swap", CHANNELS, [(
         "        (*fields).value = capability(ValueKind::CHANNEL_COMPLETION, channel, owner, token);\n        (*fields.add(1)).value = capability(ValueKind::CHANNEL_RECEIVER, channel, owner, token);\n        (*fields.add(2))",
         "        (*fields).value = capability(ValueKind::CHANNEL_RECEIVER, channel, owner, token);\n        (*fields.add(1)).value = capability(ValueKind::CHANNEL_COMPLETION, channel, owner, token);\n        (*fields.add(2))",
