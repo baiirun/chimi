@@ -1,16 +1,15 @@
 //! The std/process and std/supervisor operations that run on the scheduler
 //! (docs/architecture/supervised-process-runtime.md, "Mapping onto the
-//! native runtime"), as they move from `runtime.c`. This file holds the
-//! requests that need no spec: a process's own address and mailbox counts,
-//! `Process.send`, `receive`, `monitor` and `unmonitor`, and
-//! `Supervisor.address`, `remove_process`, `remove_supervisor`, `stop` and
-//! `wait`.
+//! native runtime"), moved from `runtime.c`: a process's own address and
+//! mailbox counts, `Process.send`, `receive`, `monitor` and `unmonitor`,
+//! and `Supervisor.address`, `remove_process`, `remove_supervisor`, `stop`
+//! and `wait`. The supervisor starts are in `process_starts.rs`.
 //!
 //! Only process programs link the process kernel (pay-for-play, lab
 //! scenario MF06), so nothing the evaluator always links calls this file:
 //! `runtime.c`'s kernel, which only the runtime variant built with
-//! `CHIMI_PROCESS_KERNEL` holds, calls [`chimi_runtime_process_kernel_v1`]
-//! first, and the linker drops this code from every other program.
+//! `CHIMI_PROCESS_KERNEL` holds, calls [`chimi_runtime_process_kernel_v1`],
+//! and the linker drops this code from every other program.
 
 use core::ffi::{CStr, c_char, c_void};
 use core::ptr;
@@ -19,6 +18,7 @@ use super::abi::arguments;
 use super::channels::{Carried, fragment_of, free_fragment};
 use super::clocks::ClockCall;
 use super::message::Message;
+use super::process_starts::{Starter, start_operation};
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
 use super::test_log::{foreign_message, send_to_test_mailbox};
 use crate::eval::cancelled;
@@ -79,31 +79,18 @@ unsafe fn ask_until_answered(request: &mut ProcessRequest) -> bool {
     }
 }
 
-/// What a refused hand-over says: "<operation>: the <subject> points into
-/// owner N, outside the <side>'s heap (owner M)".
-struct Foreign {
-    operation: &'static [u8],
-    subject: &'static [u8],
-    side: &'static [u8],
-}
-
 /// Issues `request` once with a copy of `value` as its message, carrying the
 /// Receivers and Completions the copy holds: the scheduler keeps both when
 /// it answers OK, until the receive that adopts the copy, and any other
 /// reply leaves them with this fiber. `counting` counts the copy's bytes
-/// toward the fiber's measured copies, as a sent message does. `Ok(true)`
-/// when the fiber was cancelled.
+/// toward the fiber's measured copies, as a sent message does. `Some(true)`
+/// when the fiber was cancelled; `None`, with nothing issued, when the value
+/// points into another heap (the caller reads why from the carrier at once).
 ///
 /// # Safety
 /// Runs on a fiber of a program linked with the process kernel; `value` is
 /// live.
-unsafe fn hand_over(
-    request: &mut ProcessRequest,
-    value: *mut Value,
-    counting: bool,
-    foreign: Foreign,
-    node: i64,
-) -> Result<bool, *mut Control> {
+pub(crate) unsafe fn hand_over(request: &mut ProcessRequest, value: *mut Value, counting: bool) -> Option<bool> {
     // SAFETY: the caller's contract; an OK reply makes the fragment the
     // scheduler's.
     unsafe {
@@ -111,9 +98,7 @@ unsafe fn hand_over(
         (*here).copy_counting = counting;
         let copy = fragment_of(value);
         (*here).copy_counting = false;
-        let Some(message) = copy else {
-            return Err(defect_with(foreign_message(foreign.operation, foreign.subject, foreign.side), node));
-        };
+        let message = copy?;
         let mut carried = Carried::of((*message).roots[0]);
         let capabilities = MessageCapabilities { items: carried.items, count: carried.count };
         request.message = message as u64;
@@ -123,7 +108,7 @@ unsafe fn hand_over(
         if request.status != Scheduler::RESPONSE_OK {
             free_fragment(message);
         }
-        Ok(cancel)
+        Some(cancel)
     }
 }
 
@@ -144,11 +129,10 @@ unsafe fn send(address: *mut Value, message: *mut Value, call_node: u32) -> *mut
         let mut request = ProcessRequest::of(Scheduler::REQUEST_PROCESS_SEND);
         request.address_kind = target.kind;
         request.address = target.target;
-        let foreign = Foreign { operation: b"Process.send", subject: b"message", side: b"sender" };
-        match hand_over(&mut request, message, true, foreign, node) {
-            Err(refused) => refused,
-            Ok(true) => cancelled(),
-            Ok(false) => match request.status {
+        match hand_over(&mut request, message, true) {
+            None => defect_with(foreign_message(b"Process.send", b"message", b"sender"), node),
+            Some(true) => cancelled(),
+            Some(false) => match request.status {
                 Scheduler::RESPONSE_OK => success(void_value()),
                 Scheduler::RESPONSE_FULL => {
                     failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))
@@ -180,16 +164,15 @@ unsafe fn monitor(address: *mut Value, notice: *mut Value, call_node: u32) -> *m
         let mut request = ProcessRequest::of(Scheduler::REQUEST_PROCESS_MONITOR);
         request.address_kind = target.kind;
         request.address = target.target;
-        let foreign = Foreign { operation: b"Process.monitor", subject: b"notice", side: b"watcher" };
-        match hand_over(&mut request, notice, false, foreign, node) {
-            Err(refused) => refused,
-            Ok(true) => cancelled(),
-            Ok(false) if request.status == Scheduler::RESPONSE_OK => {
+        match hand_over(&mut request, notice, false) {
+            None => defect_with(foreign_message(b"Process.monitor", b"notice", b"watcher"), node),
+            Some(true) => cancelled(),
+            Some(false) if request.status == Scheduler::RESPONSE_OK => {
                 let value = new_value(ValueKind::PROCESS_MONITOR);
                 (*value).payload.address.target = request.monitor;
                 success(value)
             }
-            Ok(false) => defect(c"Process.monitor scheduler request failed", node),
+            Some(false) => defect(c"Process.monitor scheduler request failed", node),
         }
     }
 }
@@ -264,13 +247,18 @@ unsafe fn removal_defect(function: &[u8], owner: u64, supervisor: u64, node: i64
     unsafe { defect_with(message, node) }
 }
 
-/// The intrinsic `intrinsic` of the process kernel on `arguments`, or null
-/// when `runtime.c` still serves it.
+/// The intrinsic `intrinsic` of the process kernel on `arguments`.
+/// `process_entry` is every incarnation's entry, for the starts.
 ///
 /// # Safety
 /// Runs on a fiber of a program linked with the process kernel; the
 /// arguments are live and the call's fields are its own.
-unsafe fn process_kernel_operation(call: ClockCall, intrinsic: u32, arguments: &[*mut Value]) -> *mut Control {
+unsafe fn process_kernel_operation(
+    call: ClockCall,
+    process_entry: *const c_void,
+    intrinsic: u32,
+    arguments: &[*mut Value],
+) -> *mut Control {
     // SAFETY: the caller's contract; payloads are read as their kinds say.
     unsafe {
         let node = i64::from(call.call_node);
@@ -400,13 +388,17 @@ unsafe fn process_kernel_operation(call: ClockCall, intrinsic: u32, arguments: &
                     defect(c"Supervisor.wait scheduler request failed", node)
                 }
             }
-            _ => ptr::null_mut(),
+            _ => {
+                let starter = Starter { runtime: call.runtime, entry: process_entry };
+                let started = start_operation(starter, intrinsic, arguments, call.call_node);
+                if started.is_null() { shape_defect(call.call_node) } else { started }
+            }
         }
     }
 }
 
-/// [`process_kernel_operation`] for `runtime.c`'s kernel: null when the
-/// intrinsic is still served there.
+/// [`process_kernel_operation`], for `runtime.c`'s kernel. `process_entry`
+/// is `chimi_rt_process_entry`, which only that runtime variant defines.
 ///
 /// # Safety
 /// As for [`process_kernel_operation`]; `values` holds `count` live values.
@@ -419,10 +411,11 @@ pub unsafe extern "C" fn chimi_runtime_process_kernel_v1(
     span: u64,
     call_node: u32,
     environment: *mut Environment,
+    process_entry: *const c_void,
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe {
         let call = ClockCall { runtime, span, call_node, environment };
-        process_kernel_operation(call, intrinsic, arguments(values, count))
+        process_kernel_operation(call, process_entry, intrinsic, arguments(values, count))
     }
 }

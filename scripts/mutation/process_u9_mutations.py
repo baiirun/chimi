@@ -14,6 +14,11 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
+# The supervisor starts marshal their specs and policies in Rust since
+# CHI-305 step 5, phase 7.
+STARTS = "../../runtime/chimi-runtime/src/intrinsics/process_starts.rs"
+# The scheduler trace writers are Rust since CHI-305 step 5, phase 7.
+TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
 
 TRANSCRIPT = "expected.transcript line"
 OUTCOME = "expected.outcome line"
@@ -29,7 +34,7 @@ def lab(name, file, scenario, expect, edits):
                 expect=expect)
 
 
-NESTED_MEMBER = "      array[index].supervisor = child;\n"
+NESTED_MEMBER = "                    (*slot).kind = Scheduler::MEMBER_SUPERVISOR;\n                    (*slot).restart = restart;\n"
 
 MUTATIONS = [
     # Declared nested supervisors.
@@ -37,10 +42,10 @@ MUTATIONS = [
         [TRANSCRIPT], [(
             "                            plan.steps.push_front(Step::Emit(ProcessEventKind::Stopped {\n                                supervisor: child,\n                            }));\n",
             "")]),
-    lab("supervisor_started names no parent", RUNTIME, "SV09",
+    lab("supervisor_started names no parent", TELEMETRY, "SV09",
         ["root `supervisor_started` has membership"], [(
-            'json_identity(output, "parent_supervisor_id", event->parent_supervisor);',
-            'json_identity(output, "parent_supervisor_id", 0);')]),
+            '        out.identity(b"parent_supervisor_id", event.parent_supervisor);',
+            '        out.identity(b"parent_supervisor_id", 0);')]),
     # Dynamic nested supervisors.
     lab("a nested supervisor takes no parent slot", KERNEL, "SV10",
         [TRANSCRIPT, OUTCOME], [(
@@ -50,19 +55,19 @@ MUTATIONS = [
         [TRANSCRIPT, OUTCOME], [(
             "            Some(Instance::Supervisor(child)) => Plan::from([\n                Step::StopMembers(child),\n                Step::Emit(ProcessEventKind::Stopped { supervisor: child }),\n                Step::Retire(child),\n                finish,\n            ]),",
             "            Some(Instance::Supervisor(_)) => Plan::from([finish]),")]),
-    lab("the ManagedSupervisor handle holds the nested supervisor, not its membership", RUNTIME, "SV10",
+    lab("the ManagedSupervisor handle holds the nested supervisor, not its membership", STARTS, "SV10",
         [OUTCOME, EXITED], [(
-            "managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,\n                                              request.membership)",
-            "managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,\n                                              request.supervisor)")]),
+            "managed_value(ValueKind::MANAGED_SUPERVISOR, parent, request.membership)",
+            "managed_value(ValueKind::MANAGED_SUPERVISOR, parent, request.supervisor)")]),
     # Nested escalation.
     # Never restarted, `counter` stays unrouted, so main's `Report` send
     # fails and main ends with that failure (exit 1).
-    lab("a declared nested supervisor is marshalled as Never", RUNTIME, "ES02",
+    lab("a declared nested supervisor is marshalled as Never", STARTS, "ES02",
         [TRANSCRIPT, OUTCOME, EXITED], [(
-            NESTED_MEMBER, NESTED_MEMBER + "      array[index].restart = CHIMI_RESTART_NEVER;\n")]),
-    lab("a declared nested supervisor is marshalled as OnDefect", RUNTIME, "ES03",
+            NESTED_MEMBER, NESTED_MEMBER + "                    (*slot).restart = Scheduler::RESTART_NEVER;\n")]),
+    lab("a declared nested supervisor is marshalled as OnDefect", STARTS, "ES03",
         [TRANSCRIPT, OUTCOME], [(
-            NESTED_MEMBER, NESTED_MEMBER + "      array[index].restart = CHIMI_RESTART_ON_DEFECT;\n")]),
+            NESTED_MEMBER, NESTED_MEMBER + "                    (*slot).restart = Scheduler::RESTART_ON_DEFECT;\n")]),
     lab("a nested escalation ends its membership as a requested end", KERNEL, "ES04",
         [TRANSCRIPT, OUTCOME], [(
             "                let cause = if record.end_requested {",

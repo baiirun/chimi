@@ -49,8 +49,8 @@ MUTATIONS = [
         "failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))",
     )]),
     mutant("a sent message's copy is not counted", [(
-        "        match hand_over(&mut request, message, true, foreign, node) {",
-        "        match hand_over(&mut request, message, false, foreign, node) {",
+        "        match hand_over(&mut request, message, true) {",
+        "        match hand_over(&mut request, message, false) {",
     )]),
     mutant("a monitor handle names no monitor", [(
         "                (*value).payload.address.target = request.monitor;\n",

@@ -7079,6 +7079,100 @@ fn native_process_data_constructors_check_values_when_they_run() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+/// The supervisor starts hand the scheduler 32-bit counts, so a mailbox
+/// capacity, a policy capacity or a restart limit past 4294967295 defects
+/// when a start reads it, naming the start, even for a member's spec inside
+/// a policy.
+#[test]
+fn native_supervisor_starts_refuse_counts_past_32_bits() {
+    let scratch = scratch_directory("native-process-starts");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/int as Int\n",
+            "import std/duration as Duration\n",
+            "import std/process as Process\n",
+            "import std/supervisor as Supervisor\n",
+            "import std/process.{Inbox}\n",
+            "import std/list as List\n",
+            "pub enum Message {\n  Ping\n}\n",
+            "fn work(inbox: Inbox<Message>) -> Void {\n  Void\n}\n",
+            "fn root() -> Supervisor.Running {\n",
+            "  Supervisor.start(Supervisor.policy([], 2, Supervisor.restarts(0, Duration.seconds(1))))\n}\n",
+            "fn process(capacity: Int) -> Int {\n",
+            "  let spec = Process.spec(work, capacity, Duration.seconds(1))\n",
+            "  case Supervisor.start_process(root(), spec, Supervisor.Restart.Never) {\n",
+            "    Success(_) -> 0\n    Failure(_) -> 1\n  }\n}\n",
+            "fn handoff(capacity: Int) -> Int {\n",
+            "  let spec = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) { Void }, capacity, Duration.seconds(1))\n",
+            "  case Supervisor.start_handoff(root(), spec, 7) {\n",
+            "    Success(_) -> 0\n    Failure(_) -> 1\n  }\n}\n",
+            "fn tree(capacity: Int, limit: Int, member: Int) -> Int {\n",
+            "  let spec = Process.spec(work, member, Duration.seconds(1)) |> Supervisor.process(Supervisor.Restart.Never)\n",
+            "  let _ = Supervisor.start(Supervisor.policy([spec], capacity, Supervisor.restarts(limit, Duration.seconds(1))))\n",
+            "  0\n}\n",
+            "pub fn main(arguments: List<Text>) -> Int {\n",
+            "  let pick = case List.first(arguments) {\n    Some(text) -> Int.parse(text)\n    None -> 0\n  }\n",
+            "  let big = 4294967296 + pick - pick\n",
+            "  case pick {\n",
+            "    0 -> process(big)\n",
+            "    1 -> handoff(big)\n",
+            "    2 -> tree(big, 1, 1)\n",
+            "    3 -> tree(1, big, 1)\n",
+            "    4 -> tree(1, 1, big)\n",
+            "    5 -> tree(1, big - 1, 1)\n",
+            "    _ -> process(1) + handoff(1)\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    for (pick, defect) in [
+        ("0", Some("Supervisor.start_process: mailbox capacity must be at most 4294967295, got 4294967296")),
+        ("1", Some("Supervisor.start_handoff: mailbox capacity must be at most 4294967295, got 4294967296")),
+        ("2", Some("Supervisor.start: capacity must be at most 4294967295, got 4294967296")),
+        ("3", Some("Supervisor.start: restart limit must be at most 4294967295, got 4294967296")),
+        ("4", Some("Supervisor.start: mailbox capacity must be at most 4294967295, got 4294967296")),
+        ("5", None),
+        ("6", None),
+    ] {
+        let outcome = scratch.join(format!("outcome-{pick}.json"));
+        let run = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg("--")
+            .arg(pick)
+            .output()
+            .unwrap();
+        let written = std::fs::read_to_string(&outcome).unwrap();
+        match defect {
+            Some(defect) => {
+                assert_eq!(run.status.code(), Some(70), "pick {pick}: {run:?}");
+                assert!(
+                    written.contains("\"outcome\":\"defect\"") && written.contains(defect),
+                    "pick {pick}: {written}"
+                );
+            }
+            None => {
+                assert_eq!(run.status.code(), Some(0), "pick {pick}: {run:?}");
+                assert!(written.contains("\"outcome\":\"success\""), "pick {pick}: {written}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_process_stack_depth_and_named_defects() {
     let scratch = scratch_directory("native-process-stack");

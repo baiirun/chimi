@@ -20,6 +20,9 @@ RUNTIME = "runtime/native/runtime.c"
 PROCESSES = "../../runtime/chimi-runtime/src/intrinsics/processes.rs"
 PROCESS_KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
+# The supervisor starts marshal their specs and policies in Rust since
+# CHI-305 step 5, phase 7.
+STARTS = "../../runtime/chimi-runtime/src/intrinsics/process_starts.rs"
 
 TRANSCRIPT = "expected.transcript line"
 OUTCOME = "expected.outcome line"
@@ -52,13 +55,15 @@ MUTATIONS = [
         [TRANSCRIPT, OUTCOME], [(
             "        if members >= supervision.policy.capacity.get() as usize {",
             "        if members > supervision.policy.capacity.get() as usize {")]),
-    lab("Stopped is reported as CapacityReached", RUNTIME, "SV06",
+    lab("Stopped is reported as CapacityReached", STARTS, "SV06",
         [OUTCOME], [(
-            "case CHIMI_RESPONSE_STOPPED: return failure(standard_value(CHIMI_CONSTRUCTOR_START_STOPPED, NULL, 0));",
-            "case CHIMI_RESPONSE_STOPPED: return failure(standard_value(CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED, NULL, 0));")]),
+            "Scheduler::RESPONSE_STOPPED => failure(standard_value(StandardConstructor::START_STOPPED, &[])),",
+            "Scheduler::RESPONSE_STOPPED => failure(standard_value(StandardConstructor::START_CAPACITY_REACHED, &[])),")]),
     # Names.
-    lab("NameTaken carries a text other than the trace label", RUNTIME, "RT03",
-        [OUTCOME], [('{text_value(label ? label : "")}', '{text_value("counter")}')]),
+    lab("NameTaken carries a text other than the trace label", STARTS, "RT03",
+        [OUTCOME], [(
+            "                let text = text_value(label.as_ptr(), label.count_bytes());",
+            '                let text = text_value(c"counter".as_ptr(), 7);')]),
     lab("every process name is one scheduler name", EVAL, "RT04",
         [TRANSCRIPT, OUTCOME, EXITED], [(
             "                (*value).payload.address.target = u64::from(symbol_index) + 1;",

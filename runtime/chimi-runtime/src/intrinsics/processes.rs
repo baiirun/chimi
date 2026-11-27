@@ -38,14 +38,14 @@ unsafe fn record(fields: &[(&'static CStr, *mut Value)]) -> *mut Value {
     }
 }
 
-/// The field `name` of a record, or null.
+/// The field `name` of a record, or null, also for a null `value`.
 ///
 /// # Safety
-/// `value` is live.
-unsafe fn field(value: *mut Value, name: &'static CStr) -> *mut Value {
+/// `value` is live or null.
+pub(crate) unsafe fn field(value: *mut Value, name: &'static CStr) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
-        if (*value).kind != ValueKind::RECORD {
+        if value.is_null() || (*value).kind != ValueKind::RECORD {
             return core::ptr::null_mut();
         }
         select_value(value, name.as_ptr())

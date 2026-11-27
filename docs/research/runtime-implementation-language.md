@@ -261,8 +261,14 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       the message or notice, and the Receivers and Completions it carries,
       to the scheduler (`hand_over` in `intrinsics/process_kernel.rs`).
       runtime.c's export for a send to a test address is gone, since the
-      Rust send calls the test mailbox directly. The supervisor starts,
-      which marshal specs and policies, are next.
+      Rust send calls the test mailbox directly.
+      Twelfth PR: the supervisor starts (`intrinsics/process_starts.rs`),
+      which marshal `Process.Spec` and `Supervisor.Policy` records into the
+      scheduler's structs; `start_handoff` reuses the send's `hand_over`.
+      runtime.c passes the kernel export `chimi_rt_process_entry`, so Rust
+      never names a symbol that only the kernel variant defines. runtime.c's
+      process kernel is now that entry, the release of a spec's context and a
+      one-line call into Rust.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

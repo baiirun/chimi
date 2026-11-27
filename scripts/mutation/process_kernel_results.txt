@@ -54,3 +54,44 @@ KILLED       a stack overflow is not named [cli -- native_process_stack_depth_an
 KILLED       the scheduler does not flag an overflowed body [cli -- native_process_stack_depth_and_named_defects] (59s)
 KILLED       OB07: the incarnation is written from the task field [cargo run --quiet --bin chimi-process-lab -- --scenario OB07 --through U5] (59s)
 # result: every mutant killed
+
+# Twelfth PR: the supervisor starts (process_starts_mutations.py and retargeted process-suite mutants)
+# The first run (089aa74c) killed four of the new mutants and five retargets, then ran out of disk; the rest were rerun at 4d1ca1ae.
+# mutation run at 089aa74cc9827d5f8e1632ff6012384a6731461d
+KILLED       a mailbox capacity past 32 bits is truncated [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (57s)
+KILLED       a policy capacity past 32 bits is truncated [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (56s)
+KILLED       a restart limit past 32 bits is truncated [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (57s)
+KILLED       the limits stop one short of 32 bits [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (54s)
+# result: four killed before the disk filled
+KILLED       RA01: declared members always marshal as Restart.Never [cargo run --quiet --bin chimi-process-lab -- --scenario RA01 --through U6] (52s)
+KILLED       SV04: declared members always marshal as OnDefect [cargo run --quiet --bin chimi-process-lab -- --scenario SV04 --through U6] (53s)
+KILLED       RT01: dynamic members always marshal as Restart.Never [cargo run --quiet --bin chimi-process-lab -- --scenario RT01 --through U6] (53s)
+KILLED       RA01: the restart limit marshals as 0 [cargo run --quiet --bin chimi-process-lab -- --scenario RA01 --through U6] (54s)
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       the restart limit stops one short of 32 bits [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (53s)
+KILLED       a member's spec names the nested start [cli -- native_supervisor_starts_refuse_counts_past_32_bits] (54s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       RA02: the restart window marshals as 1 ns [cargo run --quiet --bin chimi-process-lab -- --scenario RA02 --through U6] (50s)
+KILLED       OB04: telemetry carries the process id [cargo run --quiet --bin chimi-process-lab -- --scenario OB04 --through U6] (52s)
+KILLED       OB04 (recorded runs): telemetry carries the process id [cargo run --quiet --bin chimi-process-lab -- all --through U6] (82s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       SV06: Stopped is reported as CapacityReached [cargo run --quiet --bin chimi-process-lab -- --scenario SV06 --through U7] (53s)
+KILLED       RT03: NameTaken carries a text other than the trace label [cargo run --quiet --bin chimi-process-lab -- --scenario RT03 --through U7] (52s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       SV09: supervisor_started names no parent [cargo run --quiet --bin chimi-process-lab -- --scenario SV09 --through U9] (52s)
+KILLED       SV10: the ManagedSupervisor handle holds the nested supervisor, not its membership [cargo run --quiet --bin chimi-process-lab -- --scenario SV10 --through U9] (55s)
+KILLED       ES02: a declared nested supervisor is marshalled as Never [cargo run --quiet --bin chimi-process-lab -- --scenario ES02 --through U9] (52s)
+KILLED       ES03: a declared nested supervisor is marshalled as OnDefect [cargo run --quiet --bin chimi-process-lab -- --scenario ES03 --through U9] (53s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       a stopped supervisor reports a full one [cargo run --quiet --bin chimi-process-lab -- --scenario MB21] (52s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       a sent message's copy is not counted [process_lab cli] (157s)
+# result: every mutant killed
+# mutation run at 4d1ca1aed87391461d71e6c7ec06b208b6251e1d
+KILLED       CB07: a send skips the foreign-pointer check [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (55s)
+# result: every mutant killed

@@ -25,6 +25,7 @@ pub mod json;
 pub(crate) mod message;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod process_kernel;
+mod process_starts;
 pub mod processes;
 pub mod scalars;
 #[cfg(all(feature = "runtime-c", unix))]

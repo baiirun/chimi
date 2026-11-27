@@ -18,6 +18,13 @@ RUNTIME = "runtime/native/runtime.c"
 PROCESSES = "../../runtime/chimi-runtime/src/intrinsics/processes.rs"
 FIXTURE = "src/process_lab/fixture.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
+# The supervisor starts marshal their specs and policies in Rust since
+# CHI-305 step 5, phase 7.
+STARTS = "../../runtime/chimi-runtime/src/intrinsics/process_starts.rs"
+# The scheduler trace writers are Rust since CHI-305 step 5, phase 7.
+TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
+OB04_COUNT = "                (b\"discard_count\", event.discard_count),"
+OB04_PID = "                (b\"discard_count\", event.discard_count + libc::getpid() as u64),"
 
 TRANSCRIPT = "expected.transcript line"
 OUTCOME = "expected.outcome line"
@@ -33,10 +40,10 @@ def lab(name, file, scenario, expect, edits):
                 expect=expect)
 
 
-MEMBER_RESTART = '    array[index].restart = marshal_restart(process_field(member, "restart"));'
-LIMIT = "    .restart_limit = (uint32_t)limit->as.integer,"
-WINDOW = "    .restart_within = window->as.integer,"
-DYNAMIC_RESTART = "        .restart = marshal_restart(arguments[2]),"
+MEMBER_RESTART = '                let restart = restart_of(field(member, c"restart"));'
+LIMIT = "                restart_limit: limit as u32,"
+WINDOW = "                restart_within: (*window).payload.integer,"
+DYNAMIC_RESTART = "        request.restart = restart_of(arguments[2]);"
 WINDOW_PRUNE = "            .is_some_and(|at| at.saturating_add(restarts.within) <= now)"
 RESTART_RULE = "        if cause == TerminalCause::Defected && entry.member.restart == Restart::OnDefect && open {"
 CHARGE = """        supervision.restart_times.push_back(now);
@@ -63,16 +70,16 @@ CLOCK_MODE = ".clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTU
 
 MUTATIONS = [
     # Restart policy marshalling (runtime.c -> ChimiSupervisorPolicy).
-    lab("declared members always marshal as Restart.Never", RUNTIME, "RA01",
-        [TRANSCRIPT, EXITED], [(MEMBER_RESTART, "    array[index].restart = CHIMI_RESTART_NEVER;")]),
-    lab("declared members always marshal as OnDefect", RUNTIME, "SV04",
-        [TRANSCRIPT], [(MEMBER_RESTART, "    array[index].restart = CHIMI_RESTART_ON_DEFECT;")]),
-    lab("dynamic members always marshal as Restart.Never", RUNTIME, "RT01",
-        [TRANSCRIPT, EXITED], [(DYNAMIC_RESTART, "        .restart = CHIMI_RESTART_NEVER,")]),
-    lab("the restart limit marshals as 0", RUNTIME, "RA01",
-        [TRANSCRIPT, EXITED], [(LIMIT, "    .restart_limit = 0,")]),
-    lab("the restart window marshals as 1 ns", RUNTIME, "RA02",
-        [TRANSCRIPT, EXITED], [(WINDOW, "    .restart_within = 1,")]),
+    lab("declared members always marshal as Restart.Never", STARTS, "RA01",
+        [TRANSCRIPT, EXITED], [(MEMBER_RESTART, "                let restart = Scheduler::RESTART_NEVER;")]),
+    lab("declared members always marshal as OnDefect", STARTS, "SV04",
+        [TRANSCRIPT], [(MEMBER_RESTART, "                let restart = Scheduler::RESTART_ON_DEFECT;")]),
+    lab("dynamic members always marshal as Restart.Never", STARTS, "RT01",
+        [TRANSCRIPT, EXITED], [(DYNAMIC_RESTART, "        request.restart = Scheduler::RESTART_NEVER;")]),
+    lab("the restart limit marshals as 0", STARTS, "RA01",
+        [TRANSCRIPT, EXITED], [(LIMIT, "                restart_limit: 0,")]),
+    lab("the restart window marshals as 1 ns", STARTS, "RA02",
+        [TRANSCRIPT, EXITED], [(WINDOW, "                restart_within: 1,")]),
     # Restart accounting in the scheduler.
     lab("a restart exactly `within` later is inside the window", KERNEL, "RA04",
         [TRANSCRIPT, EXITED], [(
@@ -135,16 +142,12 @@ MUTATIONS = [
     # Virtual time and determinism.
     lab("the runner ignores --clock=virtual", RUNTIME, "OB06",
         ["exceeded the 60 s run limit"], [(CLOCK_MODE, ".clock_mode = CHIMI_SCHEDULER_CLOCK_REAL,")]),
-    lab("telemetry carries the process id", RUNTIME, "OB04",
-        ["telemetry of the second --trace=full run"], [(
-            "          event->waiter_depth, event->discard_count);",
-            "          event->waiter_depth, event->discard_count + (uint64_t)getpid());")]),
+    lab("telemetry carries the process id", TELEMETRY, "OB04",
+        ["telemetry of the second --trace=full run"], [(OB04_COUNT, OB04_PID)]),
     # The same mutant through `all`, where OB04 reads the result MB01's own
     # run recorded in the runtime kind instead of rebuilding it.
-    dict(name="OB04 (recorded runs): telemetry carries the process id", file=RUNTIME,
-         edits=[(
-             "          event->waiter_depth, event->discard_count);",
-             "          event->waiter_depth, event->discard_count + (uint64_t)getpid());")],
+    dict(name="OB04 (recorded runs): telemetry carries the process id", file=TELEMETRY,
+         edits=[(OB04_COUNT, OB04_PID)],
          command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
                   "all", "--through", "U6"],
          expect=["\"OB04\",\"status\":\"fail\",\"detail\":\"MB01: telemetry of the second"]),
