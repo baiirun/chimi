@@ -341,6 +341,13 @@ mod tests {
             .arg("-?")
             .output()
             .unwrap();
+        let version = std::process::Command::new("sh")
+            .arg(&script)
+            .arg("--version")
+            .current_dir(&directory)
+            .env("TMPDIR", &directory)
+            .output()
+            .unwrap();
         std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
@@ -348,6 +355,11 @@ mod tests {
         );
         assert_eq!(probe.status.code(), Some(1), "{probe:?}");
         assert!(probe.stdout.is_empty(), "{probe:?}");
+        // `--version` reaches Zig, from the temporary directory.
+        assert_eq!(
+            String::from_utf8(version.stdout).unwrap(),
+            "cc -target aarch64-macos.11.0 -g0 --version\n"
+        );
     }
 
     #[test]

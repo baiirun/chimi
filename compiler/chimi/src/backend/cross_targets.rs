@@ -101,10 +101,11 @@ pub const ZIG_AR_ARGUMENTS: [&str; 1] = ["ar"];
 /// that takes a C compiler as one executable (the `cc` crate in the build
 /// script's nested runtime builds). It drops the `--target=` and
 /// `-mmacosx-version-min=` flags that tool adds in Clang's spelling of the
-/// target, which `zig cc` rejects, since `-target` already names it, and
-/// fails `-?`, the `cc` crate's probe for Microsoft's compiler, which `zig cc`
-/// answers by writing an empty `a.o` into the current directory (the
-/// fiber library's source directory).
+/// target, which `zig cc` rejects, since `-target` already names it. `zig cc`
+/// answers the `cc` crate's probes `-?` (for Microsoft's compiler) and
+/// `--version` by writing an empty `a.o` into the current directory, the
+/// fiber library's source directory, so the script fails `-?` and answers
+/// `--version` from the temporary directory.
 #[allow(dead_code)]
 pub fn zig_cc_script(zig: &str, target: &CrossTarget) -> String {
     let arguments = zig_cc_arguments(target)
@@ -118,6 +119,7 @@ pub fn zig_cc_script(zig: &str, target: &CrossTarget) -> String {
          \x20 shift\n\
          \x20 case \"$argument\" in\n\
          \x20   '-?') exit 1 ;;\n\
+         \x20   --version) cd \"${{TMPDIR:-/tmp}}\" || exit 1; set -- \"$@\" \"$argument\" ;;\n\
          \x20   --target=*|-mmacosx-version-min=*) ;;\n\
          \x20   *) set -- \"$@\" \"$argument\" ;;\n\
          \x20 esac\n\
