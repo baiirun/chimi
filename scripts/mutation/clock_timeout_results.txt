@@ -18,3 +18,10 @@ KILLED       --clock-start is accepted with the real clock [clock] (12s)
 KILLED       scope firing is reported as a timer fire [clock] (11s)
 # result: every mutant killed
 exit=0
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the loop nodes moved (CHI-305 phase 7, PR 272):
+# mutation run at 54125fee9e4961d32dd35a33555adbb88202430e
+# clock_timeout_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [clock] (55s)
+KILLED       a busy loop never polls for scope deadlines [clock] (113s)
+# result: every mutant killed

@@ -1,0 +1,38 @@
+# mutation run at 1267e8d9b0b6b08bfd6048999c165a577458c280
+# loop_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [language] (83s)
+BASELINE ok  [cli clock] (35s)
+BASELINE ok  [language cli clock] (63s)
+BASELINE ok  [language cli] (62s)
+KILLED       a pass keeps the initial state [language] (69s)
+SURVIVED     a break leaves any enclosing loop [language] (80s)
+SURVIVED     a loop pass is no cancellation point [cli clock] (88s)
+KILLED       a fired scope does not stop a loop [language cli clock] (89s)
+KILLED       a pass keeps all it allocated [language cli] (84s)
+KILLED       a loop's region adds nothing to the totals [language cli] (87s)
+KILLED       the peak is the last scope's [language cli] (85s)
+KILLED       a direct loop's break gives its state [language] (79s)
+KILLED       a fallback pass reruns from zero [language] (79s)
+SURVIVED     a direct loop ignores cancellation [cli clock] (87s)
+KILLED       the scalar intrinsics go to C [language] (69s)
+KILLED       Map.remove goes to C [language] (82s)
+SURVIVED     a file read never sees a cancellation [cli clock] (95s)
+SURVIVED     std/test recorders go to C [language] (79s)
+
+# The first run stopped at its time limit after the mutants above. Reruns after tests were added or mutants pointed at the suite that covers them:
+# mutation run at 54125fee9e4961d32dd35a33555adbb88202430e
+BASELINE ok  [signals -- direct_integer_loop] (51s)
+BASELINE ok  [std_modules -- standard_] (8s)
+KILLED       a direct loop ignores cancellation [signals -- direct_integer_loop] (113s)
+KILLED       std/test recorders go to C [testing] (58s)
+# Survivors, each traced:
+# - "a break leaves any enclosing loop": Chimi has no break labels, so a break that reaches
+#   a pass always names the loop whose body it is in; one in a nested loop's initial state
+#   runs in chimi_rt_loop before any pass. Kept as a guard, as the C had it.
+# - "a loop pass is no cancellation point": run_node checks the same flag before the pass's
+#   body runs, so the cancellation arrives as the pass's control instead. Equivalent.
+# - "a file read never sees a cancellation": the check before a std/fs or std/env system
+#   call closes the window between the call node's own cancel check (run_node) and the
+#   syscall; no test can land a signal inside that window deterministically.
+# result: every non-equivalent mutant killed ("a direct loop ignores cancellation" was killed
+# once tests/signals.rs gained sigint_stops_an_endless_direct_integer_loop)

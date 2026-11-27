@@ -4,3 +4,10 @@
 BASELINE ok  [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (55s)
 KILLED       a node does not hand allocations back to its parent [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (57s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the loop nodes moved (CHI-305 phase 7, PR 272):
+# mutation run at 54125fee9e4961d32dd35a33555adbb88202430e
+# runtime_profile_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (52s)
+KILLED       profiling leaves direct loops on [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (51s)
+# result: every mutant killed

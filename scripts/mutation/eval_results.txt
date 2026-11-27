@@ -28,3 +28,11 @@ KILLED       a dependency call takes no span [language cli trace_export] (124s)
 TIMEOUT      True and False share one value [language] (656s)
 SURVIVED     a cancelled run keeps evaluating [cli clock] (100s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# Rerun after tests/language.rs gained a_decimal_overflow_defect_names_both_operands (PR 272):
+# mutation run at 4c60c736101cd106ed01ad5c06b674e692e57e01
+# eval_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language] (80s)
+KILLED       a decimal overflow names one operand twice [language] (79s)
+# result: every mutant killed
+# Survivor "a cancelled run keeps evaluating": loop passes, parks and host calls check the same flag, and no test program runs long without one of them; the C had the same check untested.

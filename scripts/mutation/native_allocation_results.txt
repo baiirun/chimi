@@ -6,3 +6,10 @@ BASELINE ok  [language -- a_match_reads_every_one] (0s)
 KILLED       a block always binds into a fresh clone [language -- an_inner_block_binding] (53s)
 SURVIVED     the stack array holds one subject fewer than the bound [language -- a_match_reads_every_one] (54s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# Rerun after match_node took its stack array as a bounds-checked slice (PR 272):
+# mutation run at 1267e8d9b0b6b08bfd6048999c165a577458c280
+# native_allocation_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- a_match_reads_every_one] (52s)
+KILLED       the stack array holds one subject fewer than the bound [language -- a_match_reads_every_one] (53s)
+# result: every mutant killed
