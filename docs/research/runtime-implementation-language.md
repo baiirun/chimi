@@ -224,7 +224,13 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Rust intrinsics reach the scheduler through `scheduler.rs`, whose one
       C call, `chimi_runtime_scheduler_request_v1`, restores the fiber's
       heap and carrier as every request must; the loop's scope check uses it
-      too.
+      too. Fifth PR: std/channel, std/broadcast, std/watch, `Task.result`
+      and `Task.cancel` (`intrinsics/channels.rs`), each one scheduler
+      request or a loop of them. runtime.c keeps the capability values (it
+      keeps the handle counts), the capability walk a send collects, and the
+      task result word's decoding, behind three small exports; its waits
+      still take a committed event's value through these intrinsics, so
+      `invoke_intrinsic` forwards those ids to Rust.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

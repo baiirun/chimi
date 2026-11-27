@@ -410,12 +410,31 @@ impl SchedulerRequest {
     }
 }
 
+/// `ChimiMessageCapabilities` (chimi_fiber.h): the Receivers and Completions a
+/// sent message carries, as a send request's context.
+#[repr(C)]
+pub struct MessageCapabilities {
+    pub items: *const c_void,
+    pub count: usize,
+}
+
 /// The scheduler's request kinds, replies and fiber commands (chimi_fiber.h)
 /// the Rust intrinsics use.
 pub struct Scheduler;
 
 impl Scheduler {
     pub const FIBER_CANCEL: u32 = 2;
+    pub const REQUEST_TASK_RESULT: u32 = 2;
+    pub const REQUEST_TASK_CANCEL: u32 = 3;
+    pub const REQUEST_CHANNEL_BOUNDED: u32 = 4;
+    pub const REQUEST_CHANNEL_SEND: u32 = 5;
+    pub const REQUEST_CHANNEL_RECEIVE: u32 = 6;
+    pub const REQUEST_CHANNEL_CLOSE: u32 = 7;
+    pub const REQUEST_CHANNEL_ABORT: u32 = 8;
+    pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
+    pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
+    pub const REQUEST_CHANNEL_WATCH: u32 = 38;
+    pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
     pub const REQUEST_SCOPE_ENTER: u32 = 25;
     pub const REQUEST_SCOPE_EXIT: u32 = 26;
     pub const REQUEST_SCOPE_CHECK: u32 = 27;
@@ -427,6 +446,13 @@ impl Scheduler {
     pub const RESPONSE_UNSET: u32 = 0;
     pub const RESPONSE_OK: u32 = 1;
     pub const RESPONSE_PENDING: u32 = 2;
+    pub const RESPONSE_SUCCEEDED: u32 = 3;
+    pub const RESPONSE_CANCELLED: u32 = 4;
+    pub const RESPONSE_DEFECTED: u32 = 5;
+    pub const RESPONSE_STACK_OVERFLOW: u32 = 6;
+    pub const RESPONSE_CLOSED: u32 = 8;
+    pub const RESPONSE_ABORTED: u32 = 9;
+    pub const RESPONSE_DRAINED: u32 = 10;
 }
 
 /// The codes of the program's core tree (runtime.h) the evaluator reads, and
@@ -587,6 +613,21 @@ impl Intrinsic {
     pub const LIST_PUSH: u32 = 130;
     pub const LIST_SLICE: u32 = 131;
     pub const LIST_SET: u32 = 132;
+    pub const TASK_RESULT: u32 = 9;
+    pub const TASK_CANCEL: u32 = 10;
+    pub const CHANNEL_SEND: u32 = 11;
+    pub const CHANNEL_RECEIVE: u32 = 12;
+    pub const CHANNEL_CLOSE: u32 = 13;
+    pub const CHANNEL_ABORT: u32 = 14;
+    pub const CHANNEL_BOUNDED: u32 = 15;
+    pub const CHANNEL_ADD_RECEIVER: u32 = 82;
+    pub const BROADCAST_BOUNDED: u32 = 83;
+    pub const BROADCAST_PUBLISH: u32 = 84;
+    pub const BROADCAST_SUBSCRIBE: u32 = 85;
+    pub const WATCH_STARTING_WITH: u32 = 86;
+    pub const WATCH_PUBLISH: u32 = 87;
+    pub const WATCH_SUBSCRIBE: u32 = 88;
+    pub const WATCH_RECEIVE: u32 = 89;
     pub const CAUSE_CONTEXT: u32 = 169;
     pub const CAUSE_OF: u32 = 170;
     pub const CAUSE_KIND_CODE: u32 = 171;
@@ -660,6 +701,11 @@ impl StandardConstructor {
     pub const DURATION_PARSE_INVALID: u32 = 34;
     pub const PROCESS_SEND_FULL: u32 = 36;
     pub const DURATION_PARSE_OUT_OF_RANGE: u32 = 35;
+    pub const CHANNEL_SEND_CLOSED: u32 = 17;
+    pub const CHANNEL_SEND_ABORTED: u32 = 18;
+    pub const CHANNEL_RECEIVED: u32 = 19;
+    pub const CHANNEL_DRAINED: u32 = 20;
+    pub const CHANNEL_ABORTED: u32 = 21;
 }
 
 /// `MapNode`.
@@ -1343,7 +1389,28 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerRequest" SchedulerRequest, "value", value)
     field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
     field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
+    size("ChimiMessageCapabilities" MessageCapabilities)
+    field("ChimiMessageCapabilities" MessageCapabilities, "items", items)
+    field("ChimiMessageCapabilities" MessageCapabilities, "count", count)
     constant("CHIMI_FIBER_CANCEL" Scheduler::FIBER_CANCEL)
+    constant("CHIMI_REQUEST_TASK_RESULT" Scheduler::REQUEST_TASK_RESULT)
+    constant("CHIMI_REQUEST_TASK_CANCEL" Scheduler::REQUEST_TASK_CANCEL)
+    constant("CHIMI_REQUEST_CHANNEL_BOUNDED" Scheduler::REQUEST_CHANNEL_BOUNDED)
+    constant("CHIMI_REQUEST_CHANNEL_SEND" Scheduler::REQUEST_CHANNEL_SEND)
+    constant("CHIMI_REQUEST_CHANNEL_RECEIVE" Scheduler::REQUEST_CHANNEL_RECEIVE)
+    constant("CHIMI_REQUEST_CHANNEL_CLOSE" Scheduler::REQUEST_CHANNEL_CLOSE)
+    constant("CHIMI_REQUEST_CHANNEL_ABORT" Scheduler::REQUEST_CHANNEL_ABORT)
+    constant("CHIMI_REQUEST_CHANNEL_ADD_RECEIVER" Scheduler::REQUEST_CHANNEL_ADD_RECEIVER)
+    constant("CHIMI_REQUEST_CHANNEL_BROADCAST" Scheduler::REQUEST_CHANNEL_BROADCAST)
+    constant("CHIMI_REQUEST_CHANNEL_WATCH" Scheduler::REQUEST_CHANNEL_WATCH)
+    constant("CHIMI_REQUEST_CHANNEL_SUBSCRIBE" Scheduler::REQUEST_CHANNEL_SUBSCRIBE)
+    constant("CHIMI_RESPONSE_SUCCEEDED" Scheduler::RESPONSE_SUCCEEDED)
+    constant("CHIMI_RESPONSE_CANCELLED" Scheduler::RESPONSE_CANCELLED)
+    constant("CHIMI_RESPONSE_DEFECTED" Scheduler::RESPONSE_DEFECTED)
+    constant("CHIMI_RESPONSE_STACK_OVERFLOW" Scheduler::RESPONSE_STACK_OVERFLOW)
+    constant("CHIMI_RESPONSE_CLOSED" Scheduler::RESPONSE_CLOSED)
+    constant("CHIMI_RESPONSE_ABORTED" Scheduler::RESPONSE_ABORTED)
+    constant("CHIMI_RESPONSE_DRAINED" Scheduler::RESPONSE_DRAINED)
     constant("CHIMI_REQUEST_SCOPE_ENTER" Scheduler::REQUEST_SCOPE_ENTER)
     constant("CHIMI_REQUEST_SCOPE_EXIT" Scheduler::REQUEST_SCOPE_EXIT)
     constant("CHIMI_REQUEST_SCOPE_CHECK" Scheduler::REQUEST_SCOPE_CHECK)
@@ -1425,6 +1492,11 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SET_SIZE" Intrinsic::SET_SIZE)
     constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
     constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
+    constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED" StandardConstructor::CHANNEL_SEND_CLOSED)
+    constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED" StandardConstructor::CHANNEL_SEND_ABORTED)
+    constant("CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED" StandardConstructor::CHANNEL_RECEIVED)
+    constant("CHIMI_CONSTRUCTOR_CHANNEL_DRAINED" StandardConstructor::CHANNEL_DRAINED)
+    constant("CHIMI_CONSTRUCTOR_CHANNEL_ABORTED" StandardConstructor::CHANNEL_ABORTED)
     constant("CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY" StandardConstructor::INT_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT" StandardConstructor::INT_PARSE_INVALID_DIGIT)
     constant("CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE" StandardConstructor::INT_PARSE_OUT_OF_RANGE)
@@ -1500,6 +1572,21 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_LIST_PUSH" Intrinsic::LIST_PUSH)
     constant("CHIMI_INTRINSIC_LIST_SLICE" Intrinsic::LIST_SLICE)
     constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
+    constant("CHIMI_INTRINSIC_TASK_RESULT" Intrinsic::TASK_RESULT)
+    constant("CHIMI_INTRINSIC_TASK_CANCEL" Intrinsic::TASK_CANCEL)
+    constant("CHIMI_INTRINSIC_CHANNEL_SEND" Intrinsic::CHANNEL_SEND)
+    constant("CHIMI_INTRINSIC_CHANNEL_RECEIVE" Intrinsic::CHANNEL_RECEIVE)
+    constant("CHIMI_INTRINSIC_CHANNEL_CLOSE" Intrinsic::CHANNEL_CLOSE)
+    constant("CHIMI_INTRINSIC_CHANNEL_ABORT" Intrinsic::CHANNEL_ABORT)
+    constant("CHIMI_INTRINSIC_CHANNEL_BOUNDED" Intrinsic::CHANNEL_BOUNDED)
+    constant("CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER" Intrinsic::CHANNEL_ADD_RECEIVER)
+    constant("CHIMI_INTRINSIC_BROADCAST_BOUNDED" Intrinsic::BROADCAST_BOUNDED)
+    constant("CHIMI_INTRINSIC_BROADCAST_PUBLISH" Intrinsic::BROADCAST_PUBLISH)
+    constant("CHIMI_INTRINSIC_BROADCAST_SUBSCRIBE" Intrinsic::BROADCAST_SUBSCRIBE)
+    constant("CHIMI_INTRINSIC_WATCH_STARTING_WITH" Intrinsic::WATCH_STARTING_WITH)
+    constant("CHIMI_INTRINSIC_WATCH_PUBLISH" Intrinsic::WATCH_PUBLISH)
+    constant("CHIMI_INTRINSIC_WATCH_SUBSCRIBE" Intrinsic::WATCH_SUBSCRIBE)
+    constant("CHIMI_INTRINSIC_WATCH_RECEIVE" Intrinsic::WATCH_RECEIVE)
     constant("CHIMI_INTRINSIC_CAUSE_CONTEXT" Intrinsic::CAUSE_CONTEXT)
     constant("CHIMI_INTRINSIC_CAUSE_OF" Intrinsic::CAUSE_OF)
     constant("CHIMI_INTRINSIC_CAUSE_KIND_CODE" Intrinsic::CAUSE_KIND_CODE)

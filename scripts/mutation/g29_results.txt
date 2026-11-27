@@ -31,3 +31,9 @@ KILLED       an event read through a field borrows nothing [channel_variants]
 KILLED       a move within the task counts as leaving it [channel_variants]
 # dropped as equivalent: "a new publish overtakes a parked one" (see g29_fiber_mutations.py)
 # result: 25 of 25 listed mutants killed
+
+# Rerun after the channel intrinsics moved to Rust (intrinsics/channels.rs, CHI-305 phase 7):
+BASELINE ok  [channel_variants] (59s)
+KILLED       publish returns no count [channel_variants] (59s)
+KILLED       a zero capacity broadcast is not rejected by name [channel_variants] (59s)
+# result: every mutant killed

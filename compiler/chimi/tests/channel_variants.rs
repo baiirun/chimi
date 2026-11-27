@@ -402,6 +402,16 @@ fn a_broadcast_needs_a_positive_capacity() {
     assert_defect(&result, "`Broadcast.bounded(0)` needs a positive capacity");
 }
 
+// A negative channel capacity is refused where the channel is made.
+#[test]
+fn a_channel_refuses_a_negative_capacity() {
+    let result = run_virtual(
+        "negative-capacity",
+        "pub fn main() -> Int {\n  let made = Channel.bounded(-1)\n  1\n}\n",
+    );
+    assert_defect(&result, "verified standard function has invalid runtime arguments");
+}
+
 // ----- Watch --------------------------------------------------------------------
 
 // A subscription's first receive is the current value; after that each

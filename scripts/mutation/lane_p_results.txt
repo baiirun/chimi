@@ -21,3 +21,8 @@ KILLED       a body's defect is remembered only while tracing [cargo run --quiet
 KILLED       --baseline without performance is ignored again [process_lab -- a_baseline_or_injection_without_performance_is_an_error] (10s)
 # result: every mutant killed
 EXIT 0
+
+# Rerun after the channel intrinsics moved to Rust (intrinsics/channels.rs, CHI-305 phase 7):
+BASELINE ok  [cli -- native_a_receiver_] (56s)
+KILLED       a sent message carries no capabilities [cli -- native_a_receiver_] (58s)
+# result: every mutant killed

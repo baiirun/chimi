@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest (std/
-//! task, std/channel, processes, waits, clocks, signals, log and metrics
+//! task starts and combinators, processes, waits, clocks, signals, log and metrics
 //! hosts, and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`, as host functions do.
 //!
@@ -14,6 +14,7 @@ use super::abi::arguments;
 use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
 use super::causes::cause_operation;
+use super::channels::channel_operation;
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
 use super::decimals::decimal_operation;
@@ -116,6 +117,10 @@ pub unsafe fn invoke_native(
             Intrinsic::CAUSE_CONTEXT => cause_context(scope(), arguments(values, count)),
             Intrinsic::CAUSE_OF..=Intrinsic::CAUSE_TO_TEXT => {
                 cause_operation(intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::TASK_RESULT..=Intrinsic::CHANNEL_BOUNDED
+            | Intrinsic::CHANNEL_ADD_RECEIVER..=Intrinsic::WATCH_RECEIVE => {
+                channel_operation(intrinsic, arguments(values, count), call_node)
             }
             Intrinsic::RESOURCE_SCOPED => resource_scoped(scope(), arguments(values, count)),
             Intrinsic::TEST_CAPTURE_DEFECT => capture_defect(scope(), arguments(values, count)),

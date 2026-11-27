@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 
 CHANNEL = "../../runtime/chimi-fiber/src/channel.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+CHANNELS = "../../runtime/chimi-runtime/src/intrinsics/channels.rs"
 CAPABILITY = "src/capability.rs"
 
 
@@ -52,12 +53,12 @@ MUTATIONS = [
     variant("a receive does not admit a parked publish", CHANNEL, [(
         "            self.admit_publishers(hub, &mut transition);\n        }\n        Ok((result, transition))",
         "        }\n        Ok((result, transition))")]),
-    variant("publish returns no count", RUNTIME_C, [(
-        "? integer_value(request.value)\n                           : void_value());",
-        "? integer_value(0)\n                           : void_value());")]),
-    variant("a zero capacity broadcast is not rejected by name", RUNTIME_C, [(
-        "      if (arguments[0]->as.integer < 1)\n        return defect(numeric_message(\"`Broadcast.bounded",
-        "      if (arguments[0]->as.integer < 0)\n        return defect(numeric_message(\"`Broadcast.bounded")]),
+    variant("publish returns no count", CHANNELS, [(
+        "integer_value(ValueKind::INTEGER, request.value)",
+        "integer_value(ValueKind::INTEGER, 0)")]),
+    variant("a zero capacity broadcast is not rejected by name", CHANNELS, [(
+        "                if capacity < 1 {",
+        "                if capacity < 0 {")]),
     # Watch.
     variant("a new watch subscription has not got the current value", CHANNEL, [(
         "            let copy = self.copy_value(current);\n            channel.queue.push_back(copy);\n",
