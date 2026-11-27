@@ -15,6 +15,7 @@ SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
+RUST_CAUSES = "../../runtime/chimi-runtime/src/intrinsics/causes.rs"
 
 
 def combinators(name, file, edits, filter=""):
@@ -53,11 +54,11 @@ MUTATIONS = [
     combinators("sibling failures are dropped", RUNTIME, [(
         "      if (collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {",
         "      if (false && collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {")]),
-    combinators("a sibling cause has no reason", RUNTIME, [(
-        "  cause_set(marked, CAUSE_REASON, integer_value(CAUSE_REASON_SIBLING));\n",
+    combinators("a sibling cause has no reason", RUST_CAUSES, [(
+        "        set(marked, Slot::REASON, int(REASON_SIBLING));\n",
         "")]),
     combinators("a stored Err loses its cause", RUNTIME, [(
-        "  return success(failed ? with_stored_cause(stored, control_cause(outcome)) : stored);",
+        "  return success(failed ? chimi_runtime_with_stored_cause_v1(stored, chimi_runtime_control_cause_v1(outcome)) : stored);",
         "  return success(stored);")]),
     combinators("an empty race parks instead of defecting", RUNTIME, [(
         "    if (intrinsic == CHIMI_INTRINSIC_TASK_RACE)\n      return defect(\"Task.race needs at least one operation\", call_node);\n",

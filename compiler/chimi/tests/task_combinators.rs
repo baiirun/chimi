@@ -279,6 +279,30 @@ fn task_all_cancels_siblings_on_the_first_failure_and_keeps_earlier_ones_as_sibl
     assert_success(&run, "[7,1,1,2]");
 }
 
+// Rejects a root report whose cause text drops a sibling's reason or its
+// failure: the native renderer writes each suppressed cause as
+// "suppressed (<reason>): <cause>".
+#[test]
+fn a_root_task_all_failure_reports_its_sibling_causes() {
+    let run = run_virtual(
+        "all-failure-report",
+        concat!(
+            "pub fn main() -> List<Int> {\n",
+            "  Task.all([\n",
+            "    fn() { broken_after(2, 7) },\n",
+            "    fn() { broken_after(2, 8) },\n",
+            "  ])\n",
+            "}\n",
+        ),
+    );
+    assert!(
+        run.outcome.contains("\\n  suppressed (sibling): expected failure JobError.Broken(8)"),
+        "{}\n{}",
+        run.outcome,
+        String::from_utf8_lossy(&run.process.stderr)
+    );
+}
+
 // Rejects an empty call that starts nothing but still parks or defects.
 #[test]
 fn task_all_of_an_empty_list_is_an_empty_list() {

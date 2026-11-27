@@ -1,13 +1,18 @@
 //! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
 //! calls these for the std/map, std/set, std/json, std/decimal, std/bytes and
 //! std/duration intrinsics, and `Debug.crash`, `Option.unwrap_or_fail`,
-//! std/text and std/list, and std/test's assertions, recorders, scripts and
-//! mailboxes.
+//! std/text and std/list, std/test's assertions, recorders, scripts and
+//! mailboxes, and std/cause with the failure causes the interpreter loop
+//! builds.
 
 use core::ffi::c_void;
 
 use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
+use super::causes::{
+    cause_derived, cause_has_detail, cause_operation, cause_text, cause_with_frame, cause_with_sibling, control_cause,
+    control_with_cause, matched_cause_value, with_stored_cause,
+};
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
 use super::debug::render;
@@ -205,4 +210,114 @@ pub unsafe extern "C" fn chimi_runtime_send_to_test_mailbox_v1(
 pub unsafe extern "C" fn chimi_runtime_test_log_release_v1(log: *const Value) -> u32 {
     // SAFETY: the caller's contract.
     unsafe { release(log) }
+}
+
+/// [`cause_operation`].
+///
+/// # Safety
+/// As for `cause_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_cause_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { cause_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`control_cause`].
+///
+/// # Safety
+/// As for `control_cause`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_control_cause_v1(control: *const Control) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { control_cause(control) }
+}
+
+/// [`control_with_cause`].
+///
+/// # Safety
+/// As for `control_with_cause`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_control_with_cause_v1(control: *const Control, cause: *mut Value) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { control_with_cause(control, cause) }
+}
+
+/// [`cause_with_frame`].
+///
+/// # Safety
+/// As for `cause_with_frame`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_cause_with_frame_v1(cause: *const Value, text: *mut Value, node: i64) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { cause_with_frame(cause, text, node) }
+}
+
+/// [`cause_with_sibling`].
+///
+/// # Safety
+/// As for `cause_with_sibling`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_cause_with_sibling_v1(cause: *const Value, sibling: *const Value) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { cause_with_sibling(cause, sibling) }
+}
+
+/// [`cause_derived`].
+///
+/// # Safety
+/// As for `cause_derived`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_cause_derived_v1(
+    matched: *mut Value,
+    keep: bool,
+    error: *mut Value,
+    node: i64,
+) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { cause_derived(matched, keep, error, node) }
+}
+
+/// [`with_stored_cause`].
+///
+/// # Safety
+/// As for `with_stored_cause`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_with_stored_cause_v1(value: *const Value, cause: *mut Value) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { with_stored_cause(value, cause) }
+}
+
+/// [`matched_cause_value`].
+///
+/// # Safety
+/// As for `matched_cause_value`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_matched_cause_value_v1(subject: *const Control) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { matched_cause_value(subject) }
+}
+
+/// [`cause_text`].
+///
+/// # Safety
+/// As for `cause_text`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_cause_text_v1(cause: *const Value) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { cause_text(cause) }
+}
+
+/// [`cause_has_detail`].
+///
+/// # Safety
+/// As for `cause_has_detail`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_cause_has_detail_v1(cause: *const Value) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { cause_has_detail(cause) }
 }
