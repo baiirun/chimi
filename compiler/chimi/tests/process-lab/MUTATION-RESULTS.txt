@@ -417,3 +417,8 @@ KILLED       harness: the stop phase starts at the last termination [lib -- proc
 KILLED       harness: the baseline warns at exactly 1.5 times [lib -- process_lab::performance] (2s)
 KILLED       harness: a gate passes at its limit [lib -- process_lab::performance] (2s)
 # result: every mutant killed
+
+# Rerun after Channel.send moved to Rust (intrinsics/channels.rs, CHI-305 phase 7):
+BASELINE ok  [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (55s)
+KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (57s)
+# result: every mutant killed

@@ -8,3 +8,11 @@ KILLED       an ordinary channel refuses a managed handle too [channel_variants 
 KILLED       a watch starts with a managed handle [channel_variants -- managed] (11s)
 KILLED       a second remove keeps the generic message [channel_variants -- managed] (12s)
 # result: every mutant killed
+
+# Rerun after the channel intrinsics moved to Rust (intrinsics/channels.rs, CHI-305 phase 7):
+BASELINE ok  [channel_variants -- managed] (60s)
+KILLED       broadcast publishes a managed handle [channel_variants -- managed] (56s)
+KILLED       a watch publishes a managed handle [channel_variants -- managed] (59s)
+KILLED       an ordinary channel refuses a managed handle too [channel_variants -- managed] (58s)
+KILLED       a watch starts with a managed handle [channel_variants -- managed] (59s)
+# result: every mutant killed

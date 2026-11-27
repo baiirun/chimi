@@ -1,0 +1,17 @@
+# mutation run at a7a6d444d3174e8651d2a2c6cc94fa444e3b2048 (first run) and 4a23129ebc825e4e483ec5e77cd1f9b26533099e (retargets)
+# channels_mutations.py: 8 mutants against compiler/chimi
+BASELINE ok  [language channel_variants wait] (95s)
+KILLED       a drained receiver reads as aborted [language channel_variants wait] (60s)
+KILLED       Task.result does not wait [language channel_variants wait] (62s)
+KILLED       a channel's completion and receiver swap [language channel_variants wait] (61s)
+KILLED       an accepted close or cancel is a defect [language channel_variants wait] (61s)
+KILLED       a wait's receive and cancel no longer reach Rust [language channel_variants wait] (60s)
+# Rerun with the closed-send mutant aimed at cli's native_channel_ tests and a new test, a_channel_refuses_a_negative_capacity (channel_variants.rs):
+BASELINE ok  [cli -- native_channel_] (57s)
+BASELINE ok  [testing cli task_release resources] (54s)
+BASELINE ok  [language channel_variants wait] (36s)
+KILLED       a send to a closed channel reads as aborted [cli -- native_channel_] (56s)
+SURVIVED     a defected task's result is a request failure [testing cli task_release resources] (110s)
+KILLED       a negative channel capacity is accepted [language channel_variants wait] (62s)
+# result: 7 of 8 killed
+# Survivor "a defected task's result is a request failure": the scheduler answers Task.result with a defect only while the parent's process is stopping (absorbs_child_defect), and that incarnation ends with a defect either way; the C had the same branch untested.
