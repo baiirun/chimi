@@ -1,0 +1,12 @@
+# mutation run at c0cb0b7f52407efad7afce858ff862cace761ddc
+# tasks_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok  [cli -- native_a_receiver_handed_back_to_the_parent] (62s)
+BASELINE ok  [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (1s)
+BASELINE ok  [task_combinators cli] (36s)
+BASELINE ok  [task_combinators] (3s)
+KILLED       a child does not know its parent [cli -- native_a_receiver_handed_back_to_the_parent] (59s)
+KILLED       a child's exclusive captures are not transferred [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (58s)
+SURVIVED     a combinator child's overflow is a request failure [task_combinators cli] (93s)
+KILLED       a removed child's position is not moved [task_combinators] (60s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# Survivor "a combinator child's overflow is a request failure": a child's stack overflow, like a defect, unwinds the waiting parent's containment, so the combinator sees the overflow reply only while a process that is stopping absorbs it (absorbs_child_defect), and that incarnation ends with a defect either way. The C had the same branch untested.

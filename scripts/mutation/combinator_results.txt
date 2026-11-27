@@ -25,3 +25,15 @@ BASELINE ok  [task_combinators] (130s)
 KILLED       a sibling cause has no reason [task_combinators] (51s)
 KILLED       a stored Err loses its cause [task_combinators] (51s)
 # result: every mutant killed
+
+# Rerun after Task.start and the combinators moved to Rust (intrinsics/tasks.rs, CHI-305 phase 7):
+BASELINE ok  [task_combinators] (60s)
+KILLED       the losers are not cancelled [task_combinators] (58s)
+KILLED       the losers are neither cancelled nor drained [task_combinators] (59s)
+KILLED       Task.race waits for every child [task_combinators] (59s)
+KILLED       Task.results stops at the first failure [task_combinators] (58s)
+KILLED       successes land in finishing order [task_combinators] (60s)
+KILLED       sibling failures are dropped [task_combinators] (59s)
+KILLED       a stored Err loses its cause [task_combinators] (58s)
+KILLED       an empty race parks instead of defecting [task_combinators] (58s)
+# result: every mutant killed
