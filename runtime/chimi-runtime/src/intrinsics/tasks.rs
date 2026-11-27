@@ -13,7 +13,7 @@ use core::ptr;
 use super::abi::arguments;
 use super::causes::{cause_with_sibling, control_cause, control_with_cause, with_stored_cause};
 use super::standard::{defect, shape_defect, standard_value, success};
-use crate::eval::cancelled;
+use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
 use crate::heap::allocator::current_carrier;
 use crate::heap::fragment;
 use crate::heap::layout::{
@@ -47,10 +47,6 @@ struct FiberResult {
     value: i64,
     defect_code: i64,
 }
-
-/// The defect a copy reports when a value points into another heap.
-const FOREIGN_POINTER_DEFECT: &core::ffi::CStr =
-    c"Chimi runtime heap invariant violated: a value points into another heap";
 
 /// The call a task operation belongs to.
 #[derive(Clone, Copy)]

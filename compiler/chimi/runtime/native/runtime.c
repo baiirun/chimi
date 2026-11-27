@@ -690,7 +690,7 @@ typedef struct {
      defects (guard_host_stack); 0 disables the check. Each carrier thread has
      its own stack. */
   uintptr_t host_stack_limit;
-  /* The thread carrier_bind gave this carrier to; chimi_task_entry checks it
+  /* The thread carrier_bind gave this carrier to; chimi_runtime_task_entry_v1 checks it
      when several carriers run, since a thread that never bound aliases
      carrier 0. */
   pthread_t thread;
@@ -5616,8 +5616,6 @@ static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, Chi
   return defect("unknown standard intrinsic", call_node);
 }
 
-/* Starts `callable` as a child of the calling task (Task.start's contract) and
-   returns its handle. */
 /* std/wait (time-and-outcomes.md, "Choosing among events"). An Event is a record
    that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
    receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
