@@ -93,6 +93,7 @@ unsafe fn set(cause: *mut Value, slot: usize, value: *mut Value) {
 
 /// # Safety
 /// Runs on a fiber that may allocate.
+#[inline(never)]
 unsafe fn int(raw: i64) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe { integer_value(ValueKind::INTEGER, raw) }
@@ -100,6 +101,7 @@ unsafe fn int(raw: i64) -> *mut Value {
 
 /// # Safety
 /// Runs on a fiber that may allocate; `values` holds `length` values.
+#[inline(never)]
 unsafe fn list_of(values: *const *mut Value, length: u32) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe { list::list_value(list::from_values(values, length), 0, length) }
@@ -109,6 +111,7 @@ unsafe fn list_of(values: *const *mut Value, length: u32) -> *mut Value {
 ///
 /// # Safety
 /// Runs on a fiber that may allocate; `payload` is live or null.
+#[inline(never)]
 unsafe fn cause_new(kind: i64, payload: *mut Value, origin: i64) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
@@ -133,6 +136,7 @@ unsafe fn cause_new(kind: i64, payload: *mut Value, origin: i64) -> *mut Value {
 ///
 /// # Safety
 /// Runs on a fiber that may allocate; `cause` is a live Cause.
+#[inline(never)]
 unsafe fn cause_copy(cause: *const Value) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
@@ -193,6 +197,7 @@ pub unsafe fn control_with_cause(control: *const Control, cause: *mut Value) -> 
 ///
 /// # Safety
 /// Runs on a fiber that may allocate; `items` is a live List.
+#[inline(never)]
 unsafe fn push_bounded(items: *const Value, item: *mut Value, limit: u32) -> (*mut Value, bool) {
     // SAFETY: the caller's contract.
     unsafe {
@@ -285,6 +290,7 @@ unsafe fn link(cause: *mut Value, below: *mut Value) {
 /// # Safety
 /// Runs on a fiber that may allocate; `cause` is unshared and `below` a live
 /// Cause.
+#[inline(never)]
 unsafe fn linked(cause: *mut Value, below_cause: *mut Value) -> *mut Value {
     const KEEP_NEWEST: usize = (LINK_LIMIT / 2) as usize;
     // SAFETY: the caller's contract.
@@ -402,6 +408,7 @@ struct Writer(HeapText);
 impl Writer {
     /// # Safety
     /// Runs on a fiber that may allocate.
+    #[inline(never)]
     unsafe fn text(&mut self, bytes: &[u8]) {
         // SAFETY: the caller's contract.
         unsafe { self.0.push_bytes(bytes) };
@@ -419,6 +426,7 @@ impl Writer {
 
     /// # Safety
     /// As for [`Writer::text`].
+    #[inline(never)]
     unsafe fn location(&mut self, node: i64) {
         if node < 0 {
             return;
@@ -433,6 +441,7 @@ impl Writer {
 
     /// # Safety
     /// As for [`Writer::text`].
+    #[inline(never)]
     unsafe fn indent(&mut self, depth: u32) {
         // SAFETY: the caller's contract.
         unsafe {
@@ -531,7 +540,8 @@ pub unsafe fn cause_text(cause: *const Value) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
         let mut writer = Writer(HeapText::new());
-        writer.0.reserve(0);
+        // The first block before any byte, as the C's `buffer_reserve(0)`.
+        writer.0.push_bytes(b"");
         writer.cause(cause, 0);
         text_value(writer.0.data().cast(), writer.0.len())
     }
