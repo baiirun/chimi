@@ -1949,6 +1949,63 @@ fn native_runner_separates_versioned_telemetry_outcome_and_application_streams()
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// A native program's own telemetry, field by field: the root span has no
+// parent and starts at time 0, outcomes are named as the runner contract
+// names them, and text from outside (the execution id) is escaped as JSON.
+#[test]
+fn a_native_trace_names_roots_outcomes_and_escapes_text() {
+    let scratch = scratch_directory("native-trace-fields");
+    let source = scratch.join("refuse.chimi");
+    std::fs::write(
+        &source,
+        "pub enum Problem {\n  Missing\n}\n\npub fn main() -> Int {\n  let answer = 40 + 2\n  case answer > 0 {\n    True -> Failure(Problem.Missing)\n    False -> answer\n  }\n}\n",
+    )
+    .unwrap();
+    let executable = scratch.join("refuse");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the traced program");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let telemetry = scratch.join("telemetry.jsonl");
+    let run = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg("--carriers=1")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg("--execution-id=q\"b\\s\tt\nn\u{1}c")
+        .arg("--")
+        .output()
+        .expect("run the traced program");
+    assert!(!run.status.success(), "the program fails as expected");
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    let lines: Vec<&str> = telemetry.lines().collect();
+    assert!(
+        lines[0].starts_with(concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",\"sequence\":0,",
+            "\"computation\":\"main\",\"execution_id\":\"q\\\"b\\\\s\\tt\\nn\\u0001c\",",
+            "\"span_id\":1,\"parent_span_id\":null,",
+        )),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains(",\"attributes\":{\"time_ns\":0,\"start_unix_ns\":"), "{}", lines[0]);
+    let last = lines.last().unwrap();
+    assert!(last.contains("\"event\":\"computation_completed\""), "{last}");
+    assert!(last.contains("\"parent_span_id\":null"), "{last}");
+    assert!(last.contains("\"attributes\":{\"outcome\":\"expected_failure\",\"time_ns\":"), "{last}");
+    assert!(
+        lines.iter().any(|line| line.contains("\"event\":\"operation_completed\"")
+            && line.contains("\"attributes\":{\"outcome\":\"success\",")),
+        "{telemetry}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_runner_options_require_the_explicit_configuration_boundary() {
     let scratch = scratch_directory("runner-boundary");
