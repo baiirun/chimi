@@ -12,14 +12,15 @@ CRATE = "compiler/chimi"
 N = "src/backend/native.rs"
 K = "src/backend/runtime_archive_key.rs"
 C = "runtime/native/runtime.c"
+JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 
 
 def build(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["cli", "bindings"], filter="sanitized")
 
 
-def corpus(name, edits):
-    return dict(name=name, file=C, edits=edits, targets=["runtime_fuzz"], filter="")
+def corpus(name, edits, file=C):
+    return dict(name=name, file=file, edits=edits, targets=["runtime_fuzz"], filter="")
 
 
 MUTATIONS = [
@@ -35,10 +36,8 @@ MUTATIONS = [
         "                        .args(extra_flags)\n",
         "",
     )]),
-    corpus("JSON encoding stops escaping quotes", [(
-        """      case '"': buffer_bytes(buffer, "\\\\\\"", 2); break;""",
-        """      case '"': buffer_char(buffer, '"'); break;""",
-    )]),
+    corpus('JSON encoding stops escaping quotes', [('b\'"\' => output.push_bytes(b"\\\\\\""),',
+        'b\'"\' => output.push_bytes(b"\\""),')], JSON_INTRINSICS),
     corpus("JSON nesting limit off by one", [(
         "if (depth > 128) return json_fail",
         "if (depth > 127) return json_fail",

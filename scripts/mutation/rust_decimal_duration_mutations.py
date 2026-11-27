@@ -21,6 +21,7 @@ DURATION = RT + "duration.rs"
 DURATION_ABI = RT + "duration_abi.rs"
 TEXT = RT + "text_buffer.rs"
 RUNTIME = "runtime/native/runtime.c"
+DECIMAL_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/decimals.rs"
 
 
 def fuzz(name, file, edits):
@@ -56,8 +57,8 @@ MUTATIONS = [
     fuzz("ABI subtract adds", DECIMAL_ABI,
          [("unsafe { write(decimal(left).subtract(decimal(right)), out) }",
            "unsafe { write(decimal(left).add(decimal(right)), out) }")]),
-    fuzz("ABI rounding codes shifted", DECIMAL_ABI,
-         [("Rounding::from_code(i64::from(rounding))", "Rounding::from_code(i64::from(rounding).min(5))")]),
+    fuzz('ABI rounding codes shifted', DECIMAL_INTRINSICS, [('Rounding::from_code(integer(3))',
+        'Rounding::from_code(integer(3).min(5))')]),
     fuzz("padding one zero short", TEXT,
          [("for _ in count..width {", "for _ in count + 1..width {")]),
     fuzz("duration fraction printed one digit short", DURATION,
@@ -74,13 +75,11 @@ MUTATIONS = [
            "")]),
     fuzz("ABI parse reports Empty as Invalid", DURATION_ABI,
          [("Err(ParseFailure::Empty) => 1,", "Err(ParseFailure::Empty) => 2,")]),
-    fuzz("C checked subtract adds", RUNTIME,
-         [("CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED ? chimi_decimal_subtract_v1(left, right, &output)",
-           "CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED ? chimi_decimal_add_v1(left, right, &output)")]),
+    fuzz('native checked subtract adds', DECIMAL_INTRINSICS, [('optional(decimal(0).subtract(decimal(1)))',
+        'optional(decimal(0).add(decimal(1)))')]),
     fuzz("C maps OutOfRange to Invalid", RUNTIME,
          [("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID,\n                                        CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE};",
            "CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID,\n                                        CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID};")]),
-    fuzz("C reads the text one byte short", RUNTIME,
-         [("chimi_decimal_parse_v1(arguments[0]->as.text.bytes, (size_t)arguments[0]->as.text.length,",
-           "chimi_decimal_parse_v1(arguments[0]->as.text.bytes, (size_t)arguments[0]->as.text.length - (arguments[0]->as.text.length > 0),")]),
+    fuzz('native reads the text one byte short', DECIMAL_INTRINSICS, [('text.bytes.cast::<u8>(), text.length) }',
+        'text.bytes.cast::<u8>(), text.length - 1) }')]),
 ]

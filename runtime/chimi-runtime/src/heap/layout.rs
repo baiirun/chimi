@@ -222,6 +222,19 @@ impl Intrinsic {
     pub const SET_REMOVE: u32 = 139;
     pub const SET_SIZE: u32 = 140;
     pub const SET_REDUCE_ITEMS: u32 = 141;
+    pub const JSON_DECODE: u32 = 142;
+    pub const JSON_ENCODE: u32 = 143;
+    pub const JSON_INT: u32 = 144;
+    pub const JSON_NUMBER_TO_INT: u32 = 145;
+    pub const JSON_NUMBER_TO_DECIMAL: u32 = 146;
+    pub const DECIMAL_SCALED: u32 = 147;
+    pub const DECIMAL_READ: u32 = 148;
+    pub const DECIMAL_TO_TEXT: u32 = 149;
+    pub const DECIMAL_ADD_CHECKED: u32 = 150;
+    pub const DECIMAL_SUBTRACT_CHECKED: u32 = 151;
+    pub const DECIMAL_MULTIPLY_CHECKED: u32 = 152;
+    pub const DECIMAL_DIVIDE_ROUNDED: u32 = 153;
+    pub const DECIMAL_TO_FLOAT: u32 = 154;
 }
 
 /// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
@@ -230,6 +243,15 @@ pub struct StandardConstructor;
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
     pub const OPTION_NONE: u32 = 7;
+    pub const JSON_NULL: u32 = 8;
+    pub const JSON_BOOLEAN: u32 = 9;
+    pub const JSON_NUMBER: u32 = 10;
+    pub const JSON_TEXT: u32 = 11;
+    pub const JSON_ARRAY: u32 = 12;
+    pub const JSON_OBJECT: u32 = 13;
+    pub const DECODE_INVALID_JSON: u32 = 14;
+    pub const JSON_NOT_INTEGER: u32 = 15;
+    pub const JSON_OUT_OF_RANGE: u32 = 16;
 }
 
 /// `MapNode`.
@@ -817,6 +839,28 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
     constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
+    constant("CHIMI_INTRINSIC_JSON_DECODE" Intrinsic::JSON_DECODE)
+    constant("CHIMI_INTRINSIC_JSON_ENCODE" Intrinsic::JSON_ENCODE)
+    constant("CHIMI_INTRINSIC_JSON_INT" Intrinsic::JSON_INT)
+    constant("CHIMI_INTRINSIC_JSON_NUMBER_TO_INT" Intrinsic::JSON_NUMBER_TO_INT)
+    constant("CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL" Intrinsic::JSON_NUMBER_TO_DECIMAL)
+    constant("CHIMI_INTRINSIC_DECIMAL_SCALED" Intrinsic::DECIMAL_SCALED)
+    constant("CHIMI_INTRINSIC_DECIMAL_READ" Intrinsic::DECIMAL_READ)
+    constant("CHIMI_INTRINSIC_DECIMAL_TO_TEXT" Intrinsic::DECIMAL_TO_TEXT)
+    constant("CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED" Intrinsic::DECIMAL_ADD_CHECKED)
+    constant("CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED" Intrinsic::DECIMAL_SUBTRACT_CHECKED)
+    constant("CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED" Intrinsic::DECIMAL_MULTIPLY_CHECKED)
+    constant("CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED" Intrinsic::DECIMAL_DIVIDE_ROUNDED)
+    constant("CHIMI_INTRINSIC_DECIMAL_TO_FLOAT" Intrinsic::DECIMAL_TO_FLOAT)
+    constant("CHIMI_CONSTRUCTOR_JSON_NULL" StandardConstructor::JSON_NULL)
+    constant("CHIMI_CONSTRUCTOR_JSON_BOOLEAN" StandardConstructor::JSON_BOOLEAN)
+    constant("CHIMI_CONSTRUCTOR_JSON_NUMBER" StandardConstructor::JSON_NUMBER)
+    constant("CHIMI_CONSTRUCTOR_JSON_TEXT" StandardConstructor::JSON_TEXT)
+    constant("CHIMI_CONSTRUCTOR_JSON_ARRAY" StandardConstructor::JSON_ARRAY)
+    constant("CHIMI_CONSTRUCTOR_JSON_OBJECT" StandardConstructor::JSON_OBJECT)
+    constant("CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON" StandardConstructor::DECODE_INVALID_JSON)
+    constant("CHIMI_CONSTRUCTOR_JSON_NOT_INTEGER" StandardConstructor::JSON_NOT_INTEGER)
+    constant("CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE" StandardConstructor::JSON_OUT_OF_RANGE)
     size("MapNode" MapNode)
     field("MapNode" MapNode, "key", key)
     field("MapNode" MapNode, "value", value)

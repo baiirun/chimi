@@ -1,5 +1,6 @@
 """Mutants of the Rust JSON decoder (CHI-307): runtime/chimi-runtime/src/json.rs
-and its C side in runtime.c (json_build, json_decode).
+and the builder of values from its tape, intrinsics/json.rs (C until CHI-305
+step 5, phase 5).
 
 Each mutant must turn red the decoder's unit tests or the runtime fuzz corpus
 replay (tests/runtime_fuzz.rs), which checks every committed input against
@@ -12,6 +13,7 @@ CRATE = "compiler/chimi"
 
 DECODER = "../../runtime/chimi-runtime/src/json.rs"
 RUNTIME = "runtime/native/runtime.c"
+JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 
 
 def fuzz(name, file, edits):
@@ -49,16 +51,12 @@ MUTATIONS = [
            ".extend_from_slice(&self.source[self.offset..end]);")]),
     fuzz("exponent sign not consumed", DECODER,
          [("if let Some(b'+' | b'-') = self.peek() {\n                self.offset += 1;\n            }", "")]),
-    fuzz("keys built as Json.Text", RUNTIME,
-         [("      case JSON_NODE_SOURCE_KEY: case JSON_NODE_DECODED_KEY:\n        value = text_from_bytes(text + node->offset, node->length); break;\n",
-           "      case JSON_NODE_SOURCE_KEY: case JSON_NODE_DECODED_KEY: {\n        ChimiValue *fields[] = {text_from_bytes(text + node->offset, node->length)};\n        value = standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1); break;\n      }\n")]),
-    fuzz("decoded text read from the source", RUNTIME,
-         [("const char *text = node->kind == JSON_NODE_DECODED_TEXT || node->kind == JSON_NODE_DECODED_KEY",
-           "const char *text = node->kind == JSON_NODE_DECODED_KEY")]),
-    fuzz("error message one byte short", RUNTIME,
-         [("text_from_bytes(parse.error_message, parse.error_message_length)",
-           "text_from_bytes(parse.error_message, parse.error_message_length - 1)")]),
-    fuzz("array items taken from the wrong end", RUNTIME,
-         [("list_from_values(stack + depth, (uint32_t)node->length)",
-           "list_from_values(stack, (uint32_t)node->length)")]),
+    fuzz('keys built as Json.Text', JSON_INTRINSICS, [('NodeKind::SourceKey | NodeKind::DecodedKey => {\n                    let text = located();\n                    text_value(text.as_ptr().cast(), text.len())\n',
+        'NodeKind::SourceKey | NodeKind::DecodedKey => {\n                    let text = located();\n                    standard_value(StandardConstructor::JSON_TEXT, &[text_value(text.as_ptr().cast(), text.len())])\n')]),
+    fuzz('decoded text read from the source', JSON_INTRINSICS, [('NodeKind::DecodedText | NodeKind::DecodedKey => &tape.decoded[..],',
+        'NodeKind::DecodedKey => &tape.decoded[..],')]),
+    fuzz('error message one byte short', JSON_INTRINSICS, [('error.message.as_ptr().cast::<c_char>(), error.message.len())',
+        'error.message.as_ptr().cast::<c_char>(), error.message.len() - 1)')]),
+    fuzz('array items taken from the wrong end', JSON_INTRINSICS, [('list::from_values(stack.as_ptr().add(start), length)',
+        'list::from_values(stack.as_ptr(), length)')]),
 ]

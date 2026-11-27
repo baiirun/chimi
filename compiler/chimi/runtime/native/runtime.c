@@ -1313,6 +1313,28 @@ _Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZ
 _Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_NONE == 7, "layout: CHIMI_CONSTRUCTOR_OPTION_NONE");
+_Static_assert(CHIMI_INTRINSIC_JSON_DECODE == 142, "layout: CHIMI_INTRINSIC_JSON_DECODE");
+_Static_assert(CHIMI_INTRINSIC_JSON_ENCODE == 143, "layout: CHIMI_INTRINSIC_JSON_ENCODE");
+_Static_assert(CHIMI_INTRINSIC_JSON_INT == 144, "layout: CHIMI_INTRINSIC_JSON_INT");
+_Static_assert(CHIMI_INTRINSIC_JSON_NUMBER_TO_INT == 145, "layout: CHIMI_INTRINSIC_JSON_NUMBER_TO_INT");
+_Static_assert(CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL == 146, "layout: CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_SCALED == 147, "layout: CHIMI_INTRINSIC_DECIMAL_SCALED");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_READ == 148, "layout: CHIMI_INTRINSIC_DECIMAL_READ");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_TO_TEXT == 149, "layout: CHIMI_INTRINSIC_DECIMAL_TO_TEXT");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED == 150, "layout: CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED == 151, "layout: CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED == 152, "layout: CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED == 153, "layout: CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED");
+_Static_assert(CHIMI_INTRINSIC_DECIMAL_TO_FLOAT == 154, "layout: CHIMI_INTRINSIC_DECIMAL_TO_FLOAT");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_NUMBER == 10, "layout: CHIMI_CONSTRUCTOR_JSON_NUMBER");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_TEXT == 11, "layout: CHIMI_CONSTRUCTOR_JSON_TEXT");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_ARRAY == 12, "layout: CHIMI_CONSTRUCTOR_JSON_ARRAY");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_OBJECT == 13, "layout: CHIMI_CONSTRUCTOR_JSON_OBJECT");
+_Static_assert(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON == 14, "layout: CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_NOT_INTEGER == 15, "layout: CHIMI_CONSTRUCTOR_JSON_NOT_INTEGER");
+_Static_assert(CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE == 16, "layout: CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE");
 _Static_assert(sizeof(MapNode) == 40, "layout: sizeof(MapNode)");
 _Static_assert(offsetof(MapNode, key) == 0, "layout: offsetof(MapNode, key)");
 _Static_assert(sizeof(((MapNode *)0)->key) == 8, "layout: sizeof(((MapNode *)0)->key)");
@@ -2482,27 +2504,15 @@ static ChimiControl *float_arithmetic(uint32_t operator, double l, double r, int
    to 38; no operation rounds unless it takes a rounding mode, and none wraps or
    saturates: a result outside the range makes the function return false. */
 typedef ChimiDecimal Decimal;
-typedef unsigned __int128 DecimalMagnitude;
-/* The codes `std/decimal.rounding_code` passes, in `Rounding` declaration order. */
-typedef enum { ROUND_TOWARD_ZERO, ROUND_AWAY_FROM_ZERO, ROUND_FLOOR, ROUND_CEILING,
-               ROUND_HALF_TOWARD_ZERO, ROUND_HALF_AWAY_FROM_ZERO, ROUND_HALF_EVEN } DecimalRounding;
-#define DECIMAL_MAX_SCALE 38u
 /* decimal.rs TEXT_BYTES and a NUL. */
 #define DECIMAL_TEXT_BYTES 48
-bool chimi_decimal_new_v1(bool negative, uint64_t high, uint64_t low, uint32_t scale, ChimiDecimal *out);
 ChimiDecimal chimi_decimal_negate_v1(ChimiDecimal value);
 bool chimi_decimal_add_v1(ChimiDecimal left, ChimiDecimal right, ChimiDecimal *out);
 bool chimi_decimal_subtract_v1(ChimiDecimal left, ChimiDecimal right, ChimiDecimal *out);
 bool chimi_decimal_multiply_v1(ChimiDecimal left, ChimiDecimal right, ChimiDecimal *out);
-bool chimi_decimal_divide_v1(ChimiDecimal dividend, ChimiDecimal divisor, uint32_t scale, uint32_t rounding,
-                             ChimiDecimal *out);
 int32_t chimi_decimal_compare_v1(ChimiDecimal left, ChimiDecimal right);
 size_t chimi_decimal_text_v1(ChimiDecimal value, bool normalized, char *out);
-bool chimi_decimal_parse_v1(const char *text, size_t length, ChimiDecimal *out);
 
-static bool decimal_make(bool negative, DecimalMagnitude magnitude, uint32_t scale, Decimal *output) {
-  return chimi_decimal_new_v1(negative, (uint64_t)(magnitude >> 64), (uint64_t)magnitude, scale, output);
-}
 static Decimal decimal_of(const ChimiValue *value) { return value->as.decimal; }
 static ChimiValue *decimal_value(Decimal decimal) { return chimi_value_decimal_v1(decimal); }
 __attribute__((noinline)) static ChimiValue *decimal_negated(const ChimiValue *value) {
@@ -2972,102 +2982,6 @@ static void buffer_bytes(TextBuffer *buffer, const char *value, size_t length) {
   buffer->length += length; buffer->data[buffer->length] = '\0';
 }
 static void buffer_char(TextBuffer *buffer, char value) { buffer_bytes(buffer, &value, 1); }
-static void buffer_json_string(TextBuffer *buffer, const ChimiValue *text) {
-  buffer_char(buffer, '"');
-  const unsigned char *cursor = (const unsigned char *)text->as.text.bytes;
-  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {
-    switch (*cursor) {
-      case '"': buffer_bytes(buffer, "\\\"", 2); break;
-      case '\\': buffer_bytes(buffer, "\\\\", 2); break;
-      case '\b': buffer_bytes(buffer, "\\b", 2); break;
-      case '\f': buffer_bytes(buffer, "\\f", 2); break;
-      case '\n': buffer_bytes(buffer, "\\n", 2); break;
-      case '\r': buffer_bytes(buffer, "\\r", 2); break;
-      case '\t': buffer_bytes(buffer, "\\t", 2); break;
-      default:
-        if (*cursor < 0x20) {
-          char escaped[7]; snprintf(escaped, sizeof(escaped), "\\u%04x", *cursor);
-          buffer_bytes(buffer, escaped, 6);
-        } else buffer_char(buffer, (char)*cursor);
-    }
-  }
-  buffer_char(buffer, '"');
-}
-
-/* `Json.encode`. It keeps its own stack of steps, as the outcome writer does, so a
-   program-built Json.Value of any nesting depth costs heap, not C stack. A step
-   pushed last runs first: TEXT is a literal, KEY is an Object entry's member name
-   and `:`, and FREE releases an entry array once its entries are written. Returns
-   false, having freed what it queued, when the value is not a well-formed
-   Json.Value or an Object key is not Text. */
-static bool encode_json_step(TextBuffer *buffer, JsonSteps *steps, const ChimiValue *value) {
-  if (value->kind != VALUE_CONSTRUCTED) return false;
-  uint32_t kind = CHIMI_SYMBOLS[value->as.constructed.constructor].standard_constructor;
-  ChimiValue *field = value->as.constructed.length ? value->as.constructed.fields[0].value : NULL;
-  switch (kind) {
-    case CHIMI_CONSTRUCTOR_JSON_NULL: buffer_bytes(buffer, "null", 4); return true;
-    case CHIMI_CONSTRUCTOR_JSON_BOOLEAN:
-      if (!field || field->kind != VALUE_BOOLEAN) return false;
-      buffer_bytes(buffer, field->as.boolean ? "true" : "false", field->as.boolean ? 4 : 5); return true;
-    case CHIMI_CONSTRUCTOR_JSON_NUMBER:
-      if (!field || field->kind != VALUE_JSON_NUMBER) return false;
-      buffer_bytes(buffer, field->as.json_number, strlen(field->as.json_number)); return true;
-    case CHIMI_CONSTRUCTOR_JSON_TEXT:
-      if (!field || field->kind != VALUE_TEXT) return false;
-      buffer_json_string(buffer, field); return true;
-    case CHIMI_CONSTRUCTOR_JSON_ARRAY:
-      if (!field || field->kind != VALUE_LIST) return false;
-      buffer_char(buffer, '[');
-      json_step(steps, JSON_STEP_TEXT, "]");
-      for (uint32_t index = list_length(field); index-- > 0;) {
-        json_step(steps, JSON_STEP_VALUE, list_get(field, index));
-        if (index) json_step(steps, JSON_STEP_TEXT, ",");
-      }
-      return true;
-    case CHIMI_CONSTRUCTOR_JSON_OBJECT: {
-      if (!field || field->kind != VALUE_MAP) return false;
-      buffer_char(buffer, '{');
-      MapEntries entries = map_entries(field->as.map);
-      json_step(steps, JSON_STEP_FREE, entries.nodes);
-      json_step(steps, JSON_STEP_TEXT, "}");
-      for (size_t index = entries.length; index-- > 0;) {
-        json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
-        json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
-        if (index) json_step(steps, JSON_STEP_TEXT, ",");
-      }
-      return true;
-    }
-    default: return false;
-  }
-}
-static bool encode_json_value(TextBuffer *buffer, const ChimiValue *root) {
-  JsonSteps steps = {0};
-  json_step(&steps, JSON_STEP_VALUE, root);
-  bool encoded = true;
-  while (steps.length) {
-    JsonStep step = steps.items[--steps.length];
-    if (!encoded) {
-      if (step.kind == JSON_STEP_FREE) free((void *)step.pointer);
-      continue;
-    }
-    switch (step.kind) {
-      case JSON_STEP_TEXT: buffer_bytes(buffer, step.pointer, strlen(step.pointer)); break;
-      case JSON_STEP_KEY: {
-        const MapNode *entry = step.pointer;
-        if (entry->key->kind != VALUE_TEXT) { encoded = false; break; }
-        buffer_json_string(buffer, entry->key); buffer_char(buffer, ':');
-        break;
-      }
-      case JSON_STEP_FREE: free((void *)step.pointer); break;
-      case JSON_STEP_VALUE: encoded = encode_json_step(buffer, &steps, step.pointer); break;
-      /* The outcome writer's step; never queued here. */
-      case JSON_STEP_NAME: encoded = false; break;
-    }
-  }
-  free(steps.items);
-  return encoded;
-}
-
 static void buffer_utf8(TextBuffer *buffer, uint32_t value) {
   if (value <= 0x7f) buffer_char(buffer, (char)value);
   else if (value <= 0x7ff) {
@@ -3080,97 +2994,11 @@ static void buffer_utf8(TextBuffer *buffer, uint32_t value) {
     buffer_char(buffer, (char)(0x80 | ((value >> 6) & 0x3f))); buffer_char(buffer, (char)(0x80 | (value & 0x3f)));
   }
 }
-/* Json.decode. The decoder of the untrusted bytes is Rust
-   (runtime/chimi-runtime/src/json.rs): it checks the whole input and returns
-   either an error, with the message and offset the interpreter reports, or a
-   tape of the document's values in post-order. This side only builds the
-   values from a tape, so it reads no input byte the decoder has not checked.
-   The two structs mirror json_abi.rs; the `_v1` suffix changes with them. */
-typedef struct { uint32_t kind; size_t offset; size_t length; } ChimiJsonNode;
-enum {
-  JSON_NODE_NULL, JSON_NODE_FALSE, JSON_NODE_TRUE, JSON_NODE_NUMBER, JSON_NODE_SOURCE_TEXT,
-  JSON_NODE_DECODED_TEXT, JSON_NODE_ARRAY, JSON_NODE_OBJECT, JSON_NODE_SOURCE_KEY,
-  JSON_NODE_DECODED_KEY
-};
-typedef struct {
-  const ChimiJsonNode *nodes; size_t node_count; const char *decoded;
-  const char *error_message; size_t error_message_length; size_t error_offset; void *owned;
-} ChimiJsonParse;
-bool chimi_json_parse_v1(const char *source, size_t length, ChimiJsonParse *out);
-void chimi_json_release_v1(ChimiJsonParse *parse);
-_Static_assert(sizeof(ChimiJsonNode) == 3 * sizeof(size_t), "ChimiJsonNode mirrors json::Node");
-
-static _Noreturn void json_tape_defect(void) {
+/* Json.decode builds values from the Rust decoder's tape in
+   runtime/chimi-runtime/src/intrinsics/json.rs, and ends the program here on a
+   tape that breaks the decoder's contract. */
+_Noreturn void chimi_runtime_json_tape_defect_v1(void) {
   fputs("Chimi runtime: malformed JSON tape\n", stderr); runtime_exit(70);
-}
-/* Builds the value a tape describes: each node's members are the values on
-   top of the stack when it is reached. The tape's shape is the decoder's
-   contract; a node that breaks it ends the program rather than reading past
-   the stack. */
-static ChimiValue *json_build(const ChimiJsonParse *parse, const char *source) {
-  if (parse->node_count == 0 || parse->node_count > SIZE_MAX / sizeof(ChimiValue *)) json_tape_defect();
-  ChimiValue **stack = malloc(parse->node_count * sizeof(*stack));
-  if (!stack) exhausted_memory();
-  size_t depth = 0;
-  for (size_t index = 0; index < parse->node_count; ++index) {
-    const ChimiJsonNode *node = &parse->nodes[index];
-    const char *text = node->kind == JSON_NODE_DECODED_TEXT || node->kind == JSON_NODE_DECODED_KEY
-                           ? parse->decoded : source;
-    ChimiValue *value;
-    switch (node->kind) {
-      case JSON_NODE_NULL: value = standard_value(CHIMI_CONSTRUCTOR_JSON_NULL, NULL, 0); break;
-      case JSON_NODE_FALSE: case JSON_NODE_TRUE: {
-        ChimiValue *fields[] = {boolean_value(node->kind == JSON_NODE_TRUE)};
-        value = standard_value(CHIMI_CONSTRUCTOR_JSON_BOOLEAN, fields, 1); break;
-      }
-      case JSON_NODE_NUMBER: {
-        char *number = allocate(node->length + 1, 1);
-        memcpy(number, source + node->offset, node->length);
-        ChimiValue *fields[] = {json_number_value(number)};
-        value = standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1); break;
-      }
-      case JSON_NODE_SOURCE_TEXT: case JSON_NODE_DECODED_TEXT: {
-        ChimiValue *fields[] = {text_from_bytes(text + node->offset, node->length)};
-        value = standard_value(CHIMI_CONSTRUCTOR_JSON_TEXT, fields, 1); break;
-      }
-      case JSON_NODE_SOURCE_KEY: case JSON_NODE_DECODED_KEY:
-        value = text_from_bytes(text + node->offset, node->length); break;
-      case JSON_NODE_ARRAY: {
-        if (node->length > depth || node->length > UINT32_MAX) json_tape_defect();
-        depth -= node->length;
-        ChimiValue *fields[] = {list_from_values(stack + depth, (uint32_t)node->length)};
-        value = standard_value(CHIMI_CONSTRUCTOR_JSON_ARRAY, fields, 1); break;
-      }
-      case JSON_NODE_OBJECT: {
-        if (node->length > depth / 2) json_tape_defect();
-        depth -= 2 * node->length;
-        MapNode *map = NULL;
-        for (size_t member = 0; member < node->length; ++member)
-          map = map_put_node(map, stack[depth + 2 * member], stack[depth + 2 * member + 1]);
-        ChimiValue *fields[] = {map_value(map)};
-        value = standard_value(CHIMI_CONSTRUCTOR_JSON_OBJECT, fields, 1); break;
-      }
-      default: json_tape_defect();
-    }
-    stack[depth++] = value;
-  }
-  if (depth != 1) json_tape_defect();
-  ChimiValue *root = stack[0];
-  free(stack);
-  return root;
-}
-static ChimiControl *json_decode(const ChimiValue *text) {
-  ChimiJsonParse parse;
-  ChimiControl *result;
-  if (chimi_json_parse_v1(text->as.text.bytes, text->as.text.length, &parse)) {
-    result = success(json_build(&parse, text->as.text.bytes));
-  } else {
-    ChimiValue *fields[] = {text_from_bytes(parse.error_message, parse.error_message_length),
-                            integer_value((int64_t)parse.error_offset)};
-    result = failure(standard_value(CHIMI_CONSTRUCTOR_DECODE_INVALID_JSON, fields, 2));
-  }
-  chimi_json_release_v1(&parse);
-  return result;
 }
 
 static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
@@ -6767,6 +6595,12 @@ ChimiControl *chimi_intrinsic_map_v1(ChimiRuntime *runtime, uint32_t intrinsic, 
 ChimiControl *chimi_intrinsic_set_v1(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                      uint32_t argument_count, uint64_t span, uint32_t call_node,
                                      ChimiEnvironment *environment);
+/* The native cores of std/json and std/decimal, in intrinsics/json.rs and
+   intrinsics/decimals.rs. */
+ChimiControl *chimi_intrinsic_json_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                      uint32_t call_node);
+ChimiControl *chimi_intrinsic_decimal_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                         uint32_t call_node);
 /* `invoke` and the shared Void, False and True, for the intrinsics in Rust. */
 ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                                       uint32_t argument_count, uint64_t span, uint32_t call_node,
@@ -6774,180 +6608,6 @@ ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *call
   return invoke(runtime, callable, arguments, argument_count, span, call_node, environment);
 }
 ChimiValue *chimi_runtime_shared_value_v1(uint32_t index) { return shared_value(index); }
-
-/* The exact value of a JSON number as +-significant x 10^exponent, where
-   `significant` (the spelling's digits, '.' skipped) has no leading or trailing
-   zeros and is empty for zero, and the scale the spelling writes: fraction digits
-   minus the written exponent. As in json.rs, a written exponent is clamped to
-   JSON_EXPONENT_CLAMP, which only numbers far outside Int and Decimal reach. */
-#define JSON_EXPONENT_CLAMP 1000000000000000LL
-typedef struct { bool negative; char *significant; int64_t length; int64_t exponent; int64_t written_scale; } JsonExactNumber;
-static JsonExactNumber json_exact_number(const char *text) {
-  JsonExactNumber number = {0};
-  number.negative = *text == '-'; if (number.negative) ++text;
-  size_t mantissa = strcspn(text, "eE"), point = strcspn(text, ".eE");
-  int64_t fraction_digits = point < mantissa ? (int64_t)(mantissa - point - 1) : 0;
-  int64_t written = 0; bool written_negative = false;
-  if (text[mantissa]) {
-    const char *cursor = text + mantissa + 1;
-    written_negative = *cursor == '-'; if (*cursor == '-' || *cursor == '+') ++cursor;
-    for (; *cursor; ++cursor) {
-      written = written * 10 + (*cursor - '0');
-      if (written > JSON_EXPONENT_CLAMP) written = JSON_EXPONENT_CLAMP;
-    }
-  }
-  if (written_negative) written = -written;
-  number.significant = allocate(mantissa + 1, 1);
-  int64_t length = 0;
-  for (size_t index = 0; index < mantissa; ++index)
-    if (text[index] != '.' && (length > 0 || text[index] != '0')) number.significant[length++] = text[index];
-  int64_t trailing = 0;
-  while (length > 0 && number.significant[length - 1] == '0') { --length; ++trailing; }
-  number.length = length;
-  number.exponent = written - fraction_digits + trailing;
-  number.written_scale = fraction_digits - written;
-  return number;
-}
-
-/* json.rs `number_to_int`: true with `output` set, or false with `not_integer`
-   telling NotInteger from OutOfRange. */
-static bool json_number_to_int(const char *text, int64_t *output, bool *not_integer) {
-  JsonExactNumber number = json_exact_number(text);
-  *not_integer = false; *output = 0;
-  if (number.length == 0) return true;
-  if (number.exponent < 0) { *not_integer = true; return false; }
-  if (number.length + number.exponent > 19) return false;
-  unsigned __int128 magnitude = 0;
-  for (int64_t index = 0; index < number.length; ++index) magnitude = magnitude * 10 + (unsigned)(number.significant[index] - '0');
-  for (int64_t zero = 0; zero < number.exponent; ++zero) magnitude *= 10;
-  if (magnitude > (unsigned __int128)INT64_MAX + (number.negative ? 1u : 0u)) return false;
-  *output = number.negative ? (int64_t)(0 - (uint64_t)magnitude) : (int64_t)magnitude;
-  return true;
-}
-
-/* json.rs `number_to_decimal`: the exact value at the spelling's own scale, or
-   the largest smaller scale that fits; false past 38 significant or fraction digits. */
-static bool json_number_to_decimal(const char *text, Decimal *output) {
-  JsonExactNumber number = json_exact_number(text);
-  int64_t max_scale = DECIMAL_MAX_SCALE;
-  if (number.length == 0) {
-    int64_t scale = number.written_scale < 0 ? 0 : number.written_scale > max_scale ? max_scale : number.written_scale;
-    return decimal_make(false, 0, (uint32_t)scale, output);
-  }
-  if (number.length + (number.exponent > 0 ? number.exponent : 0) > max_scale || -number.exponent > max_scale) return false;
-  /* At least the smallest scale, max(0, -exponent), as in json.rs. */
-  int64_t scale = number.written_scale < 0 ? 0 : number.written_scale;
-  if (scale > max_scale) scale = max_scale;
-  if (scale > max_scale - number.length - number.exponent) scale = max_scale - number.length - number.exponent;
-  DecimalMagnitude magnitude = 0;
-  for (int64_t index = 0; index < number.length; ++index) magnitude = magnitude * 10 + (DecimalMagnitude)(number.significant[index] - '0');
-  for (int64_t zero = 0; zero < number.exponent + scale; ++zero) magnitude *= 10;
-  return decimal_make(number.negative, magnitude, (uint32_t)scale, output);
-}
-
-/* The native core of std/json. */
-static ChimiControl *invoke_json_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                      ChimiValue **arguments, uint32_t argument_count,
-                                      uint64_t span, uint32_t call_node,
-                                      ChimiEnvironment *environment) {
-  (void)runtime; (void)span; (void)environment;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_JSON_DECODE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return json_decode(arguments[0]);
-    }
-    case CHIMI_INTRINSIC_JSON_ENCODE: {
-      if (argument_count != 1) break;
-      TextBuffer buffer = {0};
-      if (!encode_json_value(&buffer, arguments[0])) break;
-      if (!buffer.data) buffer.data = allocate(1, 1);
-      return success(text_value(buffer.data));
-    }
-    case CHIMI_INTRINSIC_JSON_INT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) break;
-      char *number = allocate(32, 1); snprintf(number, 32, "%" PRId64, arguments[0]->as.integer);
-      ChimiValue *raw = json_number_value(number); ChimiValue *fields[] = {raw};
-      return success(standard_value(CHIMI_CONSTRUCTOR_JSON_NUMBER, fields, 1));
-    }
-    case CHIMI_INTRINSIC_JSON_NUMBER_TO_INT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) break;
-      int64_t value; bool not_integer;
-      if (json_number_to_int(arguments[0]->as.json_number, &value, &not_integer)) return success(integer_value(value));
-      return failure(standard_value(not_integer ? CHIMI_CONSTRUCTOR_JSON_NOT_INTEGER : CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE, NULL, 0));
-    }
-    case CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_JSON_NUMBER) break;
-      Decimal value;
-      if (json_number_to_decimal(arguments[0]->as.json_number, &value)) return success(decimal_value(value));
-      return failure(standard_value(CHIMI_CONSTRUCTOR_JSON_OUT_OF_RANGE, NULL, 0));
-    }
-  }
-  return intrinsic_shape_defect(call_node);
-}
-
-/* `Some(value)` when `fits`, otherwise `None`. */
-static ChimiControl *optional_decimal(bool fits, Decimal value) {
-  if (!fits) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-  ChimiValue *fields[] = {decimal_value(value)};
-  return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-}
-
-/* The native core of std/decimal. Requires: the Chimi wrappers checked the
-   documented preconditions; a broken one is a shape defect, as in the interpreter. */
-static ChimiControl *invoke_decimal_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                      ChimiValue **arguments, uint32_t argument_count,
-                                      uint64_t span, uint32_t call_node,
-                                      ChimiEnvironment *environment) {
-  (void)runtime; (void)span; (void)environment;
-  Decimal output;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_DECIMAL_SCALED: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_INTEGER ||
-          arguments[1]->as.integer < 0 || arguments[1]->as.integer > DECIMAL_MAX_SCALE)
-        break;
-      int64_t coefficient = arguments[0]->as.integer;
-      DecimalMagnitude magnitude = coefficient < 0 ? (DecimalMagnitude)(-(coefficient + 1)) + 1 : (DecimalMagnitude)coefficient;
-      decimal_make(coefficient < 0, magnitude, (uint32_t)arguments[1]->as.integer, &output);
-      return success(decimal_value(output));
-    }
-    case CHIMI_INTRINSIC_DECIMAL_READ:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return optional_decimal(chimi_decimal_parse_v1(arguments[0]->as.text.bytes, (size_t)arguments[0]->as.text.length,
-                                                     &output), output);
-    case CHIMI_INTRINSIC_DECIMAL_TO_TEXT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_DECIMAL) break;
-      char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(arguments[0]), text);
-      return success(text_value(text));
-    }
-    /* The nearest double, ties to even: strtod rounds the exact text correctly. */
-    case CHIMI_INTRINSIC_DECIMAL_TO_FLOAT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_DECIMAL) break;
-      char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(arguments[0]), text);
-      return success(float_value(strtod(text, NULL)));
-    }
-    case CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED:
-    case CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED:
-    case CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_DECIMAL || arguments[1]->kind != VALUE_DECIMAL) break;
-      Decimal left = decimal_of(arguments[0]), right = decimal_of(arguments[1]);
-      bool fits = intrinsic == CHIMI_INTRINSIC_DECIMAL_ADD_CHECKED ? chimi_decimal_add_v1(left, right, &output)
-                : intrinsic == CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED ? chimi_decimal_subtract_v1(left, right, &output)
-                : chimi_decimal_multiply_v1(left, right, &output);
-      return optional_decimal(fits, output);
-    }
-    case CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED: {
-      if (argument_count != 4 || arguments[0]->kind != VALUE_DECIMAL || arguments[1]->kind != VALUE_DECIMAL ||
-          arguments[2]->kind != VALUE_INTEGER || arguments[3]->kind != VALUE_INTEGER ||
-          arguments[2]->as.integer < 0 || arguments[2]->as.integer > DECIMAL_MAX_SCALE ||
-          arguments[3]->as.integer < ROUND_TOWARD_ZERO || arguments[3]->as.integer > ROUND_HALF_EVEN)
-        break;
-      bool fits = chimi_decimal_divide_v1(decimal_of(arguments[0]), decimal_of(arguments[1]),
-                                 (uint32_t)arguments[2]->as.integer, (DecimalRounding)arguments[3]->as.integer, &output);
-      return optional_decimal(fits, output);
-    }
-  }
-  return intrinsic_shape_defect(call_node);
-}
 
 /* std/clock and timeouts (time-and-outcomes.md, "Time sources" and "Timeouts and
    deadlines").
@@ -8236,9 +7896,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
     return chimi_intrinsic_set_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_JSON_DECODE && intrinsic <= CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
-    return invoke_json_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+    return chimi_intrinsic_json_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
-    return invoke_decimal_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+    return chimi_intrinsic_decimal_v1(intrinsic, arguments, argument_count, call_node);
   if ((intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES) ||
       intrinsic == CHIMI_INTRINSIC_HTTP_COUNT_ENDS)
     return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);

@@ -1,11 +1,9 @@
 //! The JSON decoder behind `Json.decode`.
 //!
-//! It reads untrusted bytes, so it is the part of `Json.decode` written in
-//! Rust; building the Chimi values stays with the C runtime's heap until the
-//! heap moves (CHI-310). The decoder checks the whole input and writes a
-//! *tape*: the document's values in post-order, each container after its
-//! members, so the C side builds values bottom-up with a stack and never
-//! sees bytes that failed to decode.
+//! The decoder checks the whole input and writes a *tape*: the document's
+//! values in post-order, each container after its members, so
+//! `intrinsics/json.rs` builds the Chimi values bottom-up with a stack and
+//! never sees bytes that failed to decode.
 //!
 //! Every error carries the message and byte offset that the interpreter's
 //! decoder (`compiler/chimi/src/json.rs`) reports for the same input, so
@@ -46,7 +44,7 @@ pub enum NodeKind {
     DecodedKey = 9,
 }
 
-/// One value of the tape. The C runtime reads it as `ChimiJsonNode`.
+/// One value of the tape.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Node {

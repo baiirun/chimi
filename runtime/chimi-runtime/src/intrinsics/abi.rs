@@ -1,9 +1,11 @@
-//! The C view of [`super::collections`]: `runtime.c`'s `invoke_intrinsic`
-//! calls these for the std/map and std/set intrinsics.
+//! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
+//! calls these for the std/map, std/set, std/json and std/decimal intrinsics.
 
 use core::ffi::c_void;
 
 use super::collections::{Call, map_operation, set_operation};
+use super::decimals::decimal_operation;
+use super::json::json_operation;
 use crate::heap::layout::{Control, Environment, Value};
 
 /// The arguments as a slice.
@@ -55,4 +57,34 @@ pub unsafe extern "C" fn chimi_intrinsic_set_v1(
     let call = Call { runtime, span, call_node, environment };
     // SAFETY: the caller's contract.
     unsafe { set_operation(&call, intrinsic, arguments(values, count)) }
+}
+
+/// [`json_operation`].
+///
+/// # Safety
+/// As for `json_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_json_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { json_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`decimal_operation`].
+///
+/// # Safety
+/// As for `decimal_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_decimal_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { decimal_operation(intrinsic, arguments(values, count), call_node) }
 }

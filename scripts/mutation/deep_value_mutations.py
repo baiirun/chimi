@@ -13,6 +13,7 @@ CRATE = "compiler/chimi"
 EXECUTION = "src/execution.rs"
 TEARDOWN = "src/execution/teardown.rs"
 RUNTIME = "runtime/native/runtime.c"
+JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
 
 
@@ -22,6 +23,10 @@ def lib(name, file, edits):
 
 def language(name, edits, filter):
     return dict(name=name, file=RUNTIME, edits=edits, targets=["language"], filter=filter)
+
+
+def json_language(name, edits, filter):
+    return dict(name=name, file=JSON_INTRINSICS, edits=edits, targets=["language"], filter=filter)
 
 
 def native(name, edits, filter):
@@ -116,18 +121,10 @@ MUTATIONS = [
         "        json_string(output, key->name); fputc(':', output);",
         "        fputs(key->name, output); fputc(':', output);",
     )], "debug_render_nests_through_map_keys"),
-    language("native Json.encode queues Array elements first to last", [(
-        "      for (uint32_t index = list_length(field); index-- > 0;) {\n"
-        "        json_step(steps, JSON_STEP_VALUE, list_get(field, index));",
-        "      for (uint32_t index = 0; index < list_length(field); ++index) {\n"
-        "        json_step(steps, JSON_STEP_VALUE, list_get(field, index));",
-    )], "json_encode_writes_a_deeply_nested_value"),
-    language("native Json.encode writes an Object entry's value before its key", [(
-        "        json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);\n"
-        "        json_step(steps, JSON_STEP_KEY, entries.nodes[index]);",
-        "        json_step(steps, JSON_STEP_KEY, entries.nodes[index]);\n"
-        "        json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);",
-    )], "json_encode_writes_a_deeply_nested_value"),
+    json_language('native Json.encode queues Array elements first to last', [('for index in (0..(*items).payload.list.length).rev() {',
+        'for index in 0..(*items).payload.list.length {')], 'json_encode_writes_a_deeply_nested_value'),
+    json_language("native Json.encode writes an Object entry's value before its key", [('steps.push(Step::Value((*node).value));\n                    steps.push(Step::Key(node));',
+        'steps.push(Step::Key(node));\n                    steps.push(Step::Value((*node).value));')], 'json_encode_writes_a_deeply_nested_value'),
     # The walk is Rust since CHI-305 step 5, phase 3 (heap/transfer.rs).
     transfer("native capture transfer scans the visited set linearly", [(
         "    let hash = (pointer as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);\n"

@@ -124,10 +124,10 @@ static ChimiControl *call_bytes(uint32_t intrinsic, ChimiValue **arguments, uint
   return fz_checked(invoke_bytes_operation(intrinsic, arguments, count, 0), "bytes intrinsic");
 }
 static ChimiControl *call_json(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
-  return fz_checked(invoke_json_operation(NULL, intrinsic, arguments, count, 0, 0, NULL), "json intrinsic");
+  return fz_checked(chimi_intrinsic_json_v1(intrinsic, arguments, count, 0), "json intrinsic");
 }
 static ChimiControl *call_decimal(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
-  return fz_checked(invoke_decimal_operation(NULL, intrinsic, arguments, count, 0, 0, NULL), "decimal intrinsic");
+  return fz_checked(chimi_intrinsic_decimal_v1(intrinsic, arguments, count, 0), "decimal intrinsic");
 }
 static ChimiControl *call_duration(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
   return fz_checked(invoke_duration(intrinsic, arguments, count, 0), "duration intrinsic");
@@ -368,7 +368,7 @@ static void fuzz_decimal(const uint8_t *data, size_t size, FuzzOutput *out) {
   /* Decimal.divide crashes on a zero divisor before reaching the intrinsic. */
   if (r.magnitude == 0) return;
   uint8_t pick = size ? data[0] : 0;
-  int64_t scale = pick % (DECIMAL_MAX_SCALE + 1), rounding = pick % (ROUND_HALF_EVEN + 1);
+  int64_t scale = pick % (REFERENCE_DECIMAL_MAX_SCALE + 1), rounding = pick % (REFERENCE_ROUND_HALF_EVEN + 1);
   ChimiValue *arguments[] = {left, right, integer_value(scale), integer_value(rounding)};
   out_word(out, " divide("); out_integer(out, scale); out_word(out, ","); out_integer(out, rounding);
   out_word(out, ")=");

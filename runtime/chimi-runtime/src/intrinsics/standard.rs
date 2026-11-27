@@ -40,6 +40,16 @@ unsafe fn symbol(index: u32) -> &'static Symbol {
     unsafe { &*(&raw const CHIMI_SYMBOLS).cast::<Symbol>().add(index as usize) }
 }
 
+/// The standard constructor id of the program's symbol `index`, as
+/// `ChimiSymbol.standard_constructor` holds it.
+///
+/// # Safety
+/// `index` is a symbol of the program.
+pub unsafe fn standard_constructor_of(index: u32) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { symbol(index) }.standard_constructor
+}
+
 /// The symbol of the standard constructor `standard`, if the program has one.
 fn standard_constructor_symbol(standard: u32) -> Option<u32> {
     // SAFETY: the program defines its symbol count.
@@ -104,6 +114,15 @@ pub unsafe fn boolean_value(raw: bool) -> *mut Value {
 pub unsafe fn success(value: *mut Value) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { new_control(ControlKind::SUCCESS, value, ptr::null(), -1) }
+}
+
+/// A failed control holding `value`.
+///
+/// # Safety
+/// Runs on a fiber that may allocate.
+pub unsafe fn failure(value: *mut Value) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { new_control(ControlKind::FAILURE, value, ptr::null(), -1) }
 }
 
 /// A defect at `node` with a static message.

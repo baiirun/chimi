@@ -9,6 +9,7 @@ Each mutant must turn the named language or cli test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 NUL = "text_holding_nul_keeps_every_byte_on_both_backends"
 
@@ -82,13 +83,8 @@ MUTATIONS = [
     nul("outcome JSON stops at U+0000", [(
         "      case VALUE_TEXT: json_bytes(output, value->as.text.bytes, value->as.text.length); break;",
         "      case VALUE_TEXT: json_string(output, value->as.text.bytes); break;")]),
-    nul("Json.encode stops at U+0000", [(
-        "  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {\n"
-        "    switch (*cursor) {\n"
-        "      case '\"': buffer_bytes(buffer, \"\\\\\\\"\", 2); break;",
-        "  for (; *cursor; ++cursor) {\n"
-        "    switch (*cursor) {\n"
-        "      case '\"': buffer_bytes(buffer, \"\\\\\\\"\", 2); break;")]),
+    language('Json.encode stops at U+0000', JSON_INTRINSICS, [('for &byte in text {',
+        'for &byte in text.iter().take_while(|&&byte| byte != 0) {')], NUL),
     nul("Debug.render stops at U+0000", [(
         "  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {\n"
         "    switch (*cursor) {\n"
