@@ -98,7 +98,8 @@ unsafe fn receive(call: ClockCall) -> *mut Control {
         match request.status {
             Scheduler::RESPONSE_SUCCEEDED => {
                 let mut roots = [ptr::null_mut::<c_void>(); FRAGMENT_ROOTS];
-                fragment::adopt(current_carrier(), request.message as usize as *mut RuntimeFragment, roots.as_mut_ptr());
+                let taken = request.message as usize as *mut RuntimeFragment;
+                fragment::adopt(current_carrier(), taken, roots.as_mut_ptr());
                 let message = roots[0].cast::<Value>();
                 if request.down == 0 {
                     return success(message);
@@ -178,8 +179,11 @@ unsafe fn process_kernel_operation(call: ClockCall, intrinsic: u32, arguments: &
                 if let Err(stopped) = ask(&mut request, c"Process mailbox scheduler request failed", node) {
                     return stopped;
                 }
-                let count =
-                    if intrinsic == Intrinsic::PROCESS_QUEUED { request.queued as i64 } else { i64::from(request.capacity) };
+                let count = if intrinsic == Intrinsic::PROCESS_QUEUED {
+                    request.queued as i64
+                } else {
+                    i64::from(request.capacity)
+                };
                 success(integer_value(ValueKind::INTEGER, count))
             }
             Intrinsic::PROCESS_UNMONITOR => {
@@ -214,7 +218,11 @@ unsafe fn process_kernel_operation(call: ClockCall, intrinsic: u32, arguments: &
             Intrinsic::SUPERVISOR_REMOVE_PROCESS | Intrinsic::SUPERVISOR_REMOVE_SUPERVISOR => {
                 let process = intrinsic == Intrinsic::SUPERVISOR_REMOVE_PROCESS;
                 let (function, member, kind): (&[u8], _, _) = if process {
-                    (b"Supervisor.remove_process", ValueKind::MANAGED_PROCESS, Scheduler::REQUEST_SUPERVISOR_REMOVE_PROCESS)
+                    (
+                        b"Supervisor.remove_process",
+                        ValueKind::MANAGED_PROCESS,
+                        Scheduler::REQUEST_SUPERVISOR_REMOVE_PROCESS,
+                    )
                 } else {
                     (
                         b"Supervisor.remove_supervisor",
@@ -284,6 +292,7 @@ pub unsafe extern "C" fn chimi_runtime_process_kernel_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe {
-        process_kernel_operation(ClockCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))
+        let call = ClockCall { runtime, span, call_node, environment };
+        process_kernel_operation(call, intrinsic, arguments(values, count))
     }
 }
