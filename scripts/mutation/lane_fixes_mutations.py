@@ -8,6 +8,10 @@ Each mutant must turn the named language or cli test red.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 RUNTIME = "runtime/native/runtime.c"
 SCALARS = "../../runtime/chimi-runtime/src/intrinsics/scalars.rs"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
@@ -25,8 +29,8 @@ def cli(name, file, edits, filter):
     return dict(name=name, file=file, edits=edits, targets=["cli"], filter=filter)
 
 
-def nul(name, edits):
-    return language(name, RUNTIME, edits, NUL)
+def nul(name, edits, file=RUNTIME):
+    return language(name, file, edits, NUL)
 
 
 MUTATIONS = [
@@ -53,8 +57,9 @@ MUTATIONS = [
         "static ChimiValue *string_text(uint32_t id) { return text_from_bytes(CHIMI_STRINGS[id], CHIMI_STRING_LENGTHS[id]); }",
         "static ChimiValue *string_text(uint32_t id) { return text_value(CHIMI_STRINGS[id]); }")]),
     nul("text patterns compare as C strings", [(
-        "text_equals(value, CHIMI_STRINGS[pattern->offset], CHIMI_STRING_LENGTHS[pattern->offset]);",
-        "strcmp(value->as.text.bytes, CHIMI_STRINGS[pattern->offset]) == 0;")]),
+        "                text.length == expected.len()\n"
+        "                    && core::slice::from_raw_parts(text.bytes.cast::<u8>(), text.length) == expected",
+        "                libc::strcmp(text.bytes, string(pattern.offset)) == 0")], EVAL),
     language("equal prefixes compare equal", COMPARE, [(
         "                    order = order_of(bytes(l.text), bytes(r.text));",
         "                    order = { let (a, b) = (bytes(l.text), bytes(r.text)); let n = a.len().min(b.len()); order_of(&a[..n], &b[..n]) };")],

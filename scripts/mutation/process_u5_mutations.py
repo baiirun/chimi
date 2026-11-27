@@ -13,6 +13,10 @@ scenarios in the default suite.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 RUNTIME = "runtime/native/runtime.c"
 NATIVE = "src/backend/native.rs"
 TYPING = "src/typing.rs"
@@ -110,10 +114,10 @@ MUTATIONS = [
         [TRANSCRIPT, "in its task field", "has a null incarnation_id"], [(
             '    json_identity(output, "incarnation_id", event->incarnation);',
             '    json_identity(output, "incarnation_id", event->task);')]),
-    lab("a name id is the bare symbol index", RUNTIME, "MB01",
+    lab("a name id is the bare symbol index", EVAL, "MB01",
         [TRANSCRIPT, "has no name", "has name"], [(
-            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)symbol + 1));",
-            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)symbol));")]),
+            "                (*value).payload.address.target = u64::from(symbol_index) + 1;",
+            "                (*value).payload.address.target = u64::from(symbol_index);")]),
     lab("boundaries mode runs the scheduler in full mode", RUNTIME, "OB02",
         ["expected.transcript (boundaries)"], [(
             TRACE_MODE, ".trace_mode = runtime->silent ? 0 : 2,")]),

@@ -6,17 +6,22 @@ Each mutant must turn native_profile_counts_evaluations_and_allocations_per_oper
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 R = "runtime/native/runtime.c"
 
 
-def m(name, edits):
-    return dict(name=name, file=R, edits=edits, targets=["cli"],
+def m(name, edits, file=R):
+    return dict(name=name, file=file, edits=edits, targets=["cli"],
                 filter="native_profile_counts_evaluations_and_allocations_per_operation")
 
 
 MUTATIONS = [
  m("a node does not hand allocations back to its parent",
-   [("  if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;", "  (void)outer;")]),
+   [("            (*(*current_carrier()).fiber.heap).profiled_node_plus_one = frame.outer;",
+     "            let _ = frame.outer;")], EVAL),
  m("profiling leaves direct loops on",
    [("  if (!runtime->silent || profile_rows) return chimi_rt_loop(", "  if (!runtime->silent) return chimi_rt_loop(")]),
  m("profiling leaves direct integer roots on",

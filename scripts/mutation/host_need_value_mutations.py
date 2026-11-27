@@ -6,6 +6,10 @@ Run: scripts/mutation/mutate.py scripts/mutation/host_need_value_mutations.py
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 EXECUTABLE = "src/executable.rs"
 OPERATIONS = "src/operations.rs"
 
@@ -24,8 +28,8 @@ MUTATIONS = [
         "                        RuntimeCallable::Dependency { callable, .. } => (**callable).clone(),\n",
         "",
     )]),
-    mutant("native wraps a dependency callable again", RUNTIME, [(
-        "    if (inner->kind == CALL_DEPENDENCY) inner = inner->inner;\n",
+    mutant("native wraps a dependency callable again", EVAL, [(
+        "            if (*found).kind == CallableKind::DEPENDENCY {\n                found = (*found).inner;\n            }\n",
         "",
     )]),
     mutant("the need is read as a plain reference", EXECUTABLE, [(

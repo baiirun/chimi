@@ -7,6 +7,10 @@ Run: scripts/mutation/mutate.py scripts/mutation/using_binding_mutations.py
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 TYPING = "src/typing.rs"
 EXECUTABLE = "src/executable.rs"
 EXECUTION = "src/execution.rs"
@@ -56,8 +60,8 @@ MUTATIONS = [
         "                    provided.push((provider.name, value));",
         "                    environment.requirements.insert(provider.name, value);",
     )], filter="outside_its_own_using"),
-    mutant("native evaluates a provider after the earlier ones", RUNTIME, [(
-        "    ChimiControl *control = run_node(provider->node, runtime, incoming, span);",
-        "    ChimiControl *control = RUN(provider->node);",
+    mutant("native evaluates a provider after the earlier ones", EVAL, [(
+        "            let control = eval.run(provider.node);",
+        "            let control = Eval { environment, ..eval }.run(provider.node);",
     )], filter="outside_its_own_using"),
 ]

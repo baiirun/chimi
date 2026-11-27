@@ -10,6 +10,10 @@ Results: scripts/mutation/carrier_threads_results.txt.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 R = "runtime/native/runtime.c"
 
 
@@ -44,8 +48,8 @@ MUTATIONS = [
         "  if (runtime->silent) return parent;\n"
         "  uint64_t span = (*(uint64_t *)&runtime->next_span)++;")]),
     m("profile counts are plain adds", [(
-        "static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }",
-        "static void profile_count(uint64_t *field, uint64_t by) { *field += by; }")]),
+        "            AtomicU64::from_ptr(ptr::addr_of_mut!((*row).evaluations)).fetch_add(1, Relaxed);",
+        "            (*row).evaluations += 1;")], EVAL),
     # Heap owners are taken in Rust since CHI-305 step 5 phase 3.
     m("heap owners come from a plain counter", [(
         "        (*heap).owner = NEXT_HEAP_OWNER.fetch_add(1, Relaxed);",
