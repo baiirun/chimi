@@ -24,7 +24,6 @@ KILLED       the binding archive key ignores the sources [lib -- backend::bindin
 KILLED       the interpreter calls a binding a success [bindings] (84s)
 KILLED       a test-only binding is allowed from main [bindings] (34s)
 KILLED       the probe's read ignores EAGAIN [bindings] (72s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
 # result: 1 survivor, explained:
 # - a wait never parks: equivalent. Returning READY after a wake only makes
 #   the binding retry its read, get EAGAIN, and wait again.
