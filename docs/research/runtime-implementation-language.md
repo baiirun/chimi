@@ -160,6 +160,8 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `runtime.c`'s `invoke` until dispatch moves (phase 7).
       Second PR: std/json (`intrinsics/json.rs`, which builds values from
       the decoder's tape directly) and std/decimal (`intrinsics/decimals.rs`).
+      Third PR: std/bytes and std/http's byte scan (`intrinsics/bytes.rs`),
+      with numbered defect messages in `intrinsics/message.rs`.
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
