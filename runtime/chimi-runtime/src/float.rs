@@ -160,15 +160,10 @@ fn generate<N: Natural>(mut r: N, s: N, mut m_minus: N, mut m_plus: N, inclusive
             continue;
         }
         if high && (!low || r.sum(&r).order(&s).is_ge()) {
-            // Round the last digit up; nines carry left. The carry stops at
-            // the first digit: past it the value would be 10^k, which the
-            // step-up of k left outside the interval.
-            let mut last = count;
-            while last > 1 && digits[last - 1] == b'9' {
-                last -= 1;
-            }
-            digits[last - 1] += 1;
-            count = last;
+            // Round the last digit up. It is never a 9: rounding a 9 up
+            // would give a shorter number inside the interval, and the digit
+            // before would have stopped there.
+            digits[count - 1] += 1;
         }
         return (digits, count);
     }
