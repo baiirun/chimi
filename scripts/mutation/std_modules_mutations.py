@@ -13,6 +13,7 @@ memory tests in tests/cli.rs red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 CORE = "src/execution/core_operations.rs"
 SOURCE = "src/resolution/standard_source.rs"
 TEXT = "std/text.chimi"
@@ -25,9 +26,9 @@ def std(name, file, edits, filter=""):
 
 MUTATIONS = [
     # Native cores: each must agree with its expected outcome on both backends.
-    std("native byte_slice skips the UTF-8 boundary check", RUNTIME, [(
-        "      if (!utf8_boundary(text, length, from))",
-        "      if (false)")], filter="standard_programs"),
+    std("native byte_slice skips the UTF-8 boundary check", CORE_INTRINSICS, [(
+        "if !utf8_boundary(bytes, bound) {",
+        "if false {")], filter="standard_"),
     std("interpreter byte_slice skips the UTF-8 boundary check", CORE, [(
         "                    if !value.is_char_boundary(bound) {",
         "                    if bound > value.len() {")], filter="standard_programs"),
@@ -40,12 +41,12 @@ MUTATIONS = [
         "                if separator.is_empty() && false {\n"
         "                    return defect(\"Text.split: separator must not be empty\".to_owned());")],
         filter="standard_programs"),
-    std("native List.set accepts the index equal to the length", RUNTIME, [(
-        "      if (index < 0 || (uint64_t)index >= list_length(list))",
-        "      if (index < 0 || (uint64_t)index > list_length(list))")], filter="standard_programs"),
-    std("native unwrap_or_fail fails on Some", RUNTIME, [(
-        "      if (arguments[0]->as.constructed.length == 1) return",
-        "      if (arguments[0]->as.constructed.length == 0) return")], filter="standard_programs"),
+    std("native List.set accepts the index equal to the length", CORE_INTRINSICS, [(
+        "Ok(index) if index < window.length =>",
+        "Ok(index) if index <= window.length =>")], filter="standard_"),
+    std("native unwrap_or_fail fails on Some", CORE_INTRINSICS, [(
+        "if option.length == 1 {",
+        "if option.length == 0 {")], filter="standard_"),
     std("native Debug.crash drops the caller's message", RUNTIME, [(
         "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);",
         "      return defect(\"Debug.crash\", call_node);")], filter="standard_programs"),

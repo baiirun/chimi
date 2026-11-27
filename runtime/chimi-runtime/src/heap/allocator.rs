@@ -484,6 +484,16 @@ pub unsafe fn allocate(count: usize, size: usize) -> *mut u8 {
     unsafe { allocate_in(running_carrier(), bytes) }
 }
 
+/// The running carrier, in the carrier simulation too.
+pub(crate) fn current_carrier() -> *mut Carrier {
+    if mode() == SIMULATION {
+        // SAFETY: no precondition.
+        unsafe { chimi_runtime_current_carrier() }
+    } else {
+        running_carrier()
+    }
+}
+
 /// [`allocate`] in the carrier simulation, which keeps its running carrier
 /// in `runtime.c`.
 ///

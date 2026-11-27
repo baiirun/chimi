@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 LOWERING = "src/executable.rs"
 CAUSES = "src/execution/causes.rs"
 RUNTIME = "runtime/native/runtime.c"
+CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 
 
 def programs(name, file, edits):
@@ -39,9 +40,9 @@ MUTATIONS = [
     programs("a function literal links to the enclosing arm", LOWERING, [
         ("                self.cause_scopes.push(None);\n                let lowered_body = self.expression(module_id, body);\n                self.cause_scopes.pop();",
          "                let lowered_body = self.expression(module_id, body);")]),
-    programs("C: a crash message lives in the loop's heap", RUNTIME, [
-        ("      return defect(lasting_message(arguments[0]->as.text.bytes), call_node);",
-         "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);")]),
+    programs("native: a crash message lives in the loop's heap", CORE_INTRINSICS, [
+        ("defect_with(lasting_message(bytes_of(arguments[0])), node)",
+         "defect_with((*new_text(bytes_of(arguments[0]))).payload.text.bytes, node)")]),
     programs("C: the root report stops at a NUL", RUNTIME, [
         ("    json_bytes(output, text->as.text.bytes, text->as.text.length);",
          "    json_string(output, text->as.text.bytes);")]),

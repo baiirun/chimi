@@ -1,11 +1,13 @@
 //! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
 //! calls these for the std/map, std/set, std/json, std/decimal, std/bytes and
-//! std/duration intrinsics.
+//! std/duration intrinsics, and `Debug.crash`, `Option.unwrap_or_fail`,
+//! std/text and std/list.
 
 use core::ffi::c_void;
 
 use super::bytes::bytes_operation;
 use super::collections::{Call, map_operation, set_operation};
+use super::core::core_operation;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::json::json_operation;
@@ -120,4 +122,19 @@ pub unsafe extern "C" fn chimi_intrinsic_duration_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { duration_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`core_operation`].
+///
+/// # Safety
+/// As for `core_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_core_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { core_operation(intrinsic, arguments(values, count), call_node) }
 }

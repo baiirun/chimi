@@ -9768,6 +9768,45 @@ fn duration_constructors_accept_their_boundary_counts() {
     );
 }
 
+// The defects of `List.set` and `Text.byte_slice` name the bound they broke, on
+// both backends.
+#[test]
+fn list_set_and_byte_slice_defects_name_the_bound() {
+    let cases = [
+        ("List.set([1, 2, 3], 5, 0)", "List.set: index must be in 0..3, got 5"),
+        ("Text.byte_slice(\"h\u{e9}llo\", 0..2)", "Text.byte_slice: bound 2 falls inside a UTF-8 sequence"),
+    ];
+    for (index, (expression, message)) in cases.into_iter().enumerate() {
+        let source = format!(
+            "import std/list as List\n\
+             import std/text as Text\n\
+             import std/debug as Debug\n\
+             pub fn main() -> Text {{ Debug.render({expression}) }}\n"
+        );
+        let outcome = run_both(&format!("bound-defect-{index}"), &source);
+        let expected = format!("\"outcome\":\"defect\",\"message\":\"{message}\"");
+        assert!(outcome.starts_with(&expected), "{expression}: {outcome}");
+    }
+}
+
+// A window under a quarter of its list's length is copied out on the running
+// carrier's heap (heap/list.rs `slice`), which the carrier-simulation build
+// keeps outside the thread-local: a wrong carrier there corrupts the copy.
+#[test]
+fn a_short_slice_of_a_long_list_is_copied_on_both_backends() {
+    let source = concat!(
+        "import std/list as List\n",
+        "import std/debug as Debug\n",
+        "pub fn main() -> Text {\n",
+        "  let long = [1, 2, 3, 4, 5, 6, 7, 8]\n",
+        "  let short = List.slice(long, 2..3)\n",
+        "  Debug.render([short, List.push(short, 9), long])\n",
+        "}\n"
+    );
+    let outcome = run_both("short-slice", source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"[[3], [3, 9], [1, 2, 3, 4, 5, 6, 7, 8]]\"");
+}
+
 // `negate` flips the sign and `absolute` drops it, on both backends.
 #[test]
 fn duration_negate_and_absolute_follow_the_sign() {

@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
+CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 NUL = "text_holding_nul_keeps_every_byte_on_both_backends"
 
@@ -59,24 +60,21 @@ MUTATIONS = [
     # No mutant for CHIMI_INTRINSIC_TEXT_EQUAL: no source form reaches it (`==` on
     # Text goes through structural comparison, and no module binds Text.equal),
     # so a C-string version survived the first run without being observable.
-    nul("contains stops at U+0000", [(
-        "      return success(boolean_value(text_find(arguments[0]->as.text.bytes, arguments[0]->as.text.length,\n"
-        "                                             arguments[1]->as.text.bytes, arguments[1]->as.text.length) != NULL));",
-        "      return success(boolean_value(strstr(arguments[0]->as.text.bytes, arguments[1]->as.text.bytes) != NULL));")]),
-    nul("split's last part stops at U+0000", [(
-        "      return success(list_push(parts, text_from_bytes(text, (size_t)(end - text))));",
-        "      return success(list_push(parts, text_value(text)));")]),
-    nul("replace's tail stops at U+0000", [(
-        "      buffer_bytes(&buffer, text, (size_t)(end - text));\n"
-        "      return success(text_from_bytes(buffer.data ? buffer.data : \"\", buffer.length));",
-        "      buffer_bytes(&buffer, text, strlen(text));\n"
-        "      return success(text_from_bytes(buffer.data ? buffer.data : \"\", buffer.length));")]),
-    nul("concat stops each part at U+0000", [(
-        "        buffer_bytes(&buffer, part->as.text.bytes, part->as.text.length);",
-        "        buffer_bytes(&buffer, part->as.text.bytes, strlen(part->as.text.bytes));")]),
-    nul("byte_length stops at U+0000", [(
-        "      return success(integer_value((int64_t)arguments[0]->as.text.length));",
-        "      return success(integer_value((int64_t)strlen(arguments[0]->as.text.bytes)));")]),
+    language("contains stops at U+0000", CORE_INTRINSICS, [(
+        "find(bytes_of(arguments[0]), needle)",
+        "find(bytes_of(arguments[0]).split(|&byte| byte == 0).next().unwrap(), needle)")], NUL),
+    language("split's last part stops at U+0000", CORE_INTRINSICS, [(
+        "success(list::list_push(parts, new_text(rest)))",
+        "success(list::list_push(parts, new_text(rest.split(|&byte| byte == 0).next().unwrap())))")], NUL),
+    language("replace's tail stops at U+0000", CORE_INTRINSICS, [(
+        "output.push_bytes(rest);",
+        "output.push_bytes(rest.split(|&byte| byte == 0).next().unwrap());")], NUL),
+    language("concat stops each part at U+0000", CORE_INTRINSICS, [(
+        "output.push_bytes(bytes_of(part));",
+        "output.push_bytes(bytes_of(part).split(|&byte| byte == 0).next().unwrap());")], NUL),
+    language("byte_length stops at U+0000", CORE_INTRINSICS, [(
+        "(*arguments[0]).payload.text.length as i64",
+        "bytes_of(arguments[0]).split(|&byte| byte == 0).next().unwrap().len() as i64")], NUL),
     nul("trim_end starts at U+0000", [(
         "      size_t end = arguments[0]->as.text.length, width;",
         "      size_t end = strlen(text), width;")]),

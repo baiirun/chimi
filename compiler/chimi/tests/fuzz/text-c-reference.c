@@ -9,6 +9,11 @@
 
 /* Unicode White_Space, the characters Text.trim_start and Text.trim_end remove; the
    Rust side's chimi_runtime::text::is_white_space keeps the same table. */
+/* Whether `offset` starts a UTF-8 sequence of `text` or is its end, as
+   runtime.c's utf8_boundary was. */
+static bool reference_utf8_boundary(const char *text, size_t length, size_t offset) {
+  return offset == length || ((unsigned char)text[offset] & 0xc0) != 0x80;
+}
 static bool reference_is_white_space(uint32_t code) {
   return (code >= 0x9 && code <= 0xd) || code == 0x20 || code == 0x85 || code == 0xa0 ||
          code == 0x1680 || (code >= 0x2000 && code <= 0x200a) || code == 0x2028 ||
@@ -784,7 +789,7 @@ static bool reference_cased_beyond_ignorables(const char *text, size_t length, s
   size_t width;
   while (before ? offset > 0 : offset < length) {
     size_t start = offset;
-    if (before) { start = offset - 1; while (start > 0 && !utf8_boundary(text, length, start)) --start; }
+    if (before) { start = offset - 1; while (start > 0 && !reference_utf8_boundary(text, length, start)) --start; }
     uint8_t context = reference_sigma_context(reference_utf8_decode((const unsigned char *)text + start, &width));
     if (context != REFERENCE_SIGMA_CONTEXT_IGNORABLE) return context == REFERENCE_SIGMA_CONTEXT_CASED;
     offset = before ? start : start + width;
@@ -1433,7 +1438,7 @@ static size_t reference_grapheme_end(const char *text, size_t length, size_t sta
 }
 
 
-/* Text.trim_start and Text.trim_end as invoke_core_operation spelled them. */
+/* Text.trim_start and Text.trim_end as runtime.c's invoke_core_operation spelled them. */
 static ChimiValue *reference_text_trim(const ChimiValue *value, bool trim_end) {
   if (!trim_end) {
     const unsigned char *text = (const unsigned char *)value->as.text.bytes;
@@ -1446,7 +1451,7 @@ static ChimiValue *reference_text_trim(const ChimiValue *value, bool trim_end) {
   size_t end = value->as.text.length, width;
   while (end > 0) {
     size_t start = end - 1;
-    while (start > 0 && !utf8_boundary(text, end, start)) --start;
+    while (start > 0 && !reference_utf8_boundary(text, end, start)) --start;
     if (!reference_is_white_space(reference_utf8_decode((const unsigned char *)text + start, &width))) break;
     end = start;
   }
