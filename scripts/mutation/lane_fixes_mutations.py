@@ -11,6 +11,7 @@ CRATE = "compiler/chimi"
 RUNTIME = "runtime/native/runtime.c"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 COMPARE = "../../runtime/chimi-runtime/src/heap/compare.rs"
 NUL = "text_holding_nul_keeps_every_byte_on_both_backends"
 
@@ -83,13 +84,9 @@ MUTATIONS = [
         "      case VALUE_TEXT: json_string(output, value->as.text.bytes); break;")]),
     language('Json.encode stops at U+0000', JSON_INTRINSICS, [('for &byte in text {',
         'for &byte in text.iter().take_while(|&&byte| byte != 0) {')], NUL),
-    nul("Debug.render stops at U+0000", [(
-        "  for (const unsigned char *end = cursor + text->as.text.length; cursor < end; ++cursor) {\n"
-        "    switch (*cursor) {\n"
-        "      case '\"': debug_text(buffer, \"\\\\\\\"\"); break;",
-        "  for (const unsigned char *end = cursor + strlen((const char *)cursor); cursor < end; ++cursor) {\n"
-        "    switch (*cursor) {\n"
-        "      case '\"': debug_text(buffer, \"\\\\\\\"\"); break;")]),
+    language("Debug.render stops at U+0000", DEBUG_RENDER, [(
+        "self.quote(core::slice::from_raw_parts(text.bytes.cast(), text.length));",
+        "self.quote(c_bytes(text.bytes));")], NUL),
     nul("Json.decode stops a string at U+0000", [(
         "    if (value == '\"') return text_from_bytes(buffer.data ? buffer.data : \"\", buffer.length);",
         "    if (value == '\"') return text_value(buffer.data ? buffer.data : \"\");")]),

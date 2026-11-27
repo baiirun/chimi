@@ -10,6 +10,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 I = "src/execution/core_operations.rs"
 E = "src/executable.rs"
 CAP = "src/capability.rs"
@@ -36,9 +37,9 @@ MUTATIONS = [
         "      if (log->taken == log->length)\n        return defect(",
         "      if (log->taken == log->length)\n        return success(void_value());\n      if (0)\n        return defect(",
     )]),
-    mutant("native: a recorder renders as a monitor", C, [(
-        '    case VALUE_TEST_RECORDER: debug_text(buffer, "<Recorder>"); return;',
-        '    case VALUE_TEST_RECORDER: debug_text(buffer, "<Monitor>"); return;',
+    mutant("native: a recorder renders as a monitor", DEBUG_RENDER, [(
+        'K::TEST_RECORDER => self.text(b"<Recorder>"),',
+        'K::TEST_RECORDER => self.text(b"<Monitor>"),',
     )]),
     mutant("interpreter: recorded reverses the log", I, [(
         "                Control::Success(RuntimeValue::List(values.0.iter().cloned().collect()))",
