@@ -79,4 +79,10 @@ MUTATIONS = [
         edits=[("                error = if failed == 0 { libc::EIO } else { failed };", "                error = 0;")],
         targets=["console_output"],
     ),
+    dict(
+        name="a stop signal does not end a write a full pipe holds",
+        file=IO,
+        edits=[("        if (!body.is_empty() || !tail.is_empty()) && stopped() {", "        if (!body.is_empty() || !tail.is_empty()) && false {")],
+        targets=["console_output"],
+    ),
 ]

@@ -50,6 +50,6 @@ MUTATIONS = [
         "static void input_unlock(ByteInput *input) {\n  if (input->lock) pthread_mutex_unlock(input->lock);\n}",
         "static void input_unlock(ByteInput *input) {\n  (void)input;\n}")]),
     m("a console line is written without the lock", [(
-        "    enter();\n    let outcome = write_line_locked(virtual_clock, index, text);\n    leave();",
-        "    let outcome = write_line_locked(virtual_clock, index, text);")], file=CONSOLE_IO),
+        "    enter();\n    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };\n    leave();",
+        "    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };")], file=CONSOLE_IO),
 ]

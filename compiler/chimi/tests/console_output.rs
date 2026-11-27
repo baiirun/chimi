@@ -354,3 +354,51 @@ pub fn main() -> Int needs { console: Console } {
     );
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// Without the scheduler a stop signal interrupts a write that a full pipe
+/// holds, so the program ends instead of waiting for a reader forever.
+#[test]
+fn a_stop_signal_ends_a_program_blocked_on_a_full_pipe() {
+    let scratch = scratch_directory("stalled");
+    let executable = build_native(
+        &scratch,
+        "stalled",
+        r#"import std/io.{Console}
+import std/text as Text
+
+pub fn main() -> Int needs { console: Console } {
+  console.write_error("started")
+  console.write_line(Text.repeat("x", 1000000))
+  0
+}
+"#,
+    );
+    let mut child = Command::new(&executable)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start native program");
+    let mut started = String::new();
+    BufReader::new(child.stderr.take().unwrap()).read_line(&mut started).unwrap();
+    assert_eq!(started, "started\n");
+    // The million-byte line cannot fit the pipe, which nobody reads; a
+    // signal before the write starts ends the program too.
+    std::thread::sleep(Duration::from_millis(200));
+    let kill = Command::new("kill").arg("-TERM").arg(child.id().to_string()).status().unwrap();
+    assert!(kill.success());
+    let deadline = std::time::Instant::now() + LIMIT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the program kept waiting on its full pipe after SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!status.success(), "{status}");
+    drop(child.stdout.take());
+    std::fs::remove_dir_all(scratch).unwrap();
+}

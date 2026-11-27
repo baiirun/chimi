@@ -202,8 +202,12 @@ fn mode(console: &mut Console, virtual_clock: bool, index: usize) -> Mode {
 
 /// Writes `text` and a newline straight to `fd`. 0, or the errno of the
 /// failed write. The newline goes out even after a failed write, so a later
-/// line never joins a broken one, unless a signal interrupted it.
-fn write_direct(fd: c_int, text: &[u8]) -> c_int {
+/// line never joins a broken one, unless a signal interrupted it: without
+/// the scheduler a stop signal interrupts the write (no SA_RESTART), and
+/// once `stopped` says so the line fails with EINTR, so a program blocked on
+/// a full pipe can end. A signal that lands after some bytes went out ends
+/// the write call short rather than failed, so a short write asks too.
+fn write_direct(fd: c_int, text: &[u8], stopped: impl Fn() -> bool) -> c_int {
     let newline = *b"\n";
     let (mut body, mut tail): (&[u8], &[u8]) = (text, &newline);
     let mut error = 0;
@@ -217,8 +221,6 @@ fn write_direct(fd: c_int, text: &[u8]) -> c_int {
         let count = unsafe { libc::writev(fd, parts[from..].as_ptr(), (2 - from) as c_int) };
         let Ok(mut count) = usize::try_from(count) else {
             let failed = errno();
-            // Without the scheduler a stop signal interrupts the write (no
-            // SA_RESTART), so the line fails and the program can end.
             if failed == libc::EINTR {
                 return libc::EINTR;
             }
@@ -235,6 +237,9 @@ fn write_direct(fd: c_int, text: &[u8]) -> c_int {
         body = &body[taken..];
         count -= taken;
         tail = &tail[count.min(tail.len())..];
+        if (!body.is_empty() || !tail.is_empty()) && stopped() {
+            return libc::EINTR;
+        }
     }
     error
 }
@@ -370,12 +375,17 @@ fn push(queue: &mut ConsoleQueue, bytes: &[u8]) {
 /// Writes `text` and a newline to stream `index`. 0 when written (or, for a
 /// body ending under a terminal cancel, queued), -1 when cancelled,
 /// otherwise the errno of the failed write. The caller holds the lock.
-fn write_line_locked(virtual_clock: bool, index: usize, text: &[u8]) -> c_int {
+///
+/// # Safety
+/// `runtime` is the live runtime.
+unsafe fn write_line_locked(runtime: *const Runtime, index: usize, text: &[u8]) -> c_int {
     let queue = {
         // SAFETY: the caller holds the lock; the borrow ends before any wait.
         let console = unsafe { state() };
-        if mode(console, virtual_clock, index) == Mode::Direct {
-            return write_direct(console.streams[index].fd, text);
+        // SAFETY: the caller's contract.
+        if mode(console, unsafe { (*runtime).virtual_clock }, index) == Mode::Direct {
+            // SAFETY: as above.
+            return write_direct(console.streams[index].fd, text, || unsafe { is_cancelled(runtime) });
         }
         console.streams[index].queue
     };
@@ -428,10 +438,9 @@ fn write_line_locked(virtual_clock: bool, index: usize, text: &[u8]) -> c_int {
 /// `runtime` is the live runtime; runs on a fiber when the program starts
 /// the scheduler.
 unsafe fn write_line(runtime: *const Runtime, index: usize, text: &[u8]) -> c_int {
-    // SAFETY: the caller's contract.
-    let virtual_clock = unsafe { (*runtime).virtual_clock };
     enter();
-    let outcome = write_line_locked(virtual_clock, index, text);
+    // SAFETY: the caller's contract.
+    let outcome = unsafe { write_line_locked(runtime, index, text) };
     leave();
     outcome
 }
