@@ -1164,12 +1164,22 @@ enum MatchKind {
     Failure,
 }
 
-/// One subject's value; `control` is its outcome, which holds a failure's cause.
+/// One subject's outcome, which holds its value and a failure's cause. Two
+/// words, so the stack array of a match stays small: a match sits in every
+/// frame of a recursion through `case`.
 #[derive(Clone, Copy)]
 struct MatchValue {
     kind: MatchKind,
-    value: *mut Value,
     control: *mut Control,
+}
+
+impl MatchValue {
+    /// # Safety
+    /// `control` is live.
+    unsafe fn value(self) -> *mut Value {
+        // SAFETY: the caller's contract.
+        unsafe { (*self.control).value }
+    }
 }
 
 /// The binding pass of a match. `view_failed` records a list view that could
@@ -1316,9 +1326,9 @@ unsafe fn match_value(pattern_id: u32, value: MatchValue, binder: Option<&mut Pa
         let pattern = pattern(pattern_id);
         if pattern.kind == Core::PATTERN_OUTCOME {
             let expected = if pattern.a != 0 { MatchKind::Success } else { MatchKind::Failure };
-            return value.kind == expected && match_plain(pattern.offset, value.value, binder);
+            return value.kind == expected && match_plain(pattern.offset, value.value(), binder);
         }
-        value.kind == MatchKind::Plain && match_plain(pattern_id, value.value, binder)
+        value.kind == MatchKind::Plain && match_plain(pattern_id, value.value(), binder)
     }
 }
 
@@ -1350,7 +1360,7 @@ unsafe fn match_node(eval: Eval, node_id: u32) -> *mut Control {
         let at = i64::from(node_id);
         let arm = |index: u32| entry(&raw const CHIMI_ARMS, node.a + index);
         let subjects = node.length as usize;
-        let mut stack_values = [MatchValue { kind: MatchKind::Plain, value: ptr::null_mut(), control: ptr::null_mut() };
+        let mut stack_values = [MatchValue { kind: MatchKind::Plain, control: ptr::null_mut() };
             MATCH_STACK_SUBJECTS];
         let values: *mut MatchValue = if subjects <= MATCH_STACK_SUBJECTS {
             stack_values.as_mut_ptr()
@@ -1367,7 +1377,7 @@ unsafe fn match_node(eval: Eval, node_id: u32) -> *mut Control {
                 (ControlKind::SUCCESS, false) => MatchKind::Plain,
                 _ => return control,
             };
-            *values.add(subject as usize) = MatchValue { kind, value: (*control).value, control };
+            *values.add(subject as usize) = MatchValue { kind, control };
         }
         let value = |subject: u32| *values.add(subject as usize);
         for index in 0..node.b {
@@ -1436,6 +1446,11 @@ unsafe fn host_stack_exhausted() -> bool {
 ///
 /// # Safety
 /// Runs on a fiber; `callable`, the arguments and `call_environment` are live.
+///
+/// Inlined into the call node, as the C was: a recursion through calls
+/// keeps one frame per call instead of two, so it reaches the same depth on
+/// a task's stack (tests/cli.rs, native_process_stack_depth_and_named_defects).
+#[inline(always)]
 pub unsafe fn invoke(
     runtime: *mut Runtime,
     callable: *mut Callable,
