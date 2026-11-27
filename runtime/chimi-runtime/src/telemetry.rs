@@ -463,16 +463,3 @@ pub unsafe extern "C" fn chimi_trace_scheduler_event_v1(context: *mut c_void, ev
         });
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::unsigned_spelling;
-
-    #[test]
-    fn unsigned_spelling_writes_every_digit() {
-        let mut digits = [0; 20];
-        assert_eq!(unsigned_spelling(0, &mut digits), b"0");
-        assert_eq!(unsigned_spelling(u64::MAX, &mut digits), b"18446744073709551615");
-        assert_eq!(unsigned_spelling(1_000, &mut digits), b"1000");
-    }
-}

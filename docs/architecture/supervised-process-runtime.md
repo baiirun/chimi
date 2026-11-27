@@ -798,7 +798,8 @@ kinds are additive, so the version stays 4.
 `ob07_the_process_abi_layouts_match_the_c_header` checks the layouts and the
 nested-supervisor kind values against `chimi_fiber.h`.
 
-`emit_scheduler_event` in `runtime.c` gains the matching name table. The
+The runtime's scheduler event writer (now `chimi_trace_scheduler_event_v1` in
+chimi-runtime `telemetry.rs`) gains the matching name table. The
 prototype's event order is the reference transcript.
 
 ## Pay-for-play linking
