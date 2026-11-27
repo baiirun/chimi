@@ -9,7 +9,7 @@ use core::ptr;
 use super::message::Message;
 use super::standard::{boolean_value, defect, defect_with, failure, option_value, shape_defect, success};
 use super::text::HeapText;
-use crate::heap::allocator::running_carrier;
+use crate::heap::allocator::current_carrier;
 use crate::heap::layout::{Control, Intrinsic, ListVector, Value, ValueKind};
 use crate::heap::list;
 use crate::heap::values::{integer_value, text_value};
@@ -224,7 +224,7 @@ pub unsafe fn core_operation(intrinsic: u32, arguments: &[*mut Value], call_node
             Intrinsic::LIST_SLICE if kinds(&[K::LIST, K::RANGE]) => {
                 let range = (*arguments[1]).payload.range;
                 let (from, to) = clamp_range(range.start, range.end, (*arguments[0]).payload.list.length as usize);
-                success(list::slice(running_carrier(), arguments[0], from as u32, to as u32))
+                success(list::slice(current_carrier(), arguments[0], from as u32, to as u32))
             }
             Intrinsic::LIST_SET
                 if arguments.len() == 3 && (*arguments[0]).kind == K::LIST && (*arguments[1]).kind == K::INTEGER =>

@@ -110,7 +110,7 @@ fn carrier_count() -> usize {
 /// `runtime.c`. It is read once per call: nothing here parks, so the fiber
 /// cannot move to another carrier meanwhile.
 #[inline(always)]
-pub(crate) fn running_carrier() -> *mut Carrier {
+fn running_carrier() -> *mut Carrier {
     #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         let thread: *const u8;
@@ -482,6 +482,16 @@ pub unsafe fn allocate(count: usize, size: usize) -> *mut u8 {
     }
     // SAFETY: the caller's contract.
     unsafe { allocate_in(running_carrier(), bytes) }
+}
+
+/// The running carrier, in the carrier simulation too.
+pub(crate) fn current_carrier() -> *mut Carrier {
+    if mode() == SIMULATION {
+        // SAFETY: no precondition.
+        unsafe { chimi_runtime_current_carrier() }
+    } else {
+        running_carrier()
+    }
 }
 
 /// [`allocate`] in the carrier simulation, which keeps its running carrier

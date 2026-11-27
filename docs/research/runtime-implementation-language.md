@@ -163,7 +163,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Third PR: std/bytes and std/http's byte scan (`intrinsics/bytes.rs`),
       with numbered defect messages in `intrinsics/message.rs`. Fourth PR:
       std/duration (`intrinsics/durations.rs`), over the parser and text form
-      `crate::duration` already had.
+      `crate::duration` already had. Fifth PR: `Debug.crash`,
+      `Option.unwrap_or_fail`, and the native cores of std/text and std/list
+      (`intrinsics/core.rs`), which call `crate::text` and
+      `crate::graphemes` directly instead of through C.
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a

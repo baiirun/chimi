@@ -1,5 +1,6 @@
 """Mutants of the shared text code (CHI-307): runtime/chimi-runtime/src/
-{text,graphemes,text_abi}.rs and the C glue in runtime.c.
+{text,graphemes}.rs and the native Text intrinsics over them in
+intrinsics/core.rs (C glue in runtime.c until CHI-305 step 5 moved it).
 
 Both backends run this code, so the language tests that compare them cannot
 see a mutant here; the runtime fuzz corpus replay (tests/runtime_fuzz.rs),
@@ -14,7 +15,7 @@ CRATE = "compiler/chimi"
 RT = "../../runtime/chimi-runtime/src/"
 TEXT = RT + "text.rs"
 GRAPHEMES = RT + "graphemes.rs"
-ABI = RT + "text_abi.rs"
+CORE_INTRINSICS = RT + "intrinsics/core.rs"
 RUNTIME = "runtime/native/runtime.c"
 
 
@@ -27,12 +28,12 @@ MUTATIONS = [
          [("            | '\\u{205f}'\n            | '\\u{3000}'\n", "            | '\\u{205f}'\n")]),
     fuzz("no-break space is not white space", TEXT,
          [("            | '\\u{a0}'\n", "")]),
-    fuzz("trim_end trims the start", ABI,
-         [("let kept = if end { text::trim_end(whole) } else { text::trim_start(whole) };",
-           "let kept = if end { text::trim_start(whole) } else { text::trim_start(whole) };")]),
-    fuzz("uppercase lowercases", ABI,
-         [("if upper { text::uppercase(source) } else { text::lowercase(source) }",
-           "if upper { text::lowercase(source) } else { text::lowercase(source) }")]),
+    fuzz("trim_end trims the start", CORE_INTRINSICS,
+         [("{ text::trim_end(whole) } else { text::trim_start(whole) }",
+           "{ text::trim_start(whole) } else { text::trim_start(whole) }")]),
+    fuzz("uppercase lowercases", CORE_INTRINSICS,
+         [("{ text::uppercase(source) } else { text::lowercase(source) }",
+           "{ text::lowercase(source) } else { text::lowercase(source) }")]),
     fuzz("CR LF splits", GRAPHEMES,
          [("            (Cr, Lf) => false,\n", "")]),
     fuzz("spacing marks start a cluster", GRAPHEMES,
@@ -52,13 +53,13 @@ MUTATIONS = [
     fuzz("property lookup one range late", GRAPHEMES,
          [("table::RANGES.partition_point(|&(_, last, ..)| last < code);",
            "table::RANGES.partition_point(|&(_, last, ..)| last <= code);")]),
-    fuzz("C trim keeps the start", RUNTIME,
-         [("return text_from_bytes(value->as.text.bytes + kept.start, kept.length);",
-           "return text_from_bytes(value->as.text.bytes, kept.length);")]),
-    fuzz("C case map drops the last byte", RUNTIME,
-         [("ChimiValue *result = text_from_bytes(mapped.bytes, mapped.length);",
-           "ChimiValue *result = text_from_bytes(mapped.bytes, mapped.length - (mapped.length > 0));")]),
-    fuzz("C graphemes drop the last cluster", RUNTIME,
-         [("for (size_t index = 0, start = 0; index < ends.count; start = ends.ends[index++])",
-           "for (size_t index = 0, start = 0; index + 1 < ends.count; start = ends.ends[index++])")]),
+    fuzz("native trim keeps the start", CORE_INTRINSICS,
+         [("success(new_text(kept.as_bytes()))",
+           "success(new_text(&whole.as_bytes()[..kept.len()]))")]),
+    fuzz("native case map drops the last byte", CORE_INTRINSICS,
+         [("success(new_text(mapped.as_bytes()))",
+           "success(new_text(&mapped.as_bytes()[..mapped.len().saturating_sub(1)]))")]),
+    fuzz("native graphemes drop the last cluster", CORE_INTRINSICS,
+         [("for cluster in graphemes::graphemes(whole) {",
+           "for cluster in graphemes::graphemes(whole).take(graphemes::graphemes(whole).count().saturating_sub(1)) {")]),
 ]

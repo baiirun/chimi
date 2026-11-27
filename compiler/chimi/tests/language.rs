@@ -9768,6 +9768,24 @@ fn duration_constructors_accept_their_boundary_counts() {
     );
 }
 
+// A window under a quarter of its list's length is copied out on the running
+// carrier's heap (heap/list.rs `slice`), which the carrier-simulation build
+// keeps outside the thread-local: a wrong carrier there corrupts the copy.
+#[test]
+fn a_short_slice_of_a_long_list_is_copied_on_both_backends() {
+    let source = concat!(
+        "import std/list as List\n",
+        "import std/debug as Debug\n",
+        "pub fn main() -> Text {\n",
+        "  let long = [1, 2, 3, 4, 5, 6, 7, 8]\n",
+        "  let short = List.slice(long, 2..3)\n",
+        "  Debug.render([short, List.push(short, 9), long])\n",
+        "}\n"
+    );
+    let outcome = run_both("short-slice", source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"[[3], [3, 9], [1, 2, 3, 4, 5, 6, 7, 8]]\"");
+}
+
 // `negate` flips the sign and `absolute` drops it, on both backends.
 #[test]
 fn duration_negate_and_absolute_follow_the_sign() {

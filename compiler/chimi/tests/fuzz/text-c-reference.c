@@ -1438,7 +1438,7 @@ static size_t reference_grapheme_end(const char *text, size_t length, size_t sta
 }
 
 
-/* Text.trim_start and Text.trim_end as invoke_core_operation spelled them. */
+/* Text.trim_start and Text.trim_end as runtime.c's invoke_core_operation spelled them. */
 static ChimiValue *reference_text_trim(const ChimiValue *value, bool trim_end) {
   if (!trim_end) {
     const unsigned char *text = (const unsigned char *)value->as.text.bytes;
