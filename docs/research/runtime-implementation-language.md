@@ -198,6 +198,9 @@ Each step is one or more PRs. The size and speed gates hold for every step.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
       cross-language call on every node), then match.
+      First PR: the telemetry event writers (`telemetry.rs`), with the
+      trace lock, over mirrors of `ChimiRuntime`, the node and origin tables
+      and the scheduler's trace event.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
