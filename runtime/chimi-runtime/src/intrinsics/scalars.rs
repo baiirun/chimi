@@ -1,8 +1,9 @@
 //! The intrinsics over single values that `runtime.c` kept in its own
-//! switch: std/path's identities, `List.first` and `List.length`, std/order,
-//! `Text.append` and `Text.equal`, std/int's parsing, text, checked
-//! arithmetic and modulo, std/range, std/float's conversions, text and
-//! parsing, and `Debug.render`. `execution/core_operations.rs` and
+//! switch: std/path's identities, `List.length`, `Text.append` and
+//! `Text.equal`, std/int's parsing, text, checked arithmetic and modulo,
+//! std/range, std/float's conversions, text and parsing, and `Debug.render`.
+//! `List.first` and std/order's `compare`, `min` and `max` are written in
+//! Chimi, so their intrinsics were unreachable and are gone. `execution/core_operations.rs` and
 //! `numeric.rs` are the interpreter's, and the results and defect messages
 //! match them. Values are allocated in the order `runtime.c` allocated them,
 //! so memory reports do not change.
@@ -12,9 +13,7 @@ use super::message::{Message, integer_spelling};
 use super::standard::{boolean_value, defect, defect_with, failure, option_value, shape_defect, standard_value, success};
 use super::text::HeapText;
 use crate::float;
-use crate::heap::compare::compare;
 use crate::heap::layout::{Control, Intrinsic, StandardConstructor, Value, ValueKind};
-use crate::heap::list;
 use crate::heap::values::{float_value, integer_value, text_value};
 
 unsafe extern "C" {
@@ -179,26 +178,7 @@ pub unsafe fn scalar_operation(intrinsic: u32, arguments: &[*mut Value], call_no
             Intrinsic::IO_PATH | Intrinsic::PATH_FROM | Intrinsic::PATH_TO_TEXT if kinds(&[K::TEXT]) => {
                 success(arguments[0])
             }
-            Intrinsic::LIST_FIRST if kinds(&[K::LIST]) => {
-                let list = arguments[0];
-                option_value(if (*list).payload.list.length == 0 { core::ptr::null_mut() } else { list::get(list, 0) })
-            }
             Intrinsic::LIST_LENGTH if kinds(&[K::LIST]) => success(int(i64::from((*arguments[0]).payload.list.length))),
-            Intrinsic::ORDER_COMPARE if arguments.len() == 2 => {
-                let constructor = match compare(arguments[0], arguments[1]) {
-                    ..0 => StandardConstructor::ORDERING_LESS,
-                    0 => StandardConstructor::ORDERING_EQUAL,
-                    _ => StandardConstructor::ORDERING_GREATER,
-                };
-                success(constant(constructor))
-            }
-            // Both return the left operand when the two are equal.
-            Intrinsic::ORDER_MIN if arguments.len() == 2 => {
-                success(if compare(arguments[0], arguments[1]) > 0 { arguments[1] } else { arguments[0] })
-            }
-            Intrinsic::ORDER_MAX if arguments.len() == 2 => {
-                success(if compare(arguments[0], arguments[1]) < 0 { arguments[1] } else { arguments[0] })
-            }
             Intrinsic::TEXT_APPEND if kinds(&[K::TEXT, K::TEXT]) => {
                 let mut output = HeapText::new();
                 output.push_bytes(bytes_of(arguments[0]));

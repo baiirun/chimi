@@ -5,6 +5,10 @@ each program on both backends, so a native mutant shows as a difference.
 
 Run: scripts/mutation/mutate.py scripts/mutation/scalar_mutations.py
 Results: scripts/mutation/scalar_results.txt.
+
+Mutants of List.first and Order.min survived because std/list and std/order
+define those functions in Chimi, so no program reached their intrinsics; the
+arms (and Order.compare's and Order.max's) were removed instead.
 """
 
 CRATE = "compiler/chimi"
@@ -30,9 +34,6 @@ MUTATIONS = [
          "        cursor += 1;\n        digits(&mut cursor);\n    }\n    if matches!")]),
     language("Float.to_int accepts 2^63", [
         ("..9_223_372_036_854_775_808.0).contains(&value)", "..=9_223_372_036_854_775_808.0).contains(&value)")]),
-    language("Order.min prefers the right on a tie", [
-        ("success(if compare(arguments[0], arguments[1]) > 0 { arguments[1] } else { arguments[0] })",
-         "success(if compare(arguments[0], arguments[1]) >= 0 { arguments[1] } else { arguments[0] })")]),
     language("Range.length of a reversed range is negative", [
         ("                    _ if range.end <= range.start => success(int(0)),\n", "")]),
     language("Range.contains includes its end", [
@@ -41,6 +42,4 @@ MUTATIONS = [
         ("                    _ => round(value),", "                    _ => floor(value + 0.5),")]),
     language("Text.append drops the second", [
         ("                output.push_bytes(bytes_of(arguments[1]));\n", "")]),
-    language("List.first is always None", [
-        ("option_value(if (*list).payload.list.length == 0 {", "option_value(if true {")]),
 ]

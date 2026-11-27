@@ -185,6 +185,11 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Tenth PR: the host cores of std/env and std/fs and the open-file
       table's lock (`intrinsics/host.rs`); runtime.c keeps the scheduler
       wait a blocked read or write makes.
+      Eleventh PR: the scalar intrinsics runtime.c still switched on
+      (Int, Float, Range, Path, `Text.append`, `Text.equal`, `List.length`,
+      `Debug.render`) in `intrinsics/scalars.rs`, dropping the unreachable
+      `List.first` and std/order ones; signals, log and metrics wait for
+      phase 8.
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a

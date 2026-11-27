@@ -211,7 +211,6 @@ pub struct Intrinsic;
 
 impl Intrinsic {
     pub const IO_PATH: u32 = 0;
-    pub const LIST_FIRST: u32 = 1;
     pub const LIST_LENGTH: u32 = 2;
     pub const TEXT_APPEND: u32 = 6;
     pub const TEXT_EQUAL: u32 = 7;
@@ -233,9 +232,6 @@ impl Intrinsic {
     pub const FLOAT_PARSE: u32 = 31;
     pub const DEBUG_RENDER: u32 = 32;
     pub const DEBUG_RENDER_INDENTED: u32 = 33;
-    pub const ORDER_COMPARE: u32 = 34;
-    pub const ORDER_MIN: u32 = 35;
-    pub const ORDER_MAX: u32 = 36;
     pub const RANGE_START: u32 = 37;
     pub const RANGE_END: u32 = 38;
     pub const RANGE_LENGTH: u32 = 39;
@@ -382,9 +378,6 @@ impl StandardConstructor {
     pub const FLOAT_PARSE_OUT_OF_RANGE: u32 = 27;
     pub const FLOAT_NOT_INTEGER: u32 = 28;
     pub const FLOAT_OUT_OF_RANGE: u32 = 29;
-    pub const ORDERING_LESS: u32 = 30;
-    pub const ORDERING_EQUAL: u32 = 31;
-    pub const ORDERING_GREATER: u32 = 32;
     pub const DURATION_PARSE_EMPTY: u32 = 33;
     pub const DURATION_PARSE_INVALID: u32 = 34;
     pub const PROCESS_SEND_FULL: u32 = 36;
@@ -983,9 +976,6 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE" StandardConstructor::FLOAT_PARSE_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER" StandardConstructor::FLOAT_NOT_INTEGER)
     constant("CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE" StandardConstructor::FLOAT_OUT_OF_RANGE)
-    constant("CHIMI_CONSTRUCTOR_ORDERING_LESS" StandardConstructor::ORDERING_LESS)
-    constant("CHIMI_CONSTRUCTOR_ORDERING_EQUAL" StandardConstructor::ORDERING_EQUAL)
-    constant("CHIMI_CONSTRUCTOR_ORDERING_GREATER" StandardConstructor::ORDERING_GREATER)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
     constant("CHIMI_INTRINSIC_JSON_DECODE" Intrinsic::JSON_DECODE)
     constant("CHIMI_INTRINSIC_JSON_ENCODE" Intrinsic::JSON_ENCODE)
@@ -1071,7 +1061,6 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_TEST_MAILBOX" Intrinsic::TEST_MAILBOX)
     constant("CHIMI_INTRINSIC_TEST_RECEIVED" Intrinsic::TEST_RECEIVED)
     constant("CHIMI_INTRINSIC_IO_PATH" Intrinsic::IO_PATH)
-    constant("CHIMI_INTRINSIC_LIST_FIRST" Intrinsic::LIST_FIRST)
     constant("CHIMI_INTRINSIC_LIST_LENGTH" Intrinsic::LIST_LENGTH)
     constant("CHIMI_INTRINSIC_TEXT_APPEND" Intrinsic::TEXT_APPEND)
     constant("CHIMI_INTRINSIC_TEXT_EQUAL" Intrinsic::TEXT_EQUAL)
@@ -1093,9 +1082,6 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_FLOAT_PARSE" Intrinsic::FLOAT_PARSE)
     constant("CHIMI_INTRINSIC_DEBUG_RENDER" Intrinsic::DEBUG_RENDER)
     constant("CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED" Intrinsic::DEBUG_RENDER_INDENTED)
-    constant("CHIMI_INTRINSIC_ORDER_COMPARE" Intrinsic::ORDER_COMPARE)
-    constant("CHIMI_INTRINSIC_ORDER_MIN" Intrinsic::ORDER_MIN)
-    constant("CHIMI_INTRINSIC_ORDER_MAX" Intrinsic::ORDER_MAX)
     constant("CHIMI_INTRINSIC_RANGE_START" Intrinsic::RANGE_START)
     constant("CHIMI_INTRINSIC_RANGE_END" Intrinsic::RANGE_END)
     constant("CHIMI_INTRINSIC_RANGE_LENGTH" Intrinsic::RANGE_LENGTH)
