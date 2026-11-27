@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 N = "src/backend/native.rs"
 K = "src/backend/runtime_archive_key.rs"
 C = "runtime/native/runtime.c"
+BYTES_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/bytes.rs"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 
 
@@ -50,10 +51,7 @@ MUTATIONS = [
         "    if (grapheme_breaks_before(&cluster, next)) return offset;",
         "    if (grapheme_breaks_before(&cluster, next) || next.grapheme_break != 0) return offset;",
     )]),
-    corpus("lossy conversion keeps invalid bytes", [(
-        "        if (complete) buffer_bytes(&buffer, (const char *)bytes + at, width);",
-        "        if (true) buffer_bytes(&buffer, (const char *)bytes + at, width);",
-    )]),
+    corpus('lossy conversion keeps invalid bytes', [('output.push_bytes(if complete {', 'output.push_bytes(if true {')], BYTES_INTRINSICS),
     corpus("durations under a second print in seconds", [(
         "  if (magnitude < (uint64_t)DURATION_UNITS[2]) {",
         "  if (magnitude < (uint64_t)DURATION_UNITS[3]) {",

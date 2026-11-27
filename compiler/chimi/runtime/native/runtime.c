@@ -1326,6 +1326,19 @@ _Static_assert(CHIMI_INTRINSIC_DECIMAL_SUBTRACT_CHECKED == 151, "layout: CHIMI_I
 _Static_assert(CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED == 152, "layout: CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED");
 _Static_assert(CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED == 153, "layout: CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED");
 _Static_assert(CHIMI_INTRINSIC_DECIMAL_TO_FLOAT == 154, "layout: CHIMI_INTRINSIC_DECIMAL_TO_FLOAT");
+_Static_assert(CHIMI_INTRINSIC_BYTES_FROM == 155, "layout: CHIMI_INTRINSIC_BYTES_FROM");
+_Static_assert(CHIMI_INTRINSIC_BYTES_LENGTH == 156, "layout: CHIMI_INTRINSIC_BYTES_LENGTH");
+_Static_assert(CHIMI_INTRINSIC_BYTES_GET == 157, "layout: CHIMI_INTRINSIC_BYTES_GET");
+_Static_assert(CHIMI_INTRINSIC_BYTES_INDEX_OF == 158, "layout: CHIMI_INTRINSIC_BYTES_INDEX_OF");
+_Static_assert(CHIMI_INTRINSIC_BYTES_CONCAT == 159, "layout: CHIMI_INTRINSIC_BYTES_CONCAT");
+_Static_assert(CHIMI_INTRINSIC_BYTES_SLICE == 160, "layout: CHIMI_INTRINSIC_BYTES_SLICE");
+_Static_assert(CHIMI_INTRINSIC_BYTES_TO_LIST == 161, "layout: CHIMI_INTRINSIC_BYTES_TO_LIST");
+_Static_assert(CHIMI_INTRINSIC_BYTES_FROM_TEXT == 162, "layout: CHIMI_INTRINSIC_BYTES_FROM_TEXT");
+_Static_assert(CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY == 163, "layout: CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY");
+_Static_assert(CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH == 164, "layout: CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH");
+_Static_assert(CHIMI_INTRINSIC_BYTES_READ_INT_CODE == 165, "layout: CHIMI_INTRINSIC_BYTES_READ_INT_CODE");
+_Static_assert(CHIMI_INTRINSIC_BYTES_INT_BYTES == 166, "layout: CHIMI_INTRINSIC_BYTES_INT_BYTES");
+_Static_assert(CHIMI_INTRINSIC_HTTP_COUNT_ENDS == 216, "layout: CHIMI_INTRINSIC_HTTP_COUNT_ENDS");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NUMBER == 10, "layout: CHIMI_CONSTRUCTOR_JSON_NUMBER");
@@ -3196,199 +3209,6 @@ static ChimiValue *bytes_from_hex(const char *hex, size_t length) {
   return value;
 }
 
-/* The UTF-8 sequence at `text`: how many bytes it spans, and in `complete`
-   whether they form a whole scalar. An incomplete result is the maximal
-   subpart Unicode recommends replacing with one U+FFFD (at least one byte),
-   which is what Rust's `from_utf8_lossy` replaces. Ranges follow Unicode
-   Table 3-7, so overlong forms, surrogates, and values past U+10FFFF fail. */
-static size_t utf8_sequence(const unsigned char *text, size_t remaining, bool *complete) {
-  unsigned char first = text[0];
-  size_t width; unsigned char low = 0x80, high = 0xbf;
-  if (first <= 0x7f) { *complete = true; return 1; }
-  if (first >= 0xc2 && first <= 0xdf) width = 2;
-  else if (first >= 0xe0 && first <= 0xef) {
-    width = 3;
-    if (first == 0xe0) low = 0xa0;
-    if (first == 0xed) high = 0x9f;
-  } else if (first >= 0xf0 && first <= 0xf4) {
-    width = 4;
-    if (first == 0xf0) low = 0x90;
-    if (first == 0xf4) high = 0x8f;
-  } else { *complete = false; return 1; }
-  size_t taken = 1;
-  for (; taken < width; ++taken) {
-    if (taken >= remaining || text[taken] < low || text[taken] > high) { *complete = false; return taken; }
-    low = 0x80; high = 0xbf;
-  }
-  *complete = true;
-  return width;
-}
-
-/* `layout_code` in std/bytes: U8, I8, then U16Be, U16Le, I16Be, I16Le and the
-   same four for 32 bits, then I64Be, I64Le. False for any other code. */
-static bool int_layout(int64_t code, size_t *width, bool *is_signed, bool *big_endian) {
-  if (code < 0 || code > 11) return false;
-  if (code <= 1) { *width = 1; *is_signed = code == 1; *big_endian = true; return true; }
-  if (code >= 10) { *width = 8; *is_signed = true; *big_endian = code == 10; return true; }
-  int64_t within = code - 2;
-  *width = within < 4 ? 2 : 4; *is_signed = within % 4 >= 2; *big_endian = within % 2 == 0;
-  return true;
-}
-
-static ChimiControl *optional_value(ChimiValue *value) {
-  if (!value) return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-  ChimiValue *fields[] = {value};
-  return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-}
-
-/* The native core of std/bytes, and std/http's byte scan. Defect messages match
-   the interpreter's (execution/bytes_operations.rs). */
-static ChimiControl *invoke_bytes_operation(uint32_t intrinsic, ChimiValue **arguments,
-                                            uint32_t argument_count, uint32_t call_node) {
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_BYTES_FROM: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) break;
-      uint32_t length = list_length(arguments[0]);
-      char *raw = allocate((size_t)length + 1, 1);
-      for (uint32_t i = 0; i < length; ++i) {
-        ChimiValue *element = list_get(arguments[0], i);
-        if (element->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-        if (element->as.integer < 0 || element->as.integer > 255)
-          return defect(numeric_message("Bytes.from: element %" PRIu32 " is %" PRId64 ", outside 0..=255",
-                                        i, element->as.integer), call_node);
-        raw[i] = (char)element->as.integer;
-      }
-      raw[length] = '\0';
-      ChimiValue *value = new_value(VALUE_BYTES); value->as.text.bytes = raw; value->as.text.length = length;
-      return success(value);
-    }
-    case CHIMI_INTRINSIC_BYTES_LENGTH:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_BYTES) break;
-      return success(integer_value((int64_t)arguments[0]->as.text.length));
-    case CHIMI_INTRINSIC_BYTES_GET: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_INTEGER) break;
-      int64_t index = arguments[1]->as.integer;
-      if (index < 0 || (uint64_t)index >= arguments[0]->as.text.length) return optional_value(NULL);
-      return optional_value(integer_value((unsigned char)arguments[0]->as.text.bytes[index]));
-    }
-    case CHIMI_INTRINSIC_BYTES_INDEX_OF: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_BYTES) break;
-      if (!arguments[1]->as.text.length) return defect("Bytes.index_of: needle must not be empty", call_node);
-      const char *found = text_find(arguments[0]->as.text.bytes, arguments[0]->as.text.length,
-                                    arguments[1]->as.text.bytes, arguments[1]->as.text.length);
-      return optional_value(found ? integer_value((int64_t)(found - arguments[0]->as.text.bytes)) : NULL);
-    }
-    case CHIMI_INTRINSIC_BYTES_CONCAT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) break;
-      TextBuffer buffer = {0};
-      for (uint32_t i = 0; i < list_length(arguments[0]); ++i) {
-        ChimiValue *part = list_get(arguments[0], i);
-        if (part->kind != VALUE_BYTES) return intrinsic_shape_defect(call_node);
-        buffer_bytes(&buffer, part->as.text.bytes, part->as.text.length);
-      }
-      return success(bytes_from(buffer.data ? buffer.data : "", buffer.length));
-    }
-    case CHIMI_INTRINSIC_BYTES_SLICE: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_RANGE) break;
-      size_t from, to;
-      clamp_range(arguments[1]->as.range.start, arguments[1]->as.range.end, arguments[0]->as.text.length, &from, &to);
-      return success(bytes_from(arguments[0]->as.text.bytes + from, to - from));
-    }
-    case CHIMI_INTRINSIC_BYTES_TO_LIST: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_BYTES) break;
-      size_t length = arguments[0]->as.text.length;
-      ChimiValue **items = allocate(length ? length : 1, sizeof(*items));
-      for (size_t i = 0; i < length; ++i) items[i] = integer_value((unsigned char)arguments[0]->as.text.bytes[i]);
-      return success(list_from_values(items, (uint32_t)length));
-    }
-    case CHIMI_INTRINSIC_BYTES_FROM_TEXT:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return success(bytes_from(arguments[0]->as.text.bytes, arguments[0]->as.text.length));
-    case CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_BYTES) break;
-      const unsigned char *bytes = (const unsigned char *)arguments[0]->as.text.bytes;
-      size_t length = arguments[0]->as.text.length;
-      TextBuffer buffer = {0};
-      for (size_t at = 0; at < length;) {
-        bool complete;
-        size_t width = utf8_sequence(bytes + at, length - at, &complete);
-        if (complete) buffer_bytes(&buffer, (const char *)bytes + at, width);
-        else buffer_bytes(&buffer, "\xef\xbf\xbd", 3);
-        at += width;
-      }
-      return success(text_from_bytes(buffer.data ? buffer.data : "", buffer.length));
-    }
-    case CHIMI_INTRINSIC_HTTP_COUNT_ENDS: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_BYTES) break;
-      bool allowed[256] = {false};
-      for (size_t at = 0; at < arguments[1]->as.text.length; ++at)
-        allowed[(unsigned char)arguments[1]->as.text.bytes[at]] = true;
-      const unsigned char *bytes = (const unsigned char *)arguments[0]->as.text.bytes;
-      size_t length = arguments[0]->as.text.length, leading = 0, trailing = 0;
-      while (leading < length && allowed[bytes[leading]]) ++leading;
-      if (leading == length) trailing = length;
-      while (trailing < length && allowed[bytes[length - 1 - trailing]]) ++trailing;
-      ChimiValue *pair = new_value(VALUE_TUPLE);
-      pair->as.record.length = 2;
-      pair->as.record.fields = allocate(2, sizeof(*pair->as.record.fields));
-      allocation_kind(pair->as.record.fields, ALLOCATION_FIELDS);
-      pair->as.record.fields[0] = (RuntimeField){NULL, integer_value((int64_t)leading)};
-      pair->as.record.fields[1] = (RuntimeField){NULL, integer_value((int64_t)trailing)};
-      return success(pair);
-    }
-    case CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_BYTES) break;
-      const unsigned char *bytes = (const unsigned char *)arguments[0]->as.text.bytes;
-      size_t length = arguments[0]->as.text.length, at = 0;
-      while (at < length) {
-        bool complete;
-        size_t width = utf8_sequence(bytes + at, length - at, &complete);
-        if (!complete) break;
-        at += width;
-      }
-      return success(integer_value((int64_t)at));
-    }
-    case CHIMI_INTRINSIC_BYTES_READ_INT_CODE: {
-      size_t width; bool is_signed, big_endian;
-      if (argument_count != 3 || arguments[0]->kind != VALUE_BYTES || arguments[1]->kind != VALUE_INTEGER ||
-          arguments[2]->kind != VALUE_INTEGER || !int_layout(arguments[2]->as.integer, &width, &is_signed, &big_endian))
-        break;
-      int64_t at = arguments[1]->as.integer;
-      size_t length = arguments[0]->as.text.length;
-      if (at < 0 || (uint64_t)at > length || length - (size_t)at < width) return optional_value(NULL);
-      const unsigned char *field = (const unsigned char *)arguments[0]->as.text.bytes + at;
-      uint64_t raw = 0;
-      for (size_t i = 0; i < width; ++i) raw = raw << 8 | field[big_endian ? i : width - 1 - i];
-      int64_t value = (int64_t)raw;
-      /* Sign-extend from the layout's width; 64 bits is already two's complement. */
-      if (is_signed && width < 8 && (raw >> (8 * width - 1)) & 1) value = (int64_t)(raw | ~(uint64_t)0 << (8 * width));
-      return optional_value(integer_value(value));
-    }
-    case CHIMI_INTRINSIC_BYTES_INT_BYTES: {
-      size_t width; bool is_signed, big_endian;
-      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_INTEGER ||
-          !int_layout(arguments[1]->as.integer, &width, &is_signed, &big_endian))
-        break;
-      int64_t value = arguments[0]->as.integer;
-      if (width < 8) {
-        int64_t bits = (int64_t)(8 * width);
-        int64_t low = is_signed ? -((int64_t)1 << (bits - 1)) : 0;
-        int64_t high = is_signed ? ((int64_t)1 << (bits - 1)) - 1 : ((int64_t)1 << bits) - 1;
-        if (value < low || value > high) return optional_value(NULL);
-      }
-      char raw[8];
-      for (size_t i = 0; i < width; ++i) {
-        char byte = (char)(((uint64_t)value >> (8 * (width - 1 - i))) & 0xff);
-        raw[big_endian ? i : width - 1 - i] = byte;
-      }
-      return optional_value(bytes_from(raw, width));
-    }
-    /* CHIMI_INTRINSIC_EMBED_TEXT and _BYTES never run here: lowering admits them
-       only in module constants, which the build evaluates before emitting program
-       data, so a native program receives their values as constant rows. */
-  }
-  return intrinsic_shape_defect(call_node);
-}
 
 /* std/test. A comparison's message is "<heading>\nactual:\n<render>\nexpected:\n<render>",
    byte for byte as `comparison_message` in execution/core_operations.rs, because
@@ -6601,6 +6421,9 @@ ChimiControl *chimi_intrinsic_json_v1(uint32_t intrinsic, ChimiValue **arguments
                                       uint32_t call_node);
 ChimiControl *chimi_intrinsic_decimal_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
                                          uint32_t call_node);
+/* The native core of std/bytes and std/http's byte scan, in intrinsics/bytes.rs. */
+ChimiControl *chimi_intrinsic_bytes_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                       uint32_t call_node);
 /* `invoke` and the shared Void, False and True, for the intrinsics in Rust. */
 ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                                       uint32_t argument_count, uint64_t span, uint32_t call_node,
@@ -7901,7 +7724,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return chimi_intrinsic_decimal_v1(intrinsic, arguments, argument_count, call_node);
   if ((intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES) ||
       intrinsic == CHIMI_INTRINSIC_HTTP_COUNT_ENDS)
-    return invoke_bytes_operation(intrinsic, arguments, argument_count, call_node);
+    return chimi_intrinsic_bytes_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)

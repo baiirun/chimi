@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 HTTP = "std/http.chimi"
 RUNTIME = "runtime/native/runtime.c"
+BYTES_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/bytes.rs"
 INTERPRETER = "src/execution/bytes_operations.rs"
 
 SERVER = dict(targets=["http"], filter="")
@@ -93,19 +94,10 @@ MUTATIONS = [
            "const ascii_bytes: Bytes = Bytes.from(byte_span(0, 128))",
            "const ascii_bytes: Bytes = Bytes.from(byte_span(0, 256))", BOTH),
     # The native.
-    mutant("native: the last allowed byte is skipped",
-           "      for (size_t at = 0; at < arguments[1]->as.text.length; ++at)\n        allowed[",
-           "      for (size_t at = 0; at + 1 < arguments[1]->as.text.length; ++at)\n        allowed[",
-           SERVER, RUNTIME),
-    mutant("native: the end is never counted",
-           "      while (trailing < length && allowed[bytes[length - 1 - trailing]]) ++trailing;",
-           "", SERVER, RUNTIME),
-    mutant("native: the end counts from the start",
-           "      while (trailing < length && allowed[bytes[length - 1 - trailing]]) ++trailing;",
-           "      while (trailing < length && allowed[bytes[trailing]]) ++trailing;", SERVER, RUNTIME),
-    mutant("native: the start stops one short",
-           "      while (leading < length && allowed[bytes[leading]]) ++leading;",
-           "      while (leading + 1 < length && allowed[bytes[leading]]) ++leading;", BOTH, RUNTIME),
+    mutant('native: the last allowed byte is skipped', 'for &byte in bytes_of(arguments[1]) {', 'for &byte in bytes_of(arguments[1]).split_last().map_or(&[][..], |(_, rest)| rest) {', SERVER, BYTES_INTRINSICS),
+    mutant('native: the end is never counted', 'bytes.iter().rev().take_while(|&&byte| allowed[usize::from(byte)]).count()', '0', SERVER, BYTES_INTRINSICS),
+    mutant('native: the end counts from the start', 'bytes.iter().rev().take_while(|&&byte| allowed[usize::from(byte)]).count()', 'bytes.iter().take_while(|&&byte| allowed[usize::from(byte)]).count()', SERVER, BYTES_INTRINSICS),
+    mutant('native: the start stops one short', 'let leading = bytes.iter().take_while(|&&byte| allowed[usize::from(byte)]).count();', 'let leading = bytes.iter().take_while(|&&byte| allowed[usize::from(byte)]).count().min(bytes.len().saturating_sub(1));', BOTH, BYTES_INTRINSICS),
     mutant("interpreter: the end counts from the start",
            "        value.iter().rev().take_while(held).count(),",
            "        value.iter().take_while(held).count(),", UNIT, INTERPRETER),

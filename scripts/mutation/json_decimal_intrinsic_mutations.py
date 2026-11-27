@@ -14,6 +14,7 @@ INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/"
 JSON = INTRINSICS + "json.rs"
 DECIMALS = INTRINSICS + "decimals.rs"
 TEXT = INTRINSICS + "text.rs"
+MESSAGE = INTRINSICS + "message.rs"
 
 
 def programs(name, file, old, new):
@@ -26,10 +27,8 @@ def deep(name, file, old, new):
 
 
 MUTATIONS = [
-    programs("Json.int writes a negative number without its sign", JSON,
-             "output[start] = b'-';", "output[start] = b'+';"),
-    programs("Json.int writes each digit one too high", JSON,
-             "output[start] = b'0' + (magnitude % 10) as u8;", "output[start] = b'1' + (magnitude % 10) as u8;"),
+    programs('Json.int writes a negative number without its sign', MESSAGE, "output[start] = b'-';", "output[start] = b'+';"),
+    programs('Json.int writes each digit one too high', MESSAGE, "output[start] = b'0' + (magnitude % 10) as u8;", "output[start] = b'1' + (magnitude % 10) as u8;"),
     programs("a control character escapes with its high digit twice", JSON,
              "HEX[usize::from(byte & 0xf)]", "HEX[usize::from(byte >> 4)]"),
     programs("Json.encode writes False as true", JSON,

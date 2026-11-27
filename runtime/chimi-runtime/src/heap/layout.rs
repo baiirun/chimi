@@ -235,6 +235,19 @@ impl Intrinsic {
     pub const DECIMAL_MULTIPLY_CHECKED: u32 = 152;
     pub const DECIMAL_DIVIDE_ROUNDED: u32 = 153;
     pub const DECIMAL_TO_FLOAT: u32 = 154;
+    pub const BYTES_FROM: u32 = 155;
+    pub const BYTES_LENGTH: u32 = 156;
+    pub const BYTES_GET: u32 = 157;
+    pub const BYTES_INDEX_OF: u32 = 158;
+    pub const BYTES_CONCAT: u32 = 159;
+    pub const BYTES_SLICE: u32 = 160;
+    pub const BYTES_TO_LIST: u32 = 161;
+    pub const BYTES_FROM_TEXT: u32 = 162;
+    pub const BYTES_TO_TEXT_LOSSY: u32 = 163;
+    pub const BYTES_VALID_UTF8_LENGTH: u32 = 164;
+    pub const BYTES_READ_INT_CODE: u32 = 165;
+    pub const BYTES_INT_BYTES: u32 = 166;
+    pub const HTTP_COUNT_ENDS: u32 = 216;
 }
 
 /// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
@@ -852,6 +865,19 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_DECIMAL_MULTIPLY_CHECKED" Intrinsic::DECIMAL_MULTIPLY_CHECKED)
     constant("CHIMI_INTRINSIC_DECIMAL_DIVIDE_ROUNDED" Intrinsic::DECIMAL_DIVIDE_ROUNDED)
     constant("CHIMI_INTRINSIC_DECIMAL_TO_FLOAT" Intrinsic::DECIMAL_TO_FLOAT)
+    constant("CHIMI_INTRINSIC_BYTES_FROM" Intrinsic::BYTES_FROM)
+    constant("CHIMI_INTRINSIC_BYTES_LENGTH" Intrinsic::BYTES_LENGTH)
+    constant("CHIMI_INTRINSIC_BYTES_GET" Intrinsic::BYTES_GET)
+    constant("CHIMI_INTRINSIC_BYTES_INDEX_OF" Intrinsic::BYTES_INDEX_OF)
+    constant("CHIMI_INTRINSIC_BYTES_CONCAT" Intrinsic::BYTES_CONCAT)
+    constant("CHIMI_INTRINSIC_BYTES_SLICE" Intrinsic::BYTES_SLICE)
+    constant("CHIMI_INTRINSIC_BYTES_TO_LIST" Intrinsic::BYTES_TO_LIST)
+    constant("CHIMI_INTRINSIC_BYTES_FROM_TEXT" Intrinsic::BYTES_FROM_TEXT)
+    constant("CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY" Intrinsic::BYTES_TO_TEXT_LOSSY)
+    constant("CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH" Intrinsic::BYTES_VALID_UTF8_LENGTH)
+    constant("CHIMI_INTRINSIC_BYTES_READ_INT_CODE" Intrinsic::BYTES_READ_INT_CODE)
+    constant("CHIMI_INTRINSIC_BYTES_INT_BYTES" Intrinsic::BYTES_INT_BYTES)
+    constant("CHIMI_INTRINSIC_HTTP_COUNT_ENDS" Intrinsic::HTTP_COUNT_ENDS)
     constant("CHIMI_CONSTRUCTOR_JSON_NULL" StandardConstructor::JSON_NULL)
     constant("CHIMI_CONSTRUCTOR_JSON_BOOLEAN" StandardConstructor::JSON_BOOLEAN)
     constant("CHIMI_CONSTRUCTOR_JSON_NUMBER" StandardConstructor::JSON_NUMBER)
