@@ -119,7 +119,7 @@ function-local static, so new state gets an owner when it is added.
     since CHI-308.
   - Tables whose ids travel inside values, each behind its own lock: open
     files (the Rust runtime's `FileTable`, which the interpreter shares;
-    `runtime.c` holds `fs_file_lock` around every call into it), test logs (`test_log_lock`), and binding handles
+    `runtime.c` holds `fs_file_lock` around every call into it), test logs (the Rust table in `chimi-runtime` `intrinsics/test_log.rs`, behind its own pthread mutex), and binding handles
     (`binding_handle_lock`). (A process body's defect message goes to the
     scheduler with `chimi_fiber_report_defect` since CHI-308 step 3.) A
     binding call holds each open handle among its arguments for its whole

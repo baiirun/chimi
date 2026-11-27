@@ -289,7 +289,19 @@ impl Intrinsic {
     pub const TEST_ASSERT_NOT_EQUAL: u32 = 179;
     pub const TEST_ASSERT: u32 = 180;
     pub const TEST_FAIL: u32 = 181;
+    pub const TEST_RECORDER: u32 = 184;
+    pub const TEST_RECORD: u32 = 185;
+    pub const TEST_RECORDED: u32 = 186;
+    pub const TEST_SCRIPT: u32 = 187;
+    pub const TEST_NEXT: u32 = 188;
+    pub const TEST_MAILBOX: u32 = 189;
+    pub const TEST_RECEIVED: u32 = 190;
 }
+
+/// The address kind, beside `CHIMI_ADDRESS_NAMED` and `CHIMI_ADDRESS_DIRECT`
+/// (chimi_fiber.h), whose target is a std/test Mailbox's id. No process owns
+/// it, so it never reaches the scheduler.
+pub const ADDRESS_TEST: u32 = 3;
 
 /// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
 pub struct StandardConstructor;
@@ -308,6 +320,7 @@ impl StandardConstructor {
     pub const JSON_OUT_OF_RANGE: u32 = 16;
     pub const DURATION_PARSE_EMPTY: u32 = 33;
     pub const DURATION_PARSE_INVALID: u32 = 34;
+    pub const PROCESS_SEND_FULL: u32 = 36;
     pub const DURATION_PARSE_OUT_OF_RANGE: u32 = 35;
 }
 
@@ -963,8 +976,17 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL" Intrinsic::TEST_ASSERT_NOT_EQUAL)
     constant("CHIMI_INTRINSIC_TEST_ASSERT" Intrinsic::TEST_ASSERT)
     constant("CHIMI_INTRINSIC_TEST_FAIL" Intrinsic::TEST_FAIL)
+    constant("CHIMI_INTRINSIC_TEST_RECORDER" Intrinsic::TEST_RECORDER)
+    constant("CHIMI_INTRINSIC_TEST_RECORD" Intrinsic::TEST_RECORD)
+    constant("CHIMI_INTRINSIC_TEST_RECORDED" Intrinsic::TEST_RECORDED)
+    constant("CHIMI_INTRINSIC_TEST_SCRIPT" Intrinsic::TEST_SCRIPT)
+    constant("CHIMI_INTRINSIC_TEST_NEXT" Intrinsic::TEST_NEXT)
+    constant("CHIMI_INTRINSIC_TEST_MAILBOX" Intrinsic::TEST_MAILBOX)
+    constant("CHIMI_INTRINSIC_TEST_RECEIVED" Intrinsic::TEST_RECEIVED)
+    constant("CHIMI_ADDRESS_TEST" ADDRESS_TEST)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY" StandardConstructor::DURATION_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)
+    constant("CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL" StandardConstructor::PROCESS_SEND_FULL)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE" StandardConstructor::DURATION_PARSE_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_JSON_NULL" StandardConstructor::JSON_NULL)
     constant("CHIMI_CONSTRUCTOR_JSON_BOOLEAN" StandardConstructor::JSON_BOOLEAN)

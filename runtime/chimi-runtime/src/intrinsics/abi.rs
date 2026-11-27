@@ -1,7 +1,8 @@
 //! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
 //! calls these for the std/map, std/set, std/json, std/decimal, std/bytes and
 //! std/duration intrinsics, and `Debug.crash`, `Option.unwrap_or_fail`,
-//! std/text and std/list, and std/test's assertions.
+//! std/text and std/list, and std/test's assertions, recorders, scripts and
+//! mailboxes.
 
 use core::ffi::c_void;
 
@@ -13,6 +14,7 @@ use super::debug::render;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::json::json_operation;
+use super::test_log::{release, send_to_test_mailbox, test_log_operation};
 use crate::heap::layout::{Control, Environment, Value};
 
 /// The arguments as a slice.
@@ -164,4 +166,43 @@ pub unsafe extern "C" fn chimi_intrinsic_assertion_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { assertion_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`test_log_operation`].
+///
+/// # Safety
+/// As for `test_log_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_test_log_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { test_log_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`send_to_test_mailbox`].
+///
+/// # Safety
+/// As for `send_to_test_mailbox`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_send_to_test_mailbox_v1(
+    address: *const Value,
+    message: *mut Value,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { send_to_test_mailbox(address, message, call_node) }
+}
+
+/// [`release`].
+///
+/// # Safety
+/// As for `release`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_test_log_release_v1(log: *const Value) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { release(log) }
 }

@@ -46,9 +46,6 @@ const SHARED: &[&str] = &[
     "binding_handle_free",
     // Guards the Rust runtime's open-file table (chimi-runtime files_abi.rs).
     "fs_file_lock",
-    "test_logs",
-    "test_log_count",
-    "test_log_lock",
     // The `random` provider's one seeded stream, behind its lock.
     "random_lock",
     "random_generator",

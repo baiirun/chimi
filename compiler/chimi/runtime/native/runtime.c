@@ -112,12 +112,16 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                VALUE_BYTES,
                /* A `std/cause.Cause` in `as.record`: the CAUSE_* fields, unnamed. */
                VALUE_CAUSE,
-               /* A `std/test.Recorder`, `Script` or `Mailbox`: its TestLog id in
+               /* A `std/test.Recorder`, `Script` or `Mailbox`: its log id in
                   `as.address.target`. */
                VALUE_TEST_RECORDER, VALUE_TEST_SCRIPT, VALUE_TEST_MAILBOX,
                /* A binding `native type` (G20) in `as.handle`: plain data naming a
                   slot of the runtime's handle table, never the resource itself. */
                VALUE_NATIVE_HANDLE } ValueKind;
+/* A third address kind, beside CHIMI_ADDRESS_NAMED and CHIMI_ADDRESS_DIRECT, whose
+   target is a std/test Mailbox's id (intrinsics/test_log.rs). No process owns it,
+   so it never reaches the scheduler: Process.send delivers to the mailbox there. */
+enum { CHIMI_ADDRESS_TEST = 3 };
 /* CALL_CONSTRUCTOR is a constructor with fields named as a value; calling it constructs. */
 typedef enum { CALL_DECLARED, CALL_CLOSURE, CALL_DEPENDENCY, CALL_HOST, CALL_INTRINSIC,
                CALL_CONSTRUCTOR } CallableKind;
@@ -992,7 +996,7 @@ static void allocation_kind(void *value, AllocationKind kind) {
    the total is meaningful. The counts and their lock live in Rust
    (chimi-runtime handle_counts.rs, handle_counts_abi.rs): each call below
    takes a pthread mutex there, after the scheduler's kernel lock and
-   test_log_lock, and nothing under it retains, drops, parks or runs a hook.
+   the test logs' lock (intrinsics/test_log.rs), and nothing under it retains, drops, parks or runs a hook.
    The standalone allocator can exit with it held when the map cannot grow,
    which is safe while no atexit handler touches the counts. Keys are never
    0. */
@@ -1380,8 +1384,17 @@ _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_EQUAL == 178, "layout: CHIMI_INTRINSI
 _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL == 179, "layout: CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL");
 _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT == 180, "layout: CHIMI_INTRINSIC_TEST_ASSERT");
 _Static_assert(CHIMI_INTRINSIC_TEST_FAIL == 181, "layout: CHIMI_INTRINSIC_TEST_FAIL");
+_Static_assert(CHIMI_INTRINSIC_TEST_RECORDER == 184, "layout: CHIMI_INTRINSIC_TEST_RECORDER");
+_Static_assert(CHIMI_INTRINSIC_TEST_RECORD == 185, "layout: CHIMI_INTRINSIC_TEST_RECORD");
+_Static_assert(CHIMI_INTRINSIC_TEST_RECORDED == 186, "layout: CHIMI_INTRINSIC_TEST_RECORDED");
+_Static_assert(CHIMI_INTRINSIC_TEST_SCRIPT == 187, "layout: CHIMI_INTRINSIC_TEST_SCRIPT");
+_Static_assert(CHIMI_INTRINSIC_TEST_NEXT == 188, "layout: CHIMI_INTRINSIC_TEST_NEXT");
+_Static_assert(CHIMI_INTRINSIC_TEST_MAILBOX == 189, "layout: CHIMI_INTRINSIC_TEST_MAILBOX");
+_Static_assert(CHIMI_INTRINSIC_TEST_RECEIVED == 190, "layout: CHIMI_INTRINSIC_TEST_RECEIVED");
+_Static_assert(CHIMI_ADDRESS_TEST == 3, "layout: CHIMI_ADDRESS_TEST");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
+_Static_assert(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL == 36, "layout: CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE == 35, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
@@ -2753,6 +2766,18 @@ static bool transfer_captures(CapabilityTransfer *transfer, ChimiValue *root) {
   return transferred;
 }
 
+/* Whether `root` reaches a Receiver or Completion: a std/test Mailbox refuses a
+   message with one (intrinsics/test_log.rs), since only a process receive makes
+   the capability transfer it needs. Collecting marks the copies' tokens in flight,
+   so `root` must be a detached copy the caller frees. */
+bool chimi_runtime_carries_capability_v1(ChimiValue *root) {
+  CapabilityTransfer carried = {.collect = true};
+  transfer_captures(&carried, root);
+  size_t carried_count = carried.carried_count;
+  free(carried.carried);
+  return carried_count != 0;
+}
+
 static ChimiValue *application_arguments(int32_t count, const char **argv) {
   ChimiValue **items = new_value_slots((uint32_t)count);
   for (int32_t argument = 0; argument < count; ++argument) items[argument] = text_value(argv[argument]);
@@ -3140,158 +3165,14 @@ static ChimiControl *capture_defect(ChimiRuntime *runtime, ChimiValue **argument
   return control;
 }
 
-/* A std/test Recorder, Script or Mailbox, as TestLog in execution/core_operations.rs
-   (a Mailbox is native-only). The value is plain data (its id in
-   `as.address.target`); the log lives here, outside every heap, so a value in it is
-   one detached fragment. A Recorder copies each fragment out on every `recorded`; a
-   Script hands each out once, by adoption; a Mailbox holds at most `limit` messages
-   sent to its address, and `received` adopts them all. */
-typedef struct {
-  ValueKind kind;
-  RuntimeFragment **values;
-  uint32_t length, capacity, taken;
-  int64_t limit;
-} TestLog;
-
-/* A third address kind, beside CHIMI_ADDRESS_NAMED and CHIMI_ADDRESS_DIRECT, whose
-   target is a Mailbox's TestLog id. No process owns it, so it never reaches the
-   scheduler: Process.send delivers to the mailbox here. */
-enum { CHIMI_ADDRESS_TEST = 3 };
-static TestLog *test_logs;
-static ChimiValue *process_address_value(uint32_t kind, uint64_t target);
-static uint64_t test_log_count;
-/* Held across every operation on the logs (invoke_test_log,
-   send_to_test_mailbox): a log's address travels to tasks on any carrier.
-   Nothing under it parks; it is taken before the handle counts' lock. */
-static pthread_mutex_t test_log_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static ChimiValue *new_test_log(ValueKind kind) {
-  if (test_log_count % 16 == 0) {
-    test_logs = realloc(test_logs, (size_t)(test_log_count + 16) * sizeof(*test_logs));
-    if (!test_logs) abort();
-  }
-  test_logs[test_log_count] = (TestLog){.kind = kind};
-  ChimiValue *value = new_value(kind);
-  value->as.address.target = ++test_log_count;
-  return value;
-}
-
-static TestLog *test_log(const ChimiValue *value) {
-  uint64_t id = value->as.address.target;
-  if (id == 0 || id > test_log_count || test_logs[id - 1].kind != value->kind) abort();
-  return &test_logs[id - 1];
-}
-
-static void test_log_append(TestLog *log, RuntimeFragment *fragment) {
-  if (log->length == log->capacity) {
-    log->capacity = log->capacity ? log->capacity * 2 : 8;
-    log->values = realloc(log->values, log->capacity * sizeof(*log->values));
-    if (!log->values) abort();
-  }
-  log->values[log->length++] = fragment;
-}
-
-/* NULL, with the defect in `*failure`, when `value` reaches outside this heap. */
-static bool test_log_push(TestLog *log, ChimiValue *value, const char *operation, uint32_t call_node,
-                          ChimiControl **failure) {
-  void *roots[] = {value};
-  AllocationKind kinds[] = {ALLOCATION_VALUE};
-  RuntimeFragment *fragment = NULL;
-  if (fragment_copy(roots, kinds, 1, &fragment) != HEAP_OK) {
-    *failure = defect(numeric_message("%s: the value points into owner %" PRIu64
-                                      ", outside the caller's heap (owner %" PRIu64 ")",
-                                      operation, carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
-                      call_node);
-    return false;
-  }
-  test_log_append(log, fragment);
-  return true;
-}
-
-static ChimiControl *invoke_test_log_locked(uint32_t intrinsic, ChimiValue **arguments,
-                                            uint32_t argument_count, uint32_t call_node) {
-  ChimiControl *failure = NULL;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_TEST_RECORDER:
-      if (argument_count != 0) break;
-      return success(new_test_log(VALUE_TEST_RECORDER));
-    case CHIMI_INTRINSIC_TEST_SCRIPT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST) break;
-      ChimiValue *script = new_test_log(VALUE_TEST_SCRIPT);
-      for (uint32_t index = 0; index < list_length(arguments[0]); ++index)
-        if (!test_log_push(test_log(script), list_get(arguments[0], index), "Test.script", call_node, &failure))
-          return failure;
-      return success(script);
-    }
-    case CHIMI_INTRINSIC_TEST_RECORD:
-      if (argument_count != 2 || arguments[0]->kind != VALUE_TEST_RECORDER) break;
-      if (!test_log_push(test_log(arguments[0]), arguments[1], "Test.record", call_node, &failure))
-        return failure;
-      return success(void_value());
-    case CHIMI_INTRINSIC_TEST_RECORDED: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEST_RECORDER) break;
-      TestLog *log = test_log(arguments[0]);
-      ChimiValue **values = malloc((log->length ? log->length : 1) * sizeof(*values));
-      if (!values) abort();
-      for (uint32_t index = 0; index < log->length; ++index)
-        fragment_copy_into_current(log->values[index], (void **)&values[index]);
-      ChimiValue *list = list_from_values(values, log->length);
-      free(values);
-      return success(list);
-    }
-    case CHIMI_INTRINSIC_TEST_NEXT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEST_SCRIPT) break;
-      TestLog *log = test_log(arguments[0]);
-      if (log->taken == log->length)
-        return defect(numeric_message("Test.next: script exhausted after %" PRIu32 " values", log->taken),
-                      call_node);
-      void *root = NULL;
-      fragment_adopt(log->values[log->taken], &root);
-      log->values[log->taken++] = NULL;
-      return success(root);
-    }
-    case CHIMI_INTRINSIC_TEST_MAILBOX: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) break;
-      if (arguments[0]->as.integer < 1)
-        return defect(numeric_message("Test.mailbox: the capacity must be at least 1, not %" PRId64,
-                                      arguments[0]->as.integer),
-                      call_node);
-      ChimiValue *mailbox = new_test_log(VALUE_TEST_MAILBOX);
-      test_log(mailbox)->limit = arguments[0]->as.integer;
-      ChimiValue *pair = new_value(VALUE_TUPLE);
-      pair->as.record.length = 2;
-      pair->as.record.fields = allocate(2, sizeof(*pair->as.record.fields));
-      allocation_kind(pair->as.record.fields, ALLOCATION_FIELDS);
-      pair->as.record.fields[0] =
-        (RuntimeField){NULL, process_address_value(CHIMI_ADDRESS_TEST, mailbox->as.address.target)};
-      pair->as.record.fields[1] = (RuntimeField){NULL, mailbox};
-      return success(pair);
-    }
-    case CHIMI_INTRINSIC_TEST_RECEIVED: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEST_MAILBOX) break;
-      TestLog *log = test_log(arguments[0]);
-      ChimiValue **values = malloc((log->length ? log->length : 1) * sizeof(*values));
-      if (!values) abort();
-      for (uint32_t index = 0; index < log->length; ++index) {
-        fragment_adopt(log->values[index], (void **)&values[index]);
-        log->values[index] = NULL;
-      }
-      ChimiValue *list = list_from_values(values, log->length);
-      free(values);
-      log->length = 0;
-      return success(list);
-    }
-  }
-  return intrinsic_shape_defect(call_node);
-}
-
-static ChimiControl *invoke_test_log(uint32_t intrinsic, ChimiValue **arguments,
-                                     uint32_t argument_count, uint32_t call_node) {
-  pthread_mutex_lock(&test_log_lock);
-  ChimiControl *control = invoke_test_log_locked(intrinsic, arguments, argument_count, call_node);
-  pthread_mutex_unlock(&test_log_lock);
-  return control;
-}
+/* A std/test Recorder, Script or Mailbox, in intrinsics/test_log.rs: the logs live
+   there, outside every heap, behind their own lock, which is taken before the
+   handle counts' lock. */
+ChimiControl *chimi_intrinsic_test_log_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                          uint32_t call_node);
+/* Process.send to a test address, in intrinsics/test_log.rs. */
+ChimiControl *chimi_runtime_send_to_test_mailbox_v1(const ChimiValue *address, ChimiValue *message,
+                                                    uint32_t call_node);
 
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
@@ -5102,50 +4983,6 @@ static ChimiControl *invoke_cause_operation(ChimiRuntime *runtime, uint32_t intr
    the scheduler need the process kernel, which only process programs link: their
    runtime is built with CHIMI_PROCESS_KERNEL (pay-for-play, lab scenario MF06). */
 
-/* Process.send to a test address: the mailbox rules without a scheduler. It never
-   parks; it refuses with SendError.Full once the mailbox holds its capacity, and
-   the sender keeps the message. A message carrying a Receiver or Completion would
-   need the capability transfer a process receive makes, so a test mailbox with
-   room refuses one as a defect. */
-static ChimiControl *send_to_test_mailbox_locked(ChimiValue *address, ChimiValue *message,
-                                                 uint32_t call_node) {
-  uint64_t id = address->as.address.target;
-  if (id == 0 || id > test_log_count || test_logs[id - 1].kind != VALUE_TEST_MAILBOX) abort();
-  TestLog *log = &test_logs[id - 1];
-  ChimiValue *fields[] = {message};
-  if (log->length >= log->limit)
-    return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL, fields, 1));
-  void *roots[] = {message};
-  AllocationKind kinds[] = {ALLOCATION_VALUE};
-  RuntimeFragment *fragment = NULL;
-  carrier->copy_counting = true;
-  HeapStatus status = fragment_copy(roots, kinds, 1, &fragment);
-  carrier->copy_counting = false;
-  if (status != HEAP_OK)
-    return defect(numeric_message("Process.send: the message points into owner %" PRIu64
-                                  ", outside the sender's heap (owner %" PRIu64 ")",
-                                  carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
-                  call_node);
-  CapabilityTransfer carried = {.collect = true};
-  transfer_captures(&carried, fragment->roots[0]);
-  size_t carried_count = carried.carried_count;
-  free(carried.carried);
-  if (carried_count) {
-    fragment_free(fragment);
-    return defect("Process.send: a test mailbox cannot hold a message with a Receiver or Completion",
-                  call_node);
-  }
-  test_log_append(log, fragment);
-  return success(void_value());
-}
-
-static ChimiControl *send_to_test_mailbox(ChimiValue *address, ChimiValue *message, uint32_t call_node) {
-  pthread_mutex_lock(&test_log_lock);
-  ChimiControl *control = send_to_test_mailbox_locked(address, message, call_node);
-  pthread_mutex_unlock(&test_log_lock);
-  return control;
-}
-
 static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
   ChimiValue *value = new_value(VALUE_PROCESS_ADDRESS);
   value->as.address.kind = kind;
@@ -5587,7 +5424,7 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
       if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_ADDRESS))
         return intrinsic_shape_defect(call_node);
       if (arguments[0]->as.address.kind == CHIMI_ADDRESS_TEST)
-        return send_to_test_mailbox(arguments[0], arguments[1], call_node);
+        return chimi_runtime_send_to_test_mailbox_v1(arguments[0], arguments[1], call_node);
       void *roots[] = {arguments[1]};
       AllocationKind kinds[] = {ALLOCATION_VALUE};
       RuntimeFragment *message = NULL;
@@ -7173,7 +7010,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
     return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_TEST_RECORDER && intrinsic <= CHIMI_INTRINSIC_TEST_RECEIVED)
-    return invoke_test_log(intrinsic, arguments, argument_count, call_node);
+    return chimi_intrinsic_test_log_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_ENV_HOST_VARIABLES && intrinsic <= CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY)
     return invoke_host_operation(runtime, intrinsic, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_FS_HOST_OPEN && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
