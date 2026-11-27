@@ -1376,6 +1376,10 @@ _Static_assert(CHIMI_INTRINSIC_LIST_GET == 129, "layout: CHIMI_INTRINSIC_LIST_GE
 _Static_assert(CHIMI_INTRINSIC_LIST_PUSH == 130, "layout: CHIMI_INTRINSIC_LIST_PUSH");
 _Static_assert(CHIMI_INTRINSIC_LIST_SLICE == 131, "layout: CHIMI_INTRINSIC_LIST_SLICE");
 _Static_assert(CHIMI_INTRINSIC_LIST_SET == 132, "layout: CHIMI_INTRINSIC_LIST_SET");
+_Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_EQUAL == 178, "layout: CHIMI_INTRINSIC_TEST_ASSERT_EQUAL");
+_Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL == 179, "layout: CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL");
+_Static_assert(CHIMI_INTRINSIC_TEST_ASSERT == 180, "layout: CHIMI_INTRINSIC_TEST_ASSERT");
+_Static_assert(CHIMI_INTRINSIC_TEST_FAIL == 181, "layout: CHIMI_INTRINSIC_TEST_FAIL");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE == 35, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE");
@@ -3061,43 +3065,12 @@ static ChimiValue *bytes_from_hex(const char *hex, size_t length) {
 }
 
 
-/* std/test. A comparison's message is "<heading>\nactual:\n<render>\nexpected:\n<render>",
-   byte for byte as `comparison_message` in execution/core_operations.rs, because
-   `chimi test` reads the two renderings back from it. */
+/* std/test. */
 static ChimiValue *debug_render(const ChimiValue *value, bool indented);
 
-static ChimiControl *invoke_assertion(uint32_t intrinsic, ChimiValue **arguments,
-                                      uint32_t argument_count, uint32_t call_node) {
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_TEST_ASSERT_EQUAL:
-    case CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL: {
-      if (argument_count != 2) break;
-      bool wanted = intrinsic == CHIMI_INTRINSIC_TEST_ASSERT_EQUAL;
-      if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted)
-        return success(void_value());
-      TextBuffer buffer = {0};
-      const char *heading = wanted ? "Test.assert_equal: the values differ"
-                                    : "Test.assert_not_equal: the values are equal";
-      buffer_bytes(&buffer, heading, strlen(heading));
-      buffer_bytes(&buffer, "\nactual:\n", 9);
-      ChimiValue *actual = debug_render(arguments[0], true);
-      buffer_bytes(&buffer, actual->as.text.bytes, actual->as.text.length);
-      buffer_bytes(&buffer, "\nexpected:\n", 11);
-      ChimiValue *expected = debug_render(arguments[1], true);
-      buffer_bytes(&buffer, expected->as.text.bytes, expected->as.text.length);
-      buffer_char(&buffer, '\0');
-      return defect(buffer.data, call_node);
-    }
-    case CHIMI_INTRINSIC_TEST_ASSERT:
-      if (argument_count != 2 || arguments[0]->kind != VALUE_BOOLEAN || arguments[1]->kind != VALUE_TEXT) break;
-      if (arguments[0]->as.boolean) return success(void_value());
-      return defect(copy_text(arguments[1]->as.text.bytes), call_node);
-    case CHIMI_INTRINSIC_TEST_FAIL:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) break;
-      return defect(copy_text(arguments[0]->as.text.bytes), call_node);
-  }
-  return intrinsic_shape_defect(call_node);
-}
+/* Test.assert_equal, assert_not_equal, assert and fail, in intrinsics/assertions.rs. */
+ChimiControl *chimi_intrinsic_assertion_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                           uint32_t call_node);
 
 static bool is_assertion_call(int64_t node) {
   uint32_t low = 0, high = CHIMI_ASSERTION_NODE_COUNT;
@@ -7194,7 +7167,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
-    return invoke_assertion(intrinsic, arguments, argument_count, call_node);
+    return chimi_intrinsic_assertion_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)

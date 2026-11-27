@@ -4,6 +4,7 @@
 //! `invoke_intrinsic` still dispatches; it calls a family's entry here.
 
 mod abi;
+pub mod assertions;
 pub mod bytes;
 pub mod collections;
 pub mod core;

@@ -1,10 +1,11 @@
 //! The C view of the intrinsic families: `runtime.c`'s `invoke_intrinsic`
 //! calls these for the std/map, std/set, std/json, std/decimal, std/bytes and
 //! std/duration intrinsics, and `Debug.crash`, `Option.unwrap_or_fail`,
-//! std/text and std/list.
+//! std/text and std/list, and std/test's assertions.
 
 use core::ffi::c_void;
 
+use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
@@ -148,4 +149,19 @@ pub unsafe extern "C" fn chimi_intrinsic_core_v1(
 pub unsafe extern "C" fn chimi_runtime_debug_render_v1(value: *const Value, indented: bool) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe { render(value, indented) }
+}
+
+/// [`assertion_operation`].
+///
+/// # Safety
+/// As for `assertion_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_assertion_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { assertion_operation(intrinsic, arguments(values, count), call_node) }
 }

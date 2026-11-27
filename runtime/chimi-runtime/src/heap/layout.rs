@@ -285,6 +285,10 @@ impl Intrinsic {
     pub const LIST_PUSH: u32 = 130;
     pub const LIST_SLICE: u32 = 131;
     pub const LIST_SET: u32 = 132;
+    pub const TEST_ASSERT_EQUAL: u32 = 178;
+    pub const TEST_ASSERT_NOT_EQUAL: u32 = 179;
+    pub const TEST_ASSERT: u32 = 180;
+    pub const TEST_FAIL: u32 = 181;
 }
 
 /// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
@@ -955,6 +959,10 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_LIST_PUSH" Intrinsic::LIST_PUSH)
     constant("CHIMI_INTRINSIC_LIST_SLICE" Intrinsic::LIST_SLICE)
     constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
+    constant("CHIMI_INTRINSIC_TEST_ASSERT_EQUAL" Intrinsic::TEST_ASSERT_EQUAL)
+    constant("CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL" Intrinsic::TEST_ASSERT_NOT_EQUAL)
+    constant("CHIMI_INTRINSIC_TEST_ASSERT" Intrinsic::TEST_ASSERT)
+    constant("CHIMI_INTRINSIC_TEST_FAIL" Intrinsic::TEST_FAIL)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY" StandardConstructor::DURATION_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE" StandardConstructor::DURATION_PARSE_OUT_OF_RANGE)

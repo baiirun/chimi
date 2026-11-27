@@ -14,6 +14,7 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
+RUST_TEXT = "../../runtime/chimi-runtime/src/text.rs"
 CORE = "src/execution/core_operations.rs"
 SOURCE = "src/resolution/standard_source.rs"
 TEXT = "std/text.chimi"
@@ -32,9 +33,9 @@ MUTATIONS = [
     std("interpreter byte_slice skips the UTF-8 boundary check", CORE, [(
         "                    if !value.is_char_boundary(bound) {",
         "                    if bound > value.len() {")], filter="standard_programs"),
-    std("native trim misses ideographic space", RUNTIME, [(
-        "code == 0x205f || code == 0x3000;",
-        "code == 0x205f;")], filter="standard_programs"),
+    std("native trim misses ideographic space", RUST_TEXT, [(
+        "            | '\\u{205f}'\n            | '\\u{3000}'\n",
+        "            | '\\u{205f}'\n")], filter="standard_"),
     std("interpreter split accepts an empty separator", CORE, [(
         "                if separator.is_empty() {\n"
         "                    return defect(\"Text.split: separator must not be empty\".to_owned());",
@@ -47,9 +48,9 @@ MUTATIONS = [
     std("native unwrap_or_fail fails on Some", CORE_INTRINSICS, [(
         "if option.length == 1 {",
         "if option.length == 0 {")], filter="standard_"),
-    std("native Debug.crash drops the caller's message", RUNTIME, [(
-        "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);",
-        "      return defect(\"Debug.crash\", call_node);")], filter="standard_programs"),
+    std("native Debug.crash drops the caller's message", CORE_INTRINSICS, [(
+        "defect_with(lasting_message(bytes_of(arguments[0])), node)",
+        "defect(c\"Debug.crash\", node)")], filter="standard_"),
     # Chimi source of the modules.
     std("Text.lines keeps a final empty line", TEXT, [(
         "    [..most, \"\"] -> most\n",

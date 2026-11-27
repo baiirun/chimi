@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 T = "src/testing.rs"
 C = "runtime/native/runtime.c"
+ASSERTIONS = "../../runtime/chimi-runtime/src/intrinsics/assertions.rs"
 I = "src/execution/core_operations.rs"
 B = "src/backend.rs"
 
@@ -67,13 +68,13 @@ MUTATIONS = [
         "  if (test_index >= 0) {\n    entry_function",
         "  if (test_index >= 0 && false) {\n    entry_function",
     )]),
-    runner("native: assert_equal passes on unequal values", C, [(
-        "if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted)",
-        "if ((chimi_value_compare(arguments[0], arguments[1]) == 0) == wanted || wanted)",
+    runner("native: assert_equal passes on unequal values", ASSERTIONS, [(
+        "if (compare(arguments[0], arguments[1]) == 0) == wanted {",
+        "if (compare(arguments[0], arguments[1]) == 0) == wanted || wanted {",
     )]),
-    runner("native: a failed assert is not a defect", C, [(
-        "      if (arguments[0]->as.boolean) return success(void_value());",
-        "      return success(void_value());",
+    runner("native: a failed assert is not a defect", ASSERTIONS, [(
+        "if (*arguments[0]).payload.boolean { success(void_value()) }",
+        "if true { success(void_value()) }",
     )]),
     runner("interpreter: assert_not_equal never fails", I, [(
         "                if equal == wanted {",

@@ -1,0 +1,13 @@
+# assertion_intrinsic_mutations.py (CHI-305 step 5, phase 5, seventh PR)
+BASELINE ok  [testing] (133s)
+KILLED       assert_not_equal fails on unequal values [testing] (55s)
+KILLED       the actual rendering is on one line [testing] (56s)
+KILLED       expected and actual swap [testing] (56s)
+KILLED       the expected heading is dropped [testing] (56s)
+KILLED       Test.fail drops its message [testing] (55s)
+KILLED       a failed assert reports an empty message [testing] (57s)
+# result: every mutant killed
+# retargeted in test_runner and std_modules:
+KILLED       native: assert_equal passes on unequal values [testing] (52s)
+KILLED       native: a failed assert is not a defect [testing] (55s)
+KILLED       native Debug.crash drops the caller's message [std_modules -- standard_] (55s)
