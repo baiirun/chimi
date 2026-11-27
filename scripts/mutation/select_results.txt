@@ -36,3 +36,13 @@ KILLED       user timers are never cancelled [select]
 KILLED       a request leaves an abandoned select registered [lib -- select_tests] (6s)
 KILLED       a committed receive leaves its value in the queue [lib -- a_committed_select] (5s)
 # result: every mutant killed
+
+# CHI-305 phase 7, eighth PR: the native-runtime mutants retargeted to
+# runtime/chimi-runtime/src/intrinsics/waits.rs
+# mutation run at ccc3d4130e7b59b1a47a220efe4996cbfaaddca9
+KILLED       user timers are never cancelled [wait] (60s)
+KILLED       a user clock timer uses the execution clock [wait] (61s)
+KILLED       a committed receive skips the mapping function [wait] (61s)
+SURVIVED     losing user timers are cancelled before the take [wait] (60s)
+KILLED       Wait.first accepts an empty list at run time [wait] (66s)
+# "losing user timers are cancelled before the take" survived and is now left out as equivalent (see the module docstring).

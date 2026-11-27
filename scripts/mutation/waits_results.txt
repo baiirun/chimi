@@ -8,5 +8,5 @@ KILLED       an inbox event takes a task result [wait language] (87s)
 KILLED       Wait.at measures from now [wait] (58s)
 KILLED       a timer ignores the bound clock [wait] (51s)
 KILLED       a user clock's own now is ignored [wait] (65s)
-SURVIVED     an overflowing Wait.after wraps [wait] (60s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+KILLED       an overflowing Wait.after wraps [wait] (61s)  (after the new test an_after_past_the_instant_range_defects)
+# result: every mutant killed
