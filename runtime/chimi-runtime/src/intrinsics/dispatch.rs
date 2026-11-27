@@ -1,7 +1,7 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest (std/
 //! task, std/channel, processes, waits, clocks, signals, log and metrics
-//! hosts, std/cause's context, and C bindings) go to `runtime.c`'s
+//! hosts, and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`, as host functions do.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
@@ -13,12 +13,14 @@ use core::ptr;
 use super::abi::arguments;
 use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
+use super::causes::cause_operation;
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
 use super::json::json_operation;
+use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
 use super::test_log::test_log_operation;
 use crate::heap::layout::{Callable, CallableKind, Control, Environment, Intrinsic, Runtime, Value};
@@ -94,6 +96,7 @@ pub unsafe fn invoke_native(
         }
         let intrinsic = (*callable).intrinsic;
         let call = || Call { runtime: runtime.cast::<c_void>(), span, call_node, environment };
+        let scope = || ScopeCall { runtime, span, call_node, environment };
         match intrinsic {
             Intrinsic::MAP_REMOVE..=Intrinsic::MAP_REDUCE_ENTRIES | Intrinsic::MAP_EMPTY..=Intrinsic::MAP_PUT => {
                 map_operation(&call(), intrinsic, arguments(values, count))
@@ -110,6 +113,12 @@ pub unsafe fn invoke_native(
             Intrinsic::BYTES_FROM..=Intrinsic::EMBED_BYTES | Intrinsic::HTTP_COUNT_ENDS => {
                 bytes_operation(intrinsic, arguments(values, count), call_node)
             }
+            Intrinsic::CAUSE_CONTEXT => cause_context(scope(), arguments(values, count)),
+            Intrinsic::CAUSE_OF..=Intrinsic::CAUSE_TO_TEXT => {
+                cause_operation(intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::RESOURCE_SCOPED => resource_scoped(scope(), arguments(values, count)),
+            Intrinsic::TEST_CAPTURE_DEFECT => capture_defect(scope(), arguments(values, count)),
             Intrinsic::TEST_ASSERT_EQUAL..=Intrinsic::TEST_FAIL => {
                 assertion_operation(intrinsic, arguments(values, count), call_node)
             }

@@ -20,6 +20,8 @@ pub mod host;
 pub mod json;
 pub(crate) mod message;
 pub mod scalars;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod scopes;
 pub mod standard;
 pub mod test_log;
 mod text;

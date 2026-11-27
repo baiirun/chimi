@@ -378,6 +378,57 @@ pub struct Pattern {
     pub integer: i64,
 }
 
+/// `ChimiSchedulerRequest` (chimi_fiber.h): a request a fiber makes of the
+/// scheduler, answered in place.
+#[repr(C)]
+pub struct SchedulerRequest {
+    pub kind: u32,
+    pub status: u32,
+    pub task: u64,
+    pub channel: u64,
+    pub owner: u64,
+    pub token: u64,
+    pub value: i64,
+    pub entry: *const c_void,
+    pub context: *mut c_void,
+}
+
+impl SchedulerRequest {
+    /// A request of `kind`, every other field zero.
+    pub const fn of(kind: u32) -> Self {
+        Self {
+            kind,
+            status: Scheduler::RESPONSE_UNSET,
+            task: 0,
+            channel: 0,
+            owner: 0,
+            token: 0,
+            value: 0,
+            entry: core::ptr::null(),
+            context: core::ptr::null_mut(),
+        }
+    }
+}
+
+/// The scheduler's request kinds, replies and fiber commands (chimi_fiber.h)
+/// the Rust intrinsics use.
+pub struct Scheduler;
+
+impl Scheduler {
+    pub const FIBER_CANCEL: u32 = 2;
+    pub const REQUEST_SCOPE_ENTER: u32 = 25;
+    pub const REQUEST_SCOPE_EXIT: u32 = 26;
+    pub const REQUEST_SCOPE_CHECK: u32 = 27;
+    pub const REQUEST_RESOURCE_ENTER: u32 = 33;
+    pub const REQUEST_RESOURCE_RELEASE: u32 = 34;
+    pub const REQUEST_RESOURCE_EXIT: u32 = 35;
+    pub const REQUEST_SCOPE_CANCEL: u32 = 41;
+    pub const REQUEST_RESOURCE_USE: u32 = 49;
+    pub const RESPONSE_UNSET: u32 = 0;
+    pub const RESPONSE_OK: u32 = 1;
+    pub const RESPONSE_PENDING: u32 = 2;
+}
+
 /// The codes of the program's core tree (runtime.h) the evaluator reads, and
 /// the `HostFunction`s (runtime.c) a dependency method may name.
 pub struct Core;
@@ -545,6 +596,8 @@ impl Intrinsic {
     pub const CAUSE_SUPPRESSED: u32 = 175;
     pub const CAUSE_REASON_CODE: u32 = 176;
     pub const CAUSE_TO_TEXT: u32 = 177;
+    pub const RESOURCE_SCOPED: u32 = 182;
+    pub const TEST_CAPTURE_DEFECT: u32 = 183;
     pub const TEST_ASSERT_EQUAL: u32 = 178;
     pub const TEST_ASSERT_NOT_EQUAL: u32 = 179;
     pub const TEST_ASSERT: u32 = 180;
@@ -1280,6 +1333,28 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiArm" Arm, "body", body)
     field("ChimiArm" Arm, "cause_subject", cause_subject)
     field("ChimiArm" Arm, "cause_local", cause_local)
+    size("ChimiSchedulerRequest" SchedulerRequest)
+    field("ChimiSchedulerRequest" SchedulerRequest, "kind", kind)
+    field("ChimiSchedulerRequest" SchedulerRequest, "status", status)
+    field("ChimiSchedulerRequest" SchedulerRequest, "task", task)
+    field("ChimiSchedulerRequest" SchedulerRequest, "channel", channel)
+    field("ChimiSchedulerRequest" SchedulerRequest, "owner", owner)
+    field("ChimiSchedulerRequest" SchedulerRequest, "token", token)
+    field("ChimiSchedulerRequest" SchedulerRequest, "value", value)
+    field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
+    field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
+    constant("CHIMI_FIBER_CANCEL" Scheduler::FIBER_CANCEL)
+    constant("CHIMI_REQUEST_SCOPE_ENTER" Scheduler::REQUEST_SCOPE_ENTER)
+    constant("CHIMI_REQUEST_SCOPE_EXIT" Scheduler::REQUEST_SCOPE_EXIT)
+    constant("CHIMI_REQUEST_SCOPE_CHECK" Scheduler::REQUEST_SCOPE_CHECK)
+    constant("CHIMI_REQUEST_RESOURCE_ENTER" Scheduler::REQUEST_RESOURCE_ENTER)
+    constant("CHIMI_REQUEST_RESOURCE_RELEASE" Scheduler::REQUEST_RESOURCE_RELEASE)
+    constant("CHIMI_REQUEST_RESOURCE_EXIT" Scheduler::REQUEST_RESOURCE_EXIT)
+    constant("CHIMI_REQUEST_SCOPE_CANCEL" Scheduler::REQUEST_SCOPE_CANCEL)
+    constant("CHIMI_REQUEST_RESOURCE_USE" Scheduler::REQUEST_RESOURCE_USE)
+    constant("CHIMI_RESPONSE_UNSET" Scheduler::RESPONSE_UNSET)
+    constant("CHIMI_RESPONSE_OK" Scheduler::RESPONSE_OK)
+    constant("CHIMI_RESPONSE_PENDING" Scheduler::RESPONSE_PENDING)
     size("ChimiPattern" Pattern)
     field("ChimiPattern" Pattern, "kind", kind)
     field("ChimiPattern" Pattern, "a", a)
@@ -1434,6 +1509,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_CAUSE_SUPPRESSED" Intrinsic::CAUSE_SUPPRESSED)
     constant("CHIMI_INTRINSIC_CAUSE_REASON_CODE" Intrinsic::CAUSE_REASON_CODE)
     constant("CHIMI_INTRINSIC_CAUSE_TO_TEXT" Intrinsic::CAUSE_TO_TEXT)
+    constant("CHIMI_INTRINSIC_RESOURCE_SCOPED" Intrinsic::RESOURCE_SCOPED)
+    constant("CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT" Intrinsic::TEST_CAPTURE_DEFECT)
     constant("CHIMI_INTRINSIC_TEST_ASSERT_EQUAL" Intrinsic::TEST_ASSERT_EQUAL)
     constant("CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL" Intrinsic::TEST_ASSERT_NOT_EQUAL)
     constant("CHIMI_INTRINSIC_TEST_ASSERT" Intrinsic::TEST_ASSERT)

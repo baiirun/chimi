@@ -25,7 +25,7 @@ use crate::heap::allocator::{current_carrier, one_thread_runs_fibers, profile_ro
 use crate::heap::compare::compare;
 use crate::heap::layout::{
     AllocationKind, AllocationScope, Arm, Callable, CallableKind, Constructor, Control, ControlKind, Core, Environment, Field,
-    Function, HeapStatus, NamedNode, Node, Pattern, Runtime, Step, Value, ValueKind,
+    Function, HeapStatus, NamedNode, Node, Pattern, Runtime, Scheduler, SchedulerRequest, Step, Value, ValueKind,
 };
 use crate::heap::{collector, list, young};
 use crate::heap::values::{
@@ -36,6 +36,7 @@ use crate::heap::values::{
 use crate::intrinsics::causes::{cause_derived, control_with_cause, matched_cause_value, with_stored_cause};
 use crate::intrinsics::decimals;
 use crate::intrinsics::dispatch::invoke_native;
+use crate::scheduler::{self, requires_scheduler};
 use crate::intrinsics::message::Message;
 use crate::intrinsics::standard::{boolean_value, defect, defect_with, failure, string, success, symbol, void_value};
 use crate::telemetry::{chimi_trace_dependency_v1, chimi_trace_event_v1};
@@ -61,10 +62,6 @@ unsafe extern "C" {
     static chimi_runtime_constant_values: AtomicPtr<*mut Value>;
     /// The runner's execution clock provider, as the `clock` need's value.
     fn chimi_runtime_execution_clock_value_v1() -> *mut Value;
-    /// Whether the program starts the scheduler (program data).
-    static CHIMI_REQUIRES_SCHEDULER: u32;
-    /// Asks the scheduler whether the running fiber's scope was cancelled.
-    fn chimi_runtime_loop_scope_check_v1() -> bool;
     /// The scheduler's scope queries; `runtime.c` defines weak stand-ins
     /// returning 0 for a program linked without the scheduler.
     fn chimi_fiber_scope_cancel_pending() -> u32;
@@ -148,7 +145,7 @@ unsafe fn cancel_requested(runtime: *const Runtime) -> bool {
 /// # Safety
 /// Runs on a fiber that may allocate.
 #[inline(never)]
-unsafe fn cancelled() -> *mut Control {
+pub(crate) unsafe fn cancelled() -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { new_control(ControlKind::CANCEL, ptr::null_mut(), ptr::null(), -1) }
 }
@@ -1229,13 +1226,13 @@ unsafe fn run_loop_passes(
         let mut passes = MaybeUninit::<AllocationScope>::uninit();
         let passes = passes.as_mut_ptr();
         young::scope_begin(current_carrier(), passes);
-        let scheduled = CHIMI_REQUIRES_SCHEDULER != 0;
+        let scheduled = requires_scheduler();
         let mut polls = 0u32;
         let result = loop {
             if cancel_requested(runtime) {
                 break cancelled();
             }
-            if scheduled && scope_check_due(&mut polls) && chimi_runtime_loop_scope_check_v1() {
+            if scheduled && scope_check_due(&mut polls) && scheduler::request(&mut SchedulerRequest::of(Scheduler::REQUEST_SCOPE_CHECK)) {
                 break cancelled();
             }
             *state_slot = state;
