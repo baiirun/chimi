@@ -16,6 +16,8 @@ CRATE = "compiler/chimi"
 # The core node evaluators, `invoke` and the node frame are Rust since
 # CHI-305 step 5, phase 7.
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+# The scheduler trace writers are Rust since CHI-305 step 5, phase 7.
+TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
 
 RUNTIME = "runtime/native/runtime.c"
 NATIVE = "src/backend/native.rs"
@@ -26,7 +28,7 @@ FIXTURE = "src/process_lab/fixture.rs"
 PROCESSES = "src/execution/processes.rs"
 # Process.send and monitor hand their copies over in Rust since CHI-305
 # step 5, phase 7; the foreign-pointer message is shared with test mailboxes.
-KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
+PROCESS_KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 
 TRANSCRIPT = "expected.transcript line"
@@ -60,19 +62,19 @@ TRACE_MODE = ".trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),
 
 MUTATIONS = [
     # Messages cross as copies made in the sender's heap.
-    lab("the message is the sender's original value", KERNEL, "CB01",
+    lab("the message is the sender's original value", PROCESS_KERNEL, "CB01",
         [OUTCOME, "exited with"], [(
             SEND_COPY, "        (*message).roots[0] = value.cast();\n" + SEND_COPY)]),
-    lab("an accepted message is freed by its sender", KERNEL, "MB01",
+    lab("an accepted message is freed by its sender", PROCESS_KERNEL, "MB01",
         [OUTCOME, TRANSCRIPT, "exited with"], [(SEND_FREE, "        free_fragment(message);")]),
-    lab("a refused message is never freed", KERNEL, "CB03",
+    lab("a refused message is never freed", PROCESS_KERNEL, "CB03",
         ["fragments_live is not 0"], [(
             SEND_FREE, SEND_FREE.replace("!= Scheduler::RESPONSE_OK", "== Scheduler::RESPONSE_UNSET"))]),
     lab("a message copy ignores sharing", FRAGMENT, "CB02",
         ["copied_values is not 21", "exceeded the 60 s run limit"], [(
             "        let existing = copy.table.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
             "")]),
-    lab("Full is reported as Unavailable", KERNEL, "MB02",
+    lab("Full is reported as Unavailable", PROCESS_KERNEL, "MB02",
         [OUTCOME], [(
             "failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))",
             "failure(standard_value(StandardConstructor::PROCESS_SEND_UNAVAILABLE, &[message]))")]),
@@ -85,16 +87,16 @@ MUTATIONS = [
     cli("scheduler fibers keep a 64 KiB stack", RUNTIME, STACK_TEST, [(
         "#define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)",
         "#define CHIMI_FIBER_STACK_BYTES (64u * 1024u)")]),
-    cli("a stack overflow is not named", RUNTIME, STACK_TEST, [(
-        '    if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";\n',
+    cli("a stack overflow is not named", TELEMETRY, STACK_TEST, [(
+        '                named = c"Process stack overflow".as_ptr();\n',
         "")]),
     cli("the scheduler does not flag an overflowed body", KERNEL, STACK_TEST, [(
-        "            stack_overflow: matches!(outcome, TaskOutcome::StackOverflow { .. }),",
-        "            stack_overflow: false,")]),
+        "        let stack_overflow = matches!(outcome, TaskOutcome::StackOverflow { .. });",
+        "        let stack_overflow = false;")]),
     cli("a body's defect message is dropped", RUNTIME, STACK_TEST, [(
         "      chimi_fiber_report_defect(control->message);\n", "")]),
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
-    lab("a send skips the foreign-pointer check", KERNEL, "CB07",
+    lab("a send skips the foreign-pointer check", PROCESS_KERNEL, "CB07",
         ["did not defect"], [(
             "            return Err(defect_with(foreign_message(foreign.operation, foreign.subject, foreign.side), node));",
             "            return Err(success(void_value()));")]),
@@ -114,10 +116,10 @@ MUTATIONS = [
             ("        size_of::<RuntimeFragment>()\n            + (*fragment).area.bytes",
              "        65536 + size_of::<RuntimeFragment>()\n            + (*fragment).area.bytes")]),
     # Trace family 3: identities, labels, and modes.
-    lab("the incarnation is written from the task field", RUNTIME, "OB07",
+    lab("the incarnation is written from the task field", TELEMETRY, "OB07",
         [TRANSCRIPT, "in its task field", "has a null incarnation_id"], [(
-            '    json_identity(output, "incarnation_id", event->incarnation);',
-            '    json_identity(output, "incarnation_id", event->task);')]),
+            '        out.identity(b"incarnation_id", event.incarnation);',
+            '        out.identity(b"incarnation_id", event.task);')]),
     lab("a name id is the bare symbol index", EVAL, "MB01",
         [TRANSCRIPT, "has no name", "has name"], [(
             "                (*value).payload.address.target = u64::from(symbol_index) + 1;",
