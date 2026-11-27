@@ -7,6 +7,7 @@ mod abi;
 pub mod bytes;
 pub mod collections;
 pub mod core;
+pub mod debug;
 pub mod decimals;
 pub mod durations;
 pub mod json;

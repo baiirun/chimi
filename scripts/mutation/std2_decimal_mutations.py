@@ -11,6 +11,7 @@ backends), or a language.rs decimal test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 MODEL = "src/decimal.rs"
 TYPING = "src/typing.rs"
 WRAPPER = "std/decimal.chimi"
@@ -60,9 +61,9 @@ MUTATIONS = [
     programs("Rust to_text drops trailing zeros", "src/execution/decimal_operations.rs", [(
         "RuntimeValue::Text(value.to_text())",
         "RuntimeValue::Text(value.normalized_text())")]),
-    programs("C Debug.render keeps trailing zeros", RUNTIME, [(
-        "char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text); debug_text(buffer, text); return;",
-        "char text[DECIMAL_TEXT_BYTES]; decimal_text(decimal_of(value), text); debug_text(buffer, text); return;")]),
+    lang("native Debug.render keeps trailing zeros", DEBUG_RENDER, [(
+        "self.text(decimal.normalized().text().as_bytes());",
+        "self.text(decimal.text().as_bytes());")]),
     programs("C multiply skips the overflow check", RUNTIME, [(
         "if (__builtin_mul_overflow(left.magnitude, right.magnitude, &product)) return false;",
         "product = left.magnitude * right.magnitude;")]),

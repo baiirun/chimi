@@ -16,7 +16,7 @@ pub fn payload(value: Decimal) -> layout::Decimal {
 
 /// The decimal a Decimal value's payload stores. The runtime builds every
 /// payload from a [`Decimal`], so one out of range is a runtime bug.
-fn of_payload(value: layout::Decimal) -> Decimal {
+pub(super) fn of_payload(value: layout::Decimal) -> Decimal {
     let magnitude = (u128::from(value.high) << 64) | u128::from(value.low);
     match Decimal::new(value.negative, magnitude, value.scale) {
         Some(decimal) => decimal,

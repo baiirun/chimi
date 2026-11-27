@@ -10,6 +10,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 X = "src/execution.rs"
 
 
@@ -42,13 +43,13 @@ MUTATIONS = [
         "      if (arguments[0]->as.integer < 1)\n        return defect(numeric_message(\"Test.mailbox:",
         "      if (arguments[0]->as.integer < 0)\n        return defect(numeric_message(\"Test.mailbox:",
     )]),
-    mutant("native: the address renders as direct", C, [(
-        "        : value->as.address.kind == CHIMI_ADDRESS_TEST ? \"test\" : NULL;",
-        "        : NULL;",
+    mutant("native: the address renders as direct", DEBUG_RENDER, [(
+        'ADDRESS_TEST => Some(b"test"),',
+        'ADDRESS_TEST => None,',
     )]),
-    mutant("native: a mailbox renders as a script", C, [(
-        '    case VALUE_TEST_MAILBOX: debug_text(buffer, "<Mailbox>"); return;',
-        '    case VALUE_TEST_MAILBOX: debug_text(buffer, "<Script>"); return;',
+    mutant("native: a mailbox renders as a script", DEBUG_RENDER, [(
+        'K::TEST_MAILBOX => self.text(b"<Mailbox>"),',
+        'K::TEST_MAILBOX => self.text(b"<Script>"),',
     )]),
     mutant("interpreter: Test.mailbox names the wrong requirement", X, [(
         '"Test.{} requires the native backend, as processes do"',

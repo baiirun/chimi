@@ -14,6 +14,7 @@ EXECUTION = "src/execution.rs"
 TEARDOWN = "src/execution/teardown.rs"
 RUNTIME = "runtime/native/runtime.c"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
 
 
@@ -23,6 +24,10 @@ def lib(name, file, edits):
 
 def language(name, edits, filter):
     return dict(name=name, file=RUNTIME, edits=edits, targets=["language"], filter=filter)
+
+
+def debug_language(name, edits, filter):
+    return dict(name=name, file=DEBUG_RENDER, edits=edits, targets=["language"], filter=filter)
 
 
 def json_language(name, edits, filter):
@@ -92,30 +97,29 @@ MUTATIONS = [
         "    json_step(steps, JSON_STEP_VALUE, fields[index].value);\n    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);",
         "    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);\n    json_step(steps, JSON_STEP_VALUE, fields[index].value);",
     )], "deeply_nested"),
-    language("native debug renderer queues list parts first to last", [(
-        "      for (uint32_t i = length; i-- > 0;) debug_part(steps, i, false, NULL, list_get(value, i));",
-        "      for (uint32_t i = 0; i < length; ++i) debug_part(steps, i, false, NULL, list_get(value, i));",
+    debug_language("native debug renderer queues list parts first to last", [(
+        "for index in (0..length).rev() {\n                            self.part(index, false, None, list::get(value, index));",
+        "for index in 0..length {\n                            self.part(index, false, None, list::get(value, index));",
     )], "render"),
-    language("native debug renderer closes before restoring the depth", [(
-        "        --renderer->depth;\n        debug_close(renderer, step.pointer, step.spaced);",
-        "        debug_close(renderer, step.pointer, step.spaced);\n        --renderer->depth;",
+    debug_language("native debug renderer closes before restoring the depth", [(
+        "renderer.depth -= 1;\n                    renderer.close(close, spaced);",
+        "renderer.close(close, spaced);\n                    renderer.depth -= 1;",
     )], "render"),
-    language("native debug renderer keeps the one-line format after a key", [(
-        "        renderer->indented = step.spaced;\n        debug_text(renderer->buffer, \": \");",
-        "        debug_text(renderer->buffer, \": \");",
+    debug_language("native debug renderer keeps the one-line format after a key", [(
+        "renderer.indented = indented;\n                    renderer.text(b\": \");",
+        "let _ = indented;\n                    renderer.text(b\": \");",
     )], "debug_render_nests_through_map_keys"),
-    language("native debug renderer renders a key by recursing", [(
-        "      case DEBUG_STEP_KEY:\n"
-        "        debug_step(&steps, DEBUG_STEP_KEY_END, NULL, 0, renderer->indented);\n"
-        "        debug_step(&steps, DEBUG_STEP_VALUE, step.pointer, 0, false);\n"
-        "        renderer->indented = false;\n"
-        "        break;",
-        "      case DEBUG_STEP_KEY: {\n"
-        "        DebugRenderer key = {renderer->buffer, false, renderer->depth};\n"
-        "        debug_value(&key, step.pointer);\n"
-        "        debug_text(renderer->buffer, \": \");\n"
-        "        break;\n"
-        "      }",
+    debug_language("native debug renderer renders a key by recursing", [(
+        "                Step::Key(key) => {\n"
+        "                    renderer.push(Step::KeyEnd(renderer.indented));\n"
+        "                    renderer.push(Step::Value(key));\n"
+        "                    renderer.indented = false;\n"
+        "                }",
+        "                Step::Key(key) => {\n"
+        "                    let rendered = (*render(key, false)).payload.text;\n"
+        "                    renderer.text(core::slice::from_raw_parts(rendered.bytes.cast(), rendered.length));\n"
+        "                    renderer.text(b\": \");\n"
+        "                }",
     )], "debug_render_nests_through_map_keys"),
     language("native outcome writer does not quote a non-Text key", [(
         "        json_string(output, key->name); fputc(':', output);",

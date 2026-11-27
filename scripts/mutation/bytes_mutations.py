@@ -10,6 +10,7 @@ Run: scripts/mutation/mutate.py scripts/mutation/bytes_mutations.py
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 BYTES_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/bytes.rs"
 CORE = "src/execution/bytes_operations.rs"
 WRAPPER = "std/bytes.chimi"
@@ -61,5 +62,5 @@ MUTATIONS = [
     programs("C constant hex decodes the low digit as high", RUNTIME, [
         ("raw[i] = (char)(hex_value(hex[2 * i]) << 4 | hex_value(hex[2 * i + 1]));",
          "raw[i] = (char)(hex_value(hex[2 * i + 1]) << 4 | hex_value(hex[2 * i]));")]),
-    programs("C renders without separators", RUNTIME, [("debug_text(buffer, i ? digits : digits + 1);", "debug_text(buffer, digits + 1);")]),
+    programs("native renders without separators", DEBUG_RENDER, [("self.text(if index > 0 { &digits } else { &digits[1..] });", "self.text(&digits[1..]);")]),
 ]

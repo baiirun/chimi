@@ -8,6 +8,7 @@ use core::ffi::c_void;
 use super::bytes::bytes_operation;
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
+use super::debug::render;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::json::json_operation;
@@ -137,4 +138,14 @@ pub unsafe extern "C" fn chimi_intrinsic_core_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { core_operation(intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`render`]: `value` in the debug format, as a Text.
+///
+/// # Safety
+/// As for `render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_debug_render_v1(value: *const Value, indented: bool) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { render(value, indented) }
 }
