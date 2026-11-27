@@ -40,6 +40,15 @@ unsafe fn symbol(index: u32) -> &'static Symbol {
     unsafe { &*(&raw const CHIMI_SYMBOLS).cast::<Symbol>().add(index as usize) }
 }
 
+/// The name of the program's symbol `index`.
+///
+/// # Safety
+/// `index` is a symbol of the program.
+pub unsafe fn symbol_name(index: u32) -> *const c_char {
+    // SAFETY: the caller's contract; a symbol's name is a string id.
+    unsafe { string(symbol(index).name) }
+}
+
 /// The standard constructor id of the program's symbol `index`, as
 /// `ChimiSymbol.standard_constructor` holds it.
 ///
