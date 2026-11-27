@@ -18,6 +18,12 @@ mod direct_loop;
 mod runtime_archive_key;
 
 #[cfg(feature = "native-backend")]
+mod cross_targets;
+
+#[cfg(feature = "native-backend")]
+pub mod target;
+
+#[cfg(feature = "native-backend")]
 mod bindings;
 
 #[cfg(feature = "native-aot-prototype")]

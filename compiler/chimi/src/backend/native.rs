@@ -5,9 +5,10 @@ use super::bindings::{BINDING_HEADER, BindingPackage, PackageCode, packages_for}
 use super::direct_loop::{Pass, direct_loops, emit_pass};
 use super::program_data::{render_program_data, requires_process_runtime};
 use super::runtime_archive_key::{
-    BindingArchiveInputs, RUNTIME_C_COMPILER, RuntimeArchiveInputs, binding_archive_key,
+    BindingArchiveInputs, CTools, RuntimeArchiveInputs, binding_archive_key,
     binding_package_flags, compile_binding_archive, runtime_archive_key, runtime_c_flags,
 };
+use super::target::BuildTarget;
 use crate::executable::{CoreOperation, CoreProgram};
 use crate::json::write_json_string;
 use crate::semantic::{BinaryOperator, UnaryOperator};
@@ -16,7 +17,6 @@ use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, Signature, UserFuncName, Value, types,
 };
 use cranelift_codegen::isa::OwnedTargetIsa;
-use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
@@ -86,6 +86,11 @@ pub struct NativeBuildReport {
     /// Each package the build read, with where its source came from; empty
     /// for a project with no manifest.
     pub packages: Vec<crate::project::BuiltPackage>,
+    /// The platform the executable is for, as `std::env::consts` names its
+    /// operating system and architecture there, and its Rust target triple.
+    pub target_os: &'static str,
+    pub target_arch: &'static str,
+    pub target_triple: &'static str,
 }
 
 impl NativeBuildReport {
@@ -101,9 +106,11 @@ impl NativeBuildReport {
             limits.operations, limits.call_depth, limits.value_bytes
         ));
         output.push_str(",\"target\":{\"os\":");
-        write_json_string(&mut output, std::env::consts::OS);
+        write_json_string(&mut output, self.target_os);
         output.push_str(",\"arch\":");
-        write_json_string(&mut output, std::env::consts::ARCH);
+        write_json_string(&mut output, self.target_arch);
+        output.push_str(",\"triple\":");
+        write_json_string(&mut output, self.target_triple);
         output.push_str("},\"standard_library\":");
         match &self.standard_override {
             None => output.push_str("{\"source\":\"embedded\"}"),
@@ -198,6 +205,7 @@ impl NativeBuildReport {
     }
 }
 
+/// Builds `program` for the host (`build_application_for`).
 pub fn build_application(
     program: &BackendProgram,
     standard: &crate::project::StandardTree,
@@ -205,9 +213,34 @@ pub fn build_application(
     artifact_directory: &Path,
     packages: Vec<crate::project::BuiltPackage>,
 ) -> Result<NativeBuildReport, String> {
+    build_application_for(
+        program,
+        standard,
+        executable_path,
+        artifact_directory,
+        packages,
+        &BuildTarget::host()?,
+    )
+}
+
+/// Builds `program` into `executable_path` for `target`, keeping its
+/// intermediate files in `artifact_directory`, and writes the build report
+/// there as `build.json`.
+pub fn build_application_for(
+    program: &BackendProgram,
+    standard: &crate::project::StandardTree,
+    executable_path: &Path,
+    artifact_directory: &Path,
+    packages: Vec<crate::project::BuiltPackage>,
+    target: &BuildTarget,
+) -> Result<NativeBuildReport, String> {
     let _lock = lock_artifact_directory(artifact_directory)?;
-    let artifact = build_to_path(program, artifact_directory, executable_path)?;
-    let dynamic_dependencies = dynamic_dependencies(executable_path)?;
+    let artifact = build_to_path(program, artifact_directory, executable_path, target)?;
+    let dynamic_dependencies = if target.is_host() {
+        dynamic_dependencies(executable_path)?
+    } else {
+        declared_dependencies(executable_path)?
+    };
     let manifest_path = artifact_directory.join("build.json");
     let report = NativeBuildReport {
         standard_override: standard.override_directory().map(Path::to_owned),
@@ -225,6 +258,9 @@ pub fn build_application(
         cache_misses: artifact.cache_misses,
         prebuilt: artifact.prebuilt,
         packages,
+        target_os: target.os_and_arch().0,
+        target_arch: target.os_and_arch().1,
+        target_triple: target.triple(),
     };
     std::fs::write(&manifest_path, report.render_json())
         .map_err(|error| format!("write native build manifest: {error}"))?;
@@ -236,7 +272,12 @@ pub fn build_executable(
     output_directory: &Path,
 ) -> Result<NativeArtifact, String> {
     let _lock = lock_artifact_directory(output_directory)?;
-    build_to_path(program, output_directory, &output_directory.join("program"))
+    build_to_path(
+        program,
+        output_directory,
+        &output_directory.join("program"),
+        &BuildTarget::host()?,
+    )
 }
 
 /// Holds `directory` for one build until the returned file is dropped. Builds
@@ -269,6 +310,7 @@ fn build_to_path(
     program: &BackendProgram,
     output_directory: &Path,
     executable_path: &Path,
+    target: &BuildTarget,
 ) -> Result<NativeArtifact, String> {
     let process_kernel = requires_process_runtime(&program.core);
     std::fs::create_dir_all(output_directory)
@@ -297,8 +339,10 @@ fn build_to_path(
         .unwrap_or(output_directory)
         .join(".cache/native-v1");
     let mut cache = ArtifactCache::new(cache_directory)?;
-    let target = native_target_fingerprint()?;
-    let cc = command_identity(RUNTIME_C_COMPILER)?;
+    let isa = target.isa();
+    let target_fingerprint = target.fingerprint();
+    let cc = target.c_identity()?;
+    let tools = target.c_tools();
 
     let started = Instant::now();
     let mut object_paths = Vec::new();
@@ -307,11 +351,18 @@ fn build_to_path(
     for (file_id, node_ids) in module_nodes(&program.core) {
         let name = format!("module-{file_id}.o");
         let path = output_directory.join(&name);
-        let key = module_cache_key(&program.core, file_id, &node_ids, &direct_loops, &target);
+        let key = module_cache_key(
+            &program.core,
+            file_id,
+            &node_ids,
+            &direct_loops,
+            &target_fingerprint,
+        );
         cache.materialize(&key, "o", &path, &name, |temporary| {
             std::fs::write(
                 temporary,
                 emit_module_object(
+                    &isa,
                     &program.core,
                     file_id,
                     &node_ids,
@@ -324,9 +375,9 @@ fn build_to_path(
         object_paths.push(path);
     }
     let entry_path = output_directory.join("entry.o");
-    let entry_key = entry_cache_key(&program.core, &target);
+    let entry_key = entry_cache_key(&program.core, &target_fingerprint);
     cache.materialize(&entry_key, "o", &entry_path, "entry.o", |temporary| {
-        std::fs::write(temporary, emit_entry_object(&program.core)?)
+        std::fs::write(temporary, emit_entry_object(&isa, &program.core)?)
             .map_err(|error| format!("write native entry object: {error}"))
     })?;
     object_paths.push(entry_path);
@@ -342,14 +393,28 @@ fn build_to_path(
     std::fs::write(output_directory.join("chimi_fiber.h"), FIBER_RUNTIME_HEADER)
         .map_err(|error| format!("write embedded fiber runtime header: {error}"))?;
     if let Some(path) = &fiber_runtime_archive_path {
-        std::fs::copy(bundled_fiber_archive()?, path)
+        let source = match target.pack() {
+            None => bundled_fiber_archive()?,
+            Some(pack) => materialize_embedded_archive(
+                &std::env::temp_dir(),
+                &format!(
+                    "chimi-fiber-{FIBER_RUNTIME_ABI_VERSION}-{}",
+                    target.triple()
+                ),
+                pack.fiber,
+            )?,
+        };
+        std::fs::copy(source, path)
             .map_err(|error| format!("materialize bundled fiber runtime: {error}"))?;
     }
     // Every program links one Rust archive: the fiber one carries the
     // runtime's Rust leaves, so only a program without it needs this one.
     let standalone_runtime_archive_path = if fiber_runtime_archive_path.is_none() {
         let path = output_directory.join("libchimi_runtime_standalone.a");
-        write_standalone_runtime_archive(&path)?;
+        match target.pack() {
+            None => write_standalone_runtime_archive(&path)?,
+            Some(pack) => write_archive(&path, pack.standalone)?,
+        }
         Some(path)
     } else {
         None
@@ -359,7 +424,7 @@ fn build_to_path(
     let test_build = test_runtime_build()?;
     let runtime_key = runtime_archive_key(&RuntimeArchiveInputs {
         abi_version: &runtime_abi,
-        target_triple: env!("CHIMI_RUNTIME_TARGET"),
+        target_triple: target.triple(),
         compiler_identity: &cc,
         runtime_source: RUNTIME_SOURCE.as_bytes(),
         runtime_header: RUNTIME_HEADER.as_bytes(),
@@ -382,7 +447,8 @@ fn build_to_path(
             runtime_archive_name,
             |temporary| {
                 run(
-                    Command::new(RUNTIME_C_COMPILER)
+                    tools
+                        .cc_command()
                         .args(runtime_c_flags(process_kernel))
                         .args(&test_build.runtime_flags)
                         .arg("-I")
@@ -394,7 +460,8 @@ fn build_to_path(
                     "compile native backend runtime",
                 )?;
                 run(
-                    Command::new("ar")
+                    tools
+                        .ar_command()
                         .arg("rcs")
                         .arg(temporary)
                         .arg(&runtime_object_path),
@@ -416,11 +483,16 @@ fn build_to_path(
                 files,
                 output_directory,
                 &mut cache,
-                &cc,
+                (target.triple(), &cc, &tools),
                 &test_build,
             )?,
             PackageCode::Rust => {
-                check_rust_bindings(rust_archive_path, &package, &reached_bindings)?;
+                check_rust_bindings(
+                    rust_archive_path,
+                    &package,
+                    &reached_bindings,
+                    target.macos(),
+                )?;
                 LinkedBindingPackage {
                     name: package.name.to_owned(),
                     archive_path: rust_archive_path.clone(),
@@ -436,7 +508,7 @@ fn build_to_path(
     let runtime_compilation = started.elapsed();
 
     let started = Instant::now();
-    let data_key = metadata_cache_key(&data_source, &target, &cc);
+    let data_key = metadata_cache_key(&data_source, &target_fingerprint, &cc);
     cache.materialize(
         &data_key,
         "o",
@@ -444,7 +516,8 @@ fn build_to_path(
         "program_data.o",
         |temporary| {
             run(
-                Command::new("cc")
+                tools
+                    .cc_command()
                     .arg("-std=c11")
                     .arg("-O2")
                     .arg("-I")
@@ -460,7 +533,8 @@ fn build_to_path(
     let data_compilation = started.elapsed();
 
     let started = Instant::now();
-    let mut link = Command::new("cc");
+    let macos = target.macos();
+    let mut link = tools.cc_command();
     // Binding archives call into the runtime, so they come before it.
     link.args(&object_paths).arg(&data_object_path);
     for package in &binding_packages {
@@ -478,7 +552,7 @@ fn build_to_path(
         link.arg(path);
     }
     if let Some(path) = &fiber_runtime_archive_path {
-        if cfg!(target_os = "macos") {
+        if macos {
             link.arg(format!("-Wl,-force_load,{}", path.display()));
         } else {
             link.arg("-Wl,--whole-archive")
@@ -488,7 +562,7 @@ fn build_to_path(
         // Nothing calls the scheduler's ABI marker, so the dropping of
         // unreferenced sections below would take it too; keep it, so a
         // binary says which scheduler ABI it carries.
-        link.arg(if cfg!(target_os = "macos") {
+        link.arg(if macos {
             "-Wl,-u,_chimi_fiber_abi_version"
         } else {
             "-Wl,-u,chimi_fiber_abi_version"
@@ -497,12 +571,15 @@ fn build_to_path(
     // The Rust archive holds every Rust binding package; the program
     // references only the functions it reaches, and the rest are dropped, so
     // linking stays pay-for-play.
-    link.arg(if cfg!(target_os = "macos") {
+    link.arg(if macos {
         "-Wl,-dead_strip"
     } else {
         "-Wl,--gc-sections"
     });
     link.args(&test_build.link_flags);
+    for library in target.link_libraries() {
+        link.arg(format!("-l{library}"));
+    }
     // The runtime calls `fmod`, which glibc keeps in libm.
     link.arg("-lm").arg("-o").arg(executable_path);
     run(&mut link, "link native backend executable")?;
@@ -546,6 +623,7 @@ fn check_rust_bindings(
     archive: &Path,
     package: &BindingPackage,
     reached: &[crate::operations::Binding],
+    macos: bool,
 ) -> Result<(), String> {
     let bytes = std::fs::read(archive)
         .map_err(|error| format!("read Rust runtime archive {}: {error}", archive.display()))?;
@@ -560,7 +638,7 @@ fn check_rust_bindings(
         if missing.is_empty() {
             break;
         }
-        let name = name.strip_prefix(b"_").filter(|_| cfg!(target_os = "macos")).unwrap_or(name);
+        let name = name.strip_prefix(b"_").filter(|_| macos).unwrap_or(name);
         missing.retain(|symbol| symbol.as_bytes() != name);
     }
     if let Some(symbol) = missing.first() {
@@ -578,7 +656,7 @@ fn build_binding_archive(
     files: &[(&'static str, &'static str)],
     output_directory: &Path,
     cache: &mut ArtifactCache,
-    cc: &str,
+    (target_triple, cc, tools): (&str, &str, &CTools),
     test_build: &TestRuntimeBuild,
 ) -> Result<LinkedBindingPackage, String> {
     let archive_name = package.archive_name();
@@ -586,7 +664,7 @@ fn build_binding_archive(
     let key = test_build.binding_key(binding_archive_key(&BindingArchiveInputs {
         package: package.name,
         package_flags: binding_package_flags(package.name),
-        target_triple: env!("CHIMI_RUNTIME_TARGET"),
+        target_triple,
         compiler_identity: cc,
         binding_header: BINDING_HEADER.as_bytes(),
         sources: files,
@@ -604,6 +682,7 @@ fn build_binding_archive(
                 &output_directory.join(format!("binding-{}", package.name)),
                 temporary,
                 &test_build.sanitizer_flags,
+                tools,
             )
         })?;
     }
@@ -865,6 +944,12 @@ fn write_standalone_runtime_archive(path: &Path) -> Result<(), String> {
         }
         None => EMBEDDED_STANDALONE_RUNTIME_ARCHIVE.to_vec(),
     };
+    write_archive(path, &bytes)
+}
+
+/// Writes `bytes` to `path` unless it already holds them, so an unchanged
+/// archive keeps its modification time.
+fn write_archive(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if std::fs::read(path).is_ok_and(|present| present == bytes) {
         return Ok(());
     }
@@ -932,24 +1017,6 @@ fn run(command: &mut Command, operation: &str) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
-}
-
-fn command_identity(command: &str) -> Result<String, String> {
-    let output = Command::new(command)
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("inspect {command} identity: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "inspect {command} identity: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    ))
 }
 
 fn write_strings(output: &mut String, values: &[String]) {
@@ -1105,64 +1172,6 @@ fn metadata_cache_key(source: &str, target: &str, cc: &str) -> String {
     )
 }
 
-fn native_isa() -> Result<OwnedTargetIsa, String> {
-    let mut flags = settings::builder();
-    flags
-        .set("is_pic", "true")
-        .map_err(|error| format!("enable position-independent native code: {error}"))?;
-    cranelift_native::builder()
-        .map_err(str::to_owned)?
-        .finish(settings::Flags::new(flags))
-        .map_err(|error| format!("finish native Cranelift target: {error}"))
-}
-
-/// Checks that `chimi build --target <triple>` can build for `triple`. Only
-/// the host is supported: another target needs the runtime compiled for it
-/// and a linker and C library for it, which no build ships yet.
-pub fn check_build_target(triple: &str) -> Result<(), String> {
-    use std::str::FromStr;
-    let host = native_isa()?.triple().clone();
-    let Ok(target) = target_lexicon::Triple::from_str(triple) else {
-        return Err(format!(
-            "unknown target `{triple}`; give a target triple such as {host}"
-        ));
-    };
-    if same_platform(&target, &host) {
-        return Ok(());
-    }
-    Err(format!(
-        "cannot build for {target} yet: building for another target needs the \
-         Chimi runtime compiled for it and a linker and C library for it, \
-         which this chimi does not have; it builds for {host}"
-    ))
-}
-
-/// Whether two triples name the same platform: the same architecture,
-/// operating system, environment and object format. The vendor is ignored
-/// (`x86_64-pc-linux-gnu` is the host `x86_64-unknown-linux-gnu`), and so
-/// are `darwin` against `macosx` and a macOS version.
-fn same_platform(left: &target_lexicon::Triple, right: &target_lexicon::Triple) -> bool {
-    use target_lexicon::OperatingSystem;
-    let system = |triple: &target_lexicon::Triple| match triple.operating_system {
-        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => OperatingSystem::Darwin(None),
-        other => other,
-    };
-    left.architecture == right.architecture
-        && system(left) == system(right)
-        && left.environment == right.environment
-        && left.binary_format == right.binary_format
-}
-
-fn native_target_fingerprint() -> Result<String, String> {
-    let isa = native_isa()?;
-    let mut fingerprint = format!("{}|{}", isa.triple(), isa.flags());
-    for flag in isa.isa_flags() {
-        fingerprint.push('|');
-        fingerprint.push_str(&flag.to_string());
-    }
-    Ok(fingerprint)
-}
-
 fn dynamic_dependencies(executable: &Path) -> Result<Vec<String>, String> {
     let output = if cfg!(target_os = "macos") {
         Command::new("otool").arg("-L").arg(executable).output()
@@ -1186,6 +1195,57 @@ fn dynamic_dependencies(executable: &Path) -> Result<Vec<String>, String> {
         .skip(usize::from(cfg!(target_os = "macos")))
         .filter_map(parse_dependency)
         .collect();
+    Ok(dependencies)
+}
+
+/// The shared libraries an executable built for another target names, read
+/// from the file, since the host's `ldd` or `otool` cannot run on it: an ELF
+/// file's `DT_NEEDED` entries or a Mach-O file's dylib load commands, as
+/// written (a name such as `libc.so.6`, not a path on this machine).
+fn declared_dependencies(executable: &Path) -> Result<Vec<String>, String> {
+    use cranelift_object::object::read::elf::{Dyn, FileHeader};
+    use cranelift_object::object::read::macho::MachHeader;
+    use cranelift_object::object::{Endianness, FileKind, elf, macho};
+    let bytes = std::fs::read(executable)
+        .map_err(|error| format!("read {}: {error}", executable.display()))?;
+    let malformed = |error: cranelift_object::object::read::Error| {
+        format!("inspect native dependencies of {}: {error}", executable.display())
+    };
+    let text = |name: &[u8]| String::from_utf8_lossy(name).into_owned();
+    let mut dependencies = Vec::new();
+    match FileKind::parse(&*bytes).map_err(malformed)? {
+        FileKind::Elf64 => {
+            let header = elf::FileHeader64::<Endianness>::parse(&*bytes).map_err(malformed)?;
+            let endian = header.endian().map_err(malformed)?;
+            let sections = header.sections(endian, &*bytes).map_err(malformed)?;
+            if let Some((entries, link)) = sections.dynamic(endian, &*bytes).map_err(malformed)? {
+                let strings = sections.strings(endian, &*bytes, link).map_err(malformed)?;
+                for entry in entries {
+                    if entry.tag(endian) == i64::from(elf::DT_NEEDED) {
+                        dependencies.push(text(entry.string(endian, strings).map_err(malformed)?));
+                    }
+                }
+            }
+        }
+        FileKind::MachO64 => {
+            let header = macho::MachHeader64::<Endianness>::parse(&*bytes, 0).map_err(malformed)?;
+            let endian = header.endian().map_err(malformed)?;
+            let mut commands = header.load_commands(endian, &*bytes, 0).map_err(malformed)?;
+            while let Some(command) = commands.next().map_err(malformed)? {
+                if let Some(dylib) = command.dylib().map_err(malformed)? {
+                    dependencies.push(text(
+                        command.string(endian, dylib.dylib.name).map_err(malformed)?,
+                    ));
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "inspect native dependencies of {}: not a 64-bit ELF or Mach-O executable ({other:?})",
+                executable.display()
+            ));
+        }
+    }
     Ok(dependencies)
 }
 
@@ -1221,9 +1281,8 @@ fn module_nodes(core: &CoreProgram) -> BTreeMap<u32, Vec<u32>> {
     modules
 }
 
-fn new_object_module(name: &str) -> Result<ObjectModule, String> {
-    let isa = native_isa()?;
-    let builder = ObjectBuilder::new(isa, name, default_libcall_names())
+fn new_object_module(isa: &OwnedTargetIsa, name: &str) -> Result<ObjectModule, String> {
+    let builder = ObjectBuilder::new(isa.clone(), name, default_libcall_names())
         .map_err(|error| format!("create Cranelift object builder: {error}"))?;
     Ok(ObjectModule::new(builder))
 }
@@ -1256,13 +1315,14 @@ fn runtime_signature(module: &ObjectModule) -> Signature {
 }
 
 fn emit_module_object(
+    isa: &OwnedTargetIsa,
     core: &CoreProgram,
     file_id: u32,
     node_ids: &[u32],
     direct_integer_roots: &HashMap<u32, u32>,
     direct_loops: &HashMap<u32, Pass>,
 ) -> Result<Vec<u8>, String> {
-    let mut module = new_object_module(&format!("chimi_module_{file_id}"))?;
+    let mut module = new_object_module(isa, &format!("chimi_module_{file_id}"))?;
     let node_signature = node_signature(&module);
     let runtime_signature = runtime_signature(&module);
     let pointer = module.target_config().pointer_type();
@@ -1393,8 +1453,8 @@ fn emit_module_object(
         .map_err(|error| format!("emit native module {file_id} object: {error}"))
 }
 
-fn emit_entry_object(core: &CoreProgram) -> Result<Vec<u8>, String> {
-    let mut module = new_object_module("chimi_entry")?;
+fn emit_entry_object(isa: &OwnedTargetIsa, core: &CoreProgram) -> Result<Vec<u8>, String> {
+    let mut module = new_object_module(isa, "chimi_entry")?;
     let pointer = module.target_config().pointer_type();
     let call_conv = module.target_config().default_call_conv;
     let main_signature = Signature {

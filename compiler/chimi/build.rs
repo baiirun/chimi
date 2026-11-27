@@ -19,6 +19,15 @@
 //! never waits on the outer build's lock. When it cannot build, the file is
 //! empty and the compiler falls back to looking beside its executable.
 //!
+//! For each target `CHIMI_CROSS_TARGETS` names (a comma-separated list of
+//! `src/backend/cross_targets.rs`'s triples, or `all`), it builds the same
+//! two Rust archives for that target, its runtime pack, and embeds them in
+//! `$OUT_DIR/cross_runtime_packs.rs`, so `chimi build --target` can link for
+//! it. That needs the target's Rust standard library (`rustup target add`)
+//! and Zig, whose C compiler builds the fiber library's C fixture. A pack
+//! that cannot be built is left out with a warning. Off by default: each
+//! pack adds tens of megabytes to the compiler.
+//!
 //! The Rust runtime archive of a program without the scheduler
 //! (`runtime/chimi-runtime-standalone`) is built the same way, as
 //! `$OUT_DIR/libchimi_runtime_standalone.a`. Every native program links one
@@ -29,6 +38,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 include!("src/backend/runtime_archive_key.rs");
+include!("src/backend/cross_targets.rs");
+
+const CROSS_TARGETS_VARIABLE: &str = "CHIMI_CROSS_TARGETS";
 
 const RUNTIME_SOURCE: &str = "runtime/native/runtime.c";
 const RUNTIME_HEADER: &str = "runtime/native/runtime.h";
@@ -39,6 +51,7 @@ fn main() {
     for path in [
         "build.rs",
         "src/backend/runtime_archive_key.rs",
+        "src/backend/cross_targets.rs",
         RUNTIME_SOURCE,
         RUNTIME_HEADER,
         BINDING_HEADER,
@@ -64,7 +77,7 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     prebuild_bindings(&out, &target, &binding_sources);
     let fiber = if prebuilds(&target) {
-        prebuild_fiber_runtime(&out, &target).unwrap_or_else(|error| {
+        prebuild_fiber_runtime(&out, &target, &[]).unwrap_or_else(|error| {
             println!(
                 "cargo:warning=fiber runtime not embedded ({error}); chimi build will look for it beside the compiler"
             );
@@ -78,7 +91,7 @@ fn main() {
     // only Rust's standard library for it, so a cross-compiled compiler
     // carries it too.
     let standalone = if std::env::var_os("CARGO_FEATURE_NATIVE_BACKEND").is_some() {
-        prebuild_standalone_runtime(&out, &target).unwrap_or_else(|error| {
+        prebuild_standalone_runtime(&out, &target, &[], &host_ar()).unwrap_or_else(|error| {
             println!(
                 "cargo:warning=Rust runtime archive not embedded ({error}); chimi build will look for it beside the compiler"
             );
@@ -87,6 +100,7 @@ fn main() {
     } else {
         Vec::new()
     };
+    embed_cross_runtime_packs(&out, &target);
     let standalone_path = out.join("libchimi_runtime_standalone.a");
     std::fs::write(&standalone_path, standalone).expect("write embedded Rust runtime archive");
     // For the tests that link C fixtures against the runtime by hand.
@@ -263,6 +277,7 @@ fn prebuild_binding(
         &directory.join("package"),
         &archive,
         &[],
+        &CTools::host(),
     )?;
     let key = binding_archive_key(&BindingArchiveInputs {
         package,
@@ -277,7 +292,11 @@ fn prebuild_binding(
 
 /// Builds `chimi-fiber`'s static library for `target` in the outer build's
 /// profile and returns its bytes.
-fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
+fn prebuild_fiber_runtime(
+    out: &Path,
+    target: &str,
+    environment: &[(String, std::ffi::OsString)],
+) -> Result<Vec<u8>, String> {
     let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
     let mut arguments = vec![
         "build",
@@ -294,9 +313,114 @@ fn prebuild_fiber_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
         out,
         target,
         &arguments,
+        environment,
         if release { "release" } else { "debug" },
         "libchimi_fiber.a",
     )
+}
+
+fn host_ar() -> Vec<std::ffi::OsString> {
+    vec!["ar".into()]
+}
+
+/// Writes `$OUT_DIR/cross_runtime_packs.rs`: `(triple, fiber archive,
+/// standalone archive)` for each cross target `CHIMI_CROSS_TARGETS` names
+/// whose pack builds here. The compiler's own target is skipped, since it
+/// builds as the host.
+fn embed_cross_runtime_packs(out: &Path, host_target: &str) {
+    println!("cargo:rerun-if-env-changed={CROSS_TARGETS_VARIABLE}");
+    println!("cargo:rerun-if-env-changed={ZIG_VARIABLE}");
+    let mut generated =
+        String::from("const CROSS_RUNTIME_PACKS: &[(&str, &[u8], &[u8])] = &[\n");
+    let requested = std::env::var(CROSS_TARGETS_VARIABLE).unwrap_or_default();
+    let native_backend = std::env::var_os("CARGO_FEATURE_NATIVE_BACKEND").is_some();
+    let mut wanted = Vec::new();
+    for name in requested.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+        if name == "all" {
+            wanted.extend(CROSS_TARGETS.iter());
+        } else if let Some(target) = cross_target(name) {
+            wanted.push(target);
+        } else {
+            println!(
+                "cargo:warning={CROSS_TARGETS_VARIABLE} names `{name}`, which is not one of {:?}; skipped",
+                CROSS_TARGETS.map(|target| target.triple)
+            );
+        }
+    }
+    let mut seen = Vec::new();
+    for target in wanted {
+        if !native_backend || target.triple == host_target || seen.contains(&target.triple) {
+            continue;
+        }
+        seen.push(target.triple);
+        match build_cross_runtime_pack(out, target) {
+            Ok((fiber, standalone)) => generated.push_str(&format!(
+                "    ({:?}, include_bytes!({:?}), include_bytes!({:?})),\n",
+                target.triple,
+                fiber.to_string_lossy(),
+                standalone.to_string_lossy()
+            )),
+            Err(error) => println!(
+                "cargo:warning=runtime pack for {} not built ({}); chimi build --target {} will say so",
+                target.triple,
+                error.split_whitespace().collect::<Vec<_>>().join(" "),
+                target.triple
+            ),
+        }
+    }
+    generated.push_str("];\n");
+    std::fs::write(out.join("cross_runtime_packs.rs"), generated)
+        .expect("write cross_runtime_packs.rs");
+}
+
+/// Builds `target`'s two Rust runtime archives into `$OUT_DIR/cross/<triple>/`
+/// and returns their paths. The fiber library's build script compiles a C
+/// fixture with the `cc` crate, which takes its compiler and archiver from
+/// `CC_<target>` and `AR_<target>`: here, scripts that run Zig's.
+fn build_cross_runtime_pack(out: &Path, target: &CrossTarget) -> Result<(PathBuf, PathBuf), String> {
+    let directory = out.join("cross").join(target.triple);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let zig = zig_program();
+    let zig_text = zig.to_string_lossy().into_owned();
+    let cc = directory.join("cc");
+    let ar = directory.join("ar");
+    write_script(&cc, &zig_cc_script(&zig_text, target))?;
+    write_script(
+        &ar,
+        &format!(
+            "#!/bin/sh\nexec '{}' {} \"$@\"\n",
+            zig_text.replace('\'', r"'\''"),
+            ZIG_AR_ARGUMENTS.join(" ")
+        ),
+    )?;
+    let variable = target.triple.replace('-', "_");
+    let environment = [
+        (format!("CC_{variable}"), cc.into_os_string()),
+        (format!("AR_{variable}"), ar.into_os_string()),
+    ];
+    let fiber = prebuild_fiber_runtime(out, target.triple, &environment)?;
+    let zig_ar = std::iter::once(zig.clone())
+        .chain(ZIG_AR_ARGUMENTS.iter().map(Into::into))
+        .collect::<Vec<_>>();
+    let standalone = prebuild_standalone_runtime(out, target.triple, &environment, &zig_ar)?;
+    let fiber_path = directory.join("libchimi_fiber.a");
+    let standalone_path = directory.join("libchimi_runtime_standalone.a");
+    std::fs::write(&fiber_path, fiber).map_err(|error| format!("write fiber archive: {error}"))?;
+    std::fs::write(&standalone_path, standalone)
+        .map_err(|error| format!("write standalone archive: {error}"))?;
+    Ok((fiber_path, standalone_path))
+}
+
+fn write_script(path: &Path, text: &str) -> Result<(), String> {
+    std::fs::write(path, text).map_err(|error| format!("write {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("make {} executable: {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// The feature that builds the Rust binding packages (`chimi-runtime`'s
@@ -316,7 +440,20 @@ const RUST_BINDINGS_FEATURE: &str = "bindings";
 /// lacks. With LTO everything the Rust code calls is in its one object,
 /// which needs nothing from them, so they are left out and the toolchain's
 /// libraries serve both languages.
-fn prebuild_standalone_runtime(out: &Path, target: &str) -> Result<Vec<u8>, String> {
+/// `ar` is the archiver that reads and writes the target's archives, as a
+/// program and its leading arguments.
+fn prebuild_standalone_runtime(
+    out: &Path,
+    target: &str,
+    environment: &[(String, std::ffi::OsString)],
+    ar: &[std::ffi::OsString],
+) -> Result<Vec<u8>, String> {
+    let ar_command = || {
+        let (program, arguments) = ar.split_first().expect("an archiver names its program");
+        let mut command = Command::new(program);
+        command.args(arguments);
+        command
+    };
     let full = nested_runtime_build(
         out,
         target,
@@ -332,16 +469,17 @@ fn prebuild_standalone_runtime(out: &Path, target: &str) -> Result<Vec<u8>, Stri
             "--features",
             RUST_BINDINGS_FEATURE,
         ],
+        environment,
         "runtime-standalone",
         "libchimi_runtime_standalone.a",
     )?;
-    let directory = out.join("runtime-standalone-objects");
+    let directory = out.join("runtime-standalone-objects").join(target);
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
     let full_path = directory.join("full.a");
     std::fs::write(&full_path, full).map_err(|error| format!("write full.a: {error}"))?;
-    let listing = Command::new("ar")
+    let listing = ar_command()
         .arg("t")
         .arg(&full_path)
         .output()
@@ -362,13 +500,13 @@ fn prebuild_standalone_runtime(out: &Path, target: &str) -> Result<Vec<u8>, Stri
             "expected one chimi_runtime_standalone object in the archive, found {members:?}"
         ));
     }
-    run(Command::new("ar")
+    run(ar_command()
         .current_dir(&directory)
         .arg("x")
         .arg("full.a")
         .args(&members))?;
     let archive = directory.join("libchimi_runtime_standalone.a");
-    run(Command::new("ar")
+    run(ar_command()
         .current_dir(&directory)
         .arg("rcs")
         .arg(&archive)
@@ -384,6 +522,7 @@ fn nested_runtime_build(
     out: &Path,
     target: &str,
     arguments: &[&str],
+    environment: &[(String, std::ffi::OsString)],
     profile_directory_name: &str,
     archive: &str,
 ) -> Result<Vec<u8>, String> {
@@ -405,7 +544,8 @@ fn nested_runtime_build(
         .arg(&target_directory)
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET");
+        .env_remove("CARGO_BUILD_TARGET")
+        .envs(environment.iter().map(|(name, value)| (name, value)));
     if workspace.join("Cargo.lock").is_file() {
         command.arg("--locked");
     }

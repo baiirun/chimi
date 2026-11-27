@@ -1,5 +1,6 @@
-//! `chimi build --target`: the host builds, and another target is refused
-//! with what it would need.
+//! `chimi build --target`: the host builds, and a target this compiler cannot
+//! build for is refused, before compiling anything, with what it would need.
+//! Building for the supported cross targets is `cross_build.rs`.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -76,8 +77,22 @@ fn other_spellings_of_the_host_build() {
     }
 }
 
+/// The cross targets other than the host, as `CROSS_TARGETS` in
+/// `backend/cross_targets.rs` lists them.
+fn other_supported_targets() -> Vec<&'static str> {
+    [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ]
+    .into_iter()
+    .filter(|triple| *triple != host_triple())
+    .collect()
+}
+
 #[test]
-fn another_target_is_refused_with_what_it_needs() {
+fn an_unsupported_target_is_refused_naming_the_supported_ones() {
     let (source, executable) = program("foreign");
     let output = chimi(&[
         "build",
@@ -92,10 +107,53 @@ fn another_target_is_refused_with_what_it_needs() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!(
-            "chimi: build failed: cannot build for riscv64gc-unknown-linux-gnu yet: building for \
-             another target needs the Chimi runtime compiled for it and a linker and C library \
-             for it, which this chimi does not have; it builds for {}\n",
-            host_triple()
+            "chimi: build failed: cannot build for riscv64gc-unknown-linux-gnu: chimi builds \
+             for its host, {}, and, with Zig, {}\n",
+            host_triple(),
+            other_supported_targets().join(", ")
+        )
+    );
+    assert!(!executable.exists());
+}
+
+/// Whether the compiler under test embeds the runtime pack for `triple`:
+/// the tests are built in the same cargo run as `chimi`, so they see the
+/// `CHIMI_CROSS_TARGETS` its build script saw.
+fn embeds_pack(triple: &str) -> bool {
+    option_env!("CHIMI_CROSS_TARGETS").is_some_and(|names| {
+        names
+            .split(',')
+            .map(str::trim)
+            .any(|name| name == "all" || name == triple)
+    })
+}
+
+#[test]
+fn a_supported_target_without_its_pack_names_the_rebuild_that_adds_it() {
+    let Some(triple) = other_supported_targets()
+        .into_iter()
+        .find(|triple| !embeds_pack(triple))
+    else {
+        // This compiler embeds every pack; `cross_build.rs` covers them.
+        return;
+    };
+    let (source, executable) = program("no-pack");
+    let output = chimi(&[
+        "build",
+        source.to_str().unwrap(),
+        "--target",
+        triple,
+        "-o",
+        executable.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "chimi: build failed: cannot build for {triple}: this chimi was built without its \
+             runtime; rebuild chimi with CHIMI_CROSS_TARGETS={triple} set, which needs `rustup \
+             target add {triple}` and Zig\n"
         )
     );
     assert!(!executable.exists());

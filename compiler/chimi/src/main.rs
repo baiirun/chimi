@@ -1,4 +1,5 @@
-use chimi::backend::native::{build_application, check_build_target};
+use chimi::backend::native::build_application_for;
+use chimi::backend::target::BuildTarget;
 use chimi::execution::{ExecutionConfig, ExecutionOutcome, ExecutionReport, ProgramExit, TraceMode};
 use chimi::project::{FileSystemReader, GitCache, LoadedProject, Network, StandardTree};
 use chimi::{Compiler, ModuleOrigin};
@@ -1610,10 +1611,13 @@ fn build(
     output: Option<PathBuf>,
     target: Option<&str>,
 ) -> ExitCode {
-    if let Some(Err(error)) = target.map(check_build_target) {
-        eprintln!("chimi: build failed: {error}");
-        return ExitCode::FAILURE;
-    }
+    let target = match target.map_or_else(BuildTarget::host, BuildTarget::resolve) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("chimi: build failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let output = output.unwrap_or_else(|| default_executable_path(&input));
     let artifact_directory = artifact_directory(&input, &output);
     let Some(project) = load_project(input, standard) else {
@@ -1626,12 +1630,13 @@ fn build(
             return ExitCode::FAILURE;
         }
     };
-    match build_application(
+    match build_application_for(
         &program,
         standard,
         &output,
         &artifact_directory,
         project.built_packages(),
+        &target,
     ) {
         Ok(report) => {
             print!("{}", report.render_json());
