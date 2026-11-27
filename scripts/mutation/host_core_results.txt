@@ -1,0 +1,13 @@
+# mutation run at 119962e69edf6f53b9cc71775c16c93fbaa460aa
+# fs_mutations.py: 4 mutants against compiler/chimi
+BASELINE ok  [host_modules] (122s)
+KILLED       native reports NotADirectory as Other [host_modules] (90s)
+KILLED       native replaces without truncating [host_modules] (88s)
+KILLED       native lets a NUL reach the system [host_modules] (89s)
+KILLED       native lists in system order [host_modules] (84s)
+# system_modules_mutations.py: 4 mutants against compiler/chimi
+KILLED       native variables keep non-UTF-8 values [host_modules] (89s)
+KILLED       native names split at a leading = [host_modules] (86s)
+KILLED       native variables keep the separator [host_modules] (88s)
+KILLED       native working directory is never known [host_modules] (86s)
+# result: every mutant killed

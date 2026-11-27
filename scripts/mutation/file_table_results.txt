@@ -4,3 +4,7 @@ BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (
 KILLED       the table has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
 KILLED       a take does not count a loan [runtime_state -- the_runtime_state_holds_across_carrier_threads] (67s)
 KILLED       a close ignores the loans [runtime_state -- the_runtime_state_holds_across_carrier_threads] (65s)
+KILLED       the last give does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
+KILLED       a slot is reused while its descriptor is lent [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
+KILLED       a close keeps the generation [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+# result: every mutant killed
