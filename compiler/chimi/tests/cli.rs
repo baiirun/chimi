@@ -6949,8 +6949,10 @@ fn native_a_deadlocked_root_names_the_last_process_defect() {
 // The process and supervisor data constructors check computed values when
 // they run natively, with the interpreter's defect texts (CHI-305 step 5,
 // phase 7: they are Rust now). Each run takes the index of the check to
-// trip. Rejects a constructor that skips a range check, reports another
-// value, or lets a spec be registered twice.
+// trip; 9 builds a policy with as many members as its capacity and 10 a
+// spec with a zero shutdown, which both succeed. Rejects a constructor that
+// skips a range check, refuses a value at its bound, reports another value,
+// or lets a spec be registered twice.
 #[test]
 fn native_process_data_constructors_check_values_when_they_run() {
     let scratch = scratch_directory("native-process-data");
@@ -6971,8 +6973,8 @@ fn native_process_data_constructors_check_values_when_they_run() {
             "fn work(inbox: Inbox<Message>) -> Void {\n  Void\n}\n",
             "fn spec(capacity: Int, seconds: Int) -> Int {\n",
             "  let _ = Process.spec(work, capacity, Duration.seconds(seconds))\n  0\n}\n",
-            "fn handoff(capacity: Int) -> Int {\n",
-            "  let _ = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) { Void }, capacity, Duration.seconds(1))\n",
+            "fn handoff(capacity: Int, seconds: Int) -> Int {\n",
+            "  let _ = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) { Void }, capacity, Duration.seconds(seconds))\n",
             "  0\n}\n",
             "fn restarts(limit: Int, seconds: Int) -> Int {\n",
             "  let _ = Supervisor.restarts(limit, Duration.seconds(seconds))\n  0\n}\n",
@@ -6989,12 +6991,14 @@ fn native_process_data_constructors_check_values_when_they_run() {
             "  case pick {\n",
             "    0 -> spec(zero, 1)\n",
             "    1 -> spec(zero + 1, zero - 1)\n",
-            "    2 -> handoff(zero)\n",
+            "    2 -> handoff(zero, 1)\n",
             "    3 -> restarts(zero + 1, zero)\n",
             "    4 -> restarts(zero - 1, 1)\n",
             "    5 -> policy(1, zero)\n",
             "    6 -> policy(2, zero + 1)\n",
             "    7 -> register_twice(zero + 1)\n",
+            "    8 -> handoff(zero + 1, zero - 1)\n",
+            "    9 -> policy(1, zero + 1)\n",
             "    _ -> spec(zero + 1, zero)\n",
             "  }\n",
             "}\n",
@@ -7019,7 +7023,9 @@ fn native_process_data_constructors_check_values_when_they_run() {
         ("5", Some("Supervisor.policy: capacity must be at least 1, got 0")),
         ("6", Some("Supervisor.policy: members must not exceed capacity 1, got 2")),
         ("7", Some("Process.register: spec already has a name")),
-        ("8", None),
+        ("8", Some("Process.handoff_spec: shutdown_within must be at least zero, got -1s")),
+        ("9", None),
+        ("10", None),
     ] {
         let outcome = scratch.join(format!("outcome-{pick}.json"));
         let run = Command::new(&executable)
