@@ -55,8 +55,6 @@ MUTATIONS = [
            [("    while beyond_top(&r, &m_plus, &s, inclusive) {\n", "    while false && beyond_top(&r, &m_plus, &s, inclusive) {\n")]),
     digits("a carry keeps its nines",
            [("            digits[last - 1] += 1;\n            count = last;\n", "            digits[last - 1] += 1;\n")]),
-    digits("a carry past the first digit keeps its exponent",
-           [("return (digits, 1, true);", "return (digits, 1, false);")]),
     digits("every value takes the u128 path",
            [("if s.length < 4 || (s.length == 4 && s.limbs[3] < 1 << 24) {", "if true {")]),
     digits("big subtraction drops the borrow",

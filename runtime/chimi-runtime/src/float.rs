@@ -85,7 +85,9 @@ fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
     let (significand, exponent) = if biased == 0 { (fraction, -1074) } else { (fraction | 1 << 52, biased - 1075) };
     let inclusive = significand % 2 == 0;
     // Doubled so that the halfway points are whole; at a power of two the
-    // double below is half as far away, so the scale doubles again.
+    // double below is half as far away, so the scale doubles again. (Core
+    // also treats 2^-1022 so, and every subnormal as even; neither changes a
+    // digit, since no decimal of 17 digits or fewer lies on those ends.)
     let (significand, plus, exponent) =
         if biased > 1 && fraction == 0 { (significand << 2, 2, exponent - 2) } else { (significand << 1, 1, exponent - 1) };
     let mut r = Big::from(significand);
@@ -116,7 +118,7 @@ fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
     }
     // Every number the digits need is below 10s, so a value within 120 bits
     // of precision, as most are, runs in plain u128 arithmetic.
-    let (digits, count, carried) = if s.length < 4 || (s.length == 4 && s.limbs[3] < 1 << 24) {
+    let (digits, count) = if s.length < 4 || (s.length == 4 && s.limbs[3] < 1 << 24) {
         generate(r.low(), s.low(), m_minus.low(), m_plus.low(), inclusive)
     } else {
         generate(r, s, m_minus, m_plus, inclusive)
@@ -126,7 +128,7 @@ fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
         text.push(digit);
     }
     text.trim_end(b'0', 1);
-    (text, k - 1 + i32::from(carried))
+    (text, k - 1)
 }
 
 /// Whether `r + m_plus` reaches past `s`, the top of the interval.
@@ -136,10 +138,9 @@ fn beyond_top<N: Natural>(r: &N, m_plus: &N, s: &N, inclusive: bool) -> bool {
 }
 
 /// The digits of `r / s`, which is below 1, up to the first that leaves the
-/// value within its interval, rounded as core rounds them; how many there
-/// are, and whether rounding carried past the first, which makes the value
-/// the next power of ten. At most 17 come out: 17 always single out a double.
-fn generate<N: Natural>(mut r: N, s: N, mut m_minus: N, mut m_plus: N, inclusive: bool) -> ([u8; 17], usize, bool) {
+/// value within its interval, rounded as core rounds them, and how many there
+/// are. At most 17 come out: 17 always single out a double.
+fn generate<N: Natural>(mut r: N, s: N, mut m_minus: N, mut m_plus: N, inclusive: bool) -> ([u8; 17], usize) {
     let mut digits = [0u8; 17];
     let mut count = 0;
     loop {
@@ -159,19 +160,17 @@ fn generate<N: Natural>(mut r: N, s: N, mut m_minus: N, mut m_plus: N, inclusive
             continue;
         }
         if high && (!low || r.sum(&r).order(&s).is_ge()) {
-            // Round the last digit up; nines carry left.
+            // Round the last digit up; nines carry left. The carry stops at
+            // the first digit: past it the value would be 10^k, which the
+            // step-up of k left outside the interval.
             let mut last = count;
-            while last > 0 && digits[last - 1] == b'9' {
+            while last > 1 && digits[last - 1] == b'9' {
                 last -= 1;
-            }
-            if last == 0 {
-                digits[0] = b'1';
-                return (digits, 1, true);
             }
             digits[last - 1] += 1;
             count = last;
         }
-        return (digits, count, false);
+        return (digits, count);
     }
 }
 

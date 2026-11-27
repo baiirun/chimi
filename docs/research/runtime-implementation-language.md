@@ -179,6 +179,9 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       building, linking, bounding and rendering causes, and the hidden
       field a stored Err keeps its cause in. `Cause.context` stays in C
       until dispatch moves, because it calls a function.
+      Then Float text drops core's float formatting for its own exact
+      shortest-digit generation (`float.rs`), giving the step's size
+      budget back 16 KiB.
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
