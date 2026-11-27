@@ -7,6 +7,15 @@
 # Usage, from anywhere inside the repository:
 #   scripts/compare-programs.sh record DIR    write outputs into DIR (replacing it)
 #   scripts/compare-programs.sh compare DIR   run again and diff against DIR
+#   scripts/compare-programs.sh build DIR     only build the programs, into DIR
+#
+# For another target (tooling.md, Cross-compilation): CHIMI_PROGRAMS_TARGET
+# names the triple the programs are built for (`chimi build --target`),
+# CHIMI_PROGRAMS_BINARIES names a directory `build` filled, so record and
+# compare run those programs instead of building, and CHIMI_PROGRAMS_RUNNER
+# is a command each program runs under, such as `qemu-aarch64 -L <sysroot>`.
+# CI builds for one platform on another, runs the programs there, and
+# compares their outputs with the ones that platform builds itself.
 #
 # Typical use: `record /tmp/before` on the old revision, make the change, then
 # `compare /tmp/before`. Exit status: 0 when every output matches, 1 on any
@@ -36,10 +45,10 @@
 # allocation addresses, is replaced with 0.
 set -u
 
-usage() { sed -n '7,9p' "$0" | sed 's/^# *//' >&2; exit 2; }
+usage() { sed -n '7,10p' "$0" | sed 's/^# *//' >&2; exit 2; }
 [ $# -eq 2 ] || usage
 mode=$1
-case "$mode" in record | compare) ;; *) usage ;; esac
+case "$mode" in record | compare | build) ;; *) usage ;; esac
 case "$2" in /*) directory=$2 ;; *) directory=$PWD/$2 ;; esac
 
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel) || exit 2
@@ -48,27 +57,39 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/chimi-compare-programs.XXXXXX") || exit 2
 trap 'rm -rf "$work"' EXIT
 bin="$work/bin"
 out="$work/out"
+[ "$mode" = build ] && bin=$directory
 mkdir -p "$bin" "$out"
+runner=${CHIMI_PROGRAMS_RUNNER:-}
 
 build() {
-  cargo run -q -p chimi -- build "$@" > "$work/build.log" 2>&1 || {
+  cargo run -q -p chimi -- build "$@" ${CHIMI_PROGRAMS_TARGET:+--target "$CHIMI_PROGRAMS_TARGET"} \
+    > "$work/build.log" 2>&1 || {
     cat "$work/build.log" >&2
     echo "compare-programs: build failed: $*" >&2
     exit 2
   }
 }
-build --root programs/chimi-trace-summary app/main -o "$bin/trace-summary"
-build prototypes/golden/valid/dependencies_and_execution.chimi -o "$bin/checkout"
-build --root programs/concurrency-pipeline app/main -o "$bin/concurrency-pipeline"
-build benchmarks/memory-report/heap-mix.chimi -o "$bin/heap-mix"
-build benchmarks/runtime-gate/loop-bind.chimi -o "$bin/loop-bind"
-build benchmarks/runtime-gate/map-loop.chimi -o "$bin/map-loop"
+if [ -n "${CHIMI_PROGRAMS_BINARIES:-}" ] && [ "$mode" != build ]; then
+  bin=$(cd "$CHIMI_PROGRAMS_BINARIES" && pwd) || exit 2
+else
+  build --root programs/chimi-trace-summary app/main -o "$bin/trace-summary"
+  build prototypes/golden/valid/dependencies_and_execution.chimi -o "$bin/checkout"
+  build --root programs/concurrency-pipeline app/main -o "$bin/concurrency-pipeline"
+  build benchmarks/memory-report/heap-mix.chimi -o "$bin/heap-mix"
+  build benchmarks/runtime-gate/loop-bind.chimi -o "$bin/loop-bind"
+  build benchmarks/runtime-gate/map-loop.chimi -o "$bin/map-loop"
+fi
+if [ "$mode" = build ]; then
+  echo "compare-programs: built $(ls "$bin" | wc -l | tr -d ' ') programs in $bin"
+  exit 0
+fi
 
 # Traced runs name one carrier: a program takes a carrier per core by
 # default, and events from several carriers interleave from run to run.
 # run NAME COMMAND...: stdout to NAME.stdout.txt followed by "exit STATUS".
 run() {
   name=$1; shift
+  case "$1" in sh) ;; *) set -- $runner "$@" ;; esac
   "$@" > "$out/$name.stdout.txt"
   echo "exit $?" >> "$out/$name.stdout.txt"
 }
@@ -79,7 +100,7 @@ run checkout "$bin/checkout" --chimi-runner --carriers=1 --trace=boundaries --ex
   --memory-report-file=checkout.memory.json --
 cat checkout.trace.jsonl checkout.outcome.jsonl > checkout.execution.jsonl
 run summary "$bin/trace-summary" checkout.execution.jsonl
-run summary-stdin sh -c '"$1" - < checkout.execution.jsonl' sh "$bin/trace-summary"
+run summary-stdin sh -c "$runner"' "$1" - < checkout.execution.jsonl' sh "$bin/trace-summary"
 run summary-full "$bin/trace-summary" --chimi-runner --carriers=1 --trace=full --execution-id=fixed \
   --telemetry-file=summary.trace.jsonl --outcome-file=summary.outcome.jsonl \
   --memory-report-file=summary-full.memory.json -- checkout.execution.jsonl

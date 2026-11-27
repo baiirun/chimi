@@ -136,6 +136,98 @@ jobs:
             ${{ runner.temp }}/fuzz/slow-unit-*
           if-no-files-found: ignore
 
+  # Cross-compilation (tooling.md, "Cross-compilation"): Linux builds the
+  # example programs for arm64 Linux, runs them under QEMU and compares their
+  # outputs with its own build's, and builds them for macOS; macOS builds
+  # them for x86_64 Linux. `cross-run` runs each set on the platform it was
+  # built for and compares with that platform's own build.
+  cross-build:
+    name: cross build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: aarch64-unknown-linux-gnu,aarch64-apple-darwin
+            ships: aarch64-apple-darwin
+          - os: macos-latest
+            targets: x86_64-unknown-linux-gnu
+            ships: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CHIMI_CROSS_TARGETS: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+      # Pinned: the C archives' keys name Zig's version, and the build is
+      # tested with this one. PyPI's `ziglang` is Zig's own release.
+      - name: Install Zig
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet ziglang==0.17.1
+          zig=$("$RUNNER_TEMP/zig/bin/python" -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))')/zig
+          "$zig" version
+          echo "CHIMI_ZIG=$zig" >> "$GITHUB_ENV"
+      - name: Install QEMU and an arm64 glibc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user libc6-arm64-cross
+      - name: Test cross builds
+        run: cargo test -p chimi --quiet --test cross_build --test build_target
+      - name: Run arm64 Linux programs under QEMU (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          scripts/compare-programs.sh record "$RUNNER_TEMP/host-outputs"
+          CHIMI_PROGRAMS_TARGET=aarch64-unknown-linux-gnu \
+            scripts/compare-programs.sh build "$RUNNER_TEMP/aarch64-linux"
+          CHIMI_PROGRAMS_BINARIES="$RUNNER_TEMP/aarch64-linux" \
+            CHIMI_PROGRAMS_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
+            scripts/compare-programs.sh compare "$RUNNER_TEMP/host-outputs"
+      - name: Build programs for ${{ matrix.ships }}
+        run: |
+          CHIMI_PROGRAMS_TARGET=${{ matrix.ships }} \
+            scripts/compare-programs.sh build "$RUNNER_TEMP/programs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-programs-${{ matrix.ships }}
+          path: ${{ runner.temp }}/programs
+          if-no-files-found: error
+          retention-days: 3
+
+  cross-run:
+    name: cross run (${{ matrix.target }})
+    needs: cross-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-programs-${{ matrix.target }}
+          path: ${{ runner.temp }}/programs
+      # An artifact keeps no file modes.
+      - name: Compare with programs built here
+        run: |
+          chmod +x "$RUNNER_TEMP"/programs/*
+          scripts/compare-programs.sh record "$RUNNER_TEMP/native-outputs"
+          CHIMI_PROGRAMS_BINARIES="$RUNNER_TEMP/programs" \
+            scripts/compare-programs.sh compare "$RUNNER_TEMP/native-outputs"
+
   # The editor grammar is written by hand next to the compiler's parser, so
   # it falls behind silently when the syntax grows. This fails when any .chimi
   # file the compiler parses does not parse in the grammar.
