@@ -44,8 +44,6 @@ const SHARED: &[&str] = &[
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handle_lock",
     "binding_handle_free",
-    // Guards the Rust runtime's open-file table (chimi-runtime files_abi.rs).
-    "fs_file_lock",
     // The `random` provider's one seeded stream, behind its lock.
     "random_lock",
     "random_generator",

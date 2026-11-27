@@ -22,7 +22,6 @@ mod decimal_abi;
 pub mod duration;
 mod duration_abi;
 pub mod files;
-mod files_abi;
 pub mod float;
 mod float_abi;
 pub mod graphemes;

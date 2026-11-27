@@ -305,6 +305,21 @@ impl Intrinsic {
     pub const TEST_NEXT: u32 = 188;
     pub const TEST_MAILBOX: u32 = 189;
     pub const TEST_RECEIVED: u32 = 190;
+    pub const ENV_HOST_VARIABLES: u32 = 194;
+    pub const ENV_HOST_CURRENT_DIRECTORY: u32 = 195;
+    pub const FS_HOST_OPEN: u32 = 196;
+    pub const FS_HOST_CREATE: u32 = 197;
+    pub const FS_HOST_READ: u32 = 198;
+    pub const FS_HOST_WRITE: u32 = 199;
+    pub const FS_HOST_CLOSE: u32 = 200;
+    pub const FS_HOST_METADATA: u32 = 201;
+    pub const FS_HOST_LIST: u32 = 202;
+    pub const FS_HOST_CREATE_DIRECTORY: u32 = 203;
+    pub const FS_HOST_REMOVE: u32 = 204;
+    pub const FS_HOST_RENAME: u32 = 205;
+    pub const FS_HOST_IS_DIRECTORY: u32 = 206;
+    pub const FS_HOST_TEMPORARY_DIRECTORY: u32 = 207;
+    pub const FS_TEST_ROOT: u32 = 208;
 }
 
 /// The address kind, beside `CHIMI_ADDRESS_NAMED` and `CHIMI_ADDRESS_DIRECT`
@@ -1001,6 +1016,21 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_TEST_NEXT" Intrinsic::TEST_NEXT)
     constant("CHIMI_INTRINSIC_TEST_MAILBOX" Intrinsic::TEST_MAILBOX)
     constant("CHIMI_INTRINSIC_TEST_RECEIVED" Intrinsic::TEST_RECEIVED)
+    constant("CHIMI_INTRINSIC_ENV_HOST_VARIABLES" Intrinsic::ENV_HOST_VARIABLES)
+    constant("CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY" Intrinsic::ENV_HOST_CURRENT_DIRECTORY)
+    constant("CHIMI_INTRINSIC_FS_HOST_OPEN" Intrinsic::FS_HOST_OPEN)
+    constant("CHIMI_INTRINSIC_FS_HOST_CREATE" Intrinsic::FS_HOST_CREATE)
+    constant("CHIMI_INTRINSIC_FS_HOST_READ" Intrinsic::FS_HOST_READ)
+    constant("CHIMI_INTRINSIC_FS_HOST_WRITE" Intrinsic::FS_HOST_WRITE)
+    constant("CHIMI_INTRINSIC_FS_HOST_CLOSE" Intrinsic::FS_HOST_CLOSE)
+    constant("CHIMI_INTRINSIC_FS_HOST_METADATA" Intrinsic::FS_HOST_METADATA)
+    constant("CHIMI_INTRINSIC_FS_HOST_LIST" Intrinsic::FS_HOST_LIST)
+    constant("CHIMI_INTRINSIC_FS_HOST_CREATE_DIRECTORY" Intrinsic::FS_HOST_CREATE_DIRECTORY)
+    constant("CHIMI_INTRINSIC_FS_HOST_REMOVE" Intrinsic::FS_HOST_REMOVE)
+    constant("CHIMI_INTRINSIC_FS_HOST_RENAME" Intrinsic::FS_HOST_RENAME)
+    constant("CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY" Intrinsic::FS_HOST_IS_DIRECTORY)
+    constant("CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY" Intrinsic::FS_HOST_TEMPORARY_DIRECTORY)
+    constant("CHIMI_INTRINSIC_FS_TEST_ROOT" Intrinsic::FS_TEST_ROOT)
     constant("CHIMI_ADDRESS_TEST" ADDRESS_TEST)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY" StandardConstructor::DURATION_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)

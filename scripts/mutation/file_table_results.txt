@@ -1,12 +1,10 @@
-# mutation run at 08d1a1c4c078333d8288b3b3e1f8b202c03b9939
-# file_table_mutations.py: 8 mutants against compiler/chimi
-BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (65s)
-KILLED       the table has no lock in fs_take [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
-KILLED       the table has no lock in fs_give [runtime_state -- the_runtime_state_holds_across_carrier_threads] (57s)
-KILLED       the table has no lock in fs_close [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
-KILLED       a take does not count a loan [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
-KILLED       a close ignores the loans [runtime_state -- the_runtime_state_holds_across_carrier_threads] (56s)
-KILLED       the last give does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (57s)
-KILLED       a slot is reused while its descriptor is lent [runtime_state -- the_runtime_state_holds_across_carrier_threads] (59s)
+# mutation run at 2603a3b41646ad8a2ea1c964a2c3c327249b9807
+# file_table_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (188s)
+KILLED       the table has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+KILLED       a take does not count a loan [runtime_state -- the_runtime_state_holds_across_carrier_threads] (67s)
+KILLED       a close ignores the loans [runtime_state -- the_runtime_state_holds_across_carrier_threads] (65s)
+KILLED       the last give does not release [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
+KILLED       a slot is reused while its descriptor is lent [runtime_state -- the_runtime_state_holds_across_carrier_threads] (62s)
 KILLED       a close keeps the generation [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
 # result: every mutant killed

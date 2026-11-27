@@ -9,7 +9,7 @@ CARGO_TEST_ARGS = ["--release"]
 
 OPERATIONS = "src/operations.rs"
 HOST = "src/execution/host_operations.rs"
-RUNTIME = "runtime/native/runtime.c"
+NATIVE = "../../runtime/chimi-runtime/src/intrinsics/host.rs"
 FS = "std/fs.chimi"
 
 
@@ -31,16 +31,16 @@ MUTATIONS = [
         ("(i64::from(*current) == generation).then_some(file.as_mut()?)", "file.as_mut()")]),
     host("the interpreter lists in system order", HOST, [
         ("                    names.sort_unstable();\n", "")]),
-    # The native host core.
-    host("native reports NotADirectory as Other", RUNTIME, [
-        ("    case ENOTDIR: return FS_NOT_A_DIRECTORY;\n", "")]),
-    host("native replaces without truncating", RUNTIME, [
-        ("(mode == 0 ? O_TRUNC : mode == 1", "(mode == 0 ? 0 : mode == 1")]),
-    host("native ignores a handle's generation", RUNTIME, [
-        ("return file->open && (int64_t)file->generation == handle >> 32 ? file : NULL;",
-         "return file->open ? file : NULL;")]),
-    host("native lists in system order", RUNTIME, [
-        ("    qsort(names, count, sizeof(*names), fs_compare_names);\n", "")]),
+    # The native host core (its table's rules are file_table_mutations.py's).
+    host("native reports NotADirectory as Other", NATIVE, [
+        ("        libc::ENOTDIR => NOT_A_DIRECTORY,\n", "")]),
+    host("native replaces without truncating", NATIVE, [
+        ("                        0 => libc::O_TRUNC,", "                        0 => 0,")]),
+    host("native lets a NUL reach the system", NATIVE, [
+        ("            if !libc::memchr(bytes.cast(), 0, length).is_null() {", "            if false {")]),
+    host("native lists in system order", NATIVE, [
+        ("                libc::qsort(names.0.as_mut_ptr().cast(), names.0.len(), size_of::<*mut c_char>(), Some(compare_names));\n",
+         "")]),
     # std/fs in Chimi.
     host("read keeps only the last chunk", FS, [
         ("None -> break Bytes.concat(chunks)", "None -> break Bytes.concat(List.drop(chunks, List.length(chunks) - 1))")]),

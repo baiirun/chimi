@@ -11,7 +11,7 @@ LOWERING = "src/executable.rs"
 TYPING = "src/typing.rs"
 OPERATIONS = "src/operations.rs"
 HOST = "src/execution/host_operations.rs"
-RUNTIME = "runtime/native/runtime.c"
+NATIVE = "../../runtime/chimi-runtime/src/intrinsics/host.rs"
 PATH = "std/path.chimi"
 ENV = "std/env.chimi"
 
@@ -39,17 +39,18 @@ MUTATIONS = [
     host("the interpreter keeps non-UTF-8 pairs as empty", HOST, [
         ("Some((name.into_string().ok()?, value.into_string().ok()?))",
          "Some((name.into_string().ok()?, value.into_string().unwrap_or_default()))")]),
-    host("native variables keep non-UTF-8 values", RUNTIME, [
-        ("            !valid_utf8((const unsigned char *)equals + 1, value_length))",
-         "            false)")]),
-    host("native names split at a leading =", RUNTIME, [
-        ("const char *equals = **entry ? strchr(*entry + 1, '=') : NULL;",
-         "const char *equals = strchr(*entry, '=');")]),
-    host("native variables keep the separator", RUNTIME, [
-        ("(RuntimeField){NULL, text_from_bytes(equals + 1, value_length)};",
-         "(RuntimeField){NULL, text_from_bytes(equals, value_length + 1)};")]),
-    host("native working directory is never known", RUNTIME, [
-        ("        if (getcwd(buffer, capacity)) {", "        if (false && getcwd(buffer, capacity)) {")]),
+    host("native variables keep non-UTF-8 values", NATIVE, [
+        ("core::str::from_utf8(name).is_err() || core::str::from_utf8(value).is_err()",
+         "core::str::from_utf8(name).is_err()")]),
+    host("native names split at a leading =", NATIVE, [
+        ("bytes.iter().skip(1).position(|&byte| byte == b'=').map(|at| at + 1)",
+         "bytes.iter().position(|&byte| byte == b'=')")]),
+    host("native variables keep the separator", NATIVE, [
+        ("let (name, value) = (&bytes[..equals], &bytes[equals + 1..]);",
+         "let (name, value) = (&bytes[..equals], &bytes[equals..]);")]),
+    host("native working directory is never known", NATIVE, [
+        ("            if !libc::getcwd(buffer, capacity).is_null() {",
+         "            if false && !libc::getcwd(buffer, capacity).is_null() {")]),
     host("the last value of a name wins", ENV, [
         ("List.reduce(List.reverse(environment.variables()), Map.empty(), fn(variables, variable) {",
          "List.reduce(environment.variables(), Map.empty(), fn(variables, variable) {")]),

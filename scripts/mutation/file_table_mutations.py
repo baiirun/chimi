@@ -1,6 +1,7 @@
 """Mutants of the open-file table in the Rust runtime
-(runtime/chimi-runtime/src/files.rs), which runtime.c and the interpreter
-share, and the lock runtime.c holds around every call into it.
+(runtime/chimi-runtime/src/files.rs), which the native runtime and the
+interpreter share, and the lock the native runtime takes around every call
+into it (intrinsics/host.rs's FILES, a PthreadLocked).
 
 Run: scripts/mutation/mutate.py scripts/mutation/file_table_mutations.py
 Each must turn the_runtime_state_holds_across_carrier_threads in
@@ -11,14 +12,14 @@ file mutants that carrier_threads_mutations.py held before the move.
 
 ThreadSanitizer cannot see the Rust table (the archive is not instrumented),
 so a missing lock is caught by the fixture's cross-thread loan test, not by
-a race report. Not listed: dropping the lock in fs_insert, which every
-thread's handle is inserted before the threads start, so no test races it.
+a race report. The lock mutant drops every PthreadLocked lock at once, since
+the table's is reached only through `with`.
 """
 
 CRATE = "compiler/chimi"
 
 FILES = "../../runtime/chimi-runtime/src/files.rs"
-R = "runtime/native/runtime.c"
+LOCK = "../../runtime/chimi-runtime/src/pthread_locked.rs"
 
 
 def m(name, file, edits):
@@ -27,17 +28,12 @@ def m(name, file, edits):
 
 
 MUTATIONS = [
-    m("the table has no lock in fs_take", R, [(
-        "static int fs_take(int64_t handle) {\n  pthread_mutex_lock(&fs_file_lock);\n  int fd = chimi_files_take_v1(handle);\n  pthread_mutex_unlock(&fs_file_lock);",
-        "static int fs_take(int64_t handle) {\n  int fd = chimi_files_take_v1(handle);",
-    )]),
-    m("the table has no lock in fs_give", R, [(
-        "  pthread_mutex_lock(&fs_file_lock);\n  int fd = chimi_files_give_v1(handle);\n  pthread_mutex_unlock(&fs_file_lock);",
-        "  int fd = chimi_files_give_v1(handle);",
-    )]),
-    m("the table has no lock in fs_close", R, [(
-        "  pthread_mutex_lock(&fs_file_lock);\n  int fd = chimi_files_close_v1(handle);\n  pthread_mutex_unlock(&fs_file_lock);",
-        "  int fd = chimi_files_close_v1(handle);",
+    m("the table has no lock", LOCK, [(
+        "if unsafe { libc::pthread_mutex_lock(self.mutex.get()) } != 0 {",
+        "if false {",
+    ), (
+        "unsafe { libc::pthread_mutex_unlock(self.0) };",
+        "let _ = self.0;",
     )]),
     m("a take does not count a loan", FILES, [(
         "        entry.loans += 1;\n",

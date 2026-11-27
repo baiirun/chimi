@@ -2,8 +2,8 @@
 //! calls these for the std/map, std/set, std/json, std/decimal, std/bytes and
 //! std/duration intrinsics, and `Debug.crash`, `Option.unwrap_or_fail`,
 //! std/text and std/list, std/test's assertions, recorders, scripts and
-//! mailboxes, and std/cause with the failure causes the interpreter loop
-//! builds.
+//! mailboxes, std/cause with the failure causes the interpreter loop
+//! builds, and the host cores of std/env and std/fs.
 
 use core::ffi::c_void;
 
@@ -18,6 +18,7 @@ use super::core::core_operation;
 use super::debug::render;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
+use super::host::host_operation;
 use super::json::json_operation;
 use super::test_log::{release, send_to_test_mailbox, test_log_operation};
 use crate::heap::layout::{Control, Environment, Value};
@@ -320,4 +321,21 @@ pub unsafe extern "C" fn chimi_runtime_cause_text_v1(cause: *const Value) -> *mu
 pub unsafe extern "C" fn chimi_runtime_cause_has_detail_v1(cause: *const Value) -> bool {
     // SAFETY: the caller's contract.
     unsafe { cause_has_detail(cause) }
+}
+
+/// [`host_operation`]; `cancel` is the running task's cancellation flag.
+///
+/// # Safety
+/// As for `host_operation`; `runtime` is the call's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_host_v1(
+    runtime: *mut c_void,
+    cancel: bool,
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { host_operation(runtime, cancel, intrinsic, arguments(values, count), call_node) }
 }

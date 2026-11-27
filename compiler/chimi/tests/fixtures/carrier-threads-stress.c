@@ -109,6 +109,20 @@ static ChimiValue *recorder;
 /* Frees what a test log holds and returns how many fragments it held (chimi-runtime
    intrinsics/test_log.rs). */
 uint32_t chimi_runtime_test_log_release_v1(const ChimiValue *log);
+/* The open-file table and std/fs's host core (chimi-runtime intrinsics/host.rs). */
+int64_t chimi_files_insert_v1(int fd);
+int chimi_files_take_v1(int64_t handle);
+void chimi_files_give_v1(int64_t handle);
+bool chimi_files_close_v1(int64_t handle);
+#define fs_insert chimi_files_insert_v1
+#define fs_take chimi_files_take_v1
+#define fs_give chimi_files_give_v1
+#define fs_close chimi_files_close_v1
+enum { FS_CLOSED = -7 };
+static ChimiControl *fs_read(ChimiRuntime *runtime, int64_t handle) {
+  ChimiValue *arguments[] = {integer_value(handle)};
+  return chimi_intrinsic_host_v1(runtime, false, CHIMI_INTRINSIC_FS_HOST_READ, arguments, 1, 0);
+}
 static int64_t shared_file;
 static _Atomic int64_t closed_reads;
 /* Per thread, then per round. */
