@@ -18,7 +18,7 @@ use crate::heap::allocator::allocate;
 use crate::heap::layout::{CallableKind, Field, StandardConstructor, Value, ValueKind};
 use crate::heap::values::text_value;
 use crate::heap::{json_number, list, map};
-use crate::{decimal, duration, float, timestamp};
+use crate::{duration, float, timestamp};
 
 unsafe extern "C" {
     /// The `<module path>.<identifier>` label of a scheduler name id, or
