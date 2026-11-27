@@ -4011,14 +4011,26 @@ fn build_native(scratch: &Path, name: &str, source_text: &str) -> PathBuf {
     executable
 }
 
-// Pay-for-play linking, the no-concurrency and tasks-only half of lab MF06 (MF06
-// itself waits for process programs, U5): only a program that uses tasks links
+// Pay-for-play linking, lab MF06: only a program that uses tasks links
 // libchimi_fiber.a. `chimi_fiber_create` is defined only in that archive; runtime.c
-// has weak fallbacks for the two entry points it calls, not for this one.
+// has weak fallbacks for the two entry points it calls, not for this one. Only a
+// process program links the process kernel, whose Rust half
+// (`chimi_runtime_process_kernel_v1`) only the kernel variant of runtime.c calls,
+// so the linker drops it from every other program.
 #[test]
 fn native_only_a_task_program_links_the_fiber_runtime() {
     let scratch = scratch_directory("native-pay-for-play-linking");
-    let links_fiber_runtime = |name: &str, source: &str| {
+    let defines = |listing: &str, symbol: &str| {
+        let underscored = format!("_{symbol}");
+        listing.lines().any(|line| {
+            let mut columns = line.split_whitespace().rev();
+            columns
+                .next()
+                .is_some_and(|name| name == symbol || name == underscored)
+                && matches!(columns.next(), Some("T" | "t"))
+        })
+    };
+    let links = |name: &str, source: &str| {
         let source_path = scratch.join(format!("{name}.chimi"));
         let executable = scratch.join(name);
         std::fs::write(&source_path, source).unwrap();
@@ -4041,34 +4053,51 @@ fn native_only_a_task_program_links_the_fiber_runtime() {
             .output()
             .expect("run nm");
         assert!(symbols.status.success());
-        let defined = String::from_utf8(symbols.stdout)
-            .unwrap()
-            .lines()
-            .any(|line| {
-                let mut columns = line.split_whitespace().rev();
-                matches!(
-                    columns.next(),
-                    Some("chimi_fiber_create" | "_chimi_fiber_create")
-                ) && matches!(columns.next(), Some("T" | "t"))
-            });
+        let listing = String::from_utf8(symbols.stdout).unwrap();
+        let defined = defines(&listing, "chimi_fiber_create");
         let archived = !report.contains("\"fiber_runtime_archive\":null");
         assert_eq!(archived, defined, "{name}: {report}");
-        defined
+        let kernel = defines(&listing, "chimi_runtime_process_kernel_v1");
+        assert_eq!(kernel, defines(&listing, "chimi_rt_process_entry"), "{name}");
+        (defined, kernel)
     };
-    assert!(!links_fiber_runtime(
-        "plain",
-        "import std/list as List\npub fn main() -> Int {\n  List.length([1, 2, 3]) - 1\n}\n"
-    ));
-    assert!(links_fiber_runtime(
-        "tasks",
-        concat!(
-            "import std/task as Task\n",
-            "pub fn main() -> Int {\n",
-            "  let child = Task.start(fn() -> Int { 41 })\n",
-            "  Task.result(child) + 1\n",
-            "}\n",
-        )
-    ));
+    assert_eq!(
+        links(
+            "plain",
+            "import std/list as List\npub fn main() -> Int {\n  List.length([1, 2, 3]) - 1\n}\n"
+        ),
+        (false, false)
+    );
+    assert_eq!(
+        links(
+            "tasks",
+            concat!(
+                "import std/task as Task\n",
+                "pub fn main() -> Int {\n",
+                "  let child = Task.start(fn() -> Int { 41 })\n",
+                "  Task.result(child) + 1\n",
+                "}\n",
+            )
+        ),
+        (true, false)
+    );
+    assert_eq!(
+        links(
+            "processes",
+            concat!(
+                "import std/process as Process\n",
+                "enum Message {\n  Ping\n}\n",
+                "process name pinger: Message\n",
+                "pub fn main() -> Int {\n",
+                "  case Process.send(pinger, Message.Ping) {\n",
+                "    Success(_) -> 0\n",
+                "    Failure(_) -> 1\n",
+                "  }\n",
+                "}\n",
+            )
+        ),
+        (true, true)
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
