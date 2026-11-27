@@ -118,7 +118,7 @@ static ChimiControl *fz_checked(ChimiControl *control, const char *operation) {
   return control;
 }
 static ChimiControl *call_core(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
-  return fz_checked(invoke_core_operation(intrinsic, arguments, count, 0), "core intrinsic");
+  return fz_checked(chimi_intrinsic_core_v1(intrinsic, arguments, count, 0), "core intrinsic");
 }
 static ChimiControl *call_bytes(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
   return fz_checked(chimi_intrinsic_bytes_v1(intrinsic, arguments, count, 0), "bytes intrinsic");

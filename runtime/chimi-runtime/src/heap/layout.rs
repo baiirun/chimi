@@ -266,6 +266,25 @@ impl Intrinsic {
     pub const DURATION_ABSOLUTE: u32 = 56;
     pub const DURATION_TO_TEXT: u32 = 57;
     pub const DURATION_PARSE: u32 = 58;
+    pub const DEBUG_CRASH: u32 = 114;
+    pub const OPTION_UNWRAP_OR_FAIL: u32 = 115;
+    pub const TEXT_CONCAT: u32 = 116;
+    pub const TEXT_BYTE_LENGTH: u32 = 117;
+    pub const TEXT_BYTE_SLICE: u32 = 118;
+    pub const TEXT_CONTAINS: u32 = 119;
+    pub const TEXT_STARTS_WITH: u32 = 120;
+    pub const TEXT_ENDS_WITH: u32 = 121;
+    pub const TEXT_SPLIT: u32 = 122;
+    pub const TEXT_REPLACE: u32 = 123;
+    pub const TEXT_TRIM_START: u32 = 124;
+    pub const TEXT_TRIM_END: u32 = 125;
+    pub const TEXT_LOWERCASE: u32 = 126;
+    pub const TEXT_UPPERCASE: u32 = 127;
+    pub const TEXT_GRAPHEMES: u32 = 128;
+    pub const LIST_GET: u32 = 129;
+    pub const LIST_PUSH: u32 = 130;
+    pub const LIST_SLICE: u32 = 131;
+    pub const LIST_SET: u32 = 132;
 }
 
 /// The `CHIMI_CONSTRUCTOR_*` standard constructor ids (runtime.h) Rust builds.
@@ -917,6 +936,25 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_DURATION_ABSOLUTE" Intrinsic::DURATION_ABSOLUTE)
     constant("CHIMI_INTRINSIC_DURATION_TO_TEXT" Intrinsic::DURATION_TO_TEXT)
     constant("CHIMI_INTRINSIC_DURATION_PARSE" Intrinsic::DURATION_PARSE)
+    constant("CHIMI_INTRINSIC_DEBUG_CRASH" Intrinsic::DEBUG_CRASH)
+    constant("CHIMI_INTRINSIC_OPTION_UNWRAP_OR_FAIL" Intrinsic::OPTION_UNWRAP_OR_FAIL)
+    constant("CHIMI_INTRINSIC_TEXT_CONCAT" Intrinsic::TEXT_CONCAT)
+    constant("CHIMI_INTRINSIC_TEXT_BYTE_LENGTH" Intrinsic::TEXT_BYTE_LENGTH)
+    constant("CHIMI_INTRINSIC_TEXT_BYTE_SLICE" Intrinsic::TEXT_BYTE_SLICE)
+    constant("CHIMI_INTRINSIC_TEXT_CONTAINS" Intrinsic::TEXT_CONTAINS)
+    constant("CHIMI_INTRINSIC_TEXT_STARTS_WITH" Intrinsic::TEXT_STARTS_WITH)
+    constant("CHIMI_INTRINSIC_TEXT_ENDS_WITH" Intrinsic::TEXT_ENDS_WITH)
+    constant("CHIMI_INTRINSIC_TEXT_SPLIT" Intrinsic::TEXT_SPLIT)
+    constant("CHIMI_INTRINSIC_TEXT_REPLACE" Intrinsic::TEXT_REPLACE)
+    constant("CHIMI_INTRINSIC_TEXT_TRIM_START" Intrinsic::TEXT_TRIM_START)
+    constant("CHIMI_INTRINSIC_TEXT_TRIM_END" Intrinsic::TEXT_TRIM_END)
+    constant("CHIMI_INTRINSIC_TEXT_LOWERCASE" Intrinsic::TEXT_LOWERCASE)
+    constant("CHIMI_INTRINSIC_TEXT_UPPERCASE" Intrinsic::TEXT_UPPERCASE)
+    constant("CHIMI_INTRINSIC_TEXT_GRAPHEMES" Intrinsic::TEXT_GRAPHEMES)
+    constant("CHIMI_INTRINSIC_LIST_GET" Intrinsic::LIST_GET)
+    constant("CHIMI_INTRINSIC_LIST_PUSH" Intrinsic::LIST_PUSH)
+    constant("CHIMI_INTRINSIC_LIST_SLICE" Intrinsic::LIST_SLICE)
+    constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY" StandardConstructor::DURATION_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE" StandardConstructor::DURATION_PARSE_OUT_OF_RANGE)

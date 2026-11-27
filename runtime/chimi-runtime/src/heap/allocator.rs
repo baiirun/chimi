@@ -110,7 +110,7 @@ fn carrier_count() -> usize {
 /// `runtime.c`. It is read once per call: nothing here parks, so the fiber
 /// cannot move to another carrier meanwhile.
 #[inline(always)]
-fn running_carrier() -> *mut Carrier {
+pub(crate) fn running_carrier() -> *mut Carrier {
     #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         let thread: *const u8;

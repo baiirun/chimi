@@ -4,16 +4,6 @@
 use super::layout::{Carrier, ListVector, Value};
 use super::list;
 
-/// [`list::set`].
-///
-/// # Safety
-/// As for `set`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_list_vector_set_v1(vector: ListVector, index: u32, item: *mut Value) -> ListVector {
-    // SAFETY: the caller's contract.
-    unsafe { list::set(vector, index, item) }
-}
-
 /// [`list::from_values`].
 ///
 /// # Safety
