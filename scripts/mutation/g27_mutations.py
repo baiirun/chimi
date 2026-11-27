@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 MONITOR = "../../runtime/chimi-fiber/src/scheduler/process/monitor.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+PROCESS_KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 
 
 def lab(scenario):
@@ -55,11 +56,11 @@ MUTATIONS = [
          edits=[("(record.mailbox.len(), record.spec.mailbox_capacity.get())",
                  "(record.mailbox.len() + 1, record.spec.mailbox_capacity.get())")],
          **lab("MB13")),
-    dict(name="capacity reports the backlog", file=RUNTIME_C,
-         edits=[(": (int64_t)request.capacity));", ": (int64_t)request.queued));")],
+    dict(name="capacity reports the backlog", file=PROCESS_KERNEL,
+         edits=[("                    i64::from(request.capacity)\n", "                    request.queued as i64\n")],
          **lab("MB13")),
-    dict(name="the own address routes by name", file=RUNTIME_C,
-         edits=[("      if (request.status != CHIMI_RESPONSE_OK) return defect(\"Process.address scheduler request failed\", call_node);\n      return success(process_address_value(CHIMI_ADDRESS_DIRECT, request.address));",
-                 "      if (request.status != CHIMI_RESPONSE_OK) return defect(\"Process.address scheduler request failed\", call_node);\n      return success(process_address_value(CHIMI_ADDRESS_NAMED, request.address));")],
+    dict(name="the own address routes by name", file=PROCESS_KERNEL,
+         edits=[("        (*value).payload.address.kind = Trace::ADDRESS_DIRECT;",
+                 "        (*value).payload.address.kind = Trace::ADDRESS_NAMED;")],
          **lab("MB12")),
 ]
