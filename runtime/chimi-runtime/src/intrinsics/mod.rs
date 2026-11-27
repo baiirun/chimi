@@ -12,6 +12,7 @@ pub mod core;
 pub mod debug;
 pub mod decimals;
 pub mod durations;
+pub mod host;
 pub mod json;
 mod message;
 pub mod standard;
