@@ -14,6 +14,7 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
+RUST_TEXT = "../../runtime/chimi-runtime/src/text.rs"
 CORE = "src/execution/core_operations.rs"
 SOURCE = "src/resolution/standard_source.rs"
 TEXT = "std/text.chimi"
@@ -32,9 +33,9 @@ MUTATIONS = [
     std("interpreter byte_slice skips the UTF-8 boundary check", CORE, [(
         "                    if !value.is_char_boundary(bound) {",
         "                    if bound > value.len() {")], filter="standard_programs"),
-    std("native trim misses ideographic space", RUNTIME, [(
-        "code == 0x205f || code == 0x3000;",
-        "code == 0x205f;")], filter="standard_programs"),
+    std("native trim misses ideographic space", RUST_TEXT, [(
+        "            | '\\u{205f}'\n            | '\\u{3000}'\n",
+        "            | '\\u{205f}'\n")], filter="standard_"),
     std("interpreter split accepts an empty separator", CORE, [(
         "                if separator.is_empty() {\n"
         "                    return defect(\"Text.split: separator must not be empty\".to_owned());",
