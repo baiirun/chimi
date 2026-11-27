@@ -1,5 +1,5 @@
 /// A test-only binding package that exercises the C binding boundary (G20)
-/// from the compiler's own tests: values in and out, a failure, a defect, and
+/// from the compiler's own tests: values in and out, a failure, a defect, Text the C side refuses, and
 /// a handle to a pipe whose reads wait through the scheduler. Every operation
 /// is test-only (`T4401`), so no program reaches it.
 ///
@@ -50,6 +50,21 @@ pub fn crash(message: Text) -> Void {
   native_crash(message)
 }
 
+/// The Text `bytes` spell, built in C. Defects when they are not UTF-8.
+pub fn decode(bytes: Bytes) -> Text {
+  native_decode(bytes)
+}
+
+/// Fails with `ProbeError.Invalid` whose message is `message`, or defects
+/// with it when `defect` is true; either way C sees it only up to its first
+/// U+0000. Defects instead when that message is not UTF-8.
+pub fn refuse(message: Bytes, defect: Bool) -> Void {
+  case native_refuse(message, defect) {
+    Ok(nothing) -> nothing
+    Err((_, text)) -> Failure(ProbeError.Invalid(text))
+  }
+}
+
 // 3. A handle.
 
 /// A new pipe. Defects when the operating system has no descriptors left.
@@ -88,6 +103,8 @@ native fn native_echo(bytes: Bytes) -> Bytes
 native fn native_add(left: Int, right: Int) -> Int
 native fn native_try_parse(text: Text) -> Result<Int, (Int, Text)>
 native fn native_crash(message: Text) -> Void
+native fn native_decode(bytes: Bytes) -> Text
+native fn native_refuse(message: Bytes, defect: Bool) -> Result<Void, (Int, Text)>
 native fn native_open_pipe() -> Pipe
 native fn native_write_pipe(pipe: Pipe, bytes: Bytes) -> Result<Void, (Int, Text)>
 native fn native_read_pipe(pipe: Pipe) -> Result<Option<Bytes>, (Int, Text)>

@@ -10,9 +10,10 @@ doctest = false
 
 [features]
 # The binding packages written in Rust (`src/binding`). They import the
-# binding API from `runtime.c`, so only the runtime archives that link with it
-# turn this on: `compiler/chimi/build.rs` passes it to its nested builds of
-# the fiber and standalone archives, and nothing in the workspace enables it.
+# handle and wait half of the binding API from `runtime.c`, so only the
+# runtime archives that link with it turn this on: `compiler/chimi/build.rs`
+# passes it to its nested builds of the fiber and standalone archives, and
+# nothing in the workspace enables it.
 bindings = ["runtime-c"]
 # The code that imports from `runtime.c` (the allocator, `src/heap`), and so
 # links only into the runtime archives, like the bindings.

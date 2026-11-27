@@ -58,6 +58,7 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  FiberContext fiber;", "} Carrier;"),
     ("typedef struct {\n  size_t total_allocated_bytes;", "} ScopeTotals;"),
     ("enum { FRAGMENT_ROOTS", "} RuntimeFragment;"),
+    ("struct ChimiBindingCall {", "\n};"),
     // runtime.h
     ("typedef struct {\n  uint32_t kind;\n  uint32_t name;\n  uint32_t function;", "} ChimiSymbol;"),
     ("typedef struct {\n  uint32_t type_name;\n  uint32_t variant_name;", "} ChimiConstructor;"),

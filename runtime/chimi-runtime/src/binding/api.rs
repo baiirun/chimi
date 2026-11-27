@@ -1,5 +1,7 @@
 //! The binding API of `compiler/chimi/runtime/native/chimi_binding.h`, as
-//! `runtime.c` exports it, and a safe view of one call over it.
+//! the runtime exports it (`runtime.c` for handles and waits,
+//! `intrinsics/binding_values.rs` for values and results), and a safe view of
+//! one call over it.
 //!
 //! A [`Call`] lives for one binding function's run. The runtime owns every
 //! value it hands out; they stay valid until the function returns. The

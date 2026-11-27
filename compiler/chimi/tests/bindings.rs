@@ -111,10 +111,28 @@ test "a defect raised in C" {
   Test.capture_defect(fn() { BindingProbe.add(9223372036854775807, 1) })
     |> Test.assert_equal("Integer overflow")
 }
+
+// C hands back Text with its length, so U+0000 stays in it; bytes that are
+// not UTF-8 never become Text, nor a failure's or a defect's message.
+test "Text C builds is UTF-8" {
+  let not_utf8 = Bytes.append(Bytes.from_text("a"), Bytes.from_int(255, Bytes.IntLayout.U8))
+  BindingProbe.decode(Bytes.from_text("a\u{0}é")) |> Test.assert_equal("a\u{0}é")
+  Test.capture_defect(fn() { BindingProbe.decode(not_utf8) })
+    |> Test.assert_equal("a C binding built an invalid value")
+  Result.capture(fn() { BindingProbe.refuse(Bytes.from_text("no\u{0}pe"), False) })
+    |> Debug.render
+    |> Test.assert_equal("Result.Err(ProbeError.Invalid(\"no\"))")
+  Test.capture_defect(fn() { BindingProbe.refuse(Bytes.from_text("halt"), True) })
+    |> Test.assert_equal("halt")
+  Test.capture_defect(fn() { BindingProbe.refuse(not_utf8, False) })
+    |> Test.assert_equal("a C binding failed with a message that is not UTF-8")
+  Test.capture_defect(fn() { BindingProbe.refuse(not_utf8, True) })
+    |> Test.assert_equal("a C binding defected with a message that is not UTF-8")
+}
 "#,
     );
     assert_eq!(run.status, Some(0), "{}{}", run.stdout, run.stderr);
-    assert!(run.stdout.contains("3 passed, 0 failed"), "{}", run.stdout);
+    assert!(run.stdout.contains("4 passed, 0 failed"), "{}", run.stdout);
 }
 
 #[test]

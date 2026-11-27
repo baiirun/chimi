@@ -5,6 +5,7 @@
 
 mod abi;
 pub mod assertions;
+pub mod binding_values;
 pub mod bytes;
 pub mod causes;
 pub mod collections;

@@ -2,7 +2,9 @@
 results of the binding API, the descriptor wait, dispatch through the callee's
 binding, pay-for-play linking, and the interpreter's refusal. The handle
 table is in Rust since CHI-309 part 2 (runtime/chimi-runtime/src/handles.rs),
-whose own unit-test mutants are in handle_slots_mutations.py. "Closing twice
+whose own unit-test mutants are in handle_slots_mutations.py, and the
+argument readers and value and result builders since CHI-305 step 5 phase 6
+(runtime/chimi-runtime/src/intrinsics/binding_values.rs). "Closing twice
 releases twice" was dropped there: with the generation moved on, a second close
 cannot find the slot, so "close does not bump the generation" covers it, and
 "a handle of another type is accepted" moved there, where a unit test of the
@@ -22,6 +24,7 @@ NATIVE = "src/backend/native.rs"
 EXEC = "src/execution.rs"
 OPS = "src/operations.rs"
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
+VALUES = "../../runtime/chimi-runtime/src/intrinsics/binding_values.rs"
 
 
 def mutant(name, file, edits, targets=("bindings",), filter=""):
@@ -37,25 +40,45 @@ MUTATIONS = [
         "            Some(Slot::Open(live)) if live.generation == generation => Some(live),",
         "            Some(Slot::Open(live)) => Some(live),",
     )]),
-    mutant("Err loses its message", C, [(
-        "    chimi_binding_make_text(call, message, message ? strlen(message) : 0),\n  };",
-        "    chimi_binding_make_text(call, \"\", 0),\n  };",
+    mutant("Err loses its message", VALUES, [(
+        "        let message = chimi_binding_make_text(call, message, length);",
+        "        let message = chimi_binding_make_text(call, c\"\".as_ptr(), 0);",
     )]),
-    mutant("ok returns the bare value", C, [(
-        "  ChimiValue *fields[] = {runtime_value(value)};\n  return binding_result(success(standard_value(CHIMI_CONSTRUCTOR_RESULT_OK, fields, 1)));",
-        "  return binding_result(success(runtime_value(value)));",
+    mutant("ok returns the bare value", VALUES, [(
+        "        success(standard_value(StandardConstructor::RESULT_OK, &[value]))",
+        "        success(value)",
     )]),
-    mutant("a defect keeps no message", C, [(
-        "  return binding_result(defect(copy_text(message), call->call_node));",
-        "  return binding_result(defect(\"binding defect\", call->call_node));",
+    mutant("a defect keeps no message", VALUES, [(
+        "        defect_with(lasting_message(message), node)",
+        "        defect(c\"binding defect\", node)",
     )]),
-    mutant("bytes lose their last byte", C, [(
-        "  return binding_value(bytes_from((const char *)bytes, length));",
-        "  return binding_value(bytes_from((const char *)bytes, length ? length - 1 : 0));",
+    mutant("a defect message need not be UTF-8", VALUES, [(
+        "        if core::str::from_utf8(message).is_err() {",
+        "        if false {",
     )]),
-    mutant("text stops at U+0000", C, [(
-        "    if (!valid_utf8((const unsigned char *)bytes + start, end - start)) return NULL;\n    start = end + 1;",
-        "    if (!valid_utf8((const unsigned char *)bytes + start, end - start)) return NULL;\n    if (nul) return NULL;\n    start = end + 1;",
+    mutant("bytes lose their last byte", VALUES, [(
+        "        let value = text_value(bytes.cast(), length);\n        (*value).kind = ValueKind::BYTES;",
+        "        let value = text_value(bytes.cast(), length.saturating_sub(1));\n        (*value).kind = ValueKind::BYTES;",
+    )]),
+    mutant("text stops at U+0000", VALUES, [(
+        "        if core::str::from_utf8(slice(bytes.cast(), length)).is_err() {",
+        "        if core::str::from_utf8(slice(bytes.cast(), length)).is_err() || slice(bytes.cast(), length).contains(&0) {",
+    )]),
+    mutant("text need not be UTF-8", VALUES, [(
+        "        if core::str::from_utf8(slice(bytes.cast(), length)).is_err() {",
+        "        if false {",
+    )]),
+    mutant("an argument of another kind is read", VALUES, [(
+        "        if (*value).kind == kind { value } else { ptr::null() }",
+        "        value",
+    )]),
+    mutant("a refused item still builds its tuple", VALUES, [(
+        "    items.iter().all(|item| !item.is_null()).then_some(items)",
+        "    Some(items)",
+    )]),
+    mutant("a refused value succeeds", VALUES, [(
+        "    unsafe { if value.is_null() { invalid_value(call) } else { success(value) } }",
+        "    unsafe { success(value) }",
     )]),
     mutant("a wait never parks", C, [(
         "      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;\n    }\n  }\n  struct pollfd poll_fd = {",
