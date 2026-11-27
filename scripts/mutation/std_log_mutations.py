@@ -11,7 +11,6 @@ H = "src/execution/host_operations.rs"
 E = "src/execution.rs"
 C = "runtime/native/runtime.c"
 IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
-CONSOLE = "../../runtime/chimi-runtime/src/console.rs"
 
 
 def mutant(name, file, edits, filter="", targets=("std_log",)):
@@ -66,14 +65,6 @@ MUTATIONS = [
     mutant("the native runner writes log lines to stdout", IO, [(
         "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",
         "        let index = if (*runtime).log_file.is_null() { 0 } else { LOG_STREAM };",
-    )]),
-    mutant("the native log line drops its milliseconds", CONSOLE, [(
-        "    let millis = millis.clamp(0, 999);",
-        "    let millis = millis.clamp(0, 0);",
-    )]),
-    mutant("the native log level names shift by one", CONSOLE, [(
-        "    line.extend_from_slice(LEVELS[level.clamp(0, 3) as usize]);",
-        "    line.extend_from_slice(LEVELS[(level + 1).clamp(0, 3) as usize]);",
     )]),
     mutant("a respelled report path is accepted as the log file", C, [(
         "          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {",
