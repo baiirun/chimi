@@ -7,7 +7,7 @@ Each mutant must turn one of the named native tests red.
 CRATE = "compiler/chimi"
 
 L = "src/backend/direct_loop.rs"
-R = "runtime/native/runtime.c"
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 LANGUAGE = dict(targets=["language"], filter="direct_integer_loop")
 DIRECT = dict(targets=["cli"], filter="native_integer_loop_runs_as_direct_passes")
@@ -36,13 +36,13 @@ MUTATIONS = [
  m("Int minimum / -1 is not checked", L,
    [("                    let defect = builder.ins().bor(zero, overflow);",
      "                    let defect = zero;\n                    let _ = overflow;")], LANGUAGE),
- m("a state that is not an Int defects", R,
-   [("    return run_loop_passes(runtime, node_id, incoming, parent, initial->value);",
-     "    return defect(\"verified direct loop state is not an integer\", node_id);")],
+ m("a state that is not an Int defects", EVAL,
+   [("            return run_loop_passes(runtime, node_id, incoming, parent, initial);",
+     "            return defect(c\"verified direct loop state is not an integer\", i64::from(node_id));")],
    dict(targets=["language"], filter="direct_loops_over_other_states")),
  m("no loop is lowered directly", L,
    [("                reader.pass(body.raw()).map(|pass| (node.id.raw(), pass))",
      "                reader.pass(body.raw()).and(None)")], DIRECT),
- m("tracing runs the direct passes", R,
-   [("  if (!runtime->silent) return chimi_rt_loop(runtime, node_id, incoming, parent);\n", "")], TRACED),
+ m("tracing runs the direct passes", EVAL,
+   [("        if !(*runtime).silent || !profile_rows().is_null() {", "        if !profile_rows().is_null() {")], TRACED),
 ]
