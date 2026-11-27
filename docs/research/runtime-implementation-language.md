@@ -169,6 +169,7 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `crate::graphemes` directly instead of through C. Sixth PR: the
       debug renderer behind `Debug.render`, assertion messages and causes
       (`intrinsics/debug.rs`); runtime.c's `debug_render` forwards to it.
+      Seventh PR: std/test's assertions (`intrinsics/assertions.rs`).
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
