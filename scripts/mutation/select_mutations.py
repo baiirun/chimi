@@ -1,6 +1,6 @@
 """Mutants of `Wait.first` and `std/wait` (CHI-203): the scheduler's
-`CHIMI_REQUEST_SELECT`, the channel and inbox watchers, the native runtime's
-event commit and user-clock timers, and the checker's select contracts.
+`CHIMI_REQUEST_SELECT`, the channel and inbox watchers, the Rust runtime's
+event commit and user-clock timers (intrinsics/waits.rs), and the checker's select contracts.
 
 Run: scripts/mutation/mutate.py scripts/mutation/select_mutations.py
 Each mutant must turn a test in tests/wait.rs red. The scheduler mutants edit
@@ -23,7 +23,7 @@ CHANNEL = f"{FIBER}/channel.rs"
 SCHEDULER = f"{FIBER}/scheduler.rs"
 PROCESS = f"{FIBER}/scheduler/process.rs"
 SCOPE = f"{FIBER}/scheduler/scope.rs"
-RUNTIME = "runtime/native/runtime.c"
+WAITS = "../../runtime/chimi-runtime/src/intrinsics/waits.rs"
 CONTRACTS = "src/typing/wait.rs"
 TYPING = "src/typing.rs"
 JOINS = "src/typing/failure_sets.rs"
@@ -77,22 +77,22 @@ MUTATIONS = [
     select("a firing scope cannot withdraw a select", SCOPE, [(
         "            | super::REQUEST_PROCESS_RECEIVE\n            | super::REQUEST_SELECT\n    )\n}\n\nimpl",
         "            | super::REQUEST_PROCESS_RECEIVE\n    )\n}\n\nimpl")]),
-    select("user timers are never cancelled", RUNTIME, [(
-        "    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);",
-        "    (void)cancel_user_timers;")]),
-    select("a user clock timer uses the execution clock", RUNTIME, [(
-        "        if (on_execution_clock(provider)) {\n          *entry",
-        "        if (true) {\n          *entry")]),
-    select("a committed receive skips the mapping function", RUNTIME, [(
-        "  ChimiValue *mapped[] = {taken->value};\n  return invoke(",
-        "  ChimiValue *mapped[] = {taken->value};\n  return taken;\n  return invoke(")]),
-    select("losing user timers are cancelled before the take", RUNTIME, [(
-        "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n",
-        "    cancel_user_timers(runtime, sources, user_timer, count, committed, span, call_node, environment);\n"
-        "    taken = select_take(runtime, event, timer_task, span, call_node, environment);\n  }\n")]),
-    select("Wait.first accepts an empty list at run time", RUNTIME, [(
-        "  if (count == 0) return defect(\"`Wait.first` needs at least one event\", call_node);",
-        "  if (count == 0) return success(void_value());")]),
+    select("user timers are never cancelled", WAITS, [(
+        "            cancel_user_timers(&sources, &user_timer, committed, call.call_node);\n        }",
+        "            let _ = committed;\n        }")]),
+    select("a user clock timer uses the execution clock", WAITS, [(
+        "                if on_execution_clock(provider) {\n                    entry.deadline",
+        "                if true {\n                    entry.deadline")]),
+    select("a committed receive skips the mapping function", WAITS, [(
+        "        if (*taken).kind != ControlKind::SUCCESS || kind == EventKind::AFTER || kind == EventKind::AT {",
+        "        if true {")]),
+    select("losing user timers are cancelled before the take", WAITS, [(
+        "        let mut taken = core::ptr::null_mut();\n",
+        "        cancel_user_timers(&sources, &user_timer, committed, call.call_node);\n"
+        "        let mut taken = core::ptr::null_mut();\n")]),
+    select("Wait.first accepts an empty list at run time", WAITS, [(
+        "            return defect(c\"`Wait.first` needs at least one event\", node);",
+        "            return success(void_value());")]),
     # The checker.
     select("an empty list literal is accepted", CONTRACTS, [(
         "            && elements.is_empty()", "            && elements.is_empty() && false")]),
