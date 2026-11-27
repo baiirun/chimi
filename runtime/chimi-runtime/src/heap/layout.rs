@@ -179,6 +179,121 @@ pub struct ListVector {
     pub length: u32,
 }
 
+/// `ChimiOrigin` (runtime.h): where a node came from in the source.
+#[repr(C)]
+pub struct Origin {
+    pub file_id: u32,
+    pub semantic_id: u32,
+    pub start: u32,
+    pub end: u32,
+    pub location: u32,
+}
+
+/// `ChimiNode` (runtime.h): one node of the program's core tree.
+#[repr(C)]
+pub struct Node {
+    pub origin: u32,
+    pub a: u32,
+    pub b: u32,
+    pub c: u32,
+    pub d: u32,
+    pub offset: u32,
+    pub length: u32,
+    pub integer: i64,
+}
+
+/// `ChimiInjectedSignal` (chimi_fiber.h): a std/signal signal the virtual
+/// clock latches at `at` nanoseconds.
+#[repr(C)]
+pub struct InjectedSignal {
+    pub code: u32,
+    pub at: i64,
+}
+
+/// `CHIMI_MAX_INJECTED_SIGNALS`.
+pub const MAX_INJECTED_SIGNALS: usize = 64;
+
+/// `struct ChimiRuntime`: one run's settings and its telemetry state. Rust
+/// reads it to write telemetry events; `runtime.c` builds it.
+#[repr(C)]
+pub struct Runtime {
+    pub execution_id: *const c_char,
+    pub computation: *const c_char,
+    pub full_trace: bool,
+    pub virtual_clock: bool,
+    pub carriers: u32,
+    pub clock_start: i64,
+    pub start_unix_ns: i64,
+    pub deadlock_waiters: *mut c_char,
+    pub last_defect_incarnation: u64,
+    pub last_defect_membership: u64,
+    pub last_defect_message: *mut c_char,
+    pub process_defect_count: u64,
+    pub capability_violations: *mut c_void,
+    /// `volatile sig_atomic_t`.
+    pub cancel: i32,
+    pub injected_signal: i32,
+    pub injected_signal_at: i64,
+    pub injected_user_signals: [InjectedSignal; MAX_INJECTED_SIGNALS],
+    pub injected_user_signal_count: usize,
+    pub silent: bool,
+    /// `FILE *`.
+    pub telemetry: *mut c_void,
+    pub outcome: *mut c_void,
+    pub max_line_bytes: u32,
+    pub log_level: i64,
+    pub log_file: *mut c_void,
+    pub metrics_file: *mut c_void,
+    pub next_sequence: u64,
+    /// `_Atomic uint64_t`.
+    pub next_span: core::sync::atomic::AtomicU64,
+    pub trace_events_constructed: u64,
+}
+
+/// `ChimiSchedulerTraceEvent` (chimi_fiber.h): one event the scheduler's
+/// trace hook reports.
+#[repr(C)]
+pub struct SchedulerTraceEvent {
+    pub family: u32,
+    pub kind: u32,
+    pub sequence: u64,
+    pub task: u64,
+    pub parent: u64,
+    pub cause: u64,
+    pub channel: u64,
+    pub capacity: u64,
+    pub queue_depth: u64,
+    pub waiter_depth: u64,
+    pub discard_count: u64,
+    pub supervisor: u64,
+    pub membership: u64,
+    pub incarnation: u64,
+    pub name: u64,
+    pub parent_supervisor: u64,
+    pub attempts_in_window: u64,
+    pub time: i64,
+    pub address_kind: u32,
+    pub outcome: u32,
+}
+
+/// The scheduler trace event codes (chimi_fiber.h) telemetry names.
+pub struct Trace;
+
+impl Trace {
+    pub const FAMILY_TASK: u32 = 1;
+    pub const FAMILY_CHANNEL: u32 = 2;
+    pub const FAMILY_PROCESS: u32 = 3;
+    pub const FAMILY_CLOCK: u32 = 4;
+    pub const PROCESS_ADMISSION_REJECTED: u32 = 2;
+    pub const PROCESS_TERMINATED: u32 = 3;
+    pub const PROCESS_SEND: u32 = 9;
+    pub const PROCESS_CAUSE_DEFECTED: u64 = 3;
+    pub const PROCESS_DEFECT_STACK_OVERFLOW: u32 = 1;
+    pub const CLOCK_SELECT_COMMITTED: u32 = 8;
+    pub const ADDRESS_NAMED: u32 = 1;
+    pub const ADDRESS_DIRECT: u32 = 2;
+}
+
 /// `struct ChimiBindingCall`: one call of a C binding function. A binding
 /// sees it only through the `chimi_binding_*` functions.
 #[repr(C)]
@@ -785,7 +900,8 @@ classified!(Bool: bool);
 classified!(Float: f32, f64);
 classified!(Compound: Decimal, Capability, ListVector, TextPayload, ListPayload, RecordPayload,
     ConstructedPayload, RangePayload, AddressPayload, ManagedPayload, HandlePayload, Payload,
-    AllocationArea, FiberContext, HeapTotals, ScopeTotals, SmallBlockCache, PointerStack);
+    AllocationArea, FiberContext, HeapTotals, ScopeTotals, SmallBlockCache, PointerStack,
+    core::sync::atomic::AtomicU64);
 
 impl<T> Classified for *const T {
     const CLASS: Class = Class::Compound;
@@ -949,6 +1065,87 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ListVector" ListVector, "root", root)
     field("ListVector" ListVector, "tail", tail)
     field("ListVector" ListVector, "length", length)
+    size("ChimiOrigin" Origin)
+    field("ChimiOrigin" Origin, "file_id", file_id)
+    field("ChimiOrigin" Origin, "semantic_id", semantic_id)
+    field("ChimiOrigin" Origin, "start", start)
+    field("ChimiOrigin" Origin, "end", end)
+    field("ChimiOrigin" Origin, "location", location)
+    size("ChimiNode" Node)
+    field("ChimiNode" Node, "origin", origin)
+    field("ChimiNode" Node, "a", a)
+    field("ChimiNode" Node, "b", b)
+    field("ChimiNode" Node, "c", c)
+    field("ChimiNode" Node, "d", d)
+    field("ChimiNode" Node, "offset", offset)
+    field("ChimiNode" Node, "length", length)
+    field("ChimiNode" Node, "integer", integer)
+    size("ChimiInjectedSignal" InjectedSignal)
+    field("ChimiInjectedSignal" InjectedSignal, "code", code)
+    field("ChimiInjectedSignal" InjectedSignal, "at", at)
+    size("ChimiRuntime" Runtime)
+    field("ChimiRuntime" Runtime, "execution_id", execution_id)
+    field("ChimiRuntime" Runtime, "computation", computation)
+    field("ChimiRuntime" Runtime, "full_trace", full_trace)
+    field("ChimiRuntime" Runtime, "virtual_clock", virtual_clock)
+    field("ChimiRuntime" Runtime, "carriers", carriers)
+    field("ChimiRuntime" Runtime, "clock_start", clock_start)
+    field("ChimiRuntime" Runtime, "start_unix_ns", start_unix_ns)
+    field("ChimiRuntime" Runtime, "deadlock_waiters", deadlock_waiters)
+    field("ChimiRuntime" Runtime, "last_defect_incarnation", last_defect_incarnation)
+    field("ChimiRuntime" Runtime, "last_defect_membership", last_defect_membership)
+    field("ChimiRuntime" Runtime, "last_defect_message", last_defect_message)
+    field("ChimiRuntime" Runtime, "process_defect_count", process_defect_count)
+    field("ChimiRuntime" Runtime, "capability_violations", capability_violations)
+    field("ChimiRuntime" Runtime, "cancel", cancel)
+    field("ChimiRuntime" Runtime, "injected_signal", injected_signal)
+    field("ChimiRuntime" Runtime, "injected_signal_at", injected_signal_at)
+    field("ChimiRuntime" Runtime, "injected_user_signals", injected_user_signals)
+    field("ChimiRuntime" Runtime, "injected_user_signal_count", injected_user_signal_count)
+    field("ChimiRuntime" Runtime, "silent", silent)
+    field("ChimiRuntime" Runtime, "telemetry", telemetry)
+    field("ChimiRuntime" Runtime, "outcome", outcome)
+    field("ChimiRuntime" Runtime, "max_line_bytes", max_line_bytes)
+    field("ChimiRuntime" Runtime, "log_level", log_level)
+    field("ChimiRuntime" Runtime, "log_file", log_file)
+    field("ChimiRuntime" Runtime, "metrics_file", metrics_file)
+    field("ChimiRuntime" Runtime, "next_sequence", next_sequence)
+    field("ChimiRuntime" Runtime, "next_span", next_span)
+    field("ChimiRuntime" Runtime, "trace_events_constructed", trace_events_constructed)
+    size("ChimiSchedulerTraceEvent" SchedulerTraceEvent)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "family", family)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "kind", kind)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "sequence", sequence)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "task", task)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "parent", parent)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "cause", cause)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "channel", channel)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "capacity", capacity)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "queue_depth", queue_depth)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "waiter_depth", waiter_depth)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "discard_count", discard_count)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "supervisor", supervisor)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "membership", membership)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "incarnation", incarnation)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "name", name)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "parent_supervisor", parent_supervisor)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "attempts_in_window", attempts_in_window)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "time", time)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "address_kind", address_kind)
+    field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "outcome", outcome)
+    constant("CHIMI_MAX_INJECTED_SIGNALS" MAX_INJECTED_SIGNALS)
+    constant("CHIMI_SCHEDULER_TRACE_TASK" Trace::FAMILY_TASK)
+    constant("CHIMI_SCHEDULER_TRACE_CHANNEL" Trace::FAMILY_CHANNEL)
+    constant("CHIMI_SCHEDULER_TRACE_PROCESS" Trace::FAMILY_PROCESS)
+    constant("CHIMI_SCHEDULER_TRACE_CLOCK" Trace::FAMILY_CLOCK)
+    constant("CHIMI_PROCESS_TRACE_ADMISSION_REJECTED" Trace::PROCESS_ADMISSION_REJECTED)
+    constant("CHIMI_PROCESS_TRACE_TERMINATED" Trace::PROCESS_TERMINATED)
+    constant("CHIMI_PROCESS_TRACE_SEND" Trace::PROCESS_SEND)
+    constant("CHIMI_PROCESS_CAUSE_DEFECTED" Trace::PROCESS_CAUSE_DEFECTED)
+    constant("CHIMI_PROCESS_DEFECT_STACK_OVERFLOW" Trace::PROCESS_DEFECT_STACK_OVERFLOW)
+    constant("CHIMI_CLOCK_TRACE_SELECT_COMMITTED" Trace::CLOCK_SELECT_COMMITTED)
+    constant("CHIMI_ADDRESS_NAMED" Trace::ADDRESS_NAMED)
+    constant("CHIMI_ADDRESS_DIRECT" Trace::ADDRESS_DIRECT)
     size("ChimiBindingCall" BindingCall)
     field("ChimiBindingCall" BindingCall, "runtime", runtime)
     field("ChimiBindingCall" BindingCall, "arguments", arguments)

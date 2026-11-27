@@ -50,8 +50,6 @@ const SHARED: &[&str] = &[
     "random_seed",
     "random_seed_given",
     "random_read",
-    // Held while one telemetry event is written.
-    "trace_lock",
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
     "chimi_runtime_profile_rows",

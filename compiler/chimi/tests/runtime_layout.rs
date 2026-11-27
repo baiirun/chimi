@@ -59,9 +59,12 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  size_t total_allocated_bytes;", "} ScopeTotals;"),
     ("enum { FRAGMENT_ROOTS", "} RuntimeFragment;"),
     ("struct ChimiBindingCall {", "\n};"),
+    ("struct ChimiRuntime {", "\n};"),
     // runtime.h
     ("typedef struct {\n  uint32_t kind;\n  uint32_t name;\n  uint32_t function;", "} ChimiSymbol;"),
     ("typedef struct {\n  uint32_t type_name;\n  uint32_t variant_name;", "} ChimiConstructor;"),
+    ("typedef struct {\n  uint32_t file_id;", "} ChimiOrigin;"),
+    ("typedef struct {\n  uint32_t origin;\n  uint32_t a;", "} ChimiNode;"),
 ];
 
 /// The text before the block, the block itself (both marker lines

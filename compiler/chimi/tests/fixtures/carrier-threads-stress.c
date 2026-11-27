@@ -365,7 +365,7 @@ static void *carrier_thread(void *raw_index) {
       epochs[(index * ROUNDS + round) * EPOCHS_PER_ROUND + epoch] = chimi_take_mark_epoch_v1(carrier);
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
     ChimiSchedulerTraceEvent started = {.task = index + 1};
-    emit_scheduler_event(&runtime, &started);
+    chimi_trace_scheduler_event_v1(&runtime, &started);
     profile_leave(profile_enter(0, "carrier_round"));
     draws[index * ROUNDS + round] = random_next();
     ChimiValue *arguments[] = {recorder, list};

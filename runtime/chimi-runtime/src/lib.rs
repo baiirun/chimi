@@ -42,6 +42,8 @@ pub mod random;
 mod random_abi;
 mod serialized;
 pub use serialized::note_exiting;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod telemetry;
 pub mod text;
 mod text_abi;
 mod text_buffer;

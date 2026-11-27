@@ -39,8 +39,8 @@ MUTATIONS = [
         "  if (runtime->virtual_clock) return 0;",
     )]),
     mutant("the real start is the origin", RUNTIME, [(
-        "  clock_gettime(CLOCK_REALTIME, &host);\n  return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;\n}\n\nstatic void emit_event",
-        "  (void)host;\n  return 0;\n}\n\nstatic void emit_event",
+        "  clock_gettime(CLOCK_REALTIME, &host);\n  return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;\n}\n\n/* The telemetry events are Rust",
+        "  (void)host;\n  return 0;\n}\n\n/* The telemetry events are Rust",
     )]),
     mutant("the interpreter writes no time", EXECUTION, [(
         "            output.push_str(\"\\\"time_ns\\\":0\");",
