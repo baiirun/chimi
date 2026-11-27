@@ -48,7 +48,7 @@ MUTATIONS = [
         "                        integer_value(ValueKind::INTEGER, 0),")]),
     m("a direct loop ignores cancellation", [(
         "            if cancel_requested(runtime) {\n                return cancelled();\n            }\n            let mut next",
-        "            let mut next")], ("cli", "clock")),
+        "            let mut next")], ("signals",), "direct_integer_loop"),
     m("the scalar intrinsics go to C", [(
         "            _ if is_scalar(intrinsic) => scalar_operation(intrinsic, arguments(values, count), call_node),\n",
         "")], file=DISPATCH),
@@ -61,5 +61,5 @@ MUTATIONS = [
         "                let cancel = false;")], ("cli", "clock"), file=DISPATCH),
     m("std/test recorders go to C", [(
         "            Intrinsic::TEST_RECORDER..=Intrinsic::TEST_RECEIVED => {",
-        "            Intrinsic::TEST_RECEIVED..=Intrinsic::TEST_RECEIVED => {")], file=DISPATCH),
+        "            Intrinsic::TEST_RECEIVED..=Intrinsic::TEST_RECEIVED => {")], ("std_modules",), "standard_", file=DISPATCH),
 ]
