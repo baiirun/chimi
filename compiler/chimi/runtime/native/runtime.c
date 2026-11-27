@@ -858,7 +858,6 @@ static AllocationArea *current_area(void) {
   return here->fiber.heap->innermost ? &here->fiber.heap->innermost->young : &here->fiber.heap->base;
 }
 
-
 /* Process-wide footprints and their peaks with several carrier threads
    (step 3 PR 6b). Each carrier folds its change into them once it has moved
    FOOTPRINT_FOLD_BYTES from what it last folded, so the counters are within
@@ -902,8 +901,6 @@ Carrier *chimi_runtime_carrier_at(size_t index) { return carrier_at(index); }
    thread-local itself (other platforms, and the simulation). */
 Carrier *chimi_runtime_current_carrier(void);
 Carrier *chimi_runtime_current_carrier(void) { return carrier; }
-
-
 
 /* The young chunks and the regions' start and end are Rust (chimi-runtime
    heap/young.rs): its per-carrier cache of empty chunks, the deferred counts of a
@@ -2521,7 +2518,6 @@ static void pointer_stack_push(PointerStack *stack, void *pointer) {
   stack->items[stack->length++] = pointer;
 }
 
-
 /* The collector is Rust (heap/collector.rs): a pass marks from the roots passed
    by address, moves the marked young chunk allocations into survivor blocks and
    rewrites the roots, frees what it did not reach, and on a full pass sweeps the
@@ -3248,7 +3244,6 @@ _Noreturn void chimi_runtime_json_tape_defect_v1(void) {
   fputs("Chimi runtime: malformed JSON tape\n", stderr); runtime_exit(70);
 }
 
-
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
 #define COUNT_OF(table) (sizeof (table) / sizeof (table)[0])
@@ -3270,16 +3265,12 @@ static ChimiValue *bytes_from_hex(const char *hex, size_t length) {
   return value;
 }
 
-
 /* std/test. */
 static ChimiValue *debug_render(const ChimiValue *value, bool indented);
 
 /* Test.assert_equal, assert_not_equal, assert and fail, in intrinsics/assertions.rs. */
 ChimiControl *chimi_intrinsic_assertion_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
                                            uint32_t call_node);
-
-
-
 
 /* A std/test Recorder, Script or Mailbox, in intrinsics/test_log.rs: the logs live
    there, outside every heap, behind their own lock, which is taken before the
@@ -4521,7 +4512,6 @@ static void duration_text(int64_t duration, char *text) { chimi_duration_text_v1
 
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
-
 /* The debug format of `std/debug` (G10), in intrinsics/debug.rs. It MUST
    match the interpreter's renderer in execution/debug.rs byte for byte; the
    language tests compare both. */
@@ -4544,15 +4534,12 @@ static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
    cause of the outcome itself, built only when read. */
 ChimiValue *chimi_runtime_control_cause_v1(const ChimiControl *control);
 ChimiControl *chimi_runtime_control_with_cause_v1(const ChimiControl *control, ChimiValue *cause);
-ChimiValue *chimi_runtime_cause_with_frame_v1(const ChimiValue *cause, ChimiValue *text, int64_t node);
 ChimiValue *chimi_runtime_cause_with_sibling_v1(const ChimiValue *cause, const ChimiValue *sibling);
 ChimiValue *chimi_runtime_cause_derived_v1(ChimiValue *matched, bool keep, ChimiValue *error, int64_t node);
 ChimiValue *chimi_runtime_with_stored_cause_v1(const ChimiValue *value, ChimiValue *cause);
 ChimiValue *chimi_runtime_matched_cause_value_v1(const ChimiControl *subject);
 ChimiValue *chimi_runtime_cause_text_v1(const ChimiValue *cause);
 bool chimi_runtime_cause_has_detail_v1(const ChimiValue *cause);
-ChimiControl *chimi_intrinsic_cause_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
-                                       uint32_t call_node);
 
 /* A cancellation's reason in an outcome record; a cancellation's cause
    (intrinsics/causes.rs) carries the same text. */
@@ -4563,7 +4550,6 @@ const char *chimi_runtime_node_location_v1(int64_t node);
 const char *chimi_runtime_node_location_v1(int64_t node) {
   return CHIMI_STRINGS[CHIMI_ORIGINS[CHIMI_NODES[node].origin].location];
 }
-
 
 /* std/process and std/supervisor (docs/architecture/supervised-process-runtime.md,
    "Mapping onto the native runtime"; the scheduler's process ABI in chimi_fiber.h).
@@ -4737,7 +4723,6 @@ typedef struct {
   RuntimeFragment *body;
   bool handoff;
 } ProcessSpecContext;
-
 
 /* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
    is external so a built executable shows that it links the process kernel (MF06). */
@@ -5456,10 +5441,6 @@ static ChimiControl *run_in_scope(ChimiRuntime *runtime, ChimiValue *operation, 
     return control;
   }
 }
-
-
-
-
 
 static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                   uint32_t argument_count, uint64_t span, uint32_t call_node,

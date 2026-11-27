@@ -14,3 +14,14 @@ KILLED       T4401: the path loses its callers [testing] (21s)
 KILLED       scheduler: a scope cancel leaves the children running [testing] (18s)
 KILLED       scheduler: a scope without a deadline still gets a timer [testing] (7s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/intrinsics/scopes.rs and eval.rs when the scope intrinsics moved (CHI-305 phase 7, PR 273):
+# mutation run at 10def2f83b45107a59b01f75ae8352b562050c1e
+# capture_defect_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [testing] (72s)
+KILLED       native: an inner assertion is captured [testing] (59s)
+KILLED       native: the operation's tasks are not cancelled [testing] (60s)
+KILLED       native: a success is returned as the message [testing] (59s)
+KILLED       native: an expected failure escapes [testing] (61s)
+KILLED       native: the node search misses the last entry [testing] (62s)
+# result: every mutant killed

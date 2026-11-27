@@ -29,3 +29,15 @@ KILLED       shutdown is delivered into a running release [resources]
 KILLED       the deadline leaves children of a finished body running [resources]
 KILLED       shutdown cancels the helpers a release started [resources]
 # result: 25/25 killed
+
+# Retargeted to runtime/chimi-runtime/src/intrinsics/scopes.rs and eval.rs when the scope intrinsics moved (CHI-305 phase 7, PR 273):
+# mutation run at 9d729f536b82954a3904fa2ab1bd4cdb432057fc
+# resource_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [resources] (57s)
+BASELINE ok  [std_modules] (8s)
+KILLED       resource_scoped ignores the cancellation its exit delivers [resources] (55s)
+KILLED       a cancelled use skips its release [resources] (59s)
+KILLED       native: a release failure does not replace the use's outcome [std_modules] (61s)
+KILLED       native: a release defect outranks a use defect [std_modules] (61s)
+KILLED       native: a release defect does not replace a use failure [std_modules] (59s)
+# result: every mutant killed

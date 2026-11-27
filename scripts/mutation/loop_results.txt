@@ -36,3 +36,10 @@ KILLED       std/test recorders go to C [testing] (58s)
 #   syscall; no test can land a signal inside that window deterministically.
 # result: every non-equivalent mutant killed ("a direct loop ignores cancellation" was killed
 # once tests/signals.rs gained sigint_stops_an_endless_direct_integer_loop)
+
+# Retargeted to runtime/chimi-runtime/src/intrinsics/scopes.rs and eval.rs when the scope intrinsics moved (CHI-305 phase 7, PR 273):
+# mutation run at 9d729f536b82954a3904fa2ab1bd4cdb432057fc
+# loop_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language cli clock] (116s)
+KILLED       a fired scope does not stop a loop [language cli clock] (90s)
+# result: every mutant killed

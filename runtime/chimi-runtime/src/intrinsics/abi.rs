@@ -10,7 +10,7 @@ use core::ffi::c_void;
 use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
 use super::causes::{
-    cause_derived, cause_has_detail, cause_operation, cause_text, cause_with_frame, cause_with_sibling, control_cause,
+    cause_derived, cause_has_detail, cause_text, cause_with_sibling, control_cause,
     control_with_cause, matched_cause_value, with_stored_cause,
 };
 use super::collections::{Call, map_operation, set_operation};
@@ -214,21 +214,6 @@ pub unsafe extern "C" fn chimi_runtime_test_log_release_v1(log: *const Value) ->
     unsafe { release(log) }
 }
 
-/// [`cause_operation`].
-///
-/// # Safety
-/// As for `cause_operation`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_intrinsic_cause_v1(
-    intrinsic: u32,
-    values: *mut *mut Value,
-    count: u32,
-    call_node: u32,
-) -> *mut Control {
-    // SAFETY: the caller's contract.
-    unsafe { cause_operation(intrinsic, arguments(values, count), call_node) }
-}
-
 /// [`control_cause`].
 ///
 /// # Safety
@@ -247,16 +232,6 @@ pub unsafe extern "C" fn chimi_runtime_control_cause_v1(control: *const Control)
 pub unsafe extern "C" fn chimi_runtime_control_with_cause_v1(control: *const Control, cause: *mut Value) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { control_with_cause(control, cause) }
-}
-
-/// [`cause_with_frame`].
-///
-/// # Safety
-/// As for `cause_with_frame`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_cause_with_frame_v1(cause: *const Value, text: *mut Value, node: i64) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { cause_with_frame(cause, text, node) }
 }
 
 /// [`cause_with_sibling`].
