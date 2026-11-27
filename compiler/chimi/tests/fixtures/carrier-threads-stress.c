@@ -106,6 +106,9 @@ static ChimiRuntime runtime = {
   .next_span = 2,
 };
 static ChimiValue *recorder;
+/* Frees what a test log holds and returns how many fragments it held (chimi-runtime
+   intrinsics/test_log.rs). */
+uint32_t chimi_runtime_test_log_release_v1(const ChimiValue *log);
 static int64_t shared_file;
 static _Atomic int64_t closed_reads;
 /* Per thread, then per round. */
@@ -352,7 +355,7 @@ static void *carrier_thread(void *raw_index) {
     profile_leave(profile_enter(0, "carrier_round"));
     draws[index * ROUNDS + round] = random_next();
     ChimiValue *arguments[] = {recorder, list};
-    CHECK(invoke_test_log(CHIMI_INTRINSIC_TEST_RECORD, arguments, 2, 0)->kind == CONTROL_SUCCESS,
+    CHECK(chimi_intrinsic_test_log_v1(CHIMI_INTRINSIC_TEST_RECORD, arguments, 2, 0)->kind == CONTROL_SUCCESS,
           "Test.record failed");
     handle_round(index, round);
     input_round();
@@ -792,7 +795,7 @@ int main(void) {
   CHECK(profile_rows, "profile rows");
   random_seed = 7;
   random_seed_given = true;
-  recorder = new_test_log(VALUE_TEST_RECORDER);
+  recorder = chimi_intrinsic_test_log_v1(CHIMI_INTRINSIC_TEST_RECORDER, NULL, 0, 0)->value;
   int zero = open("/dev/zero", O_RDONLY);
   CHECK(zero >= 0, "open /dev/zero");
   shared_file = fs_insert(zero);
@@ -817,10 +820,8 @@ int main(void) {
     CHECK(pthread_create(&threads[index], NULL, carrier_thread, (void *)(uintptr_t)index) == 0, "start");
   for (size_t index = 0; index < THREADS; ++index) pthread_join(threads[index], NULL);
 
-  TestLog *log = test_log(recorder);
-  CHECK(log->length == THREADS * ROUNDS, "%" PRIu32 " recorded", log->length);
-  for (uint32_t index = 0; index < log->length; ++index) fragment_free(log->values[index]);
-  log->length = 0;
+  uint32_t recorded = chimi_runtime_test_log_release_v1(recorder);
+  CHECK(recorded == THREADS * ROUNDS, "%" PRIu32 " recorded", recorded);
   HeapTotals after = heap_totals_sum();
   CHECK(after.live_allocations == before.live_allocations, "%" PRId64 " allocations leaked",
         after.live_allocations - before.live_allocations);

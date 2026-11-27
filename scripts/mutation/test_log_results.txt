@@ -1,14 +1,17 @@
-# mutation run at f409488ed5efcd007e6f4d6bb8a64088151d75b2
-# test_log_mutations.py: 10 mutants against compiler/chimi
-BASELINE ok  [testing] (49s)
-KILLED       native: a record is dropped [testing] (12s)
-KILLED       native: recorded misses the last value [testing] (11s)
-KILLED       native: next repeats its first reply [testing] (12s)
-KILLED       native: an exhausted script returns Void [testing] (12s)
-KILLED       native: a recorder renders as a monitor [testing] (11s)
-KILLED       interpreter: recorded reverses the log [testing] (27s)
-KILLED       interpreter: next does not count its replies [testing] (20s)
-KILLED       assertion set: an exhausted script is a plain defect [testing] (24s)
-KILLED       T4403: a recorded value is never checked [testing] (25s)
-KILLED       T4403: a script is never checked [testing] (16s)
+# mutation run at 87cf1cefd635ff11a6603fcc3c5100fcd07812eb
+# test_log_mutations.py: 13 mutants against compiler/chimi
+BASELINE ok  [testing] (136s)
+KILLED       native: a record is dropped [testing] (56s)
+KILLED       native: a script keeps only its first reply [testing] (55s)
+KILLED       native: recorded misses the last value [testing] (54s)
+KILLED       native: recorded adopts the log [testing] (55s)
+KILLED       native: next repeats its first reply [testing] (55s)
+KILLED       native: an exhausted script returns Void [testing] (56s)
+KILLED       native: an exhausted script miscounts [testing] (56s)
+KILLED       native: a recorder renders as a monitor [testing] (56s)
+KILLED       interpreter: recorded reverses the log [testing] (73s)
+KILLED       interpreter: next does not count its replies [testing] (35s)
+KILLED       assertion set: an exhausted script is a plain defect [testing] (40s)
+KILLED       T4403: a recorded value is never checked [testing] (40s)
+KILLED       T4403: a script is never checked [testing] (28s)
 # result: every mutant killed

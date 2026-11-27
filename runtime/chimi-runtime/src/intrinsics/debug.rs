@@ -15,7 +15,7 @@ use super::message::integer_spelling;
 use super::standard::{standard_constructor_of, symbol_name};
 use super::text::HeapText;
 use crate::heap::allocator::allocate;
-use crate::heap::layout::{CallableKind, Field, StandardConstructor, Value, ValueKind};
+use crate::heap::layout::{ADDRESS_TEST, CallableKind, Field, StandardConstructor, Value, ValueKind};
 use crate::heap::values::text_value;
 use crate::heap::{json_number, list, map};
 use crate::{duration, float, timestamp};
@@ -30,8 +30,6 @@ unsafe extern "C" {
 
 /// `CHIMI_ADDRESS_NAMED` (chimi_fiber.h).
 const ADDRESS_NAMED: u32 = 1;
-/// `CHIMI_ADDRESS_TEST` (runtime.c): a std/test Mailbox's address.
-const ADDRESS_TEST: u32 = 3;
 
 #[derive(Clone, Copy)]
 enum Step {

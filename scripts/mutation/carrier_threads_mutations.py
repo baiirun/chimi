@@ -14,6 +14,7 @@ R = "runtime/native/runtime.c"
 
 
 FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
+TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 
 
 def m(name, edits, file=R):
@@ -28,11 +29,9 @@ MUTATIONS = [
         ("  state[3] = rotate_left(state[3], 45);\n  pthread_mutex_unlock(&random_lock);\n",
          "  state[3] = rotate_left(state[3], 45);\n")]),
     m("the test logs have no lock", [(
-        "  pthread_mutex_lock(&test_log_lock);\n  ChimiControl *control = invoke_test_log_locked(",
-        "  ChimiControl *control = invoke_test_log_locked("), (
-        "invoke_test_log_locked(intrinsic, arguments, argument_count, call_node);\n"
-        "  pthread_mutex_unlock(&test_log_lock);",
-        "invoke_test_log_locked(intrinsic, arguments, argument_count, call_node);")]),
+        "    LOGS.with(|logs| unsafe { locked(logs, intrinsic, arguments, call_node) })",
+        "    let logs = LOGS.with(|logs| logs as *mut Logs);\n"
+        "    unsafe { locked(&mut *logs, intrinsic, arguments, call_node) }")], file=TEST_LOG),
     m("an event is written without the trace lock", [(
         "  FILE *output = runtime->telemetry;\n  pthread_mutex_lock(&trace_lock);\n"
         "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output); json_string(output, event);",

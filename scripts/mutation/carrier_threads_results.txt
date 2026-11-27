@@ -20,3 +20,9 @@ KILLED       carriers_create leaves the count at one [runtime_state -- the_runti
 BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (66s)
 KILLED       heap owners come from a plain counter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (64s)
 # result: every mutant killed
+
+# mutation run at 87cf1cefd635ff11a6603fcc3c5100fcd07812eb
+# carrier_threads_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (126s)
+KILLED       the test logs have no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (49s)
+# result: every mutant killed

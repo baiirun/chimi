@@ -14,4 +14,5 @@ pub mod durations;
 pub mod json;
 mod message;
 pub mod standard;
+pub mod test_log;
 mod text;

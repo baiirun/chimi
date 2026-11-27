@@ -10,6 +10,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 X = "src/execution.rs"
 
@@ -20,28 +21,36 @@ def mutant(name, file, edits, targets=("testing",), filter="mailbox"):
 
 MUTATIONS = [
     mutant("native: a send to a test address goes to the scheduler", C, [(
-        "      if (arguments[0]->as.address.kind == CHIMI_ADDRESS_TEST)\n        return send_to_test_mailbox(",
-        "      if (0)\n        return send_to_test_mailbox(",
+        "      if (arguments[0]->as.address.kind == CHIMI_ADDRESS_TEST)\n        return chimi_runtime_send_to_test_mailbox_v1(",
+        "      if (0)\n        return chimi_runtime_send_to_test_mailbox_v1(",
     )]),
-    mutant("native: a mailbox holds one more than its capacity", C, [(
-        "  if (log->length >= log->limit)",
-        "  if (log->length > log->limit)",
+    mutant("native: a mailbox holds one more than its capacity", TEST_LOG, [(
+        "        if log.values.len() as i64 >= log.limit {",
+        "        if log.values.len() as i64 > log.limit {",
     )]),
-    mutant("native: Full carries no message", C, [(
-        "    return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL, fields, 1));\n  void *roots[] = {message};",
-        "    return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE, fields, 1));\n  void *roots[] = {message};",
+    mutant("native: Full carries no message", TEST_LOG, [(
+        "            return failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]));",
+        "            return failure(standard_value(StandardConstructor::PROCESS_SEND_FULL + 1, &[message]));",
     )]),
-    mutant("native: received keeps the messages", C, [(
-        "      free(values);\n      log->length = 0;",
-        "      free(values);\n      log->length = log->length;",
+    mutant("native: received keeps the messages", TEST_LOG, [(
+        "                let list = list_of(&mut log.values, false);\n                log.values.clear();",
+        "                let list = list_of(&mut log.values, true);",
     )]),
-    mutant("native: a receiver is let through", C, [(
-        "  if (carried_count) {\n    fragment_free(fragment);\n    return defect(\"Process.send: a test mailbox",
-        "  if (0) {\n    fragment_free(fragment);\n    return defect(\"Process.send: a test mailbox",
+    mutant("native: a receiver is let through", TEST_LOG, [(
+        "        if chimi_runtime_carries_capability_v1((*copy).roots[0].cast()) {",
+        "        if false && chimi_runtime_carries_capability_v1((*copy).roots[0].cast()) {",
     )]),
-    mutant("native: a capacity of zero is allowed", C, [(
-        "      if (arguments[0]->as.integer < 1)\n        return defect(numeric_message(\"Test.mailbox:",
-        "      if (arguments[0]->as.integer < 0)\n        return defect(numeric_message(\"Test.mailbox:",
+    mutant("native: the capability check sees nothing", C, [(
+        "  return carried_count != 0;",
+        "  return false;",
+    )]),
+    mutant("native: a capacity of zero is allowed", TEST_LOG, [(
+        "                if capacity < 1 {",
+        "                if capacity < 0 {",
+    )]),
+    mutant("native: the mailbox's address names another log", TEST_LOG, [(
+        "                (*address).payload.address.target = (*mailbox).payload.address.target;",
+        "                (*address).payload.address.target = (*mailbox).payload.address.target + 1;",
     )]),
     mutant("native: the address renders as direct", DEBUG_RENDER, [(
         'ADDRESS_TEST => Some(b"test"),',

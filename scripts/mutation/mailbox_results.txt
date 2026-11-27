@@ -1,13 +1,15 @@
-# mutation run at 1fc6b1050dadcfe4a5ec0bd497f88b4c298974dc
-# mailbox_mutations.py: 9 mutants against compiler/chimi
-BASELINE ok  [testing -- mailbox] (18s)
-KILLED       native: a send to a test address goes to the scheduler [testing -- mailbox] (16s)
-KILLED       native: a mailbox holds one more than its capacity [testing -- mailbox] (15s)
-KILLED       native: Full carries no message [testing -- mailbox] (13s)
-KILLED       native: received keeps the messages [testing -- mailbox] (13s)
-KILLED       native: a receiver is let through [testing -- mailbox] (15s)
-KILLED       native: a capacity of zero is allowed [testing -- mailbox] (18s)
-KILLED       native: the address renders as direct [testing -- mailbox] (23s)
-KILLED       native: a mailbox renders as a script [testing -- mailbox] (14s)
-KILLED       interpreter: Test.mailbox names the wrong requirement [testing -- mailbox] (17s)
+# mutation run at 87cf1cefd635ff11a6603fcc3c5100fcd07812eb
+# mailbox_mutations.py: 11 mutants against compiler/chimi
+BASELINE ok  [testing -- mailbox] (127s)
+KILLED       native: a send to a test address goes to the scheduler [testing -- mailbox] (42s)
+KILLED       native: a mailbox holds one more than its capacity [testing -- mailbox] (47s)
+KILLED       native: Full carries no message [testing -- mailbox] (49s)
+KILLED       native: received keeps the messages [testing -- mailbox] (48s)
+KILLED       native: a receiver is let through [testing -- mailbox] (48s)
+KILLED       native: the capability check sees nothing [testing -- mailbox] (49s)
+KILLED       native: a capacity of zero is allowed [testing -- mailbox] (50s)
+KILLED       native: the mailbox's address names another log [testing -- mailbox] (49s)
+KILLED       native: the address renders as direct [testing -- mailbox] (47s)
+KILLED       native: a mailbox renders as a script [testing -- mailbox] (47s)
+KILLED       interpreter: Test.mailbox names the wrong requirement [testing -- mailbox] (50s)
 # result: every mutant killed
