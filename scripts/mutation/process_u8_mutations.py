@@ -13,6 +13,7 @@ Every mutant runs one scenario through the lab binary with `--through U8`.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 
@@ -46,10 +47,9 @@ CHILDREN_LEFT_RUNNING = [(
     "        for child in children {\n            self.begin_terminal(child, TaskOutcome::Cancelled, false);\n        }",
     "        if self.incarnation_of(task).is_some() {\n            self.tasks.get_mut(&task).unwrap().children.clear();\n        } else {\n            for child in children {\n                self.begin_terminal(child, TaskOutcome::Cancelled, false);\n            }\n        }")]
 
-SLEEP_LOOP = """          .kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL,
-          .value = deadline,
-        };
-        if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();"""
+SLEEP_LOOP = """            request.value = deadline;
+            if scheduler::request(&mut request) {
+                return cancelled();"""
 
 REMOVAL_ENTRY = """            return Ok(self.execute(plan));
         }
@@ -68,7 +68,7 @@ MUTATIONS = [
             "  ChimiFiberResult result = child_task_result(control);",
             "  ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = (int64_t)(intptr_t)control};")]),
     # Cancellation interrupts every park.
-    lab("Clock.sleep ignores cancellation", RUNTIME, "RR05",
+    lab("Clock.sleep ignores cancellation", CLOCKS, "RR05",
         [TRANSCRIPT], [(
             SLEEP_LOOP,
             SLEEP_LOOP.replace("return cancelled();", "continue;"))]),

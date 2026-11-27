@@ -457,6 +457,8 @@ impl Scheduler {
     pub const REQUEST_SCOPE_CANCEL: u32 = 41;
     pub const REQUEST_RESOURCE_USE: u32 = 49;
     pub const REQUEST_TASK_ANY: u32 = 42;
+    pub const REQUEST_TIMER_NOW: u32 = 11;
+    pub const REQUEST_TIMER_SLEEP_UNTIL: u32 = 12;
     pub const REQUEST_TASK_DRAIN: u32 = 43;
     pub const RESPONSE_UNSET: u32 = 0;
     pub const RESPONSE_OK: u32 = 1;
@@ -519,6 +521,8 @@ impl Core {
     pub const HOST_CLOCK_NOW: u32 = 4;
     pub const HOST_CLOCK_TIMESTAMP: u32 = 5;
     pub const HOST_CLOCK_SLEEP_UNTIL: u32 = 6;
+    pub const HOST_CLOCK_SHIFTED_TIMESTAMP: u32 = 7;
+    pub const HOST_SELECT_SLEEP: u32 = 8;
 }
 
 /// The `CHIMI_INTRINSIC_*` ids (runtime.h) of the intrinsics Rust serves.
@@ -645,6 +649,20 @@ impl Intrinsic {
     pub const WATCH_PUBLISH: u32 = 87;
     pub const WATCH_SUBSCRIBE: u32 = 88;
     pub const WATCH_RECEIVE: u32 = 89;
+    pub const CLOCK_SLEEP: u32 = 59;
+    pub const CLOCK_NOW: u32 = 60;
+    pub const CLOCK_TIMESTAMP: u32 = 61;
+    pub const CLOCK_SINCE: u32 = 62;
+    pub const CLOCK_SLEEP_UNTIL: u32 = 63;
+    pub const CLOCK_ADD: u32 = 64;
+    pub const CLOCK_BETWEEN: u32 = 65;
+    pub const CLOCK_TIMESTAMP_TO_TEXT: u32 = 66;
+    pub const CLOCK_UNIX_NANOSECONDS: u32 = 67;
+    pub const CLOCK_FROM_UNIX_NANOSECONDS: u32 = 68;
+    pub const CLOCK_TIMESTAMP_BETWEEN: u32 = 69;
+    pub const CLOCK_STARTING_AT: u32 = 70;
+    pub const TASK_TIMEOUT: u32 = 71;
+    pub const TASK_DEADLINE: u32 = 72;
     pub const TASK_ALL: u32 = 73;
     pub const TASK_RESULTS: u32 = 74;
     pub const TASK_RACE: u32 = 75;
@@ -698,6 +716,7 @@ pub struct StandardConstructor;
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
     pub const OPTION_NONE: u32 = 7;
+    pub const TIMEOUT_TIMED_OUT: u32 = 43;
     pub const RESULT_OK: u32 = 49;
     pub const RESULT_ERR: u32 = 50;
     pub const JSON_NULL: u32 = 8;
@@ -1416,6 +1435,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_TASK_START" Scheduler::REQUEST_TASK_START)
     constant("CHIMI_REQUEST_TASK_RESULT" Scheduler::REQUEST_TASK_RESULT)
     constant("CHIMI_REQUEST_TASK_ANY" Scheduler::REQUEST_TASK_ANY)
+    constant("CHIMI_REQUEST_TIMER_NOW" Scheduler::REQUEST_TIMER_NOW)
+    constant("CHIMI_REQUEST_TIMER_SLEEP_UNTIL" Scheduler::REQUEST_TIMER_SLEEP_UNTIL)
     constant("CHIMI_REQUEST_TASK_DRAIN" Scheduler::REQUEST_TASK_DRAIN)
     constant("CHIMI_RESPONSE_ERROR" Scheduler::RESPONSE_ERROR)
     size("ChimiTaskContext" TaskContext)
@@ -1502,6 +1523,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("HOST_CLOCK_NOW" Core::HOST_CLOCK_NOW)
     constant("HOST_CLOCK_TIMESTAMP" Core::HOST_CLOCK_TIMESTAMP)
     constant("HOST_CLOCK_SLEEP_UNTIL" Core::HOST_CLOCK_SLEEP_UNTIL)
+    constant("HOST_CLOCK_SHIFTED_TIMESTAMP" Core::HOST_CLOCK_SHIFTED_TIMESTAMP)
+    constant("HOST_SELECT_SLEEP" Core::HOST_SELECT_SLEEP)
     size("ChimiConstructor" Constructor)
     field("ChimiConstructor" Constructor, "type_name", type_name)
     field("ChimiConstructor" Constructor, "variant_name", variant_name)
@@ -1537,6 +1560,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER" StandardConstructor::FLOAT_NOT_INTEGER)
     constant("CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE" StandardConstructor::FLOAT_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
+    constant("CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT" StandardConstructor::TIMEOUT_TIMED_OUT)
     constant("CHIMI_CONSTRUCTOR_RESULT_OK" StandardConstructor::RESULT_OK)
     constant("CHIMI_CONSTRUCTOR_RESULT_ERR" StandardConstructor::RESULT_ERR)
     constant("CHIMI_INTRINSIC_JSON_DECODE" Intrinsic::JSON_DECODE)
@@ -1605,6 +1629,20 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
     constant("CHIMI_INTRINSIC_TASK_START" Intrinsic::TASK_START)
     constant("CHIMI_INTRINSIC_TASK_RESULT" Intrinsic::TASK_RESULT)
+    constant("CHIMI_INTRINSIC_CLOCK_SLEEP" Intrinsic::CLOCK_SLEEP)
+    constant("CHIMI_INTRINSIC_CLOCK_NOW" Intrinsic::CLOCK_NOW)
+    constant("CHIMI_INTRINSIC_CLOCK_TIMESTAMP" Intrinsic::CLOCK_TIMESTAMP)
+    constant("CHIMI_INTRINSIC_CLOCK_SINCE" Intrinsic::CLOCK_SINCE)
+    constant("CHIMI_INTRINSIC_CLOCK_SLEEP_UNTIL" Intrinsic::CLOCK_SLEEP_UNTIL)
+    constant("CHIMI_INTRINSIC_CLOCK_ADD" Intrinsic::CLOCK_ADD)
+    constant("CHIMI_INTRINSIC_CLOCK_BETWEEN" Intrinsic::CLOCK_BETWEEN)
+    constant("CHIMI_INTRINSIC_CLOCK_TIMESTAMP_TO_TEXT" Intrinsic::CLOCK_TIMESTAMP_TO_TEXT)
+    constant("CHIMI_INTRINSIC_CLOCK_UNIX_NANOSECONDS" Intrinsic::CLOCK_UNIX_NANOSECONDS)
+    constant("CHIMI_INTRINSIC_CLOCK_FROM_UNIX_NANOSECONDS" Intrinsic::CLOCK_FROM_UNIX_NANOSECONDS)
+    constant("CHIMI_INTRINSIC_CLOCK_TIMESTAMP_BETWEEN" Intrinsic::CLOCK_TIMESTAMP_BETWEEN)
+    constant("CHIMI_INTRINSIC_CLOCK_STARTING_AT" Intrinsic::CLOCK_STARTING_AT)
+    constant("CHIMI_INTRINSIC_TASK_TIMEOUT" Intrinsic::TASK_TIMEOUT)
+    constant("CHIMI_INTRINSIC_TASK_DEADLINE" Intrinsic::TASK_DEADLINE)
     constant("CHIMI_INTRINSIC_TASK_ALL" Intrinsic::TASK_ALL)
     constant("CHIMI_INTRINSIC_TASK_RESULTS" Intrinsic::TASK_RESULTS)
     constant("CHIMI_INTRINSIC_TASK_RACE" Intrinsic::TASK_RACE)

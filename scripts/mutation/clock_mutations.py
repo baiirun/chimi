@@ -14,6 +14,7 @@ CRATE = "compiler/chimi"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 TIMERS = "../../runtime/chimi-fiber/src/scheduler/clock.rs"
 RUNTIME = "runtime/native/runtime.c"
+CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 TYPING = "src/typing.rs"
 
 
@@ -62,23 +63,23 @@ MUTATIONS = [
         '            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",',
         "            Some(StandardSymbol::Type(StandardType::Clock)) => false,")]),
     # Sleep and the runner.
-    native("a negative duration sleeps its magnitude", RUNTIME, [(
-        "      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {",
-        "      if (__builtin_add_overflow(now.value, llabs(arguments[0]->as.integer), &deadline)) {")],
+    native("a negative duration sleeps its magnitude", CLOCKS, [(
+        "        let Some(deadline) = now.value.checked_add(nanoseconds) else {",
+        "        let Some(deadline) = now.value.checked_add(nanoseconds.abs()) else {")],
         filter="native_virtual_sleep_advances"),
-    native("Instant overflow unchecked", RUNTIME, [(
-        "      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {",
-        "      if ((deadline = (int64_t)((uint64_t)now.value + (uint64_t)arguments[0]->as.integer), false)) {")],
+    native("Instant overflow unchecked", CLOCKS, [(
+        "        let Some(deadline) = now.value.checked_add(nanoseconds) else {",
+        "        let Some(deadline) = Some(now.value.wrapping_add(nanoseconds)) else {")],
         filter="native_sleep_past_the_instant_range"),
-    native("sleep ignores cancellation and parks again", RUNTIME, [(
-        "        if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();\n"
-        "        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());\n"
-        "        if (request.status != CHIMI_RESPONSE_PENDING)\n"
-        '          return defect("Clock.sleep scheduler request failed"',
-        "        (void)scheduler_request(&request);\n"
-        "        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());\n"
-        "        if (request.status != CHIMI_RESPONSE_PENDING)\n"
-        '          return defect("Clock.sleep scheduler request failed"')],
+    native("sleep ignores cancellation and parks again", CLOCKS, [(
+        "            if scheduler::request(&mut request) {\n"
+        "                return cancelled();\n"
+        "            }\n"
+        "            if request.status == Scheduler::RESPONSE_OK {\n"
+        "                return success(void_value());",
+        "            let _ = scheduler::request(&mut request);\n"
+        "            if request.status == Scheduler::RESPONSE_OK {\n"
+        "                return success(void_value());")],
         filter="native_cancelling_a_sleeping_task"),
     native("--clock=virtual ignored", RUNTIME, [(
         '    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;',
