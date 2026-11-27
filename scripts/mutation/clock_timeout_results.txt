@@ -32,3 +32,13 @@ KILLED       a busy loop never polls for scope deadlines [clock] (113s)
 BASELINE ok  [clock] (57s)
 KILLED       a terminal cancellation still exits its scopes [clock] (47s)
 # result: every mutant killed
+
+# Rerun after std/clock moved to Rust (intrinsics/clocks.rs, CHI-305 phase 7):
+BASELINE ok  [clock] (59s)
+KILLED       a timeout converts any cancellation [clock] (59s)
+KILLED       a terminal cancellation still exits its scopes [clock] (58s)
+KILLED       a deadline equal to now starts the operation [clock] (59s)
+KILLED       a deadline carries the deadline instead of the time to it [clock] (63s)
+KILLED       time functions bypass the bound provider [clock] (59s)
+KILLED       starting_at ignores its timestamp [clock] (61s)
+# result: every mutant killed

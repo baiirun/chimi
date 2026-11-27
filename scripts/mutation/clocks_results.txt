@@ -1,0 +1,11 @@
+# mutation run at 1a1f805b7306633d0529eb22b96072943096935a
+# clocks_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [clock wait] (66s)
+BASELINE ok  [clock cli] (35s)
+BASELINE ok  [clock language] (32s)
+KILLED       the execution clock's now goes to C [clock wait] (60s)
+KILLED       virtual wall time ignores --clock-start [clock cli] (91s)
+KILLED       a shifted clock's timestamp is its now [clock wait] (60s)
+KILLED       a wait's user-clock timer sleeps until zero [clock wait] (65s)
+KILLED       Clock.between subtracts the wrong way [clock language] (58s)
+# result: every mutant killed

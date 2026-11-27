@@ -24,3 +24,12 @@ KILLED       timer events are boundary events [cli -- native_virtual_sleep_advan
 KILLED       clock request kind written as a cause task [cli -- native_virtual_deadlock] (6s)
 # result: every mutant killed
 EXIT 0
+
+# Rerun after std/clock moved to Rust (intrinsics/clocks.rs, CHI-305 phase 7):
+BASELINE ok  [cli -- native_virtual_sleep_advances] (55s)
+BASELINE ok  [cli -- native_sleep_past_the_instant_range] (1s)
+BASELINE ok  [cli -- native_cancelling_a_sleeping_task] (1s)
+KILLED       a negative duration sleeps its magnitude [cli -- native_virtual_sleep_advances] (56s)
+KILLED       Instant overflow unchecked [cli -- native_sleep_past_the_instant_range] (56s)
+KILLED       sleep ignores cancellation and parks again [cli -- native_cancelling_a_sleeping_task] (56s)
+# result: every mutant killed
