@@ -209,6 +209,23 @@ fn time_functions_surface_the_clock_need() {
     }
 }
 
+// An Instant has no text form, so the debug format shows its offset from the
+// clock's origin, which the virtual clock puts at zero.
+#[test]
+fn debug_render_shows_an_instant_as_its_offset() {
+    let result = run_virtual(
+        "instant-render",
+        concat!(
+            "import std/debug as Debug\n",
+            "pub fn main() -> Text {\n",
+            "  Debug.render(Clock.add(Clock.now(), Duration.seconds(2)))\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.outcome, success("\"Instant(2s)\""));
+}
+
 // The runner closes a root `clock` need that `main` only infers.
 #[test]
 fn the_runner_closes_an_inferred_root_clock_need() {

@@ -16,6 +16,11 @@ def language(name, old, new):
     return dict(name=name, file=DEBUG_RENDER, edits=[(old, new)], targets=["language"], filter="")
 
 
+def clock(name, old, new):
+    return dict(name=name, file=DEBUG_RENDER, edits=[(old, new)], targets=["clock"],
+                filter="debug_render_shows_an_instant_as_its_offset")
+
+
 MUTATIONS = [
     language("a quote inside Text is not escaped", "b'\"' => self.text(b\"\\\\\\\"\"),", "b'\"' => self.text(b\"\\\"\"),"),
     language("a tab is written raw", "b'\\t' => self.text(b\"\\\\t\"),", "b'\\t' => self.text(b\"\\t\"),"),
@@ -36,7 +41,7 @@ MUTATIONS = [
              "CallableKind::DECLARED => core::ptr::null(),"),
     language("indentation is one space a level", "self.text(b\"  \");", "self.text(b\" \");"),
     language("an indented part ends without a comma", "renderer.text(b\",\");", "renderer.text(b\"\");"),
-    language("an Instant renders as its Duration", "self.text(b\"Instant(\");", "self.text(b\"(\");"),
+    clock("an Instant renders as its Duration", "self.text(b\"Instant(\");", "self.text(b\"(\");"),
     language("a range drops its end", "self.text(b\"..\");\n                    self.integer(payload.range.end);",
              "self.text(b\"..\");"),
 ]

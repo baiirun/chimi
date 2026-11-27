@@ -61,7 +61,7 @@ MUTATIONS = [
     programs("Rust to_text drops trailing zeros", "src/execution/decimal_operations.rs", [(
         "RuntimeValue::Text(value.to_text())",
         "RuntimeValue::Text(value.normalized_text())")]),
-    programs("native Debug.render keeps trailing zeros", DEBUG_RENDER, [(
+    lang("native Debug.render keeps trailing zeros", DEBUG_RENDER, [(
         "self.text(decimal.normalized().text().as_bytes());",
         "self.text(decimal.text().as_bytes());")]),
     programs("C multiply skips the overflow check", RUNTIME, [(

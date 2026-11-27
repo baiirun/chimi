@@ -9768,6 +9768,22 @@ fn duration_constructors_accept_their_boundary_counts() {
     );
 }
 
+// A Set renders as `Set {...}` in key order, and a Decimal drops its trailing
+// zeros so equal values render alike, on both backends.
+#[test]
+fn debug_render_writes_sets_and_normalized_decimals() {
+    let source = concat!(
+        "import std/set as Set\n",
+        "import std/decimal as Decimal\n",
+        "import std/debug as Debug\n",
+        "pub fn main() -> Text {\n",
+        "  Debug.render((Set.from([3, 1, 2]), Decimal.of(150, 2)))\n",
+        "}\n"
+    );
+    let outcome = run_both("set-decimal-render", source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"(Set { 1, 2, 3 }, 1.5)\"");
+}
+
 // The defects of `List.set` and `Text.byte_slice` name the bound they broke, on
 // both backends.
 #[test]
