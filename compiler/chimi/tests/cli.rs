@@ -1949,6 +1949,129 @@ fn native_runner_separates_versioned_telemetry_outcome_and_application_streams()
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// A native program's own telemetry, field by field: the root span has no
+// parent and starts at time 0, outcomes are named as the runner contract
+// names them, and text from outside (the execution id) is escaped as JSON.
+#[test]
+fn a_native_trace_names_roots_outcomes_and_escapes_text() {
+    let scratch = scratch_directory("native-trace-fields");
+    let source = scratch.join("refuse.chimi");
+    std::fs::write(
+        &source,
+        "pub enum Problem {\n  Missing\n}\n\npub fn main() -> Int {\n  let answer = 40 + 2\n  case answer > 0 {\n    True -> Failure(Problem.Missing)\n    False -> answer\n  }\n}\n",
+    )
+    .unwrap();
+    let executable = scratch.join("refuse");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the traced program");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let telemetry = scratch.join("telemetry.jsonl");
+    let run = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=full")
+        .arg("--carriers=1")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg("--execution-id=q\"b\\s\tt\nn\u{1}c")
+        .arg("--")
+        .output()
+        .expect("run the traced program");
+    assert!(!run.status.success(), "the program fails as expected");
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    let lines: Vec<&str> = telemetry.lines().collect();
+    assert!(
+        lines[0].starts_with(concat!(
+            "{\"schema\":\"chimi.runtime.v1\",\"event\":\"computation_started\",\"sequence\":0,",
+            "\"computation\":\"main\",\"execution_id\":\"q\\\"b\\\\s\\tt\\nn\\u0001c\",",
+            "\"span_id\":1,\"parent_span_id\":null,",
+        )),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains(",\"attributes\":{\"time_ns\":0,\"start_unix_ns\":"), "{}", lines[0]);
+    let last = lines.last().unwrap();
+    assert!(last.contains("\"event\":\"computation_completed\""), "{last}");
+    assert!(last.contains("\"parent_span_id\":null"), "{last}");
+    assert!(last.contains("\"attributes\":{\"outcome\":\"expected_failure\",\"time_ns\":"), "{last}");
+    assert!(
+        lines.iter().any(|line| line.contains("\"event\":\"operation_completed\"")
+            && line.contains("\"attributes\":{\"outcome\":\"success\",")),
+        "{telemetry}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// A process body's span names the incarnation it runs (CHI-312), the same
+// one `process_started` names, and its completion carries the outcome.
+#[test]
+fn a_native_trace_names_a_process_bodys_incarnation() {
+    let scratch = scratch_directory("native-trace-process-body");
+    let source = scratch.join("main.chimi");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/duration as Duration\n",
+            "import std/process as Process\n",
+            "import std/process.{Inbox}\n",
+            "import std/supervisor as Supervisor\n",
+            "import std/clock as Clock\n",
+            "enum Message {\n",
+            "  Ping\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  let spec = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) { Void }, 1, Duration.seconds(1))\n",
+            "  let root = Supervisor.start(Supervisor.policy([], 1, Supervisor.restarts(0, Duration.seconds(1))))\n",
+            "  let started = case Supervisor.start_handoff(root, spec, 1) {\n",
+            "    Success(_) -> 7\n",
+            "    Failure(_) -> 0\n",
+            "  }\n",
+            "  Clock.sleep(Duration.milliseconds(20))\n",
+            "  Supervisor.stop(root)\n",
+            "  started\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let executable = scratch.join("process");
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build the process program");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let telemetry = scratch.join("telemetry.jsonl");
+    let run = Command::new(&executable)
+        .args(["--chimi-runner", "--trace=full", "--carriers=1", "--clock=virtual", "--execution-id=x"])
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg("--")
+        .output()
+        .expect("run the process program");
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    let line = |event: &str| {
+        let marker = format!("\"event\":\"{event}\"");
+        telemetry.lines().find(|line| line.contains(&marker)).unwrap_or_else(|| panic!("no {event}: {telemetry}"))
+    };
+    assert!(line("process_started").contains("\"membership_id\":1,\"incarnation_id\":1"), "{telemetry}");
+    assert!(
+        line("process_body_started").contains("\"parent_span_id\":null,\"incarnation_id\":1,\"operation\":\"process_body\",\"attributes\":{\"time_ns\":"),
+        "{telemetry}"
+    );
+    assert!(
+        line("process_body_completed").contains("\"incarnation_id\":1,\"operation\":\"process_body\",\"attributes\":{\"outcome\":\"success\","),
+        "{telemetry}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_runner_options_require_the_explicit_configuration_boundary() {
     let scratch = scratch_directory("runner-boundary");

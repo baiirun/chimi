@@ -33,5 +33,8 @@ d3a6a6bf4a2bebfb typedef struct {
 bbb4e31cf9bddf24 typedef struct {
 b272a83f9822e009 enum { FRAGMENT_ROOTS
 e15f42388edda0bd struct ChimiBindingCall {
+b5641a0b42510257 struct ChimiRuntime {
 d4e0fb6b36613411 typedef struct {
 58b05e38765e056c typedef struct {
+a98000251e15c87d typedef struct {
+ec75d381dcde4779 typedef struct {

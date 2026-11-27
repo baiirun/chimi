@@ -1,0 +1,17 @@
+# mutation run at 7d9ed2d6069102edd0e351024ebedad85c2ad484
+# telemetry_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [language cli clock trace_export] (216s)
+BASELINE ok  [process_lab language cli] (137s)
+KILLED       sequence numbers do not advance [language cli clock trace_export] (88s)
+KILLED       a root span has a parent [cli] (rerun at 1d779cdd with the native trace tests in cli.rs)
+KILLED       a control character is written raw [cli] (rerun at 1d779cdd with the native trace tests in cli.rs)
+KILLED       a newline is escaped as a code [cli] (rerun at 1d779cdd with the native trace tests in cli.rs)
+SURVIVED     the computation start has a time [language cli clock trace_export] (117s)  (survives: computation_started is written before the scheduler starts, where the execution clock reads 0 in every mode the tests run; not proven equivalent)
+KILLED       the outcome is always success [cli] (rerun at 1d779cdd with the native trace tests in cli.rs)
+KILLED       a task id of 0 is written [language cli clock trace_export] (87s)
+KILLED       a clock event's cause is a task [language cli clock trace_export] (86s)
+KILLED       scheduler event names are off by one [language cli clock trace_export] (86s)
+KILLED       a process defect names no message [process_lab language cli] (87s)
+KILLED       a dependency call names no method [language cli clock trace_export] (86s)
+KILLED       a process body names no incarnation [cli] (rerun at 23a22278 with the native trace tests in cli.rs)
+# result: every mutant killed but one survivor, explained above

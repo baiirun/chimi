@@ -26,7 +26,7 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// `id` is a string id of the program.
-unsafe fn string(id: u32) -> *const c_char {
+pub(crate) unsafe fn string(id: u32) -> *const c_char {
     // SAFETY: the caller's contract; the table holds every string id.
     unsafe { *(&raw const CHIMI_STRINGS).cast::<*const c_char>().add(id as usize) }
 }
@@ -35,7 +35,7 @@ unsafe fn string(id: u32) -> *const c_char {
 ///
 /// # Safety
 /// `index` is below `CHIMI_SYMBOL_COUNT`.
-unsafe fn symbol(index: u32) -> &'static Symbol {
+pub(crate) unsafe fn symbol(index: u32) -> &'static Symbol {
     // SAFETY: the caller's contract.
     unsafe { &*(&raw const CHIMI_SYMBOLS).cast::<Symbol>().add(index as usize) }
 }

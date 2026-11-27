@@ -15,6 +15,7 @@ R = "runtime/native/runtime.c"
 
 FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
 TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
+TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
 
 
 def m(name, edits, file=R):
@@ -32,22 +33,9 @@ MUTATIONS = [
         "    LOGS.with(|logs| unsafe { locked(logs, intrinsic, arguments, call_node) })",
         "    let logs = LOGS.with(|logs| logs as *mut Logs);\n"
         "    unsafe { locked(&mut *logs, intrinsic, arguments, call_node) }")], file=TEST_LOG),
-    m("an event is written without the trace lock", [(
-        "  FILE *output = runtime->telemetry;\n  pthread_mutex_lock(&trace_lock);\n"
-        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output); json_string(output, event);",
-        "  FILE *output = runtime->telemetry;\n"
-        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output); json_string(output, event);"), (
-        "  if (outcome) { fputs(\"\\\"outcome\\\":\", output); json_string(output, control_name(outcome)); }\n"
-        "  fputs(\"}}\\n\", output);\n  pthread_mutex_unlock(&trace_lock);",
-        "  if (outcome) { fputs(\"\\\"outcome\\\":\", output); json_string(output, control_name(outcome)); }\n"
-        "  fputs(\"}}\\n\", output);")]),
-    m("a scheduler event is written without the trace lock", [(
-        "  FILE *output = runtime->telemetry;\n  pthread_mutex_lock(&trace_lock);\n"
-        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output);\n"
-        "  json_string(output, scheduler_event_name(event));",
-        "  FILE *output = runtime->telemetry;\n"
-        "  ++runtime->trace_events_constructed;\n  fputs(\"{\\\"schema\\\":\\\"chimi.runtime.v1\\\",\\\"event\\\":\", output);\n"
-        "  json_string(output, scheduler_event_name(event));")]),
+    m("events are written without the trace lock", [(
+        "    TRACE_LOCK.with(|()| body())",
+        "    body()")], file=TELEMETRY),
     m("span ids come from a plain counter", [(
         "static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {\n"
         "  if (runtime->silent) return parent;\n"

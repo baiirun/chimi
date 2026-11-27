@@ -329,9 +329,9 @@ struct ChimiRuntime {
      when nothing is recorded. */
   FILE *metrics_file;
   /* The telemetry stream's next sequence number. It and
-     trace_events_constructed change only under trace_lock, which an emitter
-     holds for a whole event, so events from several carriers come out whole
-     and numbered in the order written. */
+     trace_events_constructed change only under the trace lock (chimi-runtime
+     telemetry.rs), which an emitter holds for a whole event, so events from
+     several carriers come out whole and numbered in the order written. */
   uint64_t next_sequence;
   /* Span ids are unique across the process, so every carrier takes them
      from one counter. */
@@ -1260,6 +1260,202 @@ _Static_assert(sizeof(((ListVector *)0)->tail) == 8, "layout: sizeof(((ListVecto
 _Static_assert(offsetof(ListVector, length) == 16, "layout: offsetof(ListVector, length)");
 _Static_assert(sizeof(((ListVector *)0)->length) == 4, "layout: sizeof(((ListVector *)0)->length)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((ListVector *)0)->length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ListVector *)0)->length)");
+_Static_assert(sizeof(ChimiOrigin) == 20, "layout: sizeof(ChimiOrigin)");
+_Static_assert(offsetof(ChimiOrigin, file_id) == 0, "layout: offsetof(ChimiOrigin, file_id)");
+_Static_assert(sizeof(((ChimiOrigin *)0)->file_id) == 4, "layout: sizeof(((ChimiOrigin *)0)->file_id)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->file_id) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->file_id)");
+_Static_assert(offsetof(ChimiOrigin, semantic_id) == 4, "layout: offsetof(ChimiOrigin, semantic_id)");
+_Static_assert(sizeof(((ChimiOrigin *)0)->semantic_id) == 4, "layout: sizeof(((ChimiOrigin *)0)->semantic_id)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->semantic_id) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->semantic_id)");
+_Static_assert(offsetof(ChimiOrigin, start) == 8, "layout: offsetof(ChimiOrigin, start)");
+_Static_assert(sizeof(((ChimiOrigin *)0)->start) == 4, "layout: sizeof(((ChimiOrigin *)0)->start)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->start) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->start)");
+_Static_assert(offsetof(ChimiOrigin, end) == 12, "layout: offsetof(ChimiOrigin, end)");
+_Static_assert(sizeof(((ChimiOrigin *)0)->end) == 4, "layout: sizeof(((ChimiOrigin *)0)->end)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->end) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->end)");
+_Static_assert(offsetof(ChimiOrigin, location) == 16, "layout: offsetof(ChimiOrigin, location)");
+_Static_assert(sizeof(((ChimiOrigin *)0)->location) == 4, "layout: sizeof(((ChimiOrigin *)0)->location)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->location) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiOrigin *)0)->location)");
+_Static_assert(sizeof(ChimiNode) == 40, "layout: sizeof(ChimiNode)");
+_Static_assert(offsetof(ChimiNode, origin) == 0, "layout: offsetof(ChimiNode, origin)");
+_Static_assert(sizeof(((ChimiNode *)0)->origin) == 4, "layout: sizeof(((ChimiNode *)0)->origin)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->origin) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->origin)");
+_Static_assert(offsetof(ChimiNode, a) == 4, "layout: offsetof(ChimiNode, a)");
+_Static_assert(sizeof(((ChimiNode *)0)->a) == 4, "layout: sizeof(((ChimiNode *)0)->a)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->a) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->a)");
+_Static_assert(offsetof(ChimiNode, b) == 8, "layout: offsetof(ChimiNode, b)");
+_Static_assert(sizeof(((ChimiNode *)0)->b) == 4, "layout: sizeof(((ChimiNode *)0)->b)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->b) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->b)");
+_Static_assert(offsetof(ChimiNode, c) == 12, "layout: offsetof(ChimiNode, c)");
+_Static_assert(sizeof(((ChimiNode *)0)->c) == 4, "layout: sizeof(((ChimiNode *)0)->c)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->c) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->c)");
+_Static_assert(offsetof(ChimiNode, d) == 16, "layout: offsetof(ChimiNode, d)");
+_Static_assert(sizeof(((ChimiNode *)0)->d) == 4, "layout: sizeof(((ChimiNode *)0)->d)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->d) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->d)");
+_Static_assert(offsetof(ChimiNode, offset) == 20, "layout: offsetof(ChimiNode, offset)");
+_Static_assert(sizeof(((ChimiNode *)0)->offset) == 4, "layout: sizeof(((ChimiNode *)0)->offset)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->offset) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->offset)");
+_Static_assert(offsetof(ChimiNode, length) == 24, "layout: offsetof(ChimiNode, length)");
+_Static_assert(sizeof(((ChimiNode *)0)->length) == 4, "layout: sizeof(((ChimiNode *)0)->length)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->length)");
+_Static_assert(offsetof(ChimiNode, integer) == 32, "layout: offsetof(ChimiNode, integer)");
+_Static_assert(sizeof(((ChimiNode *)0)->integer) == 8, "layout: sizeof(((ChimiNode *)0)->integer)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->integer) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiNode *)0)->integer)");
+_Static_assert(sizeof(ChimiInjectedSignal) == 16, "layout: sizeof(ChimiInjectedSignal)");
+_Static_assert(offsetof(ChimiInjectedSignal, code) == 0, "layout: offsetof(ChimiInjectedSignal, code)");
+_Static_assert(sizeof(((ChimiInjectedSignal *)0)->code) == 4, "layout: sizeof(((ChimiInjectedSignal *)0)->code)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiInjectedSignal *)0)->code) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiInjectedSignal *)0)->code)");
+_Static_assert(offsetof(ChimiInjectedSignal, at) == 8, "layout: offsetof(ChimiInjectedSignal, at)");
+_Static_assert(sizeof(((ChimiInjectedSignal *)0)->at) == 8, "layout: sizeof(((ChimiInjectedSignal *)0)->at)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiInjectedSignal *)0)->at) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiInjectedSignal *)0)->at)");
+_Static_assert(sizeof(ChimiRuntime) == 1216, "layout: sizeof(ChimiRuntime)");
+_Static_assert(offsetof(ChimiRuntime, execution_id) == 0, "layout: offsetof(ChimiRuntime, execution_id)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->execution_id) == 8, "layout: sizeof(((ChimiRuntime *)0)->execution_id)");
+_Static_assert(offsetof(ChimiRuntime, computation) == 8, "layout: offsetof(ChimiRuntime, computation)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->computation) == 8, "layout: sizeof(((ChimiRuntime *)0)->computation)");
+_Static_assert(offsetof(ChimiRuntime, full_trace) == 16, "layout: offsetof(ChimiRuntime, full_trace)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->full_trace) == 1, "layout: sizeof(((ChimiRuntime *)0)->full_trace)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->full_trace) == 3, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->full_trace)");
+_Static_assert(offsetof(ChimiRuntime, virtual_clock) == 17, "layout: offsetof(ChimiRuntime, virtual_clock)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->virtual_clock) == 1, "layout: sizeof(((ChimiRuntime *)0)->virtual_clock)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->virtual_clock) == 3, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->virtual_clock)");
+_Static_assert(offsetof(ChimiRuntime, carriers) == 20, "layout: offsetof(ChimiRuntime, carriers)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->carriers) == 4, "layout: sizeof(((ChimiRuntime *)0)->carriers)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->carriers) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->carriers)");
+_Static_assert(offsetof(ChimiRuntime, clock_start) == 24, "layout: offsetof(ChimiRuntime, clock_start)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->clock_start) == 8, "layout: sizeof(((ChimiRuntime *)0)->clock_start)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->clock_start) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->clock_start)");
+_Static_assert(offsetof(ChimiRuntime, start_unix_ns) == 32, "layout: offsetof(ChimiRuntime, start_unix_ns)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->start_unix_ns) == 8, "layout: sizeof(((ChimiRuntime *)0)->start_unix_ns)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->start_unix_ns) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->start_unix_ns)");
+_Static_assert(offsetof(ChimiRuntime, deadlock_waiters) == 40, "layout: offsetof(ChimiRuntime, deadlock_waiters)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->deadlock_waiters) == 8, "layout: sizeof(((ChimiRuntime *)0)->deadlock_waiters)");
+_Static_assert(offsetof(ChimiRuntime, last_defect_incarnation) == 48, "layout: offsetof(ChimiRuntime, last_defect_incarnation)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->last_defect_incarnation) == 8, "layout: sizeof(((ChimiRuntime *)0)->last_defect_incarnation)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->last_defect_incarnation) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->last_defect_incarnation)");
+_Static_assert(offsetof(ChimiRuntime, last_defect_membership) == 56, "layout: offsetof(ChimiRuntime, last_defect_membership)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->last_defect_membership) == 8, "layout: sizeof(((ChimiRuntime *)0)->last_defect_membership)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->last_defect_membership) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->last_defect_membership)");
+_Static_assert(offsetof(ChimiRuntime, last_defect_message) == 64, "layout: offsetof(ChimiRuntime, last_defect_message)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->last_defect_message) == 8, "layout: sizeof(((ChimiRuntime *)0)->last_defect_message)");
+_Static_assert(offsetof(ChimiRuntime, process_defect_count) == 72, "layout: offsetof(ChimiRuntime, process_defect_count)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->process_defect_count) == 8, "layout: sizeof(((ChimiRuntime *)0)->process_defect_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->process_defect_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->process_defect_count)");
+_Static_assert(offsetof(ChimiRuntime, capability_violations) == 80, "layout: offsetof(ChimiRuntime, capability_violations)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->capability_violations) == 8, "layout: sizeof(((ChimiRuntime *)0)->capability_violations)");
+_Static_assert(offsetof(ChimiRuntime, cancel) == 88, "layout: offsetof(ChimiRuntime, cancel)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->cancel) == 4, "layout: sizeof(((ChimiRuntime *)0)->cancel)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->cancel) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->cancel)");
+_Static_assert(offsetof(ChimiRuntime, injected_signal) == 92, "layout: offsetof(ChimiRuntime, injected_signal)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->injected_signal) == 4, "layout: sizeof(((ChimiRuntime *)0)->injected_signal)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_signal) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_signal)");
+_Static_assert(offsetof(ChimiRuntime, injected_signal_at) == 96, "layout: offsetof(ChimiRuntime, injected_signal_at)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->injected_signal_at) == 8, "layout: sizeof(((ChimiRuntime *)0)->injected_signal_at)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_signal_at) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_signal_at)");
+_Static_assert(offsetof(ChimiRuntime, injected_user_signals) == 104, "layout: offsetof(ChimiRuntime, injected_user_signals)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->injected_user_signals) == 1024, "layout: sizeof(((ChimiRuntime *)0)->injected_user_signals)");
+_Static_assert(offsetof(ChimiRuntime, injected_user_signal_count) == 1128, "layout: offsetof(ChimiRuntime, injected_user_signal_count)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->injected_user_signal_count) == 8, "layout: sizeof(((ChimiRuntime *)0)->injected_user_signal_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_user_signal_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->injected_user_signal_count)");
+_Static_assert(offsetof(ChimiRuntime, silent) == 1136, "layout: offsetof(ChimiRuntime, silent)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->silent) == 1, "layout: sizeof(((ChimiRuntime *)0)->silent)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->silent) == 3, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->silent)");
+_Static_assert(offsetof(ChimiRuntime, telemetry) == 1144, "layout: offsetof(ChimiRuntime, telemetry)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->telemetry) == 8, "layout: sizeof(((ChimiRuntime *)0)->telemetry)");
+_Static_assert(offsetof(ChimiRuntime, outcome) == 1152, "layout: offsetof(ChimiRuntime, outcome)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->outcome) == 8, "layout: sizeof(((ChimiRuntime *)0)->outcome)");
+_Static_assert(offsetof(ChimiRuntime, max_line_bytes) == 1160, "layout: offsetof(ChimiRuntime, max_line_bytes)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->max_line_bytes) == 4, "layout: sizeof(((ChimiRuntime *)0)->max_line_bytes)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->max_line_bytes) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->max_line_bytes)");
+_Static_assert(offsetof(ChimiRuntime, log_level) == 1168, "layout: offsetof(ChimiRuntime, log_level)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->log_level) == 8, "layout: sizeof(((ChimiRuntime *)0)->log_level)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->log_level) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->log_level)");
+_Static_assert(offsetof(ChimiRuntime, log_file) == 1176, "layout: offsetof(ChimiRuntime, log_file)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->log_file) == 8, "layout: sizeof(((ChimiRuntime *)0)->log_file)");
+_Static_assert(offsetof(ChimiRuntime, metrics_file) == 1184, "layout: offsetof(ChimiRuntime, metrics_file)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->metrics_file) == 8, "layout: sizeof(((ChimiRuntime *)0)->metrics_file)");
+_Static_assert(offsetof(ChimiRuntime, next_sequence) == 1192, "layout: offsetof(ChimiRuntime, next_sequence)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->next_sequence) == 8, "layout: sizeof(((ChimiRuntime *)0)->next_sequence)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->next_sequence) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->next_sequence)");
+_Static_assert(offsetof(ChimiRuntime, next_span) == 1200, "layout: offsetof(ChimiRuntime, next_span)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->next_span) == 8, "layout: sizeof(((ChimiRuntime *)0)->next_span)");
+_Static_assert(offsetof(ChimiRuntime, trace_events_constructed) == 1208, "layout: offsetof(ChimiRuntime, trace_events_constructed)");
+_Static_assert(sizeof(((ChimiRuntime *)0)->trace_events_constructed) == 8, "layout: sizeof(((ChimiRuntime *)0)->trace_events_constructed)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->trace_events_constructed) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRuntime *)0)->trace_events_constructed)");
+_Static_assert(sizeof(ChimiSchedulerTraceEvent) == 144, "layout: sizeof(ChimiSchedulerTraceEvent)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, family) == 0, "layout: offsetof(ChimiSchedulerTraceEvent, family)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->family) == 4, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->family)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->family) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->family)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, kind) == 4, "layout: offsetof(ChimiSchedulerTraceEvent, kind)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->kind) == 4, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->kind)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, sequence) == 8, "layout: offsetof(ChimiSchedulerTraceEvent, sequence)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->sequence) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->sequence)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->sequence) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->sequence)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, task) == 16, "layout: offsetof(ChimiSchedulerTraceEvent, task)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->task) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->task)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->task) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->task)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, parent) == 24, "layout: offsetof(ChimiSchedulerTraceEvent, parent)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->parent) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->parent)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->parent) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->parent)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, cause) == 32, "layout: offsetof(ChimiSchedulerTraceEvent, cause)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->cause) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->cause)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->cause) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->cause)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, channel) == 40, "layout: offsetof(ChimiSchedulerTraceEvent, channel)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->channel) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->channel)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->channel) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->channel)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, capacity) == 48, "layout: offsetof(ChimiSchedulerTraceEvent, capacity)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->capacity) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->capacity)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->capacity) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->capacity)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, queue_depth) == 56, "layout: offsetof(ChimiSchedulerTraceEvent, queue_depth)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->queue_depth) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->queue_depth)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->queue_depth) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->queue_depth)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, waiter_depth) == 64, "layout: offsetof(ChimiSchedulerTraceEvent, waiter_depth)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->waiter_depth) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->waiter_depth)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->waiter_depth) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->waiter_depth)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, discard_count) == 72, "layout: offsetof(ChimiSchedulerTraceEvent, discard_count)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->discard_count) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->discard_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->discard_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->discard_count)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, supervisor) == 80, "layout: offsetof(ChimiSchedulerTraceEvent, supervisor)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->supervisor) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->supervisor)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->supervisor) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->supervisor)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, membership) == 88, "layout: offsetof(ChimiSchedulerTraceEvent, membership)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->membership) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->membership)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->membership) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->membership)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, incarnation) == 96, "layout: offsetof(ChimiSchedulerTraceEvent, incarnation)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->incarnation) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->incarnation)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->incarnation) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->incarnation)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, name) == 104, "layout: offsetof(ChimiSchedulerTraceEvent, name)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->name) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->name)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, parent_supervisor) == 112, "layout: offsetof(ChimiSchedulerTraceEvent, parent_supervisor)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->parent_supervisor) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->parent_supervisor)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->parent_supervisor) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->parent_supervisor)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, attempts_in_window) == 120, "layout: offsetof(ChimiSchedulerTraceEvent, attempts_in_window)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->attempts_in_window) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->attempts_in_window)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->attempts_in_window) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->attempts_in_window)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, time) == 128, "layout: offsetof(ChimiSchedulerTraceEvent, time)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->time) == 8, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->time)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->time) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->time)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, address_kind) == 136, "layout: offsetof(ChimiSchedulerTraceEvent, address_kind)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->address_kind) == 4, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->address_kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->address_kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->address_kind)");
+_Static_assert(offsetof(ChimiSchedulerTraceEvent, outcome) == 140, "layout: offsetof(ChimiSchedulerTraceEvent, outcome)");
+_Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->outcome) == 4, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->outcome)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->outcome) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->outcome)");
+_Static_assert(CHIMI_MAX_INJECTED_SIGNALS == 64, "layout: CHIMI_MAX_INJECTED_SIGNALS");
+_Static_assert(CHIMI_SCHEDULER_TRACE_TASK == 1, "layout: CHIMI_SCHEDULER_TRACE_TASK");
+_Static_assert(CHIMI_SCHEDULER_TRACE_CHANNEL == 2, "layout: CHIMI_SCHEDULER_TRACE_CHANNEL");
+_Static_assert(CHIMI_SCHEDULER_TRACE_PROCESS == 3, "layout: CHIMI_SCHEDULER_TRACE_PROCESS");
+_Static_assert(CHIMI_SCHEDULER_TRACE_CLOCK == 4, "layout: CHIMI_SCHEDULER_TRACE_CLOCK");
+_Static_assert(CHIMI_PROCESS_TRACE_ADMISSION_REJECTED == 2, "layout: CHIMI_PROCESS_TRACE_ADMISSION_REJECTED");
+_Static_assert(CHIMI_PROCESS_TRACE_TERMINATED == 3, "layout: CHIMI_PROCESS_TRACE_TERMINATED");
+_Static_assert(CHIMI_PROCESS_TRACE_SEND == 9, "layout: CHIMI_PROCESS_TRACE_SEND");
+_Static_assert(CHIMI_PROCESS_CAUSE_DEFECTED == 3, "layout: CHIMI_PROCESS_CAUSE_DEFECTED");
+_Static_assert(CHIMI_PROCESS_DEFECT_STACK_OVERFLOW == 1, "layout: CHIMI_PROCESS_DEFECT_STACK_OVERFLOW");
+_Static_assert(CHIMI_CLOCK_TRACE_SELECT_COMMITTED == 8, "layout: CHIMI_CLOCK_TRACE_SELECT_COMMITTED");
+_Static_assert(CHIMI_ADDRESS_NAMED == 1, "layout: CHIMI_ADDRESS_NAMED");
+_Static_assert(CHIMI_ADDRESS_DIRECT == 2, "layout: CHIMI_ADDRESS_DIRECT");
 _Static_assert(sizeof(ChimiBindingCall) == 32, "layout: sizeof(ChimiBindingCall)");
 _Static_assert(offsetof(ChimiBindingCall, runtime) == 0, "layout: offsetof(ChimiBindingCall, runtime)");
 _Static_assert(sizeof(((ChimiBindingCall *)0)->runtime) == 8, "layout: sizeof(((ChimiBindingCall *)0)->runtime)");
@@ -2331,17 +2527,6 @@ static ChimiControl *run_node(uint32_t node, ChimiRuntime *runtime,
   return CHIMI_NODE_FUNCTIONS[node](runtime, environment, parent_span);
 }
 
-static const char *control_name(const ChimiControl *control) {
-  switch (control->kind) {
-    case CONTROL_SUCCESS: return "success";
-    case CONTROL_FAILURE: return "expected_failure";
-    case CONTROL_DEFECT: return "defect";
-    case CONTROL_CANCEL: return "cancellation";
-    case CONTROL_BREAK: return "break";
-  }
-  return "defect";
-}
-
 static void json_bytes(FILE *output, const char *value, size_t length) {
   fputc('"', output);
   const unsigned char *end = (const unsigned char *)value + length;
@@ -2363,11 +2548,6 @@ static void json_string(FILE *output, const char *value) { json_bytes(output, va
 static void json_value(FILE *output, const ChimiValue *value);
 static void float_text(double value, char *output);
 
-/* Held while one telemetry event is written (emit_event, emit_dependency,
-   emit_scheduler_event). The scheduler's events come from its trace hook,
-   under the kernel lock, so this lock is taken after the kernel's. */
-static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
-
 /* The Unix time at the execution clock's origin: `--clock-start` under the
    virtual clock, and under the real clock the host's wall time when the
    computation starts, just before the scheduler takes its origin. */
@@ -2378,84 +2558,18 @@ static int64_t start_unix_nanos(const ChimiRuntime *runtime) {
   return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;
 }
 
-static void emit_event(ChimiRuntime *runtime, const char *event, uint32_t node_id,
-                       uint64_t span, int64_t parent, const char *operation,
-                       const ChimiControl *outcome) {
-  const ChimiNode *node = &CHIMI_NODES[node_id];
-  const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
-  FILE *output = runtime->telemetry;
-  pthread_mutex_lock(&trace_lock);
-  ++runtime->trace_events_constructed;
-  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output); json_string(output, event);
-  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, runtime->computation); fputs(",\"execution_id\":", output);
-  json_string(output, runtime->execution_id);
-  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":", span);
-  if (parent < 0) fputs("null", output); else fprintf(output, "%" PRId64, parent);
-  fprintf(output, ",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
-         "\"source_start\":%u,\"source_end\":%u,\"operation\":",
-         node_id, node->origin, origin->semantic_id, origin->file_id, origin->start, origin->end);
-  json_string(output, operation); fputs(",\"attributes\":{", output);
-  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); fputc(',', output); }
-  bool started = strcmp(event, "computation_started") == 0;
-  /* The computation starts at the clock's origin, before the scheduler runs. */
-  fprintf(output, "\"time_ns\":%" PRId64, started ? INT64_C(0) : chimi_fiber_now());
-  if (started) {
-    fprintf(output, ",\"start_unix_ns\":%" PRId64, runtime->start_unix_ns);
-    fputs(CHIMI_TRACE_MODULES, output);
-  }
-  fputs("}}\n", output);
-  pthread_mutex_unlock(&trace_lock);
-}
-
-static void emit_dependency(ChimiRuntime *runtime, uint32_t node_id, uint64_t span,
-                            uint64_t parent, const ChimiCallable *callable) {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; const ChimiOrigin *origin = &CHIMI_ORIGINS[node->origin];
-  FILE *output = runtime->telemetry;
-  pthread_mutex_lock(&trace_lock);
-  ++runtime->trace_events_constructed;
-  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":\"dependency_called\",\"sequence\":", output);
-  fprintf(output, "%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, runtime->computation);
-  fputs(",\"execution_id\":", output); json_string(output, runtime->execution_id);
-  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":%" PRIu64
-         ",\"core_node_id\":%u,\"origin_id\":%u,\"semantic_id\":%u,\"file_id\":%u,"
-         "\"source_start\":%u,\"source_end\":%u,\"operation\":\"dependency_call\",\"attributes\":{",
-         span, parent, node_id, node->origin, origin->semantic_id, origin->file_id, origin->start, origin->end);
-  fputs("\"requirement\":", output);
-  json_string(output, CHIMI_STRINGS[CHIMI_SYMBOLS[callable->requirement].name]);
-  fprintf(output, ",\"requirement_symbol_id\":%u,\"interface_symbol_id\":%u,\"method\":",
-          callable->requirement, callable->interface_symbol); json_string(output, callable->name);
-  fprintf(output, ",\"method_semantic_id\":%u,\"time_ns\":%" PRId64 "}}\n", callable->method,
-          chimi_fiber_now());
-  pthread_mutex_unlock(&trace_lock);
-}
-
-static void json_identity(FILE *output, const char *key, uint64_t identity);
-
-/* A process body's own span (CHI-312): `process_body_started` when the body
-   begins and `process_body_completed` with its outcome when it ends, both
-   naming the incarnation, so a trace reader can hang the body's operations
-   under that incarnation's `process_started`. A body the scheduler abandons
-   at a park writes no completion. */
-static void emit_process_body(ChimiRuntime *runtime, uint64_t span, uint64_t incarnation,
-                              const ChimiControl *outcome) {
-  FILE *output = runtime->telemetry;
-  pthread_mutex_lock(&trace_lock);
-  ++runtime->trace_events_constructed;
-  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
-  json_string(output, outcome ? "process_body_completed" : "process_body_started");
-  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, runtime->computation);
-  fputs(",\"execution_id\":", output);
-  json_string(output, runtime->execution_id);
-  fprintf(output, ",\"span_id\":%" PRIu64 ",\"parent_span_id\":null", span);
-  json_identity(output, "incarnation_id", incarnation);
-  fputs(",\"operation\":\"process_body\",\"attributes\":{", output);
-  if (outcome) { fputs("\"outcome\":", output); json_string(output, control_name(outcome)); fputc(',', output); }
-  fprintf(output, "\"time_ns\":%" PRId64 "}}\n", chimi_fiber_now());
-  pthread_mutex_unlock(&trace_lock);
-}
+/* The telemetry events are Rust (chimi-runtime telemetry.rs), written under
+   its own lock, which is taken after the kernel's. */
+extern void chimi_trace_event_v1(ChimiRuntime *runtime, const char *event, uint32_t node_id, uint64_t span,
+                                 int64_t parent, const char *operation, const ChimiControl *outcome);
+extern void chimi_trace_dependency_v1(ChimiRuntime *runtime, uint32_t node_id, uint64_t span, uint64_t parent,
+                                      const ChimiCallable *callable);
+extern void chimi_trace_process_body_v1(ChimiRuntime *runtime, uint64_t span, uint64_t incarnation,
+                                        const ChimiControl *outcome);
+extern void chimi_trace_scheduler_event_v1(void *context, const ChimiSchedulerTraceEvent *event);
+#define emit_event chimi_trace_event_v1
+#define emit_dependency chimi_trace_dependency_v1
+#define emit_process_body chimi_trace_process_body_v1
 
 /* Charges the current heap's allocations to `node` until profile_leave. */
 static uint32_t profile_enter(uint32_t node, const char *operation) {
@@ -7428,140 +7542,6 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
   return close_output(output);
 }
 
-static const char *scheduler_event_name(const ChimiSchedulerTraceEvent *event) {
-  static const char *const task_names[] = {
-    "task_started", "task_parked", "task_woken", "task_cancellation_requested",
-    "task_cleanup_completed", "task_terminal",
-  };
-  static const char *const channel_names[] = {
-    "channel_created", "channel_send_accepted", "channel_send_parked",
-    "channel_send_rejected_closed", "channel_send_rejected_aborted",
-    "channel_send_cancelled", "channel_receive_delivered", "channel_receive_parked",
-    "channel_receive_cancelled", "channel_closed", "channel_drained",
-    "channel_aborted", "channel_receiver_transferred", "channel_completion_transferred",
-    "channel_released",
-  };
-  if (event->family == CHIMI_SCHEDULER_TRACE_TASK &&
-      event->kind > 0 && event->kind <= sizeof(task_names) / sizeof(*task_names))
-    return task_names[event->kind - 1];
-  static const char *const clock_names[] = {
-    "clock_advanced", "clock_timer_started", "clock_timer_fired",
-    "clock_timer_cancelled", "clock_deadlock_waiter", "clock_scope_fired",
-    "clock_wait_parked", "clock_wait_committed", "clock_signal_received",
-  };
-  if (event->family == CHIMI_SCHEDULER_TRACE_CHANNEL &&
-      event->kind > 0 && event->kind <= sizeof(channel_names) / sizeof(*channel_names))
-    return channel_names[event->kind - 1];
-  if (event->family == CHIMI_SCHEDULER_TRACE_CLOCK &&
-      event->kind > 0 && event->kind <= sizeof(clock_names) / sizeof(*clock_names))
-    return clock_names[event->kind - 1];
-  /* The transcript table's names, in trace-kind order. */
-  static const char *const process_names[] = {
-    "process_started", "admission_rejected", "process_terminated", "restart_attempted",
-    "restart_limit_exceeded", "supervisor_escalated", "membership_removed",
-    "supervisor_stopped", "process_send", "supervisor_started",
-  };
-  if (event->family == CHIMI_SCHEDULER_TRACE_PROCESS &&
-      event->kind > 0 && event->kind <= sizeof(process_names) / sizeof(*process_names))
-    return process_names[event->kind - 1];
-  return "scheduler_event";
-}
-
-static void json_identity(FILE *output, const char *key, uint64_t identity) {
-  fprintf(output, ",\"%s\":", key);
-  if (identity == 0) fputs("null", output); else fprintf(output, "%" PRIu64, identity);
-}
-
-static void json_word(FILE *output, const char *key, const char *word) {
-  fprintf(output, ",\"%s\":", key);
-  if (word) json_string(output, word); else fputs("null", output);
-}
-
-/* The word of a process event's `cause`: a terminal cause, or an admission reason. */
-static const char *process_cause_word(const ChimiSchedulerTraceEvent *event) {
-  static const char *const terminal[] = {"returned", "failed", "defected", "cancelled", "forced"};
-  static const char *const admission[] = {"capacity_reached", "name_taken", "stopped", "start_failed"};
-  if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause >= 1 && event->cause <= 5)
-    return terminal[event->cause - 1];
-  if (event->kind == CHIMI_PROCESS_TRACE_ADMISSION_REJECTED && event->cause >= 1 && event->cause <= 4)
-    return admission[event->cause - 1];
-  return NULL;
-}
-
-/* The process family's fields (supervised-process-conformance.md, "Runner telemetry
-   for process and clock events"): identities at the top level, the rest in
-   `attributes`, a field the kind does not set as null. */
-static void emit_process_fields(const ChimiRuntime *runtime, FILE *output,
-                                const ChimiSchedulerTraceEvent *event, bool attributes) {
-  if (!attributes) {
-    json_identity(output, "supervisor_id", event->supervisor);
-    json_identity(output, "membership_id", event->membership);
-    json_identity(output, "incarnation_id", event->incarnation);
-    json_identity(output, "parent_supervisor_id", event->parent_supervisor);
-    return;
-  }
-  bool send = event->kind == CHIMI_PROCESS_TRACE_SEND;
-  static const char *const outcomes[] = {"accepted", "full", "unavailable"};
-  fprintf(output, ",\"time_ns\":%" PRId64, event->time);
-  json_word(output, "cause", process_cause_word(event));
-  json_word(output, "name", process_name_label(event->name));
-  json_word(output, "address_kind",
-            !send ? NULL : event->address_kind == CHIMI_ADDRESS_NAMED ? "named"
-            : event->address_kind == CHIMI_ADDRESS_DIRECT ? "direct" : NULL);
-  json_word(output, "outcome", send && event->outcome >= 1 && event->outcome <= 3 ? outcomes[event->outcome - 1] : NULL);
-  fprintf(output, ",\"attempts_in_window\":%" PRIu64, event->attempts_in_window);
-  /* `defect`: why a defected incarnation ended. A stack overflow ends the body
-     without returning, so the scheduler reports it (CHIMI_PROCESS_DEFECT_*). */
-  const char *named = NULL;
-  if (event->kind == CHIMI_PROCESS_TRACE_TERMINATED && event->cause == CHIMI_PROCESS_CAUSE_DEFECTED) {
-    if (event->outcome == CHIMI_PROCESS_DEFECT_STACK_OVERFLOW) named = "Process stack overflow";
-    if (!named && runtime->last_defect_incarnation == event->incarnation)
-      named = runtime->last_defect_message;
-  }
-  json_word(output, "defect", named);
-}
-
-static void emit_scheduler_event(void *context, const ChimiSchedulerTraceEvent *event) {
-  ChimiRuntime *runtime = context;
-  FILE *output = runtime->telemetry;
-  pthread_mutex_lock(&trace_lock);
-  ++runtime->trace_events_constructed;
-  fputs("{\"schema\":\"chimi.runtime.v1\",\"event\":", output);
-  json_string(output, scheduler_event_name(event));
-  fprintf(output, ",\"sequence\":%" PRIu64 ",\"computation\":", runtime->next_sequence++);
-  json_string(output, runtime->computation);
-  fputs(",\"execution_id\":", output);
-  json_string(output, runtime->execution_id);
-  fputs(",\"task_id\":", output);
-  if (event->task == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->task);
-  fputs(",\"parent_task_id\":", output);
-  if (event->parent == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->parent);
-  /* A clock event's `cause` is the waiter's request kind, and a process event's is
-     a cause code, not a task (supervised-process-conformance.md, "Runner telemetry"). */
-  bool clock = event->family == CHIMI_SCHEDULER_TRACE_CLOCK;
-  bool process = event->family == CHIMI_SCHEDULER_TRACE_PROCESS;
-  fputs(",\"cause_task_id\":", output);
-  if (clock || process || event->cause == 0) fputs("null", output);
-  else fprintf(output, "%" PRIu64, event->cause);
-  fputs(",\"channel_id\":", output);
-  if (event->channel == 0) fputs("null", output); else fprintf(output, "%" PRIu64, event->channel);
-  if (process) emit_process_fields(runtime, output, event, false);
-  fprintf(output,
-          ",\"attributes\":{\"scheduler_sequence\":%" PRIu64
-          ",\"capacity\":%" PRIu64 ",\"queue_depth\":%" PRIu64
-          ",\"waiter_depth\":%" PRIu64 ",\"discard_count\":%" PRIu64,
-          event->sequence, event->capacity, event->queue_depth,
-          event->waiter_depth, event->discard_count);
-  if (clock && event->kind == CHIMI_CLOCK_TRACE_SELECT_COMMITTED)
-    fprintf(output, ",\"time_ns\":%" PRId64 ",\"index\":%" PRIu64, event->time, event->cause);
-  else if (clock)
-    fprintf(output, ",\"time_ns\":%" PRId64 ",\"request_kind\":%" PRIu64,
-            event->time, event->cause);
-  if (process) emit_process_fields(runtime, output, event, true);
-  fputs("}}\n", output);
-  pthread_mutex_unlock(&trace_lock);
-}
-
 /* The operation a parked task waits on, by its scheduler request kind. */
 static const char *waited_operation(uint32_t request_kind) {
   switch (request_kind) {
@@ -8070,7 +8050,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .stack_bytes = CHIMI_FIBER_STACK_BYTES,
     .trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),
     .clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTUAL : CHIMI_SCHEDULER_CLOCK_REAL,
-    .trace_sink = emit_scheduler_event,
+    .trace_sink = chimi_trace_scheduler_event_v1,
     .trace_context = runtime,
     .release_context = runtime,
     .deadlock_report = record_deadlock,

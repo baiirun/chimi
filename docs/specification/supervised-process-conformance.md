@@ -349,7 +349,8 @@ Every transcript scenario runs in three trace modes:
 ### Runner telemetry for process and clock events
 
 The runner writes each `ChimiSchedulerTraceEvent` as one JSON line with the
-envelope that `emit_scheduler_event` in `runtime.c` already uses for task and
+envelope that the runtime's scheduler event writer (chimi-runtime
+`telemetry.rs`, formerly `emit_scheduler_event` in `runtime.c`) uses for task and
 channel events: `schema`, `event`, `sequence`, `computation`,
 `execution_id`, `task_id`, `parent_task_id`, `cause_task_id`, and
 `channel_id`, then `attributes` with `scheduler_sequence`. An identity of 0
