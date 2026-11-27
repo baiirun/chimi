@@ -208,6 +208,16 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       through one call, `chimi_runtime_invoke_native_v1`, until their
       dispatch moves. The loop nodes stay C for now, with their passes,
       which make scheduler requests; they open their frame through Rust.
+      Third PR: the loop nodes (`chimi_rt_loop`, `chimi_rt_direct_loop` and
+      their passes) and the region totals (`end_measured_scope`) in
+      `eval.rs`; a pass asks the scheduler about its scope through one C
+      call, `chimi_runtime_loop_scope_check_v1`, only when the program
+      starts the scheduler. Intrinsic routing moves too
+      (`intrinsics/dispatch.rs`): the evaluator calls the Rust families
+      directly, and only the intrinsics `runtime.c` still serves (tasks,
+      channels, processes, waits, clocks, signals, the log and metrics
+      hosts, `Cause.context`) and host functions and C bindings take the
+      C call.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
