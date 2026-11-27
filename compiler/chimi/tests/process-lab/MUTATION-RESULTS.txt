@@ -422,3 +422,9 @@ KILLED       harness: a gate passes at its limit [lib -- process_lab::performanc
 BASELINE ok  [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (55s)
 KILLED       Channel.send queues the sender's original value [cli -- native_a_value_a_finished_task_put_on_a_channel_survives_its_heap] (57s)
 # result: every mutant killed
+
+# Rerun after std/clock moved to Rust (intrinsics/clocks.rs, CHI-305 phase 7):
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario RR05 --through U8] (56s)
+SURVIVED     RR05: Clock.sleep ignores cancellation [cargo run --quiet --bin chimi-process-lab -- --scenario RR05 --through U8] (56s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# The RR05 survivor predates the move: the same C mutant survives at 9c8a8c0a too. RR05 now checks that a removal lets the handler's sleep finish, so nothing cancels that sleep; tests/cli.rs native_cancelling_a_sleeping_task kills the Rust mutant (clock_mutations.py, "sleep ignores cancellation and parks again").

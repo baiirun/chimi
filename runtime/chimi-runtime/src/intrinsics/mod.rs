@@ -10,6 +10,8 @@ pub mod binding_values;
 pub mod bytes;
 pub mod causes;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod clocks;
+#[cfg(all(feature = "runtime-c", unix))]
 pub mod channels;
 pub mod collections;
 pub mod core;

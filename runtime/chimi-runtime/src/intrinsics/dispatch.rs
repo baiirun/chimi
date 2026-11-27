@@ -1,8 +1,8 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (processes, waits, clocks, signals, log and metrics hosts, and C
-//! bindings) go to `runtime.c`'s `chimi_runtime_invoke_native_v1`, as host
-//! functions do.
+//! (processes, waits, signals, the log and metrics hosts, the other host
+//! functions, and C bindings) go to `runtime.c`'s
+//! `chimi_runtime_invoke_native_v1`.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
 //! each family contiguous; heap/layout.rs pins every bound.
@@ -15,6 +15,7 @@ use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
 use super::causes::cause_operation;
 use super::channels::channel_operation;
+use super::clocks::{ClockCall, clock_host, clock_operation};
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
 use super::decimals::decimal_operation;
@@ -25,7 +26,7 @@ use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
 use super::tasks::{TaskCall, task_operation};
 use super::test_log::test_log_operation;
-use crate::heap::layout::{Callable, CallableKind, Control, Environment, Intrinsic, Runtime, Value};
+use crate::heap::layout::{Callable, CallableKind, Control, Core, Environment, Intrinsic, Runtime, Value};
 
 unsafe extern "C" {
     /// `invoke` for an intrinsic `runtime.c` serves, a host function or a C
@@ -94,6 +95,10 @@ pub unsafe fn invoke_native(
     // SAFETY: the caller's contract.
     unsafe {
         if (*callable).kind != CallableKind::INTRINSIC {
+            if (*callable).kind == CallableKind::HOST && (*callable).host >= Core::HOST_CLOCK_NOW {
+                let call = ClockCall { runtime, span, call_node, environment };
+                return clock_host(call, callable, arguments(values, count));
+            }
             return chimi_runtime_invoke_native_v1(runtime, callable, values, count, span, call_node, environment);
         }
         let intrinsic = (*callable).intrinsic;
@@ -122,6 +127,9 @@ pub unsafe fn invoke_native(
             Intrinsic::TASK_RESULT..=Intrinsic::CHANNEL_BOUNDED
             | Intrinsic::CHANNEL_ADD_RECEIVER..=Intrinsic::WATCH_RECEIVE => {
                 channel_operation(intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::CLOCK_SLEEP..=Intrinsic::TASK_DEADLINE => {
+                clock_operation(ClockCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))
             }
             Intrinsic::TASK_START | Intrinsic::TASK_ALL..=Intrinsic::TASK_RACE => {
                 task_operation(TaskCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))

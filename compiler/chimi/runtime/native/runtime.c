@@ -1583,6 +1583,8 @@ _Static_assert(CHIMI_FIBER_CANCEL == 2, "layout: CHIMI_FIBER_CANCEL");
 _Static_assert(CHIMI_REQUEST_TASK_START == 1, "layout: CHIMI_REQUEST_TASK_START");
 _Static_assert(CHIMI_REQUEST_TASK_RESULT == 2, "layout: CHIMI_REQUEST_TASK_RESULT");
 _Static_assert(CHIMI_REQUEST_TASK_ANY == 42, "layout: CHIMI_REQUEST_TASK_ANY");
+_Static_assert(CHIMI_REQUEST_TIMER_NOW == 11, "layout: CHIMI_REQUEST_TIMER_NOW");
+_Static_assert(CHIMI_REQUEST_TIMER_SLEEP_UNTIL == 12, "layout: CHIMI_REQUEST_TIMER_SLEEP_UNTIL");
 _Static_assert(CHIMI_REQUEST_TASK_DRAIN == 43, "layout: CHIMI_REQUEST_TASK_DRAIN");
 _Static_assert(CHIMI_RESPONSE_ERROR == 7, "layout: CHIMI_RESPONSE_ERROR");
 _Static_assert(sizeof(ChimiTaskContext) == 48, "layout: sizeof(ChimiTaskContext)");
@@ -1687,6 +1689,8 @@ _Static_assert(HOST_RANDOM_NEXT_INT == 3, "layout: HOST_RANDOM_NEXT_INT");
 _Static_assert(HOST_CLOCK_NOW == 4, "layout: HOST_CLOCK_NOW");
 _Static_assert(HOST_CLOCK_TIMESTAMP == 5, "layout: HOST_CLOCK_TIMESTAMP");
 _Static_assert(HOST_CLOCK_SLEEP_UNTIL == 6, "layout: HOST_CLOCK_SLEEP_UNTIL");
+_Static_assert(HOST_CLOCK_SHIFTED_TIMESTAMP == 7, "layout: HOST_CLOCK_SHIFTED_TIMESTAMP");
+_Static_assert(HOST_SELECT_SLEEP == 8, "layout: HOST_SELECT_SLEEP");
 _Static_assert(sizeof(ChimiConstructor) == 28, "layout: sizeof(ChimiConstructor)");
 _Static_assert(offsetof(ChimiConstructor, type_name) == 0, "layout: offsetof(ChimiConstructor, type_name)");
 _Static_assert(sizeof(((ChimiConstructor *)0)->type_name) == 4, "layout: sizeof(((ChimiConstructor *)0)->type_name)");
@@ -1736,6 +1740,7 @@ _Static_assert(CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE == 27, "layout: CHIMI_
 _Static_assert(CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER == 28, "layout: CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER");
 _Static_assert(CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE == 29, "layout: CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_NONE == 7, "layout: CHIMI_CONSTRUCTOR_OPTION_NONE");
+_Static_assert(CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT == 43, "layout: CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT");
 _Static_assert(CHIMI_CONSTRUCTOR_RESULT_OK == 49, "layout: CHIMI_CONSTRUCTOR_RESULT_OK");
 _Static_assert(CHIMI_CONSTRUCTOR_RESULT_ERR == 50, "layout: CHIMI_CONSTRUCTOR_RESULT_ERR");
 _Static_assert(CHIMI_INTRINSIC_JSON_DECODE == 142, "layout: CHIMI_INTRINSIC_JSON_DECODE");
@@ -1804,6 +1809,20 @@ _Static_assert(CHIMI_INTRINSIC_LIST_SLICE == 131, "layout: CHIMI_INTRINSIC_LIST_
 _Static_assert(CHIMI_INTRINSIC_LIST_SET == 132, "layout: CHIMI_INTRINSIC_LIST_SET");
 _Static_assert(CHIMI_INTRINSIC_TASK_START == 8, "layout: CHIMI_INTRINSIC_TASK_START");
 _Static_assert(CHIMI_INTRINSIC_TASK_RESULT == 9, "layout: CHIMI_INTRINSIC_TASK_RESULT");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_SLEEP == 59, "layout: CHIMI_INTRINSIC_CLOCK_SLEEP");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_NOW == 60, "layout: CHIMI_INTRINSIC_CLOCK_NOW");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_TIMESTAMP == 61, "layout: CHIMI_INTRINSIC_CLOCK_TIMESTAMP");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_SINCE == 62, "layout: CHIMI_INTRINSIC_CLOCK_SINCE");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_SLEEP_UNTIL == 63, "layout: CHIMI_INTRINSIC_CLOCK_SLEEP_UNTIL");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_ADD == 64, "layout: CHIMI_INTRINSIC_CLOCK_ADD");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_BETWEEN == 65, "layout: CHIMI_INTRINSIC_CLOCK_BETWEEN");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_TIMESTAMP_TO_TEXT == 66, "layout: CHIMI_INTRINSIC_CLOCK_TIMESTAMP_TO_TEXT");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_UNIX_NANOSECONDS == 67, "layout: CHIMI_INTRINSIC_CLOCK_UNIX_NANOSECONDS");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_FROM_UNIX_NANOSECONDS == 68, "layout: CHIMI_INTRINSIC_CLOCK_FROM_UNIX_NANOSECONDS");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_TIMESTAMP_BETWEEN == 69, "layout: CHIMI_INTRINSIC_CLOCK_TIMESTAMP_BETWEEN");
+_Static_assert(CHIMI_INTRINSIC_CLOCK_STARTING_AT == 70, "layout: CHIMI_INTRINSIC_CLOCK_STARTING_AT");
+_Static_assert(CHIMI_INTRINSIC_TASK_TIMEOUT == 71, "layout: CHIMI_INTRINSIC_TASK_TIMEOUT");
+_Static_assert(CHIMI_INTRINSIC_TASK_DEADLINE == 72, "layout: CHIMI_INTRINSIC_TASK_DEADLINE");
 _Static_assert(CHIMI_INTRINSIC_TASK_ALL == 73, "layout: CHIMI_INTRINSIC_TASK_ALL");
 _Static_assert(CHIMI_INTRINSIC_TASK_RESULTS == 74, "layout: CHIMI_INTRINSIC_TASK_RESULTS");
 _Static_assert(CHIMI_INTRINSIC_TASK_RACE == 75, "layout: CHIMI_INTRINSIC_TASK_RACE");
@@ -4427,11 +4446,6 @@ static ChimiControl *invoke_binding(ChimiRuntime *runtime, uint32_t binding, Chi
   return control;
 }
 
-static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
-                                       ChimiValue **arguments, uint32_t argument_count,
-                                       uint64_t span, uint32_t call_node,
-                                       ChimiEnvironment *environment);
-
 /* The calls the evaluator hands back to C: an intrinsic, a host function, or a
    C binding. */
 ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallable *callable,
@@ -4446,9 +4460,6 @@ ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallabl
   if (callable->kind == CALL_INTRINSIC)
     return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
                             span, call_node, call_environment);
-  if (callable->kind == CALL_HOST && callable->host >= HOST_CLOCK_NOW)
-    return invoke_clock_host(runtime, callable, arguments, argument_count, span, call_node,
-                             call_environment);
   return invoke_host(runtime, callable->host, arguments, argument_count,
                      span, call_node, call_environment);
 }
@@ -5369,43 +5380,14 @@ ChimiControl *chimi_intrinsic_core_v1(uint32_t intrinsic, ChimiValue **arguments
 /* The shared Void, False and True, for the code in Rust. */
 ChimiValue *chimi_runtime_shared_value_v1(uint32_t index) { return shared_value(index); }
 
-/* std/clock and timeouts (time-and-outcomes.md, "Time sources" and "Timeouts and
-   deadlines").
-
-   A `clock` provider bound by `using` sits in CHIMI_CLOCK_REQUIREMENT_SLOT, and every
-   std/clock function reads time through it. With none bound, the runner's execution
-   clock provider answers: the scheduler's real or virtual source. Its methods are
-   HOST_CLOCK_* callables, and referencing the `clock` need builds it as a record, so
-   it can be passed on, for example to `Clock.starting_at`.
-
-   `Task.timeout` and `Task.deadline` read and wait on the execution time source, not
-   on a bound provider: a scope's deadline is a scheduler timer. */
-static ChimiValue *instant_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_INSTANT, nanoseconds); }
-static ChimiValue *timestamp_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_TIMESTAMP, nanoseconds); }
+/* std/clock and timeouts are Rust (chimi-runtime intrinsics/clocks.rs). The waits
+   below still build clock host callables and read the execution source's now. */
 static ChimiValue *clock_host_value(HostFunction function) {
   ChimiCallable *callable = allocate(1, sizeof(*callable));
   allocation_kind(callable, ALLOCATION_CALLABLE);
   callable->kind = CALL_HOST; callable->host = function; callable->name = "clock";
   return callable_value(callable);
 }
-/* A Clock record: `now`, `sleep_until`, `timestamp`, in field order. */
-static ChimiValue *clock_record(ChimiValue *now, ChimiValue *sleep_until, ChimiValue *timestamp) {
-  ChimiValue *value = new_value(VALUE_RECORD);
-  value->as.record.length = 3;
-  value->as.record.fields = allocate(3, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  value->as.record.fields[0] = (RuntimeField){"now", now};
-  value->as.record.fields[1] = (RuntimeField){"sleep_until", sleep_until};
-  value->as.record.fields[2] = (RuntimeField){"timestamp", timestamp};
-  return value;
-}
-static ChimiValue *execution_clock_value(void) {
-  return clock_record(clock_host_value(HOST_CLOCK_NOW), clock_host_value(HOST_CLOCK_SLEEP_UNTIL),
-                      clock_host_value(HOST_CLOCK_TIMESTAMP));
-}
-ChimiValue *chimi_runtime_execution_clock_value_v1(void);
-ChimiValue *chimi_runtime_execution_clock_value_v1(void) { return execution_clock_value(); }
-
 /* Reads the execution source's now. Reading checks cancellation. NULL on success. */
 static ChimiControl *execution_now(int64_t *now, uint32_t call_node) {
   ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};
@@ -5414,208 +5396,6 @@ static ChimiControl *execution_now(int64_t *now, uint32_t call_node) {
   *now = request.value;
   return NULL;
 }
-/* Parks until `deadline`; at or before now it returns without parking. */
-static ChimiControl *execution_sleep_until(int64_t deadline, uint32_t call_node) {
-  for (;;) {
-    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL, .value = deadline};
-    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
-    if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
-    if (request.status != CHIMI_RESPONSE_PENDING)
-      return defect("Clock scheduler request failed", call_node);
-  }
-}
-/* Virtual wall time is `--clock-start` plus now, so both advance together; real wall
-   time is the host's. */
-static ChimiControl *execution_timestamp(ChimiRuntime *runtime, uint32_t call_node) {
-  int64_t now;
-  ChimiControl *stopped = execution_now(&now, call_node);
-  if (stopped) return stopped;
-  if (runtime->virtual_clock) {
-    int64_t wall;
-    if (__builtin_add_overflow(runtime->clock_start, now, &wall))
-      return defect("`Clock.timestamp` overflows the Timestamp range", call_node);
-    return success(timestamp_value(wall));
-  }
-  struct timespec host;
-  clock_gettime(CLOCK_REALTIME, &host);
-  return success(timestamp_value((int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec));
-}
-
-static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
-                                       ChimiValue **arguments, uint32_t argument_count,
-                                       uint64_t span, uint32_t call_node,
-                                       ChimiEnvironment *environment) {
-  switch (callable->host) {
-    case HOST_CLOCK_NOW: {
-      int64_t now;
-      ChimiControl *stopped = execution_now(&now, call_node);
-      return stopped ? stopped : success(instant_value(now));
-    }
-    case HOST_CLOCK_TIMESTAMP: return execution_timestamp(runtime, call_node);
-    case HOST_CLOCK_SLEEP_UNTIL:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INSTANT)
-        return intrinsic_shape_defect(call_node);
-      return execution_sleep_until(arguments[0]->as.integer, call_node);
-    case HOST_CLOCK_SHIFTED_TIMESTAMP: {
-      ChimiControl *now = invoke(runtime, callable->inner, NULL, 0, span, call_node, environment);
-      if (now->kind != CONTROL_SUCCESS) return now;
-      if (now->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
-      int64_t wall;
-      if (__builtin_add_overflow(now->value->as.integer, callable->shift, &wall))
-        return defect("`Clock.starting_at` clock's timestamp overflows the Timestamp range", call_node);
-      return success(timestamp_value(wall));
-    }
-    case HOST_SELECT_SLEEP: {
-      ChimiValue *at[] = {instant_value(callable->shift)};
-      return invoke(runtime, callable->inner, at, 1, span, call_node, environment);
-    }
-    default: return defect("unknown clock host function", call_node);
-  }
-}
-
-/* Calls `method` of the bound clock provider, or of the execution clock. */
-static ChimiControl *clock_method(ChimiRuntime *runtime, ChimiEnvironment *environment,
-                                  const char *method, ChimiValue **arguments,
-                                  uint32_t argument_count, uint64_t span, uint32_t call_node) {
-  ChimiValue *provider = environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT];
-  if (!provider) provider = execution_clock_value();
-  ChimiValue *callable = select_value(provider, method);
-  if (!callable || callable->kind != VALUE_CALLABLE)
-    return defect("provider has no callable field", call_node);
-  return invoke(runtime, callable->as.callable, arguments, argument_count, span, call_node, environment);
-}
-
-static ChimiControl *timed_out(int64_t limit, uint32_t call_node) {
-  ChimiValue *fields[] = {duration_value(limit)};
-  ChimiValue *error = standard_value(CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT, fields, 1);
-  return error ? failure(error) : defect("Timeout.TimedOut is missing from the program", call_node);
-}
-
-/* Runs `operation` in a cancellation scope of the calling task that the scheduler
-   fires at `deadline` (time-and-outcomes.md, "Semantics" of timeouts):
-   - A deadline at or before now never starts the operation.
-   - The operation's own outcome stands: success, failure, defect, or a cancellation
-     that is not this scope's (the task's, an enclosing scope's, or shutdown's).
-   - The scope's cancellation becomes `Timeout.TimedOut(limit)` here. The scheduler
-     says whether it is that cancellation when the scope exits; a terminal
-     cancellation exits nothing, because the fiber must not park again. */
-static ChimiControl *run_in_scope(ChimiRuntime *runtime, ChimiValue *operation, int64_t now,
-                                  int64_t deadline, int64_t limit, uint64_t span,
-                                  uint32_t call_node, ChimiEnvironment *environment) {
-  if (deadline <= now) return timed_out(limit, call_node);
-  ChimiSchedulerRequest enter = {.kind = CHIMI_REQUEST_SCOPE_ENTER, .value = deadline};
-  if (scheduler_request(&enter) == CHIMI_FIBER_CANCEL) return cancelled();
-  if (enter.status != CHIMI_RESPONSE_OK) return defect("Task.timeout scheduler request failed", call_node);
-  ChimiControl *control = invoke(runtime, operation->as.callable, NULL, 0, span, call_node, environment);
-  if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;
-  for (;;) {
-    /* A cancelled operation's values are discarded, so the scope's capabilities go. */
-    ChimiSchedulerRequest exit = {.kind = CHIMI_REQUEST_SCOPE_EXIT, .token = enter.token,
-                                  .value = control->kind == CONTROL_CANCEL};
-    if (scheduler_request(&exit) == CHIMI_FIBER_CANCEL) return cancelled();
-    if (exit.status == CHIMI_RESPONSE_PENDING) continue;
-    if (exit.status != CHIMI_RESPONSE_OK) return defect("Task.timeout scheduler request failed", call_node);
-    if (control->kind == CONTROL_CANCEL && exit.value == 1) return timed_out(limit, call_node);
-    return control;
-  }
-}
-
-static ChimiControl *invoke_clock(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
-                                  uint32_t argument_count, uint64_t span, uint32_t call_node,
-                                  ChimiEnvironment *environment) {
-#define CLOCK_SHAPE(count, ...) \
-  do { if (argument_count != (count)) return intrinsic_shape_defect(call_node); \
-       ValueKind kinds[] = {__VA_ARGS__}; \
-       for (uint32_t i = 0; i < (count); ++i) \
-         if (arguments[i]->kind != kinds[i]) return intrinsic_shape_defect(call_node); } while (0)
-  int64_t result;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_CLOCK_NOW:
-      if (argument_count != 0) return intrinsic_shape_defect(call_node);
-      return clock_method(runtime, environment, "now", NULL, 0, span, call_node);
-    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP:
-      if (argument_count != 0) return intrinsic_shape_defect(call_node);
-      return clock_method(runtime, environment, "timestamp", NULL, 0, span, call_node);
-    case CHIMI_INTRINSIC_CLOCK_SLEEP_UNTIL:
-      CLOCK_SHAPE(1, VALUE_INSTANT);
-      return clock_method(runtime, environment, "sleep_until", arguments, 1, span, call_node);
-    case CHIMI_INTRINSIC_CLOCK_SINCE: {
-      CLOCK_SHAPE(1, VALUE_INSTANT);
-      ChimiControl *now = clock_method(runtime, environment, "now", NULL, 0, span, call_node);
-      if (now->kind != CONTROL_SUCCESS) return now;
-      if (now->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
-      if (__builtin_sub_overflow(now->value->as.integer, arguments[0]->as.integer, &result))
-        return defect("`Clock.since` overflows the Duration range", call_node);
-      return success(duration_value(result));
-    }
-    case CHIMI_INTRINSIC_CLOCK_ADD:
-      CLOCK_SHAPE(2, VALUE_INSTANT, VALUE_DURATION);
-      if (__builtin_add_overflow(arguments[0]->as.integer, arguments[1]->as.integer, &result))
-        return defect("`Clock.add` overflows the Instant range", call_node);
-      return success(instant_value(result));
-    case CHIMI_INTRINSIC_CLOCK_BETWEEN:
-      CLOCK_SHAPE(2, VALUE_INSTANT, VALUE_INSTANT);
-      if (__builtin_sub_overflow(arguments[1]->as.integer, arguments[0]->as.integer, &result))
-        return defect("`Clock.between` overflows the Duration range", call_node);
-      return success(duration_value(result));
-    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP_TO_TEXT: {
-      CLOCK_SHAPE(1, VALUE_TIMESTAMP);
-      char text[CHIMI_TIMESTAMP_TEXT]; timestamp_text(arguments[0]->as.integer, text);
-      return success(text_value(text));
-    }
-    case CHIMI_INTRINSIC_CLOCK_UNIX_NANOSECONDS:
-      CLOCK_SHAPE(1, VALUE_TIMESTAMP);
-      return success(integer_value(arguments[0]->as.integer));
-    case CHIMI_INTRINSIC_CLOCK_FROM_UNIX_NANOSECONDS:
-      CLOCK_SHAPE(1, VALUE_INTEGER);
-      return success(timestamp_value(arguments[0]->as.integer));
-    case CHIMI_INTRINSIC_CLOCK_TIMESTAMP_BETWEEN:
-      CLOCK_SHAPE(2, VALUE_TIMESTAMP, VALUE_TIMESTAMP);
-      if (__builtin_sub_overflow(arguments[1]->as.integer, arguments[0]->as.integer, &result))
-        return defect("`Clock.timestamp_between` overflows the Duration range", call_node);
-      return success(duration_value(result));
-    case CHIMI_INTRINSIC_CLOCK_STARTING_AT: {
-      CLOCK_SHAPE(2, VALUE_RECORD, VALUE_TIMESTAMP);
-      ChimiValue *now = select_value(arguments[0], "now");
-      ChimiValue *sleep_until = select_value(arguments[0], "sleep_until");
-      if (!now || now->kind != VALUE_CALLABLE || !sleep_until)
-        return defect("provider has no callable field", call_node);
-      ChimiControl *started = invoke(runtime, now->as.callable, NULL, 0, span, call_node, environment);
-      if (started->kind != CONTROL_SUCCESS) return started;
-      if (started->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
-      int64_t shift;
-      if (__builtin_sub_overflow(arguments[1]->as.integer, started->value->as.integer, &shift))
-        return defect("`Clock.starting_at` overflows the Timestamp range", call_node);
-      ChimiValue *timestamp = clock_host_value(HOST_CLOCK_SHIFTED_TIMESTAMP);
-      timestamp->as.callable->inner = now->as.callable;
-      timestamp->as.callable->shift = shift;
-      return success(clock_record(now, sleep_until, timestamp));
-    }
-    case CHIMI_INTRINSIC_TASK_TIMEOUT:
-    case CHIMI_INTRINSIC_TASK_DEADLINE: {
-      bool timeout = intrinsic == CHIMI_INTRINSIC_TASK_TIMEOUT;
-      CLOCK_SHAPE(2, VALUE_CALLABLE, timeout ? VALUE_DURATION : VALUE_INSTANT);
-      int64_t now, deadline, limit;
-      ChimiControl *stopped = execution_now(&now, call_node);
-      if (stopped) return stopped;
-      if (timeout) {
-        limit = arguments[1]->as.integer;
-        if (__builtin_add_overflow(now, limit, &deadline)) {
-          char text[32]; duration_text(limit, text);
-          return defect(numeric_message("`Task.timeout(%s)` overflows the Instant range", text), call_node);
-        }
-      } else {
-        deadline = arguments[1]->as.integer;
-        if (__builtin_sub_overflow(deadline, now, &limit))
-          return defect("`Task.deadline` is too far from now for a Duration", call_node);
-      }
-      return run_in_scope(runtime, arguments[0], now, deadline, limit, span, call_node, environment);
-    }
-  }
-#undef CLOCK_SHAPE
-  return defect("unknown standard intrinsic", call_node);
-}
-
 /* std/wait (time-and-outcomes.md, "Choosing among events"). An Event is a record
    that is never shown to source code: `kind` is a SELECT_EVENT_* code, `source` the
    receiver, inbox, task, Duration, or Instant it waits on, `map` the mapping
@@ -5894,8 +5674,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if ((intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST) ||
       intrinsic == CHIMI_INTRINSIC_SELECT_WATCH)
     return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
-    return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if ((intrinsic >= CHIMI_INTRINSIC_TASK_RESULT && intrinsic <= CHIMI_INTRINSIC_CHANNEL_BOUNDED) ||
       (intrinsic >= CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER && intrinsic <= CHIMI_INTRINSIC_WATCH_RECEIVE))
     return chimi_runtime_channel_operation_v1(intrinsic, arguments, argument_count, call_node);
@@ -5903,51 +5681,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       (intrinsic >= CHIMI_INTRINSIC_TASK_ALL && intrinsic <= CHIMI_INTRINSIC_TASK_RACE))
     return chimi_runtime_task_operation_v1(runtime, intrinsic, arguments, argument_count, span, call_node,
                                            environment);
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_CLOCK_SLEEP: {
-      /* `Clock.sleep(d)` is `sleep_until(now + d)`. Reading now checks
-         cancellation; a deadline at or before now then returns without
-         parking (time-and-outcomes.md, "The Clock capability"). */
-      if (argument_count != 1 || arguments[0]->kind != VALUE_DURATION)
-        return intrinsic_shape_defect(call_node);
-      if (environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT]) {
-        /* A bound provider: `sleep_until(add(now(), d))` through its methods. */
-        ChimiControl *read = clock_method(runtime, environment, "now", NULL, 0, span, call_node);
-        if (read->kind != CONTROL_SUCCESS) return read;
-        if (read->value->kind != VALUE_INSTANT) return intrinsic_shape_defect(call_node);
-        int64_t until;
-        if (__builtin_add_overflow(read->value->as.integer, arguments[0]->as.integer, &until)) {
-          char duration[32];
-          duration_text(arguments[0]->as.integer, duration);
-          return defect(numeric_message("`Clock.sleep(%s)` overflows the Instant range", duration),
-                        call_node);
-        }
-        ChimiValue *at[] = {instant_value(until)};
-        return clock_method(runtime, environment, "sleep_until", at, 1, span, call_node);
-      }
-      ChimiSchedulerRequest now = {.kind = CHIMI_REQUEST_TIMER_NOW};
-      if (scheduler_request(&now) == CHIMI_FIBER_CANCEL) return cancelled();
-      if (now.status != CHIMI_RESPONSE_OK)
-        return defect("Clock.sleep scheduler request failed", call_node);
-      int64_t deadline;
-      if (__builtin_add_overflow(now.value, arguments[0]->as.integer, &deadline)) {
-        char duration[32];
-        duration_text(arguments[0]->as.integer, duration);
-        return defect(numeric_message("`Clock.sleep(%s)` overflows the Instant range", duration),
-                      call_node);
-      }
-      for (;;) {
-        ChimiSchedulerRequest request = {
-          .kind = CHIMI_REQUEST_TIMER_SLEEP_UNTIL,
-          .value = deadline,
-        };
-        if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
-        if (request.status == CHIMI_RESPONSE_OK) return success(void_value());
-        if (request.status != CHIMI_RESPONSE_PENDING)
-          return defect("Clock.sleep scheduler request failed", call_node);
-      }
-    }
-  }
   return defect("unknown standard intrinsic", call_node);
 }
 

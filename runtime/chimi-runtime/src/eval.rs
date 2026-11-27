@@ -60,8 +60,6 @@ unsafe extern "C" {
     static CHIMI_CONSTRUCTORS: [Constructor; 0];
     /// The module constants, decoded before the entry runs.
     static chimi_runtime_constant_values: AtomicPtr<*mut Value>;
-    /// The runner's execution clock provider, as the `clock` need's value.
-    fn chimi_runtime_execution_clock_value_v1() -> *mut Value;
     /// The scheduler's scope queries; `runtime.c` defines weak stand-ins
     /// returning 0 for a program linked without the scheduler.
     fn chimi_fiber_scope_cancel_pending() -> u32;
@@ -468,7 +466,7 @@ unsafe fn reference(eval: Eval, id: u32) -> *mut Control {
                 }
                 // The runner closes `clock: Clock` with the execution clock provider.
                 if string_bytes(shape.name) == b"clock" {
-                    return success(chimi_runtime_execution_clock_value_v1());
+                    return success(crate::intrinsics::clocks::execution_clock_value());
                 }
                 defect(c"closed core has no provider", -1)
             }

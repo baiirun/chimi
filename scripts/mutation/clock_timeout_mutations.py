@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 RUNTIME = "runtime/native/runtime.c"
+CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 
@@ -21,11 +22,11 @@ def clock(name, file, edits, filter=""):
 
 MUTATIONS = [
     # A scope converts only its own delivered cancellation.
-    clock("a timeout converts any cancellation", RUNTIME, [(
-        "    if (control->kind == CONTROL_CANCEL && exit.value == 1) return timed_out(limit, call_node);",
-        "    if (control->kind == CONTROL_CANCEL) return timed_out(limit, call_node);")]),
-    clock("a terminal cancellation still exits its scopes", RUNTIME, [(
-        "  if (control->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return control;\n",
+    clock("a timeout converts any cancellation", CLOCKS, [(
+        "            if was_cancelled && exit.value == 1 {",
+        "            if was_cancelled {")]),
+    clock("a terminal cancellation still exits its scopes", CLOCKS, [(
+        "        if was_cancelled && cancel_is_terminal() {\n            return control;\n        }\n",
         "")]),
     # Firing delivers the outermost fired scope.
     clock("the innermost fired scope is delivered", SCOPE, [(
@@ -58,20 +59,22 @@ MUTATIONS = [
         "        if !self.polls_scope_deadlines(task) {\n            return;\n        }\n        let now",
         "        if true {\n            return;\n        }\n        let now")]),
     # Non-positive limits never start the operation.
-    clock("a deadline equal to now starts the operation", RUNTIME, [(
-        "  if (deadline <= now) return timed_out(limit, call_node);",
-        "  if (deadline < now) return timed_out(limit, call_node);")]),
-    clock("a deadline carries the deadline instead of the time to it", RUNTIME, [(
-        "        if (__builtin_sub_overflow(deadline, now, &limit))",
-        "        limit = deadline; if (0)")]),
+    clock("a deadline equal to now starts the operation", CLOCKS, [(
+        "        if deadline <= now {",
+        "        if deadline < now {")]),
+    clock("a deadline carries the deadline instead of the time to it", CLOCKS, [(
+        "                let Some(limit) = deadline.checked_sub(now) else {",
+        "                let Some(limit) = Some(deadline) else {")]),
     # Time functions read the bound provider.
-    clock("time functions bypass the bound provider", RUNTIME, [(
-        "  ChimiValue *provider = environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT];\n"
-        "  if (!provider) provider = execution_clock_value();",
-        "  ChimiValue *provider = execution_clock_value();")]),
-    clock("starting_at ignores its timestamp", RUNTIME, [(
-        "      timestamp->as.callable->shift = shift;",
-        "      timestamp->as.callable->shift = 0;")]),
+    clock("time functions bypass the bound provider", CLOCKS, [(
+        "        let mut provider = *(*call.environment).requirements.add(CHIMI_CLOCK_REQUIREMENT_SLOT as usize);\n"
+        "        if provider.is_null() {\n"
+        "            provider = execution_clock_value();\n"
+        "        }",
+        "        let provider = execution_clock_value();")]),
+    clock("starting_at ignores its timestamp", CLOCKS, [(
+        "        (*shifted).shift = shift;",
+        "        (*shifted).shift = 0;")]),
     # --clock-start is virtual-only.
     clock("--clock-start is accepted with the real clock", RUNTIME, [(
         "    if (clock_start_given && !runtime.virtual_clock) {",
