@@ -76,7 +76,9 @@ fn push_bytes(text: &mut FloatText, bytes: &[u8]) {
 /// the fuzz oracle keeps (tests/fuzz/float-c-reference.c), and it leaves
 /// core's float formatting, about 12 KiB, out of every program.
 fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
-    for precision in 0..=16 {
+    let mut precision = -1;
+    loop {
+        precision += 1;
         let mut scientific = [0u8; 40];
         // SAFETY: the buffer holds 40 bytes, and `%.16e` of a finite double
         // needs at most 24 with its NUL.
@@ -90,7 +92,8 @@ fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
             .fold(0u64, |value, &digit| value * 10 + u64::from(digit - b'0'));
         let scale = exponent_of(&scientific[split + 1..]) - precision;
         let smallest = 10u64.pow(precision as u32);
-        let chosen = if round_trips(nearest, scale, magnitude) {
+        // 17 significant digits always round-trip, so the loop ends there.
+        let chosen = if precision == 16 || round_trips(nearest, scale, magnitude) {
             if round_trips(nearest + 1, scale, magnitude) && is_tie(magnitude, nearest) { nearest + 1 } else { nearest }
         } else if round_trips(nearest + 1, scale, magnitude) {
             nearest + 1
@@ -106,19 +109,6 @@ fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
         digits.trim_end(b'0', 1);
         return (digits, exponent);
     }
-    // 17 significant digits always round-trip.
-    let mut scientific = [0u8; 40];
-    // SAFETY: as above.
-    unsafe {
-        libc::snprintf(scientific.as_mut_ptr().cast(), scientific.len(), c"%.16e".as_ptr(), magnitude);
-    }
-    let split = scientific.iter().position(|&byte| byte == b'e').unwrap_or(0);
-    let mut digits = TextBuffer::<24>::new();
-    for &byte in scientific[..split].iter().filter(|&&byte| byte != b'.') {
-        digits.push(byte);
-    }
-    digits.trim_end(b'0', 1);
-    (digits, exponent_of(&scientific[split + 1..]))
 }
 
 /// The exponent `%e` wrote after its `e`, up to the NUL.
@@ -169,36 +159,7 @@ fn is_tie(magnitude: f64, nearest: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{shortest_digits, text};
-
-    /// core's `{:e}` digits and exponent, which `shortest_digits` matches.
-    fn core_digits(magnitude: f64) -> (String, i32) {
-        let written = format!("{magnitude:e}");
-        let (significand, exponent) = written.split_once('e').unwrap();
-        (significand.replace('.', ""), exponent.parse().unwrap())
-    }
-
-    #[test]
-    fn shortest_digits_match_core_on_every_kind_of_double() {
-        let mut state = 0x9e37_79b9_7f4a_7c15u64;
-        let mut values = vec![5e-324, f64::MIN_POSITIVE, f64::MAX, 1.0, 0.3, 2f64.powi(-1074), 9007199254740993.0];
-        // Powers of two, where the interval below is half as wide, and
-        // random bit patterns across the whole range.
-        values.extend((-1074..1024).map(|power| 2f64.powi(power)));
-        for _ in 0..200_000 {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            let value = f64::from_bits(state & !(1 << 63));
-            if value.is_finite() && value != 0.0 {
-                values.push(value);
-            }
-        }
-        for value in values {
-            let (digits, exponent) = shortest_digits(value);
-            assert_eq!((digits.as_str().to_owned(), exponent), core_digits(value), "{value:e}");
-        }
-    }
+    use super::text;
 
     #[test]
     fn floats_print_their_shortest_round_trip_text() {

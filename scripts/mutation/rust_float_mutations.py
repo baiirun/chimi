@@ -19,6 +19,12 @@ def fuzz(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["runtime_fuzz"], filter="")
 
 
+def digits(name, edits):
+    """A mutant of the digit choice, which the corpus samples too sparsely to
+    pin; tests/float_text.rs compares it with core's shortest digits."""
+    return dict(name=name, file=FLOAT, edits=edits, targets=["float_text"], filter="")
+
+
 MUTATIONS = [
     fuzz("positional up to exponent 16", FLOAT,
          [("if (-5..16).contains(&exponent) {", "if (-5..17).contains(&exponent) {")]),
@@ -39,20 +45,18 @@ MUTATIONS = [
            "        text.push_digits")]),
     fuzz("exponent sign ignored when read", FLOAT,
          [("    if negative { -value } else { value }", "    value")]),
-    fuzz("no candidate above the nearest", FLOAT,
+    digits("no candidate above the nearest",
          [("        } else if round_trips(nearest + 1, scale, magnitude) {\n            nearest + 1\n",
            "        } else if false {\n            nearest + 1\n")]),
-    fuzz("no candidate below the nearest", FLOAT,
+    digits("no candidate below the nearest",
          [("        } else if nearest > smallest && round_trips(nearest - 1, scale, magnitude) {",
            "        } else if false && nearest > smallest && round_trips(nearest - 1, scale, magnitude) {")]),
-    fuzz("a tie keeps the smaller candidate", FLOAT,
+    digits("a tie keeps the smaller candidate",
          [("round_trips(nearest + 1, scale, magnitude) && is_tie(magnitude, nearest) { nearest + 1 }",
            "round_trips(nearest + 1, scale, magnitude) && false { nearest + 1 }")]),
-    fuzz("a carry keeps its trailing zero", FLOAT,
+    digits("a carry keeps its trailing zero",
          [("        let exponent = scale + digits.len() as i32 - 1;\n        digits.trim_end(b'0', 1);\n",
            "        let exponent = scale + digits.len() as i32 - 1;\n")]),
-    fuzz("the 17-digit fallback keeps its zeros", FLOAT,
-         [("        digits.push(byte);\n    }\n    digits.trim_end(b'0', 1);", "        digits.push(byte);\n    }")]),
     fuzz("C glue drops the text", RUNTIME,
          [("static void float_text(double value, char *output) { chimi_float_text_v1(value, output); }",
            "static void float_text(double value, char *output) { chimi_float_text_v1(value, output); output[0] = '0'; }")]),
