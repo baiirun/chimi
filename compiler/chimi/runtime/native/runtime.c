@@ -259,6 +259,15 @@ struct ChimiTaskContext {
   uint64_t parent;
 };
 
+/* What every incarnation of one spec runs: its body, copied into each new heap. A
+   handoff body also takes its start argument, which it asks the scheduler for.
+   The supervisor starts in Rust (intrinsics/process_starts.rs) build it. */
+typedef struct {
+  ChimiRuntime *runtime;
+  struct RuntimeFragment *body;
+  bool handoff;
+} ProcessSpecContext;
+
 typedef enum {
   ALLOCATION_BYTES,
   ALLOCATION_VALUE,
@@ -1594,6 +1603,56 @@ _Static_assert(CHIMI_SELECT_TIMER == 4, "layout: CHIMI_SELECT_TIMER");
 _Static_assert(CHIMI_REQUEST_PROCESS_SELF == 13, "layout: CHIMI_REQUEST_PROCESS_SELF");
 _Static_assert(CHIMI_REQUEST_PROCESS_SEND == 14, "layout: CHIMI_REQUEST_PROCESS_SEND");
 _Static_assert(CHIMI_REQUEST_PROCESS_RECEIVE == 15, "layout: CHIMI_REQUEST_PROCESS_RECEIVE");
+_Static_assert(CHIMI_REQUEST_SUPERVISOR_START == 16, "layout: CHIMI_REQUEST_SUPERVISOR_START");
+_Static_assert(CHIMI_REQUEST_SUPERVISOR_START_PROCESS == 17, "layout: CHIMI_REQUEST_SUPERVISOR_START_PROCESS");
+_Static_assert(CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR == 22, "layout: CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR");
+_Static_assert(CHIMI_RESPONSE_CAPACITY_REACHED == 13, "layout: CHIMI_RESPONSE_CAPACITY_REACHED");
+_Static_assert(CHIMI_RESPONSE_NAME_TAKEN == 14, "layout: CHIMI_RESPONSE_NAME_TAKEN");
+_Static_assert(CHIMI_RESPONSE_STOPPED == 15, "layout: CHIMI_RESPONSE_STOPPED");
+_Static_assert(CHIMI_RESTART_NEVER == 1, "layout: CHIMI_RESTART_NEVER");
+_Static_assert(CHIMI_RESTART_ON_DEFECT == 2, "layout: CHIMI_RESTART_ON_DEFECT");
+_Static_assert(CHIMI_MEMBER_PROCESS == 1, "layout: CHIMI_MEMBER_PROCESS");
+_Static_assert(CHIMI_MEMBER_SUPERVISOR == 2, "layout: CHIMI_MEMBER_SUPERVISOR");
+_Static_assert(sizeof(ChimiProcessSpec) == 40, "layout: sizeof(ChimiProcessSpec)");
+_Static_assert(offsetof(ChimiProcessSpec, entry) == 0, "layout: offsetof(ChimiProcessSpec, entry)");
+_Static_assert(sizeof(((ChimiProcessSpec *)0)->entry) == 8, "layout: sizeof(((ChimiProcessSpec *)0)->entry)");
+_Static_assert(offsetof(ChimiProcessSpec, context) == 8, "layout: offsetof(ChimiProcessSpec, context)");
+_Static_assert(sizeof(((ChimiProcessSpec *)0)->context) == 8, "layout: sizeof(((ChimiProcessSpec *)0)->context)");
+_Static_assert(offsetof(ChimiProcessSpec, mailbox_capacity) == 16, "layout: offsetof(ChimiProcessSpec, mailbox_capacity)");
+_Static_assert(sizeof(((ChimiProcessSpec *)0)->mailbox_capacity) == 4, "layout: sizeof(((ChimiProcessSpec *)0)->mailbox_capacity)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->mailbox_capacity) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->mailbox_capacity)");
+_Static_assert(offsetof(ChimiProcessSpec, shutdown_within) == 24, "layout: offsetof(ChimiProcessSpec, shutdown_within)");
+_Static_assert(sizeof(((ChimiProcessSpec *)0)->shutdown_within) == 8, "layout: sizeof(((ChimiProcessSpec *)0)->shutdown_within)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->shutdown_within) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->shutdown_within)");
+_Static_assert(offsetof(ChimiProcessSpec, name) == 32, "layout: offsetof(ChimiProcessSpec, name)");
+_Static_assert(sizeof(((ChimiProcessSpec *)0)->name) == 8, "layout: sizeof(((ChimiProcessSpec *)0)->name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessSpec *)0)->name)");
+_Static_assert(sizeof(ChimiSupervisorMember) == 56, "layout: sizeof(ChimiSupervisorMember)");
+_Static_assert(offsetof(ChimiSupervisorMember, kind) == 0, "layout: offsetof(ChimiSupervisorMember, kind)");
+_Static_assert(sizeof(((ChimiSupervisorMember *)0)->kind) == 4, "layout: sizeof(((ChimiSupervisorMember *)0)->kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorMember *)0)->kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorMember *)0)->kind)");
+_Static_assert(offsetof(ChimiSupervisorMember, restart) == 4, "layout: offsetof(ChimiSupervisorMember, restart)");
+_Static_assert(sizeof(((ChimiSupervisorMember *)0)->restart) == 4, "layout: sizeof(((ChimiSupervisorMember *)0)->restart)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorMember *)0)->restart) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorMember *)0)->restart)");
+_Static_assert(offsetof(ChimiSupervisorMember, process) == 8, "layout: offsetof(ChimiSupervisorMember, process)");
+_Static_assert(sizeof(((ChimiSupervisorMember *)0)->process) == 40, "layout: sizeof(((ChimiSupervisorMember *)0)->process)");
+_Static_assert(offsetof(ChimiSupervisorMember, supervisor) == 48, "layout: offsetof(ChimiSupervisorMember, supervisor)");
+_Static_assert(sizeof(((ChimiSupervisorMember *)0)->supervisor) == 8, "layout: sizeof(((ChimiSupervisorMember *)0)->supervisor)");
+_Static_assert(sizeof(ChimiSupervisorPolicy) == 32, "layout: sizeof(ChimiSupervisorPolicy)");
+_Static_assert(offsetof(ChimiSupervisorPolicy, members) == 0, "layout: offsetof(ChimiSupervisorPolicy, members)");
+_Static_assert(sizeof(((ChimiSupervisorPolicy *)0)->members) == 8, "layout: sizeof(((ChimiSupervisorPolicy *)0)->members)");
+_Static_assert(offsetof(ChimiSupervisorPolicy, member_count) == 8, "layout: offsetof(ChimiSupervisorPolicy, member_count)");
+_Static_assert(sizeof(((ChimiSupervisorPolicy *)0)->member_count) == 8, "layout: sizeof(((ChimiSupervisorPolicy *)0)->member_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->member_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->member_count)");
+_Static_assert(offsetof(ChimiSupervisorPolicy, capacity) == 16, "layout: offsetof(ChimiSupervisorPolicy, capacity)");
+_Static_assert(sizeof(((ChimiSupervisorPolicy *)0)->capacity) == 4, "layout: sizeof(((ChimiSupervisorPolicy *)0)->capacity)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->capacity) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->capacity)");
+_Static_assert(offsetof(ChimiSupervisorPolicy, restart_limit) == 20, "layout: offsetof(ChimiSupervisorPolicy, restart_limit)");
+_Static_assert(sizeof(((ChimiSupervisorPolicy *)0)->restart_limit) == 4, "layout: sizeof(((ChimiSupervisorPolicy *)0)->restart_limit)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->restart_limit) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->restart_limit)");
+_Static_assert(offsetof(ChimiSupervisorPolicy, restart_within) == 24, "layout: offsetof(ChimiSupervisorPolicy, restart_within)");
+_Static_assert(sizeof(((ChimiSupervisorPolicy *)0)->restart_within) == 8, "layout: sizeof(((ChimiSupervisorPolicy *)0)->restart_within)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->restart_within) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiSupervisorPolicy *)0)->restart_within)");
 _Static_assert(CHIMI_REQUEST_PROCESS_MONITOR == 28, "layout: CHIMI_REQUEST_PROCESS_MONITOR");
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_ADDRESS == 18, "layout: CHIMI_REQUEST_SUPERVISOR_ADDRESS");
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS == 19, "layout: CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS");
@@ -1676,6 +1735,14 @@ _Static_assert(offsetof(ChimiSelectSource, deadline) == 40, "layout: offsetof(Ch
 _Static_assert(sizeof(((ChimiSelectSource *)0)->deadline) == 8, "layout: sizeof(((ChimiSelectSource *)0)->deadline)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSelectSource *)0)->deadline) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiSelectSource *)0)->deadline)");
 _Static_assert(CHIMI_RESPONSE_ERROR == 7, "layout: CHIMI_RESPONSE_ERROR");
+_Static_assert(sizeof(ProcessSpecContext) == 24, "layout: sizeof(ProcessSpecContext)");
+_Static_assert(offsetof(ProcessSpecContext, runtime) == 0, "layout: offsetof(ProcessSpecContext, runtime)");
+_Static_assert(sizeof(((ProcessSpecContext *)0)->runtime) == 8, "layout: sizeof(((ProcessSpecContext *)0)->runtime)");
+_Static_assert(offsetof(ProcessSpecContext, body) == 8, "layout: offsetof(ProcessSpecContext, body)");
+_Static_assert(sizeof(((ProcessSpecContext *)0)->body) == 8, "layout: sizeof(((ProcessSpecContext *)0)->body)");
+_Static_assert(offsetof(ProcessSpecContext, handoff) == 16, "layout: offsetof(ProcessSpecContext, handoff)");
+_Static_assert(sizeof(((ProcessSpecContext *)0)->handoff) == 1, "layout: sizeof(((ProcessSpecContext *)0)->handoff)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ProcessSpecContext *)0)->handoff) == 3, "layout: CHIMI_LAYOUT_CLASS(((ProcessSpecContext *)0)->handoff)");
 _Static_assert(sizeof(ChimiTaskContext) == 48, "layout: sizeof(ChimiTaskContext)");
 _Static_assert(offsetof(ChimiTaskContext, runtime) == 0, "layout: offsetof(ChimiTaskContext, runtime)");
 _Static_assert(sizeof(((ChimiTaskContext *)0)->runtime) == 8, "layout: sizeof(((ChimiTaskContext *)0)->runtime)");
@@ -1927,6 +1994,10 @@ _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_PROCESS == 101, "layout: CHIMI_INTRINS
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR == 102, "layout: CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR");
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_POLICY == 103, "layout: CHIMI_INTRINSIC_SUPERVISOR_POLICY");
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_RESTARTS == 104, "layout: CHIMI_INTRINSIC_SUPERVISOR_RESTARTS");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_START == 105, "layout: CHIMI_INTRINSIC_SUPERVISOR_START");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_START_PROCESS == 106, "layout: CHIMI_INTRINSIC_SUPERVISOR_START_PROCESS");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR == 107, "layout: CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR");
+_Static_assert(CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF == 108, "layout: CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_RECEIVE == 93, "layout: CHIMI_INTRINSIC_PROCESS_RECEIVE");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_SEND == 94, "layout: CHIMI_INTRINSIC_PROCESS_SEND");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS == 95, "layout: CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS");
@@ -2026,6 +2097,12 @@ _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONS
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
 _Static_assert(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL == 36, "layout: CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL");
 _Static_assert(CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE == 37, "layout: CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE");
+_Static_assert(CHIMI_CONSTRUCTOR_RESTART_ON_DEFECT == 39, "layout: CHIMI_CONSTRUCTOR_RESTART_ON_DEFECT");
+_Static_assert(CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED == 40, "layout: CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED");
+_Static_assert(CHIMI_CONSTRUCTOR_START_NAME_TAKEN == 41, "layout: CHIMI_CONSTRUCTOR_START_NAME_TAKEN");
+_Static_assert(CHIMI_CONSTRUCTOR_START_STOPPED == 42, "layout: CHIMI_CONSTRUCTOR_START_STOPPED");
+_Static_assert(CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED == 51, "layout: CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED");
+_Static_assert(CHIMI_CONSTRUCTOR_HANDOFF_STOPPED == 52, "layout: CHIMI_CONSTRUCTOR_HANDOFF_STOPPED");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE == 35, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
@@ -2943,18 +3020,6 @@ static ChimiValue *float_value(double raw) { return chimi_value_float_v1(raw); }
 
 /* The numeric model. It mirrors compiler/chimi/src/numeric.rs value for value and
    message for message, because both execution paths must report identical outcomes. */
-
-#if CHIMI_PROCESS_KERNEL
-/* A defect message that outlives the collector: a defect ends its unit of work.
-   Only the process kernel still formats one here. */
-static const char *numeric_message(const char *format, ...) {
-  va_list arguments; va_start(arguments, format);
-  char *message = malloc(256);
-  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
-  vsnprintf(message, 256, format, arguments); va_end(arguments);
-  return message;
-}
-#endif
 
 /* Canonical Float text (chimi_runtime::float, which the interpreter prints
    with too): the shortest digits that parse back to the same value, positional
@@ -4782,29 +4847,6 @@ static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
 
 #if CHIMI_PROCESS_KERNEL
 
-/* The field `name` of a process record, or NULL. */
-static ChimiValue *process_field(const ChimiValue *record, const char *name) {
-  if (!record || record->kind != VALUE_RECORD) return NULL;
-  for (uint32_t index = 0; index < record->as.record.length; ++index)
-    if (strcmp(record->as.record.fields[index].name, name) == 0) return record->as.record.fields[index].value;
-  return NULL;
-}
-
-static ChimiValue *managed_value(ValueKind kind, uint64_t supervisor, uint64_t membership) {
-  ChimiValue *value = new_value(kind);
-  value->as.managed.supervisor = supervisor;
-  value->as.managed.membership = membership;
-  return value;
-}
-
-/* What every incarnation of one spec runs: its body, copied into each new heap. A
-   handoff body also takes its start argument, which it asks the scheduler for. */
-typedef struct {
-  ChimiRuntime *runtime;
-  RuntimeFragment *body;
-  bool handoff;
-} ProcessSpecContext;
-
 /* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
    is external so a built executable shows that it links the process kernel (MF06). */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
@@ -4874,265 +4916,20 @@ static void release_message_word(void *context, uint64_t message) {
   fragment_free((RuntimeFragment *)(uintptr_t)message);
 }
 
-/* The C structs one Supervisor.start or start_process request reads. The arrays are
-   freed after the request. The contexts belong to the scheduler once the request is
-   issued, served or not, so the host never frees one it has sent. */
-typedef struct {
-  void **arrays;
-  size_t array_count;
-  void **contexts;
-  size_t context_count;
-} ProcessMarshal;
-
-static void *marshal_keep(void ***items, size_t *count, void *item) {
-  void **grown = realloc(*items, (*count + 1) * sizeof(**items));
-  if (!grown) exhausted_memory();
-  *items = grown;
-  grown[(*count)++] = item;
-  return item;
-}
-
-/* Frees the arrays, and the contexts too unless the request was issued. */
-static void marshal_finish(ProcessMarshal *marshal, bool handed_over) {
-  for (size_t index = 0; index < marshal->array_count; ++index) free(marshal->arrays[index]);
-  if (!handed_over)
-    for (size_t index = 0; index < marshal->context_count; ++index)
-      release_spec_context_word(NULL, marshal->contexts[index]);
-  free(marshal->arrays);
-  free(marshal->contexts);
-}
-
-static uint32_t marshal_restart(const ChimiValue *restart) {
-  return restart && restart->kind == VALUE_CONSTRUCTED &&
-             restart->as.constructed.constructor ==
-               standard_constructor_symbol(CHIMI_CONSTRUCTOR_RESTART_ON_DEFECT)
-           ? CHIMI_RESTART_ON_DEFECT : CHIMI_RESTART_NEVER;
-}
-
-/* NULL, or the defect that stops the operation `function`. */
-static ChimiControl *marshal_spec(ChimiRuntime *runtime, const ChimiValue *spec, ProcessMarshal *marshal,
-                                  ChimiProcessSpec *out, const char *function, uint32_t call_node) {
-  ChimiValue *body = process_field(spec, "body"), *capacity = process_field(spec, "capacity");
-  ChimiValue *name = process_field(spec, "name"), *within = process_field(spec, "shutdown_within");
-  if (!body || body->kind != VALUE_CALLABLE || !capacity || capacity->kind != VALUE_INTEGER ||
-      !name || name->kind != VALUE_CONSTRUCTED || !within || within->kind != VALUE_DURATION)
-    return intrinsic_shape_defect(call_node);
-  if (capacity->as.integer > UINT32_MAX)
-    return defect(numeric_message("%s: mailbox capacity must be at most 4294967295, got %" PRId64,
-                                  function, capacity->as.integer), call_node);
-  void *roots[] = {body};
-  AllocationKind kinds[] = {ALLOCATION_VALUE};
-  RuntimeFragment *copy = NULL;
-  if (fragment_copy(roots, kinds, 1, &copy) != HEAP_OK) return defect(FOREIGN_POINTER_DEFECT, call_node);
-  ProcessSpecContext *context = malloc(sizeof(*context));
-  if (!context) exhausted_memory();
-  ChimiValue *handoff = process_field(spec, "handoff");
-  *context = (ProcessSpecContext){
-    .runtime = runtime,
-    .body = copy,
-    .handoff = handoff && handoff->kind == VALUE_BOOLEAN && handoff->as.boolean,
-  };
-  marshal_keep(&marshal->contexts, &marshal->context_count, context);
-  uint64_t registered = 0;
-  if (name->as.constructed.length == 1 && name->as.constructed.fields[0].value->kind == VALUE_PROCESS_ADDRESS)
-    registered = name->as.constructed.fields[0].value->as.address.target;
-  *out = (ChimiProcessSpec){
-    .entry = chimi_rt_process_entry,
-    .context = context,
-    .mailbox_capacity = (uint32_t)capacity->as.integer,
-    .shutdown_within = within->as.integer,
-    .name = registered,
-  };
-  return NULL;
-}
-
-static ChimiControl *marshal_policy(ChimiRuntime *runtime, const ChimiValue *policy, ProcessMarshal *marshal,
-                                    ChimiSupervisorPolicy *out, const char *function, uint32_t call_node) {
-  ChimiValue *members = process_field(policy, "members"), *capacity = process_field(policy, "capacity");
-  ChimiValue *restarts = process_field(policy, "restarts");
-  ChimiValue *limit = process_field(restarts, "limit"), *window = process_field(restarts, "window");
-  if (!members || members->kind != VALUE_LIST || !capacity || capacity->kind != VALUE_INTEGER ||
-      !limit || limit->kind != VALUE_INTEGER || !window || window->kind != VALUE_DURATION)
-    return intrinsic_shape_defect(call_node);
-  if (capacity->as.integer > UINT32_MAX)
-    return defect(numeric_message("%s: capacity must be at most 4294967295, got %" PRId64,
-                                  function, capacity->as.integer), call_node);
-  if (limit->as.integer > UINT32_MAX)
-    return defect(numeric_message("%s: restart limit must be at most 4294967295, got %" PRId64,
-                                  function, limit->as.integer), call_node);
-  uint32_t count = list_length(members);
-  ChimiSupervisorMember *array = calloc(count ? count : 1, sizeof(*array));
-  if (!array) exhausted_memory();
-  marshal_keep(&marshal->arrays, &marshal->array_count, array);
-  for (uint32_t index = 0; index < count; ++index) {
-    ChimiValue *member = list_get(members, index);
-    ChimiValue *spec = process_field(member, "spec"), *nested = process_field(member, "policy");
-    array[index].restart = marshal_restart(process_field(member, "restart"));
-    ChimiControl *failed;
-    if (spec) {
-      array[index].kind = CHIMI_MEMBER_PROCESS;
-      failed = marshal_spec(runtime, spec, marshal, &array[index].process, function, call_node);
-    } else {
-      ChimiSupervisorPolicy *child = calloc(1, sizeof(*child));
-      if (!child) exhausted_memory();
-      marshal_keep(&marshal->arrays, &marshal->array_count, child);
-      array[index].kind = CHIMI_MEMBER_SUPERVISOR;
-      array[index].supervisor = child;
-      failed = marshal_policy(runtime, nested, marshal, child, function, call_node);
-    }
-    if (failed) return failed;
-  }
-  *out = (ChimiSupervisorPolicy){
-    .members = array,
-    .member_count = count,
-    .capacity = (uint32_t)capacity->as.integer,
-    .restart_limit = (uint32_t)limit->as.integer,
-    .restart_within = window->as.integer,
-  };
-  return NULL;
-}
-
-static ChimiControl *start_error(uint32_t status, uint64_t name, const char *function, uint32_t call_node) {
-  switch (status) {
-    case CHIMI_RESPONSE_CAPACITY_REACHED:
-      return failure(standard_value(CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED, NULL, 0));
-    case CHIMI_RESPONSE_STOPPED: return failure(standard_value(CHIMI_CONSTRUCTOR_START_STOPPED, NULL, 0));
-    case CHIMI_RESPONSE_NAME_TAKEN: {
-      const char *label = process_name_label(name);
-      ChimiValue *fields[] = {text_value(label ? label : "")};
-      return failure(standard_value(CHIMI_CONSTRUCTOR_START_NAME_TAKEN, fields, 1));
-    }
-  }
-  return defect(numeric_message("%s scheduler request failed", function), call_node);
-}
-
-static bool is_kind(ChimiValue **arguments, uint32_t index, ValueKind kind) {
-  return arguments[index]->kind == kind;
-}
-
-/* The process kernel's requests that need no spec are Rust (chimi-runtime
-   intrinsics/process_kernel.rs): own address, mailbox counts, send, receive,
-   monitor, unmonitor, and Supervisor.address, remove_*, stop and wait. Only this
-   runtime variant calls it, so programs without processes do not link it (MF06).
-   NULL for the supervisor starts, still served below. */
+/* The process kernel is Rust (chimi-runtime intrinsics/process_kernel.rs and
+   process_starts.rs): sends, receives, monitors, mailbox counts, and the
+   supervisor's starts, address, removals, stop and wait. Only this runtime
+   variant calls it, so programs without processes do not link it (MF06), and
+   only this variant defines the incarnation entry it is given. */
 ChimiControl *chimi_runtime_process_kernel_v1(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                               uint32_t argument_count, uint64_t span, uint32_t call_node,
-                                              ChimiEnvironment *environment);
+                                              ChimiEnvironment *environment, ChimiFiberEntry process_entry);
 
-/* The process and supervisor operations that run on the scheduler. */
 static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                            uint32_t argument_count, uint64_t span, uint32_t call_node,
                                            ChimiEnvironment *environment) {
-  ChimiControl *served = chimi_runtime_process_kernel_v1(runtime, intrinsic, arguments, argument_count, span,
-                                                         call_node, environment);
-  if (served) return served;
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_SUPERVISOR_START:
-    case CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR: {
-      bool nested = intrinsic == CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR;
-      const char *function = nested ? "Supervisor.start_supervisor" : "Supervisor.start";
-      if (argument_count != (nested ? 3u : 1u) || (nested && !is_kind(arguments, 0, VALUE_SUPERVISOR_RUNNING)))
-        return intrinsic_shape_defect(call_node);
-      ProcessMarshal marshal = {0};
-      ChimiSupervisorPolicy policy;
-      ChimiControl *failed = marshal_policy(runtime, arguments[nested ? 1 : 0], &marshal, &policy,
-                                            function, call_node);
-      if (failed) {
-        marshal_finish(&marshal, false);
-        return failed;
-      }
-      ChimiProcessRequest request = {
-        .kind = nested ? CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR : CHIMI_REQUEST_SUPERVISOR_START,
-        .supervisor = nested ? arguments[0]->as.managed.supervisor : 0,
-        .restart = nested ? marshal_restart(arguments[2]) : 0,
-        .policy = &policy,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      marshal_finish(&marshal, true);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status == CHIMI_RESPONSE_OK)
-        return success(nested ? managed_value(VALUE_MANAGED_SUPERVISOR, arguments[0]->as.managed.supervisor,
-                                              request.membership)
-                              : managed_value(VALUE_SUPERVISOR_RUNNING, request.supervisor, 0));
-      return start_error(request.status, request.name, function, call_node);
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_START_PROCESS: {
-      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_SUPERVISOR_RUNNING))
-        return intrinsic_shape_defect(call_node);
-      ProcessMarshal marshal = {0};
-      ChimiProcessSpec spec;
-      ChimiControl *failed = marshal_spec(runtime, arguments[1], &marshal, &spec,
-                                          "Supervisor.start_process", call_node);
-      if (failed) {
-        marshal_finish(&marshal, false);
-        return failed;
-      }
-      ChimiProcessRequest request = {
-        .kind = CHIMI_REQUEST_SUPERVISOR_START_PROCESS,
-        .supervisor = arguments[0]->as.managed.supervisor,
-        .restart = marshal_restart(arguments[2]),
-        .spec = &spec,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      marshal_finish(&marshal, true);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status == CHIMI_RESPONSE_OK)
-        return success(managed_value(VALUE_MANAGED_PROCESS, arguments[0]->as.managed.supervisor,
-                                     request.membership));
-      return start_error(request.status, request.name, "Supervisor.start_process", call_node);
-    }
-    case CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF: {
-      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_SUPERVISOR_RUNNING))
-        return intrinsic_shape_defect(call_node);
-      ProcessMarshal marshal = {0};
-      ChimiProcessSpec spec;
-      ChimiControl *failed = marshal_spec(runtime, arguments[1], &marshal, &spec,
-                                          "Supervisor.start_handoff", call_node);
-      if (failed) {
-        marshal_finish(&marshal, false);
-        return failed;
-      }
-      /* The argument travels like a Process.send message: a copy in the caller's
-         heap whose Receivers and Completions go in flight once the start is
-         accepted. The new incarnation takes it before its body runs. */
-      void *roots[] = {arguments[2]};
-      AllocationKind kinds[] = {ALLOCATION_VALUE};
-      RuntimeFragment *argument = NULL;
-      if (fragment_copy(roots, kinds, 1, &argument) != HEAP_OK) {
-        marshal_finish(&marshal, false);
-        return defect(FOREIGN_POINTER_DEFECT, call_node);
-      }
-      CapabilityTransfer carried = {.collect = true};
-      transfer_captures(&carried, argument->roots[0]);
-      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
-      ChimiProcessRequest request = {
-        .kind = CHIMI_REQUEST_SUPERVISOR_START_PROCESS,
-        .supervisor = arguments[0]->as.managed.supervisor,
-        .restart = CHIMI_RESTART_NEVER,
-        .spec = &spec,
-        .message = (uint64_t)(uintptr_t)argument,
-        .carried = capabilities.count ? &capabilities : NULL,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      free(carried.carried);
-      marshal_finish(&marshal, true);
-      /* Only an accepted start keeps the argument; a refused one hands it back. */
-      if (request.status != CHIMI_RESPONSE_OK) fragment_free(argument);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      ChimiValue *fields[] = {arguments[2]};
-      switch (request.status) {
-        case CHIMI_RESPONSE_OK:
-          return success(managed_value(VALUE_MANAGED_PROCESS, arguments[0]->as.managed.supervisor,
-                                       request.membership));
-        case CHIMI_RESPONSE_CAPACITY_REACHED:
-          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED, fields, 1));
-        case CHIMI_RESPONSE_STOPPED:
-          return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_STOPPED, fields, 1));
-      }
-      return defect("Supervisor.start_handoff scheduler request failed", call_node);
-    }
-  }
-  return intrinsic_shape_defect(call_node);
+  return chimi_runtime_process_kernel_v1(runtime, intrinsic, arguments, argument_count, span, call_node,
+                                         environment, chimi_rt_process_entry);
 }
 
 #endif

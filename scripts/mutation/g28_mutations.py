@@ -11,6 +11,9 @@ CRATE = "compiler/chimi"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 PROCESS_ABI = "../../runtime/chimi-fiber/src/scheduler/process_abi.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+# The supervisor starts marshal their specs and policies in Rust since
+# CHI-305 step 5, phase 7.
+STARTS = "../../runtime/chimi-runtime/src/intrinsics/process_starts.rs"
 
 
 def lab(scenario):
@@ -45,9 +48,9 @@ MUTATIONS = [
          edits=[("let membership = self.start_process(supervisor, spec, Restart::Never)?;",
                  "let membership = self.start_process(supervisor, spec, Restart::OnDefect)?;")],
          **lab("MB20")),
-    dict(name="a stopped supervisor reports a full one", file=RUNTIME_C,
-         edits=[("return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_STOPPED, fields, 1));",
-                 "return failure(standard_value(CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED, fields, 1));")],
+    dict(name="a stopped supervisor reports a full one", file=STARTS,
+         edits=[("failure(standard_value(StandardConstructor::HANDOFF_STOPPED, &[arguments[2]]))",
+                 "failure(standard_value(StandardConstructor::HANDOFF_CAPACITY_REACHED, &[arguments[2]]))")],
          **lab("MB21")),
     dict(name="the argument may be used after start_handoff", file="src/capability.rs",
          edits=[("                    Some(StandardFunction::SupervisorStartHandoff) => {\n                        if let Some((argument, start)) = arguments.get(2) {",

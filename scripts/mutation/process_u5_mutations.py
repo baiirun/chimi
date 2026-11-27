@@ -98,8 +98,8 @@ MUTATIONS = [
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
     lab("a send skips the foreign-pointer check", PROCESS_KERNEL, "CB07",
         ["did not defect"], [(
-            "            return Err(defect_with(foreign_message(foreign.operation, foreign.subject, foreign.side), node));",
-            "            return Err(success(void_value()));")]),
+            '            None => defect_with(foreign_message(b"Process.send", b"message", b"sender"), node),',
+            "            None => success(void_value()),")]),
     lab("the defect names only the sender", TEST_LOG, "CB07",
         ["does not name both owners"], [(
             "            .integer((*here).fragment_copy_foreign_owner as i64)",

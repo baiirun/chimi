@@ -472,6 +472,49 @@ impl ProcessRequest {
     }
 }
 
+/// `ChimiProcessSpec` (chimi_fiber.h): what every incarnation of one spec
+/// runs. The scheduler owns `context` once a start request names it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessSpec {
+    /// A `ChimiFiberEntry`.
+    pub entry: *const c_void,
+    pub context: *mut c_void,
+    pub mailbox_capacity: u32,
+    pub shutdown_within: i64,
+    pub name: u64,
+}
+
+/// `ChimiSupervisorMember` (chimi_fiber.h): a process or a nested
+/// supervisor of a policy.
+#[repr(C)]
+pub struct SupervisorMember {
+    pub kind: u32,
+    pub restart: u32,
+    pub process: ProcessSpec,
+    pub supervisor: *const SupervisorPolicy,
+}
+
+/// `ChimiSupervisorPolicy` (chimi_fiber.h).
+#[repr(C)]
+pub struct SupervisorPolicy {
+    pub members: *const SupervisorMember,
+    pub member_count: usize,
+    pub capacity: u32,
+    pub restart_limit: u32,
+    pub restart_within: i64,
+}
+
+/// `ProcessSpecContext` (runtime.c): a spec's context, which every
+/// incarnation's entry (`chimi_rt_process_entry`) reads. The scheduler frees
+/// it through runtime.c's `release_spec_context`.
+#[repr(C)]
+pub struct ProcessSpecContext {
+    pub runtime: *mut Runtime,
+    pub body: *mut RuntimeFragment,
+    pub handoff: bool,
+}
+
 /// `ChimiMessageCapabilities` (chimi_fiber.h): the Receivers and Completions a
 /// sent message carries, as a send request's context.
 #[repr(C)]
@@ -530,6 +573,16 @@ impl Scheduler {
     pub const REQUEST_PROCESS_SELF: u32 = 13;
     pub const REQUEST_PROCESS_SEND: u32 = 14;
     pub const REQUEST_PROCESS_RECEIVE: u32 = 15;
+    pub const REQUEST_SUPERVISOR_START: u32 = 16;
+    pub const REQUEST_SUPERVISOR_START_PROCESS: u32 = 17;
+    pub const REQUEST_SUPERVISOR_START_SUPERVISOR: u32 = 22;
+    pub const RESPONSE_CAPACITY_REACHED: u32 = 13;
+    pub const RESPONSE_NAME_TAKEN: u32 = 14;
+    pub const RESPONSE_STOPPED: u32 = 15;
+    pub const RESTART_NEVER: u32 = 1;
+    pub const RESTART_ON_DEFECT: u32 = 2;
+    pub const MEMBER_PROCESS: u32 = 1;
+    pub const MEMBER_SUPERVISOR: u32 = 2;
     pub const REQUEST_PROCESS_MONITOR: u32 = 28;
     pub const REQUEST_SUPERVISOR_ADDRESS: u32 = 18;
     pub const REQUEST_SUPERVISOR_REMOVE_PROCESS: u32 = 19;
@@ -760,6 +813,10 @@ impl Intrinsic {
     pub const SUPERVISOR_SUPERVISOR: u32 = 102;
     pub const SUPERVISOR_POLICY: u32 = 103;
     pub const SUPERVISOR_RESTARTS: u32 = 104;
+    pub const SUPERVISOR_START: u32 = 105;
+    pub const SUPERVISOR_START_PROCESS: u32 = 106;
+    pub const SUPERVISOR_START_SUPERVISOR: u32 = 107;
+    pub const SUPERVISOR_START_HANDOFF: u32 = 108;
     pub const PROCESS_RECEIVE: u32 = 93;
     pub const PROCESS_SEND: u32 = 94;
     pub const PROCESS_OWN_ADDRESS: u32 = 95;
@@ -850,6 +907,12 @@ impl StandardConstructor {
     pub const DURATION_PARSE_INVALID: u32 = 34;
     pub const PROCESS_SEND_FULL: u32 = 36;
     pub const PROCESS_SEND_UNAVAILABLE: u32 = 37;
+    pub const RESTART_ON_DEFECT: u32 = 39;
+    pub const START_CAPACITY_REACHED: u32 = 40;
+    pub const START_NAME_TAKEN: u32 = 41;
+    pub const START_STOPPED: u32 = 42;
+    pub const HANDOFF_CAPACITY_REACHED: u32 = 51;
+    pub const HANDOFF_STOPPED: u32 = 52;
     pub const DURATION_PARSE_OUT_OF_RANGE: u32 = 35;
     pub const CHANNEL_SEND_CLOSED: u32 = 17;
     pub const CHANNEL_SEND_ABORTED: u32 = 18;
@@ -1247,7 +1310,7 @@ classified!(Float: f32, f64);
 classified!(Compound: Decimal, Capability, ListVector, TextPayload, ListPayload, RecordPayload,
     ConstructedPayload, RangePayload, AddressPayload, ManagedPayload, HandlePayload, Payload,
     AllocationArea, FiberContext, HeapTotals, ScopeTotals, SmallBlockCache, PointerStack,
-    core::sync::atomic::AtomicU64);
+    ProcessSpec, core::sync::atomic::AtomicU64);
 
 impl<T> Classified for *const T {
     const CLASS: Class = Class::Compound;
@@ -1557,6 +1620,33 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_PROCESS_SELF" Scheduler::REQUEST_PROCESS_SELF)
     constant("CHIMI_REQUEST_PROCESS_SEND" Scheduler::REQUEST_PROCESS_SEND)
     constant("CHIMI_REQUEST_PROCESS_RECEIVE" Scheduler::REQUEST_PROCESS_RECEIVE)
+    constant("CHIMI_REQUEST_SUPERVISOR_START" Scheduler::REQUEST_SUPERVISOR_START)
+    constant("CHIMI_REQUEST_SUPERVISOR_START_PROCESS" Scheduler::REQUEST_SUPERVISOR_START_PROCESS)
+    constant("CHIMI_REQUEST_SUPERVISOR_START_SUPERVISOR" Scheduler::REQUEST_SUPERVISOR_START_SUPERVISOR)
+    constant("CHIMI_RESPONSE_CAPACITY_REACHED" Scheduler::RESPONSE_CAPACITY_REACHED)
+    constant("CHIMI_RESPONSE_NAME_TAKEN" Scheduler::RESPONSE_NAME_TAKEN)
+    constant("CHIMI_RESPONSE_STOPPED" Scheduler::RESPONSE_STOPPED)
+    constant("CHIMI_RESTART_NEVER" Scheduler::RESTART_NEVER)
+    constant("CHIMI_RESTART_ON_DEFECT" Scheduler::RESTART_ON_DEFECT)
+    constant("CHIMI_MEMBER_PROCESS" Scheduler::MEMBER_PROCESS)
+    constant("CHIMI_MEMBER_SUPERVISOR" Scheduler::MEMBER_SUPERVISOR)
+    size("ChimiProcessSpec" ProcessSpec)
+    field("ChimiProcessSpec" ProcessSpec, "entry", entry)
+    field("ChimiProcessSpec" ProcessSpec, "context", context)
+    field("ChimiProcessSpec" ProcessSpec, "mailbox_capacity", mailbox_capacity)
+    field("ChimiProcessSpec" ProcessSpec, "shutdown_within", shutdown_within)
+    field("ChimiProcessSpec" ProcessSpec, "name", name)
+    size("ChimiSupervisorMember" SupervisorMember)
+    field("ChimiSupervisorMember" SupervisorMember, "kind", kind)
+    field("ChimiSupervisorMember" SupervisorMember, "restart", restart)
+    field("ChimiSupervisorMember" SupervisorMember, "process", process)
+    field("ChimiSupervisorMember" SupervisorMember, "supervisor", supervisor)
+    size("ChimiSupervisorPolicy" SupervisorPolicy)
+    field("ChimiSupervisorPolicy" SupervisorPolicy, "members", members)
+    field("ChimiSupervisorPolicy" SupervisorPolicy, "member_count", member_count)
+    field("ChimiSupervisorPolicy" SupervisorPolicy, "capacity", capacity)
+    field("ChimiSupervisorPolicy" SupervisorPolicy, "restart_limit", restart_limit)
+    field("ChimiSupervisorPolicy" SupervisorPolicy, "restart_within", restart_within)
     constant("CHIMI_REQUEST_PROCESS_MONITOR" Scheduler::REQUEST_PROCESS_MONITOR)
     constant("CHIMI_REQUEST_SUPERVISOR_ADDRESS" Scheduler::REQUEST_SUPERVISOR_ADDRESS)
     constant("CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS" Scheduler::REQUEST_SUPERVISOR_REMOVE_PROCESS)
@@ -1596,6 +1686,10 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSelectSource" SelectSource, "task", task)
     field("ChimiSelectSource" SelectSource, "deadline", deadline)
     constant("CHIMI_RESPONSE_ERROR" Scheduler::RESPONSE_ERROR)
+    size("ProcessSpecContext" ProcessSpecContext)
+    field("ProcessSpecContext" ProcessSpecContext, "runtime", runtime)
+    field("ProcessSpecContext" ProcessSpecContext, "body", body)
+    field("ProcessSpecContext" ProcessSpecContext, "handoff", handoff)
     size("ChimiTaskContext" TaskContext)
     field("ChimiTaskContext" TaskContext, "runtime", runtime)
     field("ChimiTaskContext" TaskContext, "environment", environment)
@@ -1815,6 +1909,10 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR" Intrinsic::SUPERVISOR_SUPERVISOR)
     constant("CHIMI_INTRINSIC_SUPERVISOR_POLICY" Intrinsic::SUPERVISOR_POLICY)
     constant("CHIMI_INTRINSIC_SUPERVISOR_RESTARTS" Intrinsic::SUPERVISOR_RESTARTS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_START" Intrinsic::SUPERVISOR_START)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_START_PROCESS" Intrinsic::SUPERVISOR_START_PROCESS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR" Intrinsic::SUPERVISOR_START_SUPERVISOR)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_START_HANDOFF" Intrinsic::SUPERVISOR_START_HANDOFF)
     constant("CHIMI_INTRINSIC_PROCESS_RECEIVE" Intrinsic::PROCESS_RECEIVE)
     constant("CHIMI_INTRINSIC_PROCESS_SEND" Intrinsic::PROCESS_SEND)
     constant("CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS" Intrinsic::PROCESS_OWN_ADDRESS)
@@ -1914,6 +2012,12 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)
     constant("CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL" StandardConstructor::PROCESS_SEND_FULL)
     constant("CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE" StandardConstructor::PROCESS_SEND_UNAVAILABLE)
+    constant("CHIMI_CONSTRUCTOR_RESTART_ON_DEFECT" StandardConstructor::RESTART_ON_DEFECT)
+    constant("CHIMI_CONSTRUCTOR_START_CAPACITY_REACHED" StandardConstructor::START_CAPACITY_REACHED)
+    constant("CHIMI_CONSTRUCTOR_START_NAME_TAKEN" StandardConstructor::START_NAME_TAKEN)
+    constant("CHIMI_CONSTRUCTOR_START_STOPPED" StandardConstructor::START_STOPPED)
+    constant("CHIMI_CONSTRUCTOR_HANDOFF_CAPACITY_REACHED" StandardConstructor::HANDOFF_CAPACITY_REACHED)
+    constant("CHIMI_CONSTRUCTOR_HANDOFF_STOPPED" StandardConstructor::HANDOFF_STOPPED)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE" StandardConstructor::DURATION_PARSE_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_JSON_NULL" StandardConstructor::JSON_NULL)
     constant("CHIMI_CONSTRUCTOR_JSON_BOOLEAN" StandardConstructor::JSON_BOOLEAN)
