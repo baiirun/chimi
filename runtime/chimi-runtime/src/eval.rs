@@ -1577,7 +1577,9 @@ unsafe fn match_node(eval: Eval, node_id: u32) -> *mut Control {
         let mut stack_values = [MatchValue { kind: MatchKind::Plain, control: ptr::null_mut() };
             MATCH_STACK_SUBJECTS];
         let values: *mut MatchValue = if subjects <= MATCH_STACK_SUBJECTS {
-            stack_values.as_mut_ptr()
+            // The slice check folds away under the branch, and stops a
+            // stack array shorter than the bound.
+            stack_values[..subjects].as_mut_ptr()
         } else {
             // Three words a subject, as the C's array was, so a memory report
             // counts the same bytes; the values use the first two.

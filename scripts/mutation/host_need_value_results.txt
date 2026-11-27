@@ -7,3 +7,10 @@ KILLED       console is not host-served [language -- need] (35s)
 KILLED       random is not host-served [language -- need] (12s)
 KILLED       the record keeps only the first method [language -- need] (39s)
 KILLED       the record keeps only the last method [language -- need] (36s)
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# host_need_value_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- need] (54s)
+KILLED       native wraps a dependency callable again [language -- need] (53s)
+# result: every mutant killed

@@ -26,3 +26,10 @@ KILLED       heap owners come from a plain counter [runtime_state -- the_runtime
 BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (126s)
 KILLED       the test logs have no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (49s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# carrier_threads_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+KILLED       profile counts are plain adds [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
+# result: every mutant killed

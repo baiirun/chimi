@@ -23,3 +23,10 @@ KILLED       Float.parse reads a C string [language -- float_parse_rejects_text_
 KILLED       a path holding U+0000 opens its prefix [cli -- native_host_io_keeps_text_bytes_after_nul] (7s)
 KILLED       Console stops at U+0000 [cli -- native_host_io_keeps_text_bytes_after_nul] (8s)
 # result: 22/22 KILLED after dropping the unreachable Text.equal mutant (see the list)
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# lane_fixes_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- text_holding_nul_keeps_every_byte_on_both_backends] (54s)
+KILLED       text patterns compare as C strings [language -- text_holding_nul_keeps_every_byte_on_both_backends] (56s)
+# result: every mutant killed

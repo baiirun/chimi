@@ -1,0 +1,6 @@
+# Mutants retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271); the rest of this spec was not rerun.
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# runtime_profile_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (55s)
+KILLED       a node does not hand allocations back to its parent [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (57s)
+# result: every mutant killed

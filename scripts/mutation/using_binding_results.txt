@@ -2,3 +2,10 @@ using_binding_mutations.py, 2026-11-22: 10 mutants, 10 killed.
 The first seven ran at 5790878 (two needed a type annotation to build) and
 again at ef25eb6; the row-parameter and provider-scope mutants were added
 after review and killed at ef25eb6 and 7d2a74c.
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# using_binding_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- outside_its_own_using] (58s)
+KILLED       native evaluates a provider after the earlier ones [language -- outside_its_own_using] (55s)
+# result: every mutant killed

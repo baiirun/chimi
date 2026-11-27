@@ -19,3 +19,10 @@ EXIT 1
 BASELINE ok  [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (62s)
 KILLED       a task capture skips the environment's locals [cli -- native_tasks_capture_render_encode_and_send_deeply_nested_values] (57s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# environment_slots_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (61s)
+KILLED       a function value's calls get no local slots [language -- a_function_literal_with_pattern_parameters_runs_and_captures_on_both_backends] (55s)
+# result: every mutant killed

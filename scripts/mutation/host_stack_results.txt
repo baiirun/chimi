@@ -7,3 +7,10 @@ KILLED       the check compares the wrong way [cli -- native_deep_recursion_with
 KILLED       the limit leaves no headroom [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
 KILLED       the limit sits far above the stack bottom [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (10s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# host_stack_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (51s)
+KILLED       calls never check the stack [cli -- native_deep_recursion_without_tasks_ends_with_a_stack_overflow_defect] (54s)
+# result: every mutant killed

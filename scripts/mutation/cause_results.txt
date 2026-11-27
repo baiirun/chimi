@@ -27,3 +27,11 @@ KILLED       C: a stored Err drops its cause [std_modules -- standard_programs] 
 KILLED       native: Cause.of finds no stored cause [language -- a_cause_crosses_heaps] (51s)
 # result: every mutant killed (the suppressed-reason mutant was rerun after its test was added;
 # the defect-summary mutant was dropped as unreachable from Chimi code)
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# cause_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [std_modules -- standard_programs] (57s)
+KILLED       native: re-raising the bound error links [std_modules -- standard_programs] (56s)
+KILLED       native: a stored Err drops its cause [std_modules -- standard_programs] (56s)
+# result: every mutant killed
