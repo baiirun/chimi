@@ -3,13 +3,17 @@
 //! fiber's heap and allocation target and moves to the carrier the fiber
 //! resumed on, so code here must read the carrier again after each request.
 
-use crate::heap::layout::{Scheduler, SchedulerRequest};
+use core::ffi::c_void;
+
+use crate::heap::layout::{ProcessRequest, Scheduler, SchedulerRequest};
 
 unsafe extern "C" {
     /// Whether the program starts the scheduler (program data).
     static CHIMI_REQUIRES_SCHEDULER: u32;
     /// Serves `request` and returns the fiber's command (`runtime.c`).
-    fn chimi_runtime_scheduler_request_v1(request: *mut SchedulerRequest) -> u32;
+    /// A request is a `SchedulerRequest` or a `ProcessRequest`, whose `kind`
+    /// and `status` share their offsets.
+    fn chimi_runtime_scheduler_request_v1(request: *mut c_void) -> u32;
     /// Whether the running task's cancellation ends it, rather than a
     /// scope inside it; `runtime.c` defines a weak stand-in returning 1
     /// for a program linked without the scheduler.
@@ -31,7 +35,17 @@ pub fn requires_scheduler() -> bool {
 /// Runs on a fiber of a program that starts the scheduler.
 pub unsafe fn request(request: &mut SchedulerRequest) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { chimi_runtime_scheduler_request_v1(request) == Scheduler::FIBER_CANCEL }
+    unsafe { chimi_runtime_scheduler_request_v1((request as *mut SchedulerRequest).cast()) == Scheduler::FIBER_CANCEL }
+}
+
+/// Serves a process or supervisor `request` on the running fiber; true
+/// when the fiber resumed to be cancelled.
+///
+/// # Safety
+/// Runs on a fiber of a program linked with the process kernel.
+pub unsafe fn process_request(request: &mut ProcessRequest) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { chimi_runtime_scheduler_request_v1((request as *mut ProcessRequest).cast()) == Scheduler::FIBER_CANCEL }
 }
 
 /// Whether the running task's cancellation is its own end.
