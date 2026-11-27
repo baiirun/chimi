@@ -257,8 +257,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `wait`. Pay-for-play holds because only runtime.c's kernel variant
       calls the Rust export, so the linker drops it from every other program;
       a cli test checks the symbol is absent from plain and task programs.
-      Sends, monitors and supervisor starts, which marshal messages and
-      specs, are next.
+      Eleventh PR: `Process.send` and `Process.monitor`, which hand a copy of
+      the message or notice, and the Receivers and Completions it carries,
+      to the scheduler (`hand_over` in `intrinsics/process_kernel.rs`).
+      runtime.c's export for a send to a test address is gone, since the
+      Rust send calls the test mailbox directly. The supervisor starts,
+      which marshal specs and policies, are next.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

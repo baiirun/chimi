@@ -24,3 +24,33 @@ KILLED       SV11: Supervisor.policy accepts members over capacity [cargo run --
 KILLED       RT07: a second register replaces the name [cargo run --quiet --bin chimi-process-lab -- --scenario RT07 --through U7] (53s)
 KILLED       SV12: the foreign-owner defect names one supervisor [cargo run --quiet --bin chimi-process-lab -- --scenario SV12 --through U7] (54s)
 # result: every mutant killed
+
+# Eleventh PR: Process.send and Process.monitor (the two receive mutants rerun killed too)
+# mutation run at aa9f6ccfa80dfb657b177f587de20ebbcfb68ad9
+# process_kernel_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [process_lab cli] (256s)
+KILLED       Unavailable is reported as Full [process_lab cli] (87s)
+KILLED       a sent message's copy is not counted [process_lab cli] (159s)
+KILLED       a monitor handle names no monitor [process_lab cli] (159s)
+# result: every mutant killed
+
+# Retargeted runtime.c mutants, now on intrinsics/process_kernel.rs, test_log.rs and telemetry.rs
+# mutation run at 52e135b44d33e878ac1cf35b782ee8b79b969490
+KILLED       native: a send to a test address goes to the scheduler [testing -- mailbox] (55s)
+# result: every mutant killed
+# mutation run at 52e135b44d33e878ac1cf35b782ee8b79b969490
+KILLED       the host sends no capabilities with a notice [cargo run --quiet --bin chimi-process-lab -- heap --scenario CB13] (55s)
+# result: every mutant killed
+# mutation run at 52e135b44d33e878ac1cf35b782ee8b79b969490
+KILLED       CB01: the message is the sender's original value [cargo run --quiet --bin chimi-process-lab -- --scenario CB01 --through U5] (55s)
+KILLED       MB01: an accepted message is freed by its sender [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (54s)
+KILLED       CB03: a refused message is never freed [cargo run --quiet --bin chimi-process-lab -- --scenario CB03 --through U5] (52s)
+KILLED       MB02: Full is reported as Unavailable [cargo run --quiet --bin chimi-process-lab -- --scenario MB02 --through U5] (53s)
+KILLED       CB07: a send skips the foreign-pointer check [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (56s)
+KILLED       CB07: the defect names only the sender [cargo run --quiet --bin chimi-process-lab -- --scenario CB07 --through U5] (56s)
+# result: every mutant killed
+# mutation run at 52e135b44d33e878ac1cf35b782ee8b79b969490
+KILLED       a stack overflow is not named [cli -- native_process_stack_depth_and_named_defects] (55s)
+KILLED       the scheduler does not flag an overflowed body [cli -- native_process_stack_depth_and_named_defects] (59s)
+KILLED       OB07: the incarnation is written from the task field [cargo run --quiet --bin chimi-process-lab -- --scenario OB07 --through U5] (59s)
+# result: every mutant killed
