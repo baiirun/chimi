@@ -418,12 +418,25 @@ pub struct MessageCapabilities {
     pub count: usize,
 }
 
+/// `ChimiTaskContext` (runtime.c): what a started task's fiber entry reads
+/// when it first runs. `runtime.c`'s entry frees it.
+#[repr(C)]
+pub struct TaskContext {
+    pub runtime: *mut Runtime,
+    pub environment: *mut Environment,
+    pub entry: *const c_void,
+    pub captures: *mut RuntimeFragment,
+    pub span: u64,
+    pub parent: u64,
+}
+
 /// The scheduler's request kinds, replies and fiber commands (chimi_fiber.h)
 /// the Rust intrinsics use.
 pub struct Scheduler;
 
 impl Scheduler {
     pub const FIBER_CANCEL: u32 = 2;
+    pub const REQUEST_TASK_START: u32 = 1;
     pub const REQUEST_TASK_RESULT: u32 = 2;
     pub const REQUEST_TASK_CANCEL: u32 = 3;
     pub const REQUEST_CHANNEL_BOUNDED: u32 = 4;
@@ -443,6 +456,8 @@ impl Scheduler {
     pub const REQUEST_RESOURCE_EXIT: u32 = 35;
     pub const REQUEST_SCOPE_CANCEL: u32 = 41;
     pub const REQUEST_RESOURCE_USE: u32 = 49;
+    pub const REQUEST_TASK_ANY: u32 = 42;
+    pub const REQUEST_TASK_DRAIN: u32 = 43;
     pub const RESPONSE_UNSET: u32 = 0;
     pub const RESPONSE_OK: u32 = 1;
     pub const RESPONSE_PENDING: u32 = 2;
@@ -450,6 +465,7 @@ impl Scheduler {
     pub const RESPONSE_CANCELLED: u32 = 4;
     pub const RESPONSE_DEFECTED: u32 = 5;
     pub const RESPONSE_STACK_OVERFLOW: u32 = 6;
+    pub const RESPONSE_ERROR: u32 = 7;
     pub const RESPONSE_CLOSED: u32 = 8;
     pub const RESPONSE_ABORTED: u32 = 9;
     pub const RESPONSE_DRAINED: u32 = 10;
@@ -613,6 +629,7 @@ impl Intrinsic {
     pub const LIST_PUSH: u32 = 130;
     pub const LIST_SLICE: u32 = 131;
     pub const LIST_SET: u32 = 132;
+    pub const TASK_START: u32 = 8;
     pub const TASK_RESULT: u32 = 9;
     pub const TASK_CANCEL: u32 = 10;
     pub const CHANNEL_SEND: u32 = 11;
@@ -628,6 +645,9 @@ impl Intrinsic {
     pub const WATCH_PUBLISH: u32 = 87;
     pub const WATCH_SUBSCRIBE: u32 = 88;
     pub const WATCH_RECEIVE: u32 = 89;
+    pub const TASK_ALL: u32 = 73;
+    pub const TASK_RESULTS: u32 = 74;
+    pub const TASK_RACE: u32 = 75;
     pub const CAUSE_CONTEXT: u32 = 169;
     pub const CAUSE_OF: u32 = 170;
     pub const CAUSE_KIND_CODE: u32 = 171;
@@ -1393,7 +1413,18 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiMessageCapabilities" MessageCapabilities, "items", items)
     field("ChimiMessageCapabilities" MessageCapabilities, "count", count)
     constant("CHIMI_FIBER_CANCEL" Scheduler::FIBER_CANCEL)
+    constant("CHIMI_REQUEST_TASK_START" Scheduler::REQUEST_TASK_START)
     constant("CHIMI_REQUEST_TASK_RESULT" Scheduler::REQUEST_TASK_RESULT)
+    constant("CHIMI_REQUEST_TASK_ANY" Scheduler::REQUEST_TASK_ANY)
+    constant("CHIMI_REQUEST_TASK_DRAIN" Scheduler::REQUEST_TASK_DRAIN)
+    constant("CHIMI_RESPONSE_ERROR" Scheduler::RESPONSE_ERROR)
+    size("ChimiTaskContext" TaskContext)
+    field("ChimiTaskContext" TaskContext, "runtime", runtime)
+    field("ChimiTaskContext" TaskContext, "environment", environment)
+    field("ChimiTaskContext" TaskContext, "entry", entry)
+    field("ChimiTaskContext" TaskContext, "captures", captures)
+    field("ChimiTaskContext" TaskContext, "span", span)
+    field("ChimiTaskContext" TaskContext, "parent", parent)
     constant("CHIMI_REQUEST_TASK_CANCEL" Scheduler::REQUEST_TASK_CANCEL)
     constant("CHIMI_REQUEST_CHANNEL_BOUNDED" Scheduler::REQUEST_CHANNEL_BOUNDED)
     constant("CHIMI_REQUEST_CHANNEL_SEND" Scheduler::REQUEST_CHANNEL_SEND)
@@ -1572,7 +1603,11 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_LIST_PUSH" Intrinsic::LIST_PUSH)
     constant("CHIMI_INTRINSIC_LIST_SLICE" Intrinsic::LIST_SLICE)
     constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
+    constant("CHIMI_INTRINSIC_TASK_START" Intrinsic::TASK_START)
     constant("CHIMI_INTRINSIC_TASK_RESULT" Intrinsic::TASK_RESULT)
+    constant("CHIMI_INTRINSIC_TASK_ALL" Intrinsic::TASK_ALL)
+    constant("CHIMI_INTRINSIC_TASK_RESULTS" Intrinsic::TASK_RESULTS)
+    constant("CHIMI_INTRINSIC_TASK_RACE" Intrinsic::TASK_RACE)
     constant("CHIMI_INTRINSIC_TASK_CANCEL" Intrinsic::TASK_CANCEL)
     constant("CHIMI_INTRINSIC_CHANNEL_SEND" Intrinsic::CHANNEL_SEND)
     constant("CHIMI_INTRINSIC_CHANNEL_RECEIVE" Intrinsic::CHANNEL_RECEIVE)

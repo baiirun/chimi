@@ -15,6 +15,7 @@ SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
+TASKS = "../../runtime/chimi-runtime/src/intrinsics/tasks.rs"
 RUST_CAUSES = "../../runtime/chimi-runtime/src/intrinsics/causes.rs"
 
 
@@ -35,33 +36,33 @@ MUTATIONS = [
     # cancelled child wakes the wait, and the call ends cancelled at the same
     # instant, so the mutant is equivalent.
     # The decided outcome cancels the rest.
-    combinators("the losers are not cancelled", RUNTIME, [(
-        "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TASK_CANCEL, .task = children->waiting[index]};\n",
-        "    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_TIMER_NOW};\n")]),
-    combinators("the losers are neither cancelled nor drained", RUNTIME, [(
-        "  if (children.live > 0) {\n    if (!cancel_live_children(&children)) {",
-        "  if (false) {\n    if (!cancel_live_children(&children)) {")]),
-    combinators("Task.race waits for every child", RUNTIME, [(
-        "    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RACE || outcome->kind == CONTROL_FAILURE) {",
-        "    } else if (outcome->kind == CONTROL_FAILURE) {")]),
-    combinators("Task.results stops at the first failure", RUNTIME, [(
-        "    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RESULTS) {",
-        "    } else if (intrinsic == CHIMI_INTRINSIC_TASK_RESULTS && outcome->kind == CONTROL_SUCCESS) {")]),
-    combinators("successes land in finishing order", RUNTIME, [(
-        "      values[position] = outcome->value;\n    }\n  }",
-        "      values[count - 1 - children.live] = outcome->value;\n    }\n  }")]),
+    combinators("the losers are not cancelled", TASKS, [(
+        "            let mut request = SchedulerRequest::of(Scheduler::REQUEST_TASK_CANCEL);\n            // SAFETY: below",
+        "            let mut request = SchedulerRequest::of(11); // CHIMI_REQUEST_TIMER_NOW\n            // SAFETY: below")]),
+    combinators("the losers are neither cancelled nor drained", TASKS, [(
+        "        if children.live > 0 {\n            if !children.cancel_live() {",
+        "        if false {\n            if !children.cancel_live() {")]),
+    combinators("Task.race waits for every child", TASKS, [(
+        "} else if intrinsic == Intrinsic::TASK_RACE || kind == ControlKind::FAILURE {",
+        "} else if kind == ControlKind::FAILURE {")]),
+    combinators("Task.results stops at the first failure", TASKS, [(
+        "} else if intrinsic == Intrinsic::TASK_RESULTS {",
+        "} else if intrinsic == Intrinsic::TASK_RESULTS && kind == ControlKind::SUCCESS {")]),
+    combinators("successes land in finishing order", TASKS, [(
+        "                        *values.add(position as usize) = (*outcome).value;\n                    }\n                }",
+        "                        *values.add((count - 1 - children.live) as usize) = (*outcome).value;\n                    }\n                }")]),
     # Sibling causes.
-    combinators("sibling failures are dropped", RUNTIME, [(
-        "      if (collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {",
-        "      if (false && collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {")]),
+    combinators("sibling failures are dropped", TASKS, [(
+        "if collect_siblings && (*outcome).kind == ControlKind::FAILURE {",
+        "if false && collect_siblings && (*outcome).kind == ControlKind::FAILURE {")]),
     combinators("a sibling cause has no reason", RUST_CAUSES, [(
         "        set(marked, Slot::REASON, int(REASON_SIBLING));\n",
         "")]),
-    combinators("a stored Err loses its cause", RUNTIME, [(
-        "  return success(failed ? chimi_runtime_with_stored_cause_v1(stored, chimi_runtime_control_cause_v1(outcome)) : stored);",
-        "  return success(stored);")]),
-    combinators("an empty race parks instead of defecting", RUNTIME, [(
-        "    if (intrinsic == CHIMI_INTRINSIC_TASK_RACE)\n      return defect(\"Task.race needs at least one operation\", call_node);\n",
+    combinators("a stored Err loses its cause", TASKS, [(
+        "success(if failed { with_stored_cause(stored, control_cause(outcome)) } else { stored })",
+        "success(stored)")]),
+    combinators("an empty race parks instead of defecting", TASKS, [(
+        "            if intrinsic == Intrinsic::TASK_RACE {\n                return defect(c\"Task.race needs at least one operation\", node);\n            }\n",
         "")]),
     # Typing.
     combinators("a function join keeps only the left failures", "src/typing/failure_sets.rs", [(

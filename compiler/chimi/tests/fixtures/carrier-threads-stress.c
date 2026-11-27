@@ -764,7 +764,7 @@ static void the_file_table_counts_loans_across_threads(void) {
 
 static void *start_a_task_unbound(void *unused) {
   (void)unused;
-  (void)chimi_task_entry(NULL);
+  (void)chimi_runtime_task_entry_v1(NULL);
   return NULL;
 }
 
