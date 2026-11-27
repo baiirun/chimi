@@ -210,6 +210,38 @@ pub struct Constructor {
 pub struct Intrinsic;
 
 impl Intrinsic {
+    pub const IO_PATH: u32 = 0;
+    pub const LIST_FIRST: u32 = 1;
+    pub const LIST_LENGTH: u32 = 2;
+    pub const TEXT_APPEND: u32 = 6;
+    pub const TEXT_EQUAL: u32 = 7;
+    pub const INT_PARSE: u32 = 16;
+    pub const INT_TO_TEXT: u32 = 17;
+    pub const INT_ADD_CHECKED: u32 = 18;
+    pub const INT_SUBTRACT_CHECKED: u32 = 19;
+    pub const INT_MULTIPLY_CHECKED: u32 = 20;
+    pub const INT_DIVIDE_CHECKED: u32 = 21;
+    pub const INT_REMAINDER_CHECKED: u32 = 22;
+    pub const INT_MODULO: u32 = 23;
+    pub const FLOAT_FROM_INT: u32 = 24;
+    pub const FLOAT_TRUNCATE: u32 = 25;
+    pub const FLOAT_FLOOR: u32 = 26;
+    pub const FLOAT_CEILING: u32 = 27;
+    pub const FLOAT_ROUND: u32 = 28;
+    pub const FLOAT_TO_INT: u32 = 29;
+    pub const FLOAT_TO_TEXT: u32 = 30;
+    pub const FLOAT_PARSE: u32 = 31;
+    pub const DEBUG_RENDER: u32 = 32;
+    pub const DEBUG_RENDER_INDENTED: u32 = 33;
+    pub const ORDER_COMPARE: u32 = 34;
+    pub const ORDER_MIN: u32 = 35;
+    pub const ORDER_MAX: u32 = 36;
+    pub const RANGE_START: u32 = 37;
+    pub const RANGE_END: u32 = 38;
+    pub const RANGE_LENGTH: u32 = 39;
+    pub const RANGE_CONTAINS: u32 = 40;
+    pub const PATH_FROM: u32 = 192;
+    pub const PATH_TO_TEXT: u32 = 193;
     pub const MAP_EMPTY: u32 = 3;
     pub const MAP_GET: u32 = 4;
     pub const MAP_PUT: u32 = 5;
@@ -342,6 +374,17 @@ impl StandardConstructor {
     pub const DECODE_INVALID_JSON: u32 = 14;
     pub const JSON_NOT_INTEGER: u32 = 15;
     pub const JSON_OUT_OF_RANGE: u32 = 16;
+    pub const INT_PARSE_EMPTY: u32 = 22;
+    pub const INT_PARSE_INVALID_DIGIT: u32 = 23;
+    pub const INT_PARSE_OUT_OF_RANGE: u32 = 24;
+    pub const FLOAT_PARSE_EMPTY: u32 = 25;
+    pub const FLOAT_PARSE_INVALID: u32 = 26;
+    pub const FLOAT_PARSE_OUT_OF_RANGE: u32 = 27;
+    pub const FLOAT_NOT_INTEGER: u32 = 28;
+    pub const FLOAT_OUT_OF_RANGE: u32 = 29;
+    pub const ORDERING_LESS: u32 = 30;
+    pub const ORDERING_EQUAL: u32 = 31;
+    pub const ORDERING_GREATER: u32 = 32;
     pub const DURATION_PARSE_EMPTY: u32 = 33;
     pub const DURATION_PARSE_INVALID: u32 = 34;
     pub const PROCESS_SEND_FULL: u32 = 36;
@@ -932,6 +975,17 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SET_SIZE" Intrinsic::SET_SIZE)
     constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
     constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
+    constant("CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY" StandardConstructor::INT_PARSE_EMPTY)
+    constant("CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT" StandardConstructor::INT_PARSE_INVALID_DIGIT)
+    constant("CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE" StandardConstructor::INT_PARSE_OUT_OF_RANGE)
+    constant("CHIMI_CONSTRUCTOR_FLOAT_PARSE_EMPTY" StandardConstructor::FLOAT_PARSE_EMPTY)
+    constant("CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID" StandardConstructor::FLOAT_PARSE_INVALID)
+    constant("CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE" StandardConstructor::FLOAT_PARSE_OUT_OF_RANGE)
+    constant("CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER" StandardConstructor::FLOAT_NOT_INTEGER)
+    constant("CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE" StandardConstructor::FLOAT_OUT_OF_RANGE)
+    constant("CHIMI_CONSTRUCTOR_ORDERING_LESS" StandardConstructor::ORDERING_LESS)
+    constant("CHIMI_CONSTRUCTOR_ORDERING_EQUAL" StandardConstructor::ORDERING_EQUAL)
+    constant("CHIMI_CONSTRUCTOR_ORDERING_GREATER" StandardConstructor::ORDERING_GREATER)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
     constant("CHIMI_INTRINSIC_JSON_DECODE" Intrinsic::JSON_DECODE)
     constant("CHIMI_INTRINSIC_JSON_ENCODE" Intrinsic::JSON_ENCODE)
@@ -1016,6 +1070,38 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_TEST_NEXT" Intrinsic::TEST_NEXT)
     constant("CHIMI_INTRINSIC_TEST_MAILBOX" Intrinsic::TEST_MAILBOX)
     constant("CHIMI_INTRINSIC_TEST_RECEIVED" Intrinsic::TEST_RECEIVED)
+    constant("CHIMI_INTRINSIC_IO_PATH" Intrinsic::IO_PATH)
+    constant("CHIMI_INTRINSIC_LIST_FIRST" Intrinsic::LIST_FIRST)
+    constant("CHIMI_INTRINSIC_LIST_LENGTH" Intrinsic::LIST_LENGTH)
+    constant("CHIMI_INTRINSIC_TEXT_APPEND" Intrinsic::TEXT_APPEND)
+    constant("CHIMI_INTRINSIC_TEXT_EQUAL" Intrinsic::TEXT_EQUAL)
+    constant("CHIMI_INTRINSIC_INT_PARSE" Intrinsic::INT_PARSE)
+    constant("CHIMI_INTRINSIC_INT_TO_TEXT" Intrinsic::INT_TO_TEXT)
+    constant("CHIMI_INTRINSIC_INT_ADD_CHECKED" Intrinsic::INT_ADD_CHECKED)
+    constant("CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED" Intrinsic::INT_SUBTRACT_CHECKED)
+    constant("CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED" Intrinsic::INT_MULTIPLY_CHECKED)
+    constant("CHIMI_INTRINSIC_INT_DIVIDE_CHECKED" Intrinsic::INT_DIVIDE_CHECKED)
+    constant("CHIMI_INTRINSIC_INT_REMAINDER_CHECKED" Intrinsic::INT_REMAINDER_CHECKED)
+    constant("CHIMI_INTRINSIC_INT_MODULO" Intrinsic::INT_MODULO)
+    constant("CHIMI_INTRINSIC_FLOAT_FROM_INT" Intrinsic::FLOAT_FROM_INT)
+    constant("CHIMI_INTRINSIC_FLOAT_TRUNCATE" Intrinsic::FLOAT_TRUNCATE)
+    constant("CHIMI_INTRINSIC_FLOAT_FLOOR" Intrinsic::FLOAT_FLOOR)
+    constant("CHIMI_INTRINSIC_FLOAT_CEILING" Intrinsic::FLOAT_CEILING)
+    constant("CHIMI_INTRINSIC_FLOAT_ROUND" Intrinsic::FLOAT_ROUND)
+    constant("CHIMI_INTRINSIC_FLOAT_TO_INT" Intrinsic::FLOAT_TO_INT)
+    constant("CHIMI_INTRINSIC_FLOAT_TO_TEXT" Intrinsic::FLOAT_TO_TEXT)
+    constant("CHIMI_INTRINSIC_FLOAT_PARSE" Intrinsic::FLOAT_PARSE)
+    constant("CHIMI_INTRINSIC_DEBUG_RENDER" Intrinsic::DEBUG_RENDER)
+    constant("CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED" Intrinsic::DEBUG_RENDER_INDENTED)
+    constant("CHIMI_INTRINSIC_ORDER_COMPARE" Intrinsic::ORDER_COMPARE)
+    constant("CHIMI_INTRINSIC_ORDER_MIN" Intrinsic::ORDER_MIN)
+    constant("CHIMI_INTRINSIC_ORDER_MAX" Intrinsic::ORDER_MAX)
+    constant("CHIMI_INTRINSIC_RANGE_START" Intrinsic::RANGE_START)
+    constant("CHIMI_INTRINSIC_RANGE_END" Intrinsic::RANGE_END)
+    constant("CHIMI_INTRINSIC_RANGE_LENGTH" Intrinsic::RANGE_LENGTH)
+    constant("CHIMI_INTRINSIC_RANGE_CONTAINS" Intrinsic::RANGE_CONTAINS)
+    constant("CHIMI_INTRINSIC_PATH_FROM" Intrinsic::PATH_FROM)
+    constant("CHIMI_INTRINSIC_PATH_TO_TEXT" Intrinsic::PATH_TO_TEXT)
     constant("CHIMI_INTRINSIC_ENV_HOST_VARIABLES" Intrinsic::ENV_HOST_VARIABLES)
     constant("CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY" Intrinsic::ENV_HOST_CURRENT_DIRECTORY)
     constant("CHIMI_INTRINSIC_FS_HOST_OPEN" Intrinsic::FS_HOST_OPEN)

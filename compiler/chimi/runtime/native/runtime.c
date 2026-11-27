@@ -1316,6 +1316,17 @@ _Static_assert(CHIMI_INTRINSIC_SET_REMOVE == 139, "layout: CHIMI_INTRINSIC_SET_R
 _Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZE");
 _Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
+_Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY == 22, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY");
+_Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT == 23, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT");
+_Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE == 24, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE");
+_Static_assert(CHIMI_CONSTRUCTOR_FLOAT_PARSE_EMPTY == 25, "layout: CHIMI_CONSTRUCTOR_FLOAT_PARSE_EMPTY");
+_Static_assert(CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID == 26, "layout: CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID");
+_Static_assert(CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE == 27, "layout: CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE");
+_Static_assert(CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER == 28, "layout: CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER");
+_Static_assert(CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE == 29, "layout: CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE");
+_Static_assert(CHIMI_CONSTRUCTOR_ORDERING_LESS == 30, "layout: CHIMI_CONSTRUCTOR_ORDERING_LESS");
+_Static_assert(CHIMI_CONSTRUCTOR_ORDERING_EQUAL == 31, "layout: CHIMI_CONSTRUCTOR_ORDERING_EQUAL");
+_Static_assert(CHIMI_CONSTRUCTOR_ORDERING_GREATER == 32, "layout: CHIMI_CONSTRUCTOR_ORDERING_GREATER");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_NONE == 7, "layout: CHIMI_CONSTRUCTOR_OPTION_NONE");
 _Static_assert(CHIMI_INTRINSIC_JSON_DECODE == 142, "layout: CHIMI_INTRINSIC_JSON_DECODE");
 _Static_assert(CHIMI_INTRINSIC_JSON_ENCODE == 143, "layout: CHIMI_INTRINSIC_JSON_ENCODE");
@@ -1400,6 +1411,38 @@ _Static_assert(CHIMI_INTRINSIC_TEST_SCRIPT == 187, "layout: CHIMI_INTRINSIC_TEST
 _Static_assert(CHIMI_INTRINSIC_TEST_NEXT == 188, "layout: CHIMI_INTRINSIC_TEST_NEXT");
 _Static_assert(CHIMI_INTRINSIC_TEST_MAILBOX == 189, "layout: CHIMI_INTRINSIC_TEST_MAILBOX");
 _Static_assert(CHIMI_INTRINSIC_TEST_RECEIVED == 190, "layout: CHIMI_INTRINSIC_TEST_RECEIVED");
+_Static_assert(CHIMI_INTRINSIC_IO_PATH == 0, "layout: CHIMI_INTRINSIC_IO_PATH");
+_Static_assert(CHIMI_INTRINSIC_LIST_FIRST == 1, "layout: CHIMI_INTRINSIC_LIST_FIRST");
+_Static_assert(CHIMI_INTRINSIC_LIST_LENGTH == 2, "layout: CHIMI_INTRINSIC_LIST_LENGTH");
+_Static_assert(CHIMI_INTRINSIC_TEXT_APPEND == 6, "layout: CHIMI_INTRINSIC_TEXT_APPEND");
+_Static_assert(CHIMI_INTRINSIC_TEXT_EQUAL == 7, "layout: CHIMI_INTRINSIC_TEXT_EQUAL");
+_Static_assert(CHIMI_INTRINSIC_INT_PARSE == 16, "layout: CHIMI_INTRINSIC_INT_PARSE");
+_Static_assert(CHIMI_INTRINSIC_INT_TO_TEXT == 17, "layout: CHIMI_INTRINSIC_INT_TO_TEXT");
+_Static_assert(CHIMI_INTRINSIC_INT_ADD_CHECKED == 18, "layout: CHIMI_INTRINSIC_INT_ADD_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED == 19, "layout: CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED == 20, "layout: CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_INT_DIVIDE_CHECKED == 21, "layout: CHIMI_INTRINSIC_INT_DIVIDE_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_INT_REMAINDER_CHECKED == 22, "layout: CHIMI_INTRINSIC_INT_REMAINDER_CHECKED");
+_Static_assert(CHIMI_INTRINSIC_INT_MODULO == 23, "layout: CHIMI_INTRINSIC_INT_MODULO");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_FROM_INT == 24, "layout: CHIMI_INTRINSIC_FLOAT_FROM_INT");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_TRUNCATE == 25, "layout: CHIMI_INTRINSIC_FLOAT_TRUNCATE");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_FLOOR == 26, "layout: CHIMI_INTRINSIC_FLOAT_FLOOR");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_CEILING == 27, "layout: CHIMI_INTRINSIC_FLOAT_CEILING");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_ROUND == 28, "layout: CHIMI_INTRINSIC_FLOAT_ROUND");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_TO_INT == 29, "layout: CHIMI_INTRINSIC_FLOAT_TO_INT");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_TO_TEXT == 30, "layout: CHIMI_INTRINSIC_FLOAT_TO_TEXT");
+_Static_assert(CHIMI_INTRINSIC_FLOAT_PARSE == 31, "layout: CHIMI_INTRINSIC_FLOAT_PARSE");
+_Static_assert(CHIMI_INTRINSIC_DEBUG_RENDER == 32, "layout: CHIMI_INTRINSIC_DEBUG_RENDER");
+_Static_assert(CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED == 33, "layout: CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED");
+_Static_assert(CHIMI_INTRINSIC_ORDER_COMPARE == 34, "layout: CHIMI_INTRINSIC_ORDER_COMPARE");
+_Static_assert(CHIMI_INTRINSIC_ORDER_MIN == 35, "layout: CHIMI_INTRINSIC_ORDER_MIN");
+_Static_assert(CHIMI_INTRINSIC_ORDER_MAX == 36, "layout: CHIMI_INTRINSIC_ORDER_MAX");
+_Static_assert(CHIMI_INTRINSIC_RANGE_START == 37, "layout: CHIMI_INTRINSIC_RANGE_START");
+_Static_assert(CHIMI_INTRINSIC_RANGE_END == 38, "layout: CHIMI_INTRINSIC_RANGE_END");
+_Static_assert(CHIMI_INTRINSIC_RANGE_LENGTH == 39, "layout: CHIMI_INTRINSIC_RANGE_LENGTH");
+_Static_assert(CHIMI_INTRINSIC_RANGE_CONTAINS == 40, "layout: CHIMI_INTRINSIC_RANGE_CONTAINS");
+_Static_assert(CHIMI_INTRINSIC_PATH_FROM == 192, "layout: CHIMI_INTRINSIC_PATH_FROM");
+_Static_assert(CHIMI_INTRINSIC_PATH_TO_TEXT == 193, "layout: CHIMI_INTRINSIC_PATH_TO_TEXT");
 _Static_assert(CHIMI_INTRINSIC_ENV_HOST_VARIABLES == 194, "layout: CHIMI_INTRINSIC_ENV_HOST_VARIABLES");
 _Static_assert(CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY == 195, "layout: CHIMI_INTRINSIC_ENV_HOST_CURRENT_DIRECTORY");
 _Static_assert(CHIMI_INTRINSIC_FS_HOST_OPEN == 196, "layout: CHIMI_INTRINSIC_FS_HOST_OPEN");
@@ -4605,40 +4648,6 @@ static void release_task_context(void *context, void *raw) {
   free(task);
 }
 
-/* `digits [. digits] [(e|E) [+|-] digits]`, as numeric.rs `is_decimal_number`. */
-static bool is_decimal_number(const char *text) {
-  const char *cursor = text;
-  #define CHIMI_DIGITS() do { const char *start = cursor; \
-    while (*cursor >= '0' && *cursor <= '9') ++cursor; if (cursor == start) return false; } while (0)
-  CHIMI_DIGITS();
-  if (*cursor == '.') { ++cursor; CHIMI_DIGITS(); }
-  if (*cursor == 'e' || *cursor == 'E') {
-    ++cursor; if (*cursor == '+' || *cursor == '-') ++cursor;
-    CHIMI_DIGITS();
-  }
-  #undef CHIMI_DIGITS
-  return *cursor == '\0';
-}
-
-/* `Int.parse`; returns 0 on success or the failure constructor. */
-static uint32_t parse_int_text(const char *text, int64_t *output) {
-  if (*text == '\0') return CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY;
-  const char *digits = *text == '-' ? text + 1 : text;
-  if (*digits == '\0') return CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT;
-  for (const char *cursor = digits; *cursor; ++cursor)
-    if (*cursor < '0' || *cursor > '9') return CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT;
-  errno = 0; *output = strtoll(text, NULL, 10);
-  return errno == ERANGE ? CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE : 0;
-}
-
-/* `Float.parse`; returns 0 on success or the failure constructor. */
-static uint32_t parse_float_text(const char *text, double *output) {
-  if (*text == '\0') return CHIMI_CONSTRUCTOR_FLOAT_PARSE_EMPTY;
-  if (!is_decimal_number(*text == '-' ? text + 1 : text)) return CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID;
-  *output = strtod(text, NULL);
-  return isfinite(*output) ? 0 : CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE;
-}
-
 /* `std/duration`'s intrinsics are Rust (intrinsics/durations.rs); the text form is
    chimi-runtime's duration.rs, which the debug renderer and messages here use too. */
 static ChimiValue *duration_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_DURATION, nanoseconds); }
@@ -6267,6 +6276,8 @@ static ChimiControl *invoke_select(ChimiRuntime *runtime, uint32_t intrinsic, Ch
 /* The host cores of std/env and std/fs, and the open-file table, are Rust
    (chimi-runtime intrinsics/host.rs). A read or write that would block parks
    here until dispatch moves. */
+extern ChimiControl *chimi_intrinsic_scalar_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                               uint32_t call_node);
 extern ChimiControl *chimi_intrinsic_host_v1(ChimiRuntime *runtime, bool cancel, uint32_t intrinsic,
                                              ChimiValue **arguments, uint32_t argument_count, uint32_t call_node);
 
@@ -6333,148 +6344,40 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
     return chimi_intrinsic_core_v1(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
+    /* The intrinsics over single values are Rust (chimi-runtime intrinsics/scalars.rs). */
     case CHIMI_INTRINSIC_IO_PATH:
     case CHIMI_INTRINSIC_PATH_FROM:
     case CHIMI_INTRINSIC_PATH_TO_TEXT:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
-        return intrinsic_shape_defect(call_node);
-      return success(arguments[0]);
-    case CHIMI_INTRINSIC_LIST_FIRST: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
-        return intrinsic_shape_defect(call_node);
-      if (list_length(arguments[0]) == 0)
-        return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-      ChimiValue *fields[] = {list_get(arguments[0], 0)};
-      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-    }
+    case CHIMI_INTRINSIC_LIST_FIRST:
     case CHIMI_INTRINSIC_LIST_LENGTH:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
-        return intrinsic_shape_defect(call_node);
-      return success(integer_value((int64_t)list_length(arguments[0])));
-    case CHIMI_INTRINSIC_ORDER_COMPARE: {
-      if (argument_count != 2) return intrinsic_shape_defect(call_node);
-      int order = chimi_value_compare(arguments[0], arguments[1]);
-      uint32_t constructor = order < 0 ? CHIMI_CONSTRUCTOR_ORDERING_LESS
-                           : order > 0 ? CHIMI_CONSTRUCTOR_ORDERING_GREATER : CHIMI_CONSTRUCTOR_ORDERING_EQUAL;
-      return success(standard_value(constructor, NULL, 0));
-    }
-    /* Both return the left operand when the two are equal. */
+    case CHIMI_INTRINSIC_ORDER_COMPARE:
     case CHIMI_INTRINSIC_ORDER_MIN:
-      if (argument_count != 2) return intrinsic_shape_defect(call_node);
-      return success(chimi_value_compare(arguments[0], arguments[1]) > 0 ? arguments[1] : arguments[0]);
     case CHIMI_INTRINSIC_ORDER_MAX:
-      if (argument_count != 2) return intrinsic_shape_defect(call_node);
-      return success(chimi_value_compare(arguments[0], arguments[1]) < 0 ? arguments[1] : arguments[0]);
-    case CHIMI_INTRINSIC_TEXT_APPEND: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
-          arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      TextBuffer buffer = {0};
-      buffer_bytes(&buffer, arguments[0]->as.text.bytes, arguments[0]->as.text.length);
-      buffer_bytes(&buffer, arguments[1]->as.text.bytes, arguments[1]->as.text.length);
-      return success(text_from_bytes(buffer.data ? buffer.data : "", buffer.length));
-    }
+    case CHIMI_INTRINSIC_TEXT_APPEND:
     case CHIMI_INTRINSIC_TEXT_EQUAL:
-      if (argument_count != 2 || arguments[0]->kind != VALUE_TEXT ||
-          arguments[1]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      return success(boolean_value(text_equals(arguments[0], arguments[1]->as.text.bytes, arguments[1]->as.text.length)));
-    case CHIMI_INTRINSIC_INT_PARSE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      int64_t value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT
-                                                                       : parse_int_text(arguments[0]->as.text.bytes, &value);
-      return error ? failure(standard_value(error, NULL, 0)) : success(integer_value(value));
-    }
-    case CHIMI_INTRINSIC_INT_TO_TEXT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      char text[24]; snprintf(text, sizeof(text), "%" PRId64, arguments[0]->as.integer);
-      return success(text_value(text));
-    }
+    case CHIMI_INTRINSIC_INT_PARSE:
+    case CHIMI_INTRINSIC_INT_TO_TEXT:
     case CHIMI_INTRINSIC_INT_ADD_CHECKED:
     case CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED:
     case CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED:
     case CHIMI_INTRINSIC_INT_DIVIDE_CHECKED:
-    case CHIMI_INTRINSIC_INT_REMAINDER_CHECKED: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER ||
-          arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      static const uint32_t operators[] = {CHIMI_BINARY_ADD, CHIMI_BINARY_SUBTRACT, CHIMI_BINARY_MULTIPLY,
-                                           CHIMI_BINARY_DIVIDE, CHIMI_BINARY_REMAINDER};
-      int64_t value = 0;
-      if (!integer_result(operators[intrinsic - CHIMI_INTRINSIC_INT_ADD_CHECKED],
-                          arguments[0]->as.integer, arguments[1]->as.integer, &value))
-        return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0));
-      ChimiValue *fields[] = {integer_value(value)};
-      return success(standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, fields, 1));
-    }
-    case CHIMI_INTRINSIC_INT_MODULO: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_INTEGER ||
-          arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      int64_t value = arguments[0]->as.integer, modulus = arguments[1]->as.integer;
-      if (modulus == 0) {
-        return defect(numeric_message("integer division by zero in `Int.modulo`: Int.modulo(%" PRId64
-                                      ", %" PRId64 ")", value, modulus), call_node);
-      }
-      int64_t remainder = modulus == -1 ? 0 : value % modulus;
-      if (remainder != 0 && (remainder < 0) != (modulus < 0)) remainder += modulus;
-      return success(integer_value(remainder));
-    }
+    case CHIMI_INTRINSIC_INT_REMAINDER_CHECKED:
+    case CHIMI_INTRINSIC_INT_MODULO:
     case CHIMI_INTRINSIC_RANGE_START:
     case CHIMI_INTRINSIC_RANGE_END:
-    case CHIMI_INTRINSIC_RANGE_LENGTH: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_RANGE) return intrinsic_shape_defect(call_node);
-      int64_t start = arguments[0]->as.range.start, end = arguments[0]->as.range.end;
-      if (intrinsic == CHIMI_INTRINSIC_RANGE_START) return success(integer_value(start));
-      if (intrinsic == CHIMI_INTRINSIC_RANGE_END) return success(integer_value(end));
-      if (end <= start) return success(integer_value(0));
-      int64_t length;
-      if (__builtin_sub_overflow(end, start, &length))
-        return defect("Range.length overflows Int: the range holds more than the largest Int elements", call_node);
-      return success(integer_value(length));
-    }
+    case CHIMI_INTRINSIC_RANGE_LENGTH:
     case CHIMI_INTRINSIC_RANGE_CONTAINS:
-      if (argument_count != 2 || arguments[0]->kind != VALUE_RANGE || arguments[1]->kind != VALUE_INTEGER)
-        return intrinsic_shape_defect(call_node);
-      return success(boolean_value(arguments[0]->as.range.start <= arguments[1]->as.integer &&
-                                   arguments[1]->as.integer < arguments[0]->as.range.end));
     case CHIMI_INTRINSIC_FLOAT_FROM_INT:
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      return success(float_value((double)arguments[0]->as.integer));
     case CHIMI_INTRINSIC_FLOAT_TRUNCATE:
     case CHIMI_INTRINSIC_FLOAT_FLOOR:
     case CHIMI_INTRINSIC_FLOAT_CEILING:
-    case CHIMI_INTRINSIC_FLOAT_ROUND: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
-      double value = arguments[0]->as.floating;
-      switch (intrinsic) {
-        case CHIMI_INTRINSIC_FLOAT_TRUNCATE: value = trunc(value); break;
-        case CHIMI_INTRINSIC_FLOAT_FLOOR: value = floor(value); break;
-        case CHIMI_INTRINSIC_FLOAT_CEILING: value = ceil(value); break;
-        default: value = round(value); break; /* half away from zero */
-      }
-      return success(float_value(value));
-    }
-    case CHIMI_INTRINSIC_FLOAT_TO_INT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
-      double value = arguments[0]->as.floating;
-      if (value != trunc(value)) return failure(standard_value(CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER, NULL, 0));
-      /* -2^63 is exactly representable; 2^63 is the first value above Int. */
-      if (!(value >= -9223372036854775808.0 && value < 9223372036854775808.0))
-        return failure(standard_value(CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE, NULL, 0));
-      return success(integer_value((int64_t)value));
-    }
+    case CHIMI_INTRINSIC_FLOAT_ROUND:
+    case CHIMI_INTRINSIC_FLOAT_TO_INT:
     case CHIMI_INTRINSIC_DEBUG_RENDER:
     case CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED:
-      if (argument_count != 1) return intrinsic_shape_defect(call_node);
-      return success(debug_render(arguments[0], intrinsic == CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED));
-    case CHIMI_INTRINSIC_FLOAT_TO_TEXT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_FLOAT) return intrinsic_shape_defect(call_node);
-      char text[40]; float_text(arguments[0]->as.floating, text);
-      return success(text_value(text));
-    }
-    case CHIMI_INTRINSIC_FLOAT_PARSE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-      double value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID
-                                                                      : parse_float_text(arguments[0]->as.text.bytes, &value);
-      return error ? failure(standard_value(error, NULL, 0)) : success(float_value(value));
-    }
+    case CHIMI_INTRINSIC_FLOAT_TO_TEXT:
+    case CHIMI_INTRINSIC_FLOAT_PARSE:
+      return chimi_intrinsic_scalar_v1(intrinsic, arguments, argument_count, call_node);
     case CHIMI_INTRINSIC_TASK_START:
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);

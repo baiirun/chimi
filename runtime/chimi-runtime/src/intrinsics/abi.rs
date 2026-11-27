@@ -19,6 +19,7 @@ use super::debug::render;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
+use super::scalars::scalar_operation;
 use super::json::json_operation;
 use super::test_log::{release, send_to_test_mailbox, test_log_operation};
 use crate::heap::layout::{Control, Environment, Value};
@@ -338,4 +339,19 @@ pub unsafe extern "C" fn chimi_intrinsic_host_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { host_operation(runtime, cancel, intrinsic, arguments(values, count), call_node) }
+}
+
+/// [`scalar_operation`].
+///
+/// # Safety
+/// As for `scalar_operation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_intrinsic_scalar_v1(
+    intrinsic: u32,
+    values: *mut *mut Value,
+    count: u32,
+    call_node: u32,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { scalar_operation(intrinsic, arguments(values, count), call_node) }
 }
