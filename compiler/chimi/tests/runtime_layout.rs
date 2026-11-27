@@ -65,6 +65,10 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  uint32_t type_name;\n  uint32_t variant_name;", "} ChimiConstructor;"),
     ("typedef struct {\n  uint32_t file_id;", "} ChimiOrigin;"),
     ("typedef struct {\n  uint32_t origin;\n  uint32_t a;", "} ChimiNode;"),
+    ("typedef struct {\n  uint32_t symbol;\n  uint32_t body;", "} ChimiFunction;"),
+    ("typedef struct {\n  uint32_t name;\n  uint32_t node;", "} ChimiNamedNode;"),
+    ("typedef struct {\n  uint32_t kind;\n  uint32_t symbol;\n  uint32_t node;", "} ChimiStep;"),
+    ("typedef struct {\n  uint32_t patterns_offset;", "} ChimiArm;"),
 ];
 
 /// The text before the block, the block itself (both marker lines

@@ -525,11 +525,9 @@ typedef struct {
   uint64_t allocated_bytes;
 } ProfileRow;
 /* Allocated once at startup and indexed by node, and shared by every carrier,
-   so each count is a relaxed atomic add (profile_count). */
+   so each count is a relaxed atomic add (allocator.rs and eval.rs). */
 #define profile_rows chimi_runtime_profile_rows
 ProfileRow *chimi_runtime_profile_rows;
-
-static void profile_count(uint64_t *field, uint64_t by) { __atomic_fetch_add(field, by, __ATOMIC_RELAXED); }
 
 /* Ends the process for a fatal runtime error, from any carrier thread. exit
    is not safe to call twice at once, so only the first caller runs it (and
@@ -1500,6 +1498,117 @@ _Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->environment_slot) == 2, "l
 _Static_assert(offsetof(ChimiSymbol, binding) == 36, "layout: offsetof(ChimiSymbol, binding)");
 _Static_assert(sizeof(((ChimiSymbol *)0)->binding) == 4, "layout: sizeof(((ChimiSymbol *)0)->binding)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->binding) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSymbol *)0)->binding)");
+_Static_assert(sizeof(ChimiFunction) == 20, "layout: sizeof(ChimiFunction)");
+_Static_assert(offsetof(ChimiFunction, symbol) == 0, "layout: offsetof(ChimiFunction, symbol)");
+_Static_assert(sizeof(((ChimiFunction *)0)->symbol) == 4, "layout: sizeof(((ChimiFunction *)0)->symbol)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->symbol) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->symbol)");
+_Static_assert(offsetof(ChimiFunction, body) == 4, "layout: offsetof(ChimiFunction, body)");
+_Static_assert(sizeof(((ChimiFunction *)0)->body) == 4, "layout: sizeof(((ChimiFunction *)0)->body)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->body) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->body)");
+_Static_assert(offsetof(ChimiFunction, parameters_offset) == 8, "layout: offsetof(ChimiFunction, parameters_offset)");
+_Static_assert(sizeof(((ChimiFunction *)0)->parameters_offset) == 4, "layout: sizeof(((ChimiFunction *)0)->parameters_offset)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->parameters_offset) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->parameters_offset)");
+_Static_assert(offsetof(ChimiFunction, parameters_length) == 12, "layout: offsetof(ChimiFunction, parameters_length)");
+_Static_assert(sizeof(((ChimiFunction *)0)->parameters_length) == 4, "layout: sizeof(((ChimiFunction *)0)->parameters_length)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->parameters_length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->parameters_length)");
+_Static_assert(offsetof(ChimiFunction, local_count) == 16, "layout: offsetof(ChimiFunction, local_count)");
+_Static_assert(sizeof(((ChimiFunction *)0)->local_count) == 4, "layout: sizeof(((ChimiFunction *)0)->local_count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->local_count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFunction *)0)->local_count)");
+_Static_assert(sizeof(ChimiNamedNode) == 8, "layout: sizeof(ChimiNamedNode)");
+_Static_assert(offsetof(ChimiNamedNode, name) == 0, "layout: offsetof(ChimiNamedNode, name)");
+_Static_assert(sizeof(((ChimiNamedNode *)0)->name) == 4, "layout: sizeof(((ChimiNamedNode *)0)->name)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNamedNode *)0)->name) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNamedNode *)0)->name)");
+_Static_assert(offsetof(ChimiNamedNode, node) == 4, "layout: offsetof(ChimiNamedNode, node)");
+_Static_assert(sizeof(((ChimiNamedNode *)0)->node) == 4, "layout: sizeof(((ChimiNamedNode *)0)->node)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiNamedNode *)0)->node) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiNamedNode *)0)->node)");
+_Static_assert(sizeof(ChimiStep) == 12, "layout: sizeof(ChimiStep)");
+_Static_assert(offsetof(ChimiStep, kind) == 0, "layout: offsetof(ChimiStep, kind)");
+_Static_assert(sizeof(((ChimiStep *)0)->kind) == 4, "layout: sizeof(((ChimiStep *)0)->kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->kind)");
+_Static_assert(offsetof(ChimiStep, symbol) == 4, "layout: offsetof(ChimiStep, symbol)");
+_Static_assert(sizeof(((ChimiStep *)0)->symbol) == 4, "layout: sizeof(((ChimiStep *)0)->symbol)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->symbol) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->symbol)");
+_Static_assert(offsetof(ChimiStep, node) == 8, "layout: offsetof(ChimiStep, node)");
+_Static_assert(sizeof(((ChimiStep *)0)->node) == 4, "layout: sizeof(((ChimiStep *)0)->node)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->node) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiStep *)0)->node)");
+_Static_assert(sizeof(ChimiArm) == 24, "layout: sizeof(ChimiArm)");
+_Static_assert(offsetof(ChimiArm, patterns_offset) == 0, "layout: offsetof(ChimiArm, patterns_offset)");
+_Static_assert(sizeof(((ChimiArm *)0)->patterns_offset) == 4, "layout: sizeof(((ChimiArm *)0)->patterns_offset)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->patterns_offset) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->patterns_offset)");
+_Static_assert(offsetof(ChimiArm, patterns_length) == 4, "layout: offsetof(ChimiArm, patterns_length)");
+_Static_assert(sizeof(((ChimiArm *)0)->patterns_length) == 4, "layout: sizeof(((ChimiArm *)0)->patterns_length)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->patterns_length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->patterns_length)");
+_Static_assert(offsetof(ChimiArm, guard) == 8, "layout: offsetof(ChimiArm, guard)");
+_Static_assert(sizeof(((ChimiArm *)0)->guard) == 4, "layout: sizeof(((ChimiArm *)0)->guard)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->guard) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->guard)");
+_Static_assert(offsetof(ChimiArm, body) == 12, "layout: offsetof(ChimiArm, body)");
+_Static_assert(sizeof(((ChimiArm *)0)->body) == 4, "layout: sizeof(((ChimiArm *)0)->body)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->body) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->body)");
+_Static_assert(offsetof(ChimiArm, cause_subject) == 16, "layout: offsetof(ChimiArm, cause_subject)");
+_Static_assert(sizeof(((ChimiArm *)0)->cause_subject) == 4, "layout: sizeof(((ChimiArm *)0)->cause_subject)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->cause_subject) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->cause_subject)");
+_Static_assert(offsetof(ChimiArm, cause_local) == 20, "layout: offsetof(ChimiArm, cause_local)");
+_Static_assert(sizeof(((ChimiArm *)0)->cause_local) == 4, "layout: sizeof(((ChimiArm *)0)->cause_local)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->cause_local) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiArm *)0)->cause_local)");
+_Static_assert(sizeof(ChimiPattern) == 24, "layout: sizeof(ChimiPattern)");
+_Static_assert(offsetof(ChimiPattern, kind) == 0, "layout: offsetof(ChimiPattern, kind)");
+_Static_assert(sizeof(((ChimiPattern *)0)->kind) == 4, "layout: sizeof(((ChimiPattern *)0)->kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->kind)");
+_Static_assert(offsetof(ChimiPattern, a) == 4, "layout: offsetof(ChimiPattern, a)");
+_Static_assert(sizeof(((ChimiPattern *)0)->a) == 4, "layout: sizeof(((ChimiPattern *)0)->a)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->a) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->a)");
+_Static_assert(offsetof(ChimiPattern, offset) == 8, "layout: offsetof(ChimiPattern, offset)");
+_Static_assert(sizeof(((ChimiPattern *)0)->offset) == 4, "layout: sizeof(((ChimiPattern *)0)->offset)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->offset) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->offset)");
+_Static_assert(offsetof(ChimiPattern, length) == 12, "layout: offsetof(ChimiPattern, length)");
+_Static_assert(sizeof(((ChimiPattern *)0)->length) == 4, "layout: sizeof(((ChimiPattern *)0)->length)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->length) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->length)");
+_Static_assert(offsetof(ChimiPattern, integer) == 16, "layout: offsetof(ChimiPattern, integer)");
+_Static_assert(sizeof(((ChimiPattern *)0)->integer) == 8, "layout: sizeof(((ChimiPattern *)0)->integer)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->integer) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiPattern *)0)->integer)");
+_Static_assert(CHIMI_SYMBOL_FUNCTION == 0, "layout: CHIMI_SYMBOL_FUNCTION");
+_Static_assert(CHIMI_SYMBOL_CONSTANT == 1, "layout: CHIMI_SYMBOL_CONSTANT");
+_Static_assert(CHIMI_SYMBOL_REQUIREMENT == 2, "layout: CHIMI_SYMBOL_REQUIREMENT");
+_Static_assert(CHIMI_SYMBOL_LOCAL == 3, "layout: CHIMI_SYMBOL_LOCAL");
+_Static_assert(CHIMI_SYMBOL_CONSTRUCTOR == 4, "layout: CHIMI_SYMBOL_CONSTRUCTOR");
+_Static_assert(CHIMI_SYMBOL_INTRINSIC == 5, "layout: CHIMI_SYMBOL_INTRINSIC");
+_Static_assert(CHIMI_SYMBOL_PROCESS_NAME == 7, "layout: CHIMI_SYMBOL_PROCESS_NAME");
+_Static_assert(CHIMI_LITERAL_INTEGER == 0, "layout: CHIMI_LITERAL_INTEGER");
+_Static_assert(CHIMI_LITERAL_TEXT == 1, "layout: CHIMI_LITERAL_TEXT");
+_Static_assert(CHIMI_LITERAL_BOOLEAN == 2, "layout: CHIMI_LITERAL_BOOLEAN");
+_Static_assert(CHIMI_LITERAL_FLOAT == 3, "layout: CHIMI_LITERAL_FLOAT");
+_Static_assert(CHIMI_LITERAL_VOID == 4, "layout: CHIMI_LITERAL_VOID");
+_Static_assert(CHIMI_BINARY_ADD == 0, "layout: CHIMI_BINARY_ADD");
+_Static_assert(CHIMI_BINARY_SUBTRACT == 1, "layout: CHIMI_BINARY_SUBTRACT");
+_Static_assert(CHIMI_BINARY_MULTIPLY == 2, "layout: CHIMI_BINARY_MULTIPLY");
+_Static_assert(CHIMI_BINARY_DIVIDE == 3, "layout: CHIMI_BINARY_DIVIDE");
+_Static_assert(CHIMI_BINARY_LESS == 4, "layout: CHIMI_BINARY_LESS");
+_Static_assert(CHIMI_BINARY_LESS_EQUAL == 5, "layout: CHIMI_BINARY_LESS_EQUAL");
+_Static_assert(CHIMI_BINARY_GREATER == 6, "layout: CHIMI_BINARY_GREATER");
+_Static_assert(CHIMI_BINARY_GREATER_EQUAL == 7, "layout: CHIMI_BINARY_GREATER_EQUAL");
+_Static_assert(CHIMI_BINARY_REMAINDER == 8, "layout: CHIMI_BINARY_REMAINDER");
+_Static_assert(CHIMI_BINARY_EQUAL == 9, "layout: CHIMI_BINARY_EQUAL");
+_Static_assert(CHIMI_BINARY_RANGE == 10, "layout: CHIMI_BINARY_RANGE");
+_Static_assert(CHIMI_BINARY_RANGE_INCLUSIVE == 11, "layout: CHIMI_BINARY_RANGE_INCLUSIVE");
+_Static_assert(CHIMI_PATTERN_WILDCARD == 0, "layout: CHIMI_PATTERN_WILDCARD");
+_Static_assert(CHIMI_PATTERN_BINDING == 1, "layout: CHIMI_PATTERN_BINDING");
+_Static_assert(CHIMI_PATTERN_LITERAL == 2, "layout: CHIMI_PATTERN_LITERAL");
+_Static_assert(CHIMI_PATTERN_CONSTRUCTOR == 3, "layout: CHIMI_PATTERN_CONSTRUCTOR");
+_Static_assert(CHIMI_PATTERN_OUTCOME == 4, "layout: CHIMI_PATTERN_OUTCOME");
+_Static_assert(CHIMI_PATTERN_LIST == 5, "layout: CHIMI_PATTERN_LIST");
+_Static_assert(CHIMI_PATTERN_ALIAS == 6, "layout: CHIMI_PATTERN_ALIAS");
+_Static_assert(CHIMI_PATTERN_TUPLE == 7, "layout: CHIMI_PATTERN_TUPLE");
+_Static_assert(CHIMI_TYPE_CONSOLE == 0, "layout: CHIMI_TYPE_CONSOLE");
+_Static_assert(CHIMI_TYPE_FILE_SYSTEM == 3, "layout: CHIMI_TYPE_FILE_SYSTEM");
+_Static_assert(CHIMI_TYPE_CLOCK == 37, "layout: CHIMI_TYPE_CLOCK");
+_Static_assert(CHIMI_TYPE_RANDOM == 38, "layout: CHIMI_TYPE_RANDOM");
+_Static_assert(HOST_PROCESS_UTF8_LINES == 0, "layout: HOST_PROCESS_UTF8_LINES");
+_Static_assert(HOST_WRITE_LINE == 1, "layout: HOST_WRITE_LINE");
+_Static_assert(HOST_WRITE_ERROR == 2, "layout: HOST_WRITE_ERROR");
+_Static_assert(HOST_RANDOM_NEXT_INT == 3, "layout: HOST_RANDOM_NEXT_INT");
+_Static_assert(HOST_CLOCK_NOW == 4, "layout: HOST_CLOCK_NOW");
+_Static_assert(HOST_CLOCK_TIMESTAMP == 5, "layout: HOST_CLOCK_TIMESTAMP");
+_Static_assert(HOST_CLOCK_SLEEP_UNTIL == 6, "layout: HOST_CLOCK_SLEEP_UNTIL");
 _Static_assert(sizeof(ChimiConstructor) == 28, "layout: sizeof(ChimiConstructor)");
 _Static_assert(offsetof(ChimiConstructor, type_name) == 0, "layout: offsetof(ChimiConstructor, type_name)");
 _Static_assert(sizeof(((ChimiConstructor *)0)->type_name) == 4, "layout: sizeof(((ChimiConstructor *)0)->type_name)");
@@ -2281,9 +2390,6 @@ static void enter_carrier_thread(void *context, uint32_t index) {
   carrier_thread_enter(index);
 }
 
-static bool host_stack_exhausted(void) {
-  return (uintptr_t)__builtin_frame_address(0) < carrier->host_stack_limit;
-}
 static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
 /* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
@@ -2314,25 +2420,8 @@ static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
 static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
   return chimi_environment_clone_v1(source, true, false);
 }
-static ChimiEnvironment *clone_requirement_environment(const ChimiEnvironment *source) {
-  return chimi_environment_clone_v1(source, false, true);
-}
 static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
   return chimi_environment_capture_requirements_v1(source);
-}
-static ChimiEnvironment *capture_closure_environment(const ChimiEnvironment *source,
-                                                     const ChimiNode *node) {
-  ChimiEnvironment *environment = allocate(1, sizeof(*environment));
-  allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-  environment->local_count = node->d;
-  environment->locals = new_value_slots(node->d);
-  environment->requirements = clone_value_slots(source->requirements, CHIMI_REQUIREMENT_SLOT_COUNT);
-  for (uint32_t index = 0; index < node->c; ++index) {
-    uint32_t symbol = CHIMI_IDS[node->b + index];
-    uint32_t slot = CHIMI_SYMBOLS[symbol].environment_slot;
-    environment->locals[slot] = source->locals[slot];
-  }
-  return environment;
 }
 static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
@@ -2515,12 +2604,6 @@ static const char *process_name_label(uint64_t name) {
   return CHIMI_STRINGS[CHIMI_SYMBOLS[name - 1].name];
 }
 
-static const ChimiFunction *find_function(uint32_t symbol) {
-  for (uint32_t index = 0; index < CHIMI_FUNCTION_COUNT; ++index)
-    if (CHIMI_FUNCTIONS[index].symbol == symbol) return &CHIMI_FUNCTIONS[index];
-  return NULL;
-}
-
 static ChimiControl *run_node(uint32_t node, ChimiRuntime *runtime,
                               ChimiEnvironment *environment, uint64_t parent_span) {
   if (runtime->cancel) return cancelled();
@@ -2568,61 +2651,29 @@ extern void chimi_trace_process_body_v1(ChimiRuntime *runtime, uint64_t span, ui
                                         const ChimiControl *outcome);
 extern void chimi_trace_scheduler_event_v1(void *context, const ChimiSchedulerTraceEvent *event);
 #define emit_event chimi_trace_event_v1
-#define emit_dependency chimi_trace_dependency_v1
 #define emit_process_body chimi_trace_process_body_v1
 
-/* Charges the current heap's allocations to `node` until profile_leave. */
-static uint32_t profile_enter(uint32_t node, const char *operation) {
-  if (!profile_rows) return 0;
-  ProfileRow *row = &profile_rows[node];
-  __atomic_store_n(&row->operation, operation, __ATOMIC_RELAXED);
-  profile_count(&row->evaluations, 1);
-  uint32_t outer = carrier->fiber.heap->profiled_node_plus_one;
-  carrier->fiber.heap->profiled_node_plus_one = node + 1;
-  return outer;
-}
-static void profile_leave(uint32_t outer) {
-  if (profile_rows) carrier->fiber.heap->profiled_node_plus_one = outer;
-}
-
-/* Span ids a carrier takes from the runtime's counter at once when several
-   carriers run. Traced modes take a span per node, and one shared fetch-add
-   per node made a traced counting loop slower on four carriers than on one
-   (step 3 PR 6a review). */
-enum { SPAN_BLOCK = 4096 };
-
-/* `count` consecutive span ids that no other node has; returns the first.
-   One carrier takes them straight from the counter, so its ids stay dense
-   and in order, as a transcript expects; with several, ids are unique but
-   neither dense nor ordered across carriers. */
-static uint64_t take_spans(ChimiRuntime *runtime, uint64_t count) {
-#ifdef CHIMI_CARRIER_SIMULATION
-  /* The simulated carriers share one thread, so nothing contends. */
-  return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
-#else
-  if (carrier_count == 1) return atomic_fetch_add_explicit(&runtime->next_span, count, memory_order_relaxed);
-  if (carrier->end_span - carrier->next_span < count) {
-    uint64_t size = count > SPAN_BLOCK ? count : SPAN_BLOCK;
-    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);
-    carrier->end_span = carrier->next_span + size;
-  }
-  uint64_t first = carrier->next_span;
-  carrier->next_span += count;
-  return first;
-#endif
-}
-
-static uint64_t begin_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent, const char *operation) {
-  if (runtime->silent) return parent;
-  uint64_t span = take_spans(runtime, 1);
-  if (runtime->full_trace) emit_event(runtime, "operation_started", node, span, (int64_t)parent, operation, NULL);
-  return span;
-}
-static ChimiControl *finish_node(ChimiRuntime *runtime, uint32_t node, uint64_t parent,
-                                 uint64_t span, const char *operation, ChimiControl *control) {
-  if (runtime->full_trace) emit_event(runtime, "operation_completed", node, span, (int64_t)parent, operation, control);
-  return control;
-}
+/* The evaluator is Rust (chimi-runtime eval.rs): the core nodes, `invoke`
+   for the calls a program defines, and the span and profile frame of each
+   node. It calls back into chimi_runtime_invoke_native_v1 below for the
+   intrinsics, host functions and C bindings. */
+ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
+                                      uint32_t argument_count, uint64_t span, uint32_t call_node,
+                                      ChimiEnvironment *call_environment);
+#define invoke chimi_runtime_invoke_v1
+ChimiControl *chimi_runtime_construct_value_v1(uint32_t symbol, ChimiValue *const *values);
+#define construct_value chimi_runtime_construct_value_v1
+ChimiValue *chimi_runtime_select_value_v1(const ChimiValue *value, const char *name);
+#define select_value chimi_runtime_select_value_v1
+const ChimiFunction *chimi_runtime_find_function_v1(uint32_t symbol);
+#define find_function chimi_runtime_find_function_v1
+void chimi_runtime_bind_requirement_v1(ChimiEnvironment *environment, const char *name, ChimiValue *value);
+uint64_t chimi_runtime_take_spans_v1(ChimiRuntime *runtime, uint64_t count);
+#define take_spans chimi_runtime_take_spans_v1
+uint64_t chimi_runtime_node_begin_v1(ChimiRuntime *runtime, uint32_t node, uint64_t parent,
+                                     const char *operation, uint32_t *outer);
+ChimiControl *chimi_runtime_node_finish_v1(ChimiRuntime *runtime, uint32_t node, uint64_t parent, uint64_t span,
+                                           const char *operation, uint32_t outer, ChimiControl *control);
 
 static ChimiValue *integer_value(int64_t raw) { return chimi_value_integer_v1(VALUE_INTEGER, raw); }
 static ChimiValue *range_value(int64_t start, int64_t end) { return chimi_value_range_v1(start, end); }
@@ -2632,7 +2683,8 @@ static ChimiValue *range_value(int64_t start, int64_t end) { return chimi_value_
    creates all three at startup, before any carrier runs. While carriers run on
    threads, nothing appends to the static area: list_slice copies a constant's
    window rather than compacting it there. */
-static ChimiValue *shared_values[3];
+#define shared_values chimi_runtime_shared_values
+ChimiValue *shared_values[3];
 static ChimiValue *shared_value(uint32_t index) {
   Carrier *const here = carrier;
   if (!shared_values[index]) {
@@ -2653,9 +2705,6 @@ static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; 
 static ChimiValue *text_value(const char *raw) { return text_from_bytes(raw, strlen(raw)); }
 /* A Text literal or constant from the string table, which may hold U+0000. */
 static ChimiValue *string_text(uint32_t id) { return text_from_bytes(CHIMI_STRINGS[id], CHIMI_STRING_LENGTHS[id]); }
-static bool text_equals(const ChimiValue *text, const char *bytes, size_t length) {
-  return text->as.text.length == length && memcmp(text->as.text.bytes, bytes, length) == 0;
-}
 static bool text_holds_nul(const ChimiValue *text) {
   return memchr(text->as.text.bytes, '\0', text->as.text.length) != NULL;
 }
@@ -2681,73 +2730,6 @@ static const char *numeric_message(const char *format, ...) {
 extern size_t chimi_float_text_v1(double value, char *out);
 static void float_text(double value, char *output) { chimi_float_text_v1(value, output); }
 
-static const char *binary_symbol(uint32_t operator) {
-  switch (operator) {
-    case CHIMI_BINARY_ADD: return "+";
-    case CHIMI_BINARY_SUBTRACT: return "-";
-    case CHIMI_BINARY_MULTIPLY: return "*";
-    case CHIMI_BINARY_DIVIDE: return "/";
-    case CHIMI_BINARY_REMAINDER: return "%";
-    default: return "?";
-  }
-}
-
-static bool is_arithmetic(uint32_t operator) {
-  return operator == CHIMI_BINARY_ADD || operator == CHIMI_BINARY_SUBTRACT ||
-         operator == CHIMI_BINARY_MULTIPLY || operator == CHIMI_BINARY_DIVIDE ||
-         operator == CHIMI_BINARY_REMAINDER;
-}
-
-/* Stores the exact result and returns true, or returns false on overflow or a zero divisor. */
-static bool integer_result(uint32_t operator, int64_t l, int64_t r, int64_t *output) {
-  switch (operator) {
-    case CHIMI_BINARY_ADD: return !__builtin_add_overflow(l, r, output);
-    case CHIMI_BINARY_SUBTRACT: return !__builtin_sub_overflow(l, r, output);
-    case CHIMI_BINARY_MULTIPLY: return !__builtin_mul_overflow(l, r, output);
-    case CHIMI_BINARY_DIVIDE:
-      if (r == 0) return false;
-      if (r == -1) return !__builtin_sub_overflow((int64_t)0, l, output);
-      *output = l / r; return true;
-    case CHIMI_BINARY_REMAINDER:
-      if (r == 0) return false;
-      /* INT64_MIN / -1 overflows, but INT64_MIN % -1 is exactly 0. */
-      *output = r == -1 ? 0 : l % r; return true;
-    default: return false;
-  }
-}
-
-static ChimiControl *integer_arithmetic(uint32_t operator, int64_t l, int64_t r, int64_t node) {
-  const char *symbol = binary_symbol(operator); int64_t output = 0;
-  if (integer_result(operator, l, r, &output)) return success(integer_value(output));
-  const char *format = r == 0 && (operator == CHIMI_BINARY_DIVIDE || operator == CHIMI_BINARY_REMAINDER)
-    ? "integer division by zero in `%s`: %" PRId64 " %s %" PRId64
-    : "integer overflow in `%s`: %" PRId64 " %s %" PRId64;
-  return defect(numeric_message(format, symbol, l, symbol, r), node);
-}
-
-static ChimiControl *float_arithmetic(uint32_t operator, double l, double r, int64_t node) {
-  const char *symbol = binary_symbol(operator); double output = 0;
-  char left_text[40], right_text[40]; float_text(l, left_text); float_text(r, right_text);
-  switch (operator) {
-    case CHIMI_BINARY_ADD: output = l + r; break;
-    case CHIMI_BINARY_SUBTRACT: output = l - r; break;
-    case CHIMI_BINARY_MULTIPLY: output = l * r; break;
-    case CHIMI_BINARY_DIVIDE:
-    case CHIMI_BINARY_REMAINDER:
-      if (r == 0) {
-        return defect(numeric_message("float division by zero in `%s`: %s %s %s",
-                                      symbol, left_text, symbol, right_text), node);
-      }
-      output = operator == CHIMI_BINARY_DIVIDE ? l / r : fmod(l, r);
-      break;
-  }
-  if (!isfinite(output)) {
-    return defect(numeric_message("float `%s` has no finite result: %s %s %s",
-                                  symbol, left_text, symbol, right_text), node);
-  }
-  return success(float_value(output));
-}
-
 /* std/decimal: the interpreter's own model, chimi-runtime's decimal.rs, through
    decimal_abi.rs. A sign, a magnitude of at most 38 digits, and a scale from 0
    to 38; no operation rounds unless it takes a rounding mode, and none wraps or
@@ -2764,35 +2746,11 @@ size_t chimi_decimal_text_v1(ChimiDecimal value, bool normalized, char *out);
 
 static Decimal decimal_of(const ChimiValue *value) { return value->as.decimal; }
 static ChimiValue *decimal_value(Decimal decimal) { return chimi_value_decimal_v1(decimal); }
-__attribute__((noinline)) static ChimiValue *decimal_negated(const ChimiValue *value) {
-  return decimal_value(chimi_decimal_negate_v1(decimal_of(value)));
-}
 /* `Decimal.to_text`: exactly `scale` fraction digits. `output` holds DECIMAL_TEXT_BYTES. */
 static void decimal_text(Decimal value, char *output) { chimi_decimal_text_v1(value, false, output); }
 /* The debug form: trailing fraction zeros removed, so equal values render the same. */
 static void decimal_normalized_text(Decimal value, char *output) { chimi_decimal_text_v1(value, true, output); }
 
-/* Applies `+`, `-`, or `*`; typing rejects `/` and `%` on Decimal (T4306).
-   Kept out of line, as decimal_negated is: chimi_rt_binary and chimi_rt_unary sit
-   in every frame of a recursion through an operator, and the 24-byte decimals
-   and text buffers would grow each of those frames (the task stack test in
-   tests/cli.rs recurses 1,000 calls through `+`). */
-__attribute__((noinline)) static ChimiControl *decimal_arithmetic(uint32_t operator, const ChimiValue *left,
-                                                                  const ChimiValue *right, int64_t node) {
-  Decimal l = decimal_of(left), r = decimal_of(right);
-  const char *symbol = binary_symbol(operator); Decimal output; bool fits = false;
-  switch (operator) {
-    case CHIMI_BINARY_ADD: fits = chimi_decimal_add_v1(l, r, &output); break;
-    case CHIMI_BINARY_SUBTRACT: fits = chimi_decimal_subtract_v1(l, r, &output); break;
-    case CHIMI_BINARY_MULTIPLY: fits = chimi_decimal_multiply_v1(l, r, &output); break;
-    default: return defect(numeric_message("`%s` is not a `Decimal` operator", symbol), node);
-  }
-  if (fits) return success(decimal_value(output));
-  char left_text[DECIMAL_TEXT_BYTES], right_text[DECIMAL_TEXT_BYTES];
-  decimal_text(l, left_text); decimal_text(r, right_text);
-  return defect(numeric_message("decimal overflow in `%s`: %s %s %s needs more than 38 digits or scale 38",
-                                symbol, left_text, symbol, right_text), node);
-}
 static ChimiValue *callable_value(ChimiCallable *raw) { return chimi_value_pointer_v1(VALUE_CALLABLE, raw); }
 static ChimiValue *map_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_MAP, raw); }
 static ChimiValue *set_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_SET, raw); }
@@ -2989,15 +2947,6 @@ ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t no
                                                int64_t raw) {
   if (!runtime->silent) take_spans(runtime, node_count);
   return success(integer_value(raw));
-}
-
-static ChimiValue *select_value(ChimiValue *value, const char *name) {
-  RuntimeField *fields = NULL; uint32_t length = 0;
-  if (value->kind == VALUE_RECORD) { fields = value->as.record.fields; length = value->as.record.length; }
-  else if (value->kind == VALUE_CONSTRUCTED) { fields = value->as.constructed.fields; length = value->as.constructed.length; }
-  for (uint32_t index = 0; index < length; ++index)
-    if (strcmp(fields[index].name, name) == 0) return fields[index].value;
-  return NULL;
 }
 
 /* The persistent Map tree, which Set shares, and structural order live in
@@ -3262,9 +3211,6 @@ _Noreturn void chimi_runtime_json_tape_defect_v1(void) {
   fputs("Chimi runtime: malformed JSON tape\n", stderr); runtime_exit(70);
 }
 
-static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
-                            uint32_t argument_count, uint64_t span, uint32_t call_node,
-                            ChimiEnvironment *call_environment);
 
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
@@ -4457,23 +4403,19 @@ static ChimiControl *invoke_binding(ChimiRuntime *runtime, uint32_t binding, Chi
   return control;
 }
 
-static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values);
 static ChimiControl *invoke_clock_host(ChimiRuntime *runtime, ChimiCallable *callable,
                                        ChimiValue **arguments, uint32_t argument_count,
                                        uint64_t span, uint32_t call_node,
                                        ChimiEnvironment *environment);
 
-static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
-                            uint32_t argument_count, uint64_t span, uint32_t call_node,
-                            ChimiEnvironment *call_environment) {
-  if (callable->kind == CALL_CONSTRUCTOR) return construct_value(callable->symbol, arguments);
-  if (callable->kind == CALL_DEPENDENCY) {
-    if (!runtime->silent) {
-      uint64_t dependency_span = take_spans(runtime, 1);
-      emit_dependency(runtime, call_node, dependency_span, span, callable);
-    }
-    return invoke(runtime, callable->inner, arguments, argument_count, span, call_node, call_environment);
-  }
+/* The calls the evaluator hands back to C: an intrinsic, a host function, or a
+   C binding. */
+ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallable *callable,
+                                             ChimiValue **arguments, uint32_t argument_count, uint64_t span,
+                                             uint32_t call_node, ChimiEnvironment *call_environment);
+ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallable *callable,
+                                             ChimiValue **arguments, uint32_t argument_count, uint64_t span,
+                                             uint32_t call_node, ChimiEnvironment *call_environment) {
   if (callable->kind == CALL_INTRINSIC && callable->intrinsic == CHIMI_INTRINSIC_BINDING_CALL)
     return invoke_binding(runtime, CHIMI_SYMBOLS[callable->symbol].binding, arguments,
                           argument_count, call_node);
@@ -4483,29 +4425,8 @@ static ChimiControl *invoke(ChimiRuntime *runtime, ChimiCallable *callable, Chim
   if (callable->kind == CALL_HOST && callable->host >= HOST_CLOCK_NOW)
     return invoke_clock_host(runtime, callable, arguments, argument_count, span, call_node,
                              call_environment);
-  if (callable->kind == CALL_HOST)
-    return invoke_host(runtime, callable->host, arguments, argument_count,
-                       span, call_node, call_environment);
-  if (host_stack_exhausted()) return defect("Stack overflow", -1);
-  ChimiEnvironment *environment;
-  if (callable->kind == CALL_DECLARED) {
-    // Declared functions capture provisioned requirements, but never local
-    // bindings. Build a clean local table for parameters while retaining the
-    // requirement snapshot taken when the function became a value.
-    environment = new_environment(callable->local_count);
-    if (CHIMI_REQUIREMENT_SLOT_COUNT != 0)
-      memcpy(environment->requirements, callable->environment->requirements,
-             CHIMI_REQUIREMENT_SLOT_COUNT * sizeof(*environment->requirements));
-  } else {
-    environment = clone_environment(callable->environment);
-  }
-  for (uint32_t slot = 0; slot < CHIMI_REQUIREMENT_SLOT_COUNT; ++slot)
-    if (call_environment->requirements[slot] != NULL)
-      environment->requirements[slot] = call_environment->requirements[slot];
-  uint32_t count = callable->parameters_length < argument_count ? callable->parameters_length : argument_count;
-  for (uint32_t index = 0; index < count; ++index)
-    environment->locals[environment_slot(CHIMI_IDS[callable->parameters_offset + index])] = arguments[index];
-  return run_node(callable->body, runtime, environment, span);
+  return invoke_host(runtime, callable->host, arguments, argument_count,
+                     span, call_node, call_environment);
 }
 
 static ChimiFiberResult task_fiber_result(ChimiControl *control) {
@@ -5438,12 +5359,7 @@ ChimiControl *chimi_intrinsic_duration_v1(uint32_t intrinsic, ChimiValue **argum
    std/list, in intrinsics/core.rs. */
 ChimiControl *chimi_intrinsic_core_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
                                       uint32_t call_node);
-/* `invoke` and the shared Void, False and True, for the intrinsics in Rust. */
-ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
-                                      uint32_t argument_count, uint64_t span, uint32_t call_node,
-                                      ChimiEnvironment *environment) {
-  return invoke(runtime, callable, arguments, argument_count, span, call_node, environment);
-}
+/* The shared Void, False and True, for the code in Rust. */
 ChimiValue *chimi_runtime_shared_value_v1(uint32_t index) { return shared_value(index); }
 
 /* std/clock and timeouts (time-and-outcomes.md, "Time sources" and "Timeouts and
@@ -5480,6 +5396,8 @@ static ChimiValue *execution_clock_value(void) {
   return clock_record(clock_host_value(HOST_CLOCK_NOW), clock_host_value(HOST_CLOCK_SLEEP_UNTIL),
                       clock_host_value(HOST_CLOCK_TIMESTAMP));
 }
+ChimiValue *chimi_runtime_execution_clock_value_v1(void);
+ChimiValue *chimi_runtime_execution_clock_value_v1(void) { return execution_clock_value(); }
 
 /* Reads the execution source's now. Reading checks cancellation. NULL on success. */
 static ChimiControl *execution_now(int64_t *now, uint32_t call_node) {
@@ -6674,21 +6592,15 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
 /* Module constants, decoded from CHIMI_CONSTANT_VALUES before the entry runs. They are
    allocated in the static area, so no collection frees them, and values are
    immutable, so every task shares them. Decoding cannot fail and emits no events. */
-static ChimiValue **constant_values;
+#define constant_values chimi_runtime_constant_values
+ChimiValue **constant_values;
 
 /* Binds each (requirement name, value id) pair to every requirement of that name, as a
    provision does. */
 static void bind_constant_requirements(ChimiEnvironment *environment, const uint32_t *pairs,
                                        int64_t count) {
-  for (int64_t i = 0; i < count; ++i) {
-    const char *name = CHIMI_STRINGS[pairs[2 * i]];
-    for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
-      if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
-          strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
-        environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = constant_values[pairs[2 * i + 1]];
-    if (strcmp(name, "clock") == 0)
-      environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT] = constant_values[pairs[2 * i + 1]];
-  }
+  for (int64_t i = 0; i < count; ++i)
+    chimi_runtime_bind_requirement_v1(environment, CHIMI_STRINGS[pairs[2 * i]], constant_values[pairs[2 * i + 1]]);
 }
 
 static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
@@ -6802,446 +6714,17 @@ static void decode_constants(void) {
   carrier->fiber.target = previous;
 }
 
-static ChimiControl *eval_reference(ChimiRuntime *runtime, uint32_t node_id,
-                                    ChimiEnvironment *environment, uint64_t span) {
-  uint32_t symbol = CHIMI_NODES[node_id].a; const ChimiSymbol *shape = &CHIMI_SYMBOLS[symbol];
-  switch (shape->kind) {
-    case CHIMI_SYMBOL_FUNCTION: {
-      const ChimiFunction *function = find_function(symbol);
-      ChimiCallable *callable = allocate(1, sizeof(*callable));
-      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DECLARED;
-      callable->symbol = symbol; callable->body = function->body;
-      callable->parameters_offset = function->parameters_offset; callable->parameters_length = function->parameters_length;
-      callable->local_count = function->local_count;
-      callable->environment = capture_requirements(environment); callable->name = "function";
-      return success(callable_value(callable));
-    }
-    case CHIMI_SYMBOL_CONSTANT:
-      return success(constant_values[shape->constant]);
-    case CHIMI_SYMBOL_REQUIREMENT:
-      if (environment->requirements[shape->environment_slot])
-        return success(environment->requirements[shape->environment_slot]);
-      /* The runner closes `clock: Clock` with the execution clock provider. */
-      if (strcmp(CHIMI_STRINGS[shape->name], "clock") == 0) return success(execution_clock_value());
-      return defect("closed core has no provider", -1);
-    case CHIMI_SYMBOL_LOCAL:
-      if (environment->locals[shape->environment_slot])
-        return success(environment->locals[shape->environment_slot]);
-      return defect("verified local is not bound", -1);
-    case CHIMI_SYMBOL_CONSTRUCTOR: {
-      ChimiCallable *callable = allocate(1, sizeof(*callable));
-      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_CONSTRUCTOR;
-      callable->symbol = symbol; callable->name = CHIMI_STRINGS[shape->name];
-      return success(callable_value(callable));
-    }
-    case CHIMI_SYMBOL_INTRINSIC: {
-      ChimiCallable *callable = allocate(1, sizeof(*callable));
-      allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_INTRINSIC;
-      callable->intrinsic = shape->intrinsic; callable->symbol = symbol;
-      callable->name = CHIMI_STRINGS[shape->name];
-      return success(callable_value(callable));
-    }
-    case CHIMI_SYMBOL_PROCESS_NAME:
-      return success(process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)symbol + 1));
-    default: return defect("symbol is not a runtime value", -1);
-  }
-}
-
-/* Core nodes share their incoming environment because ordinary evaluation only reads it.
-   Sequence and provision clone before binding locals or requirements, and match arms clone
-   before binding patterns. Any new node that mutates either table must establish the same
-   isolation boundary instead of writing through this shared pointer. */
+/* The loop nodes stay here with their passes, which talk to the scheduler; the
+   other core nodes are Rust (eval.rs). */
 #define NODE_WRAPPER(NAME, OPERATION, ...) \
   ChimiControl *chimi_rt_##NAME(ChimiRuntime *runtime, uint32_t node_id, ChimiEnvironment *incoming, uint64_t parent) { \
-    uint32_t profile_outer = profile_enter(node_id, OPERATION); \
-    uint64_t span = begin_node(runtime, node_id, parent, OPERATION); ChimiEnvironment *environment = incoming; \
-    (void)environment; \
+    uint32_t profile_outer; \
+    uint64_t span = chimi_runtime_node_begin_v1(runtime, node_id, parent, OPERATION, &profile_outer); \
+    ChimiEnvironment *environment = incoming; (void)environment; \
     ChimiControl *result = NULL; do { __VA_ARGS__ } while (0); \
-    result = finish_node(runtime, node_id, parent, span, OPERATION, result); \
-    profile_leave(profile_outer); return result; \
+    return chimi_runtime_node_finish_v1(runtime, node_id, parent, span, OPERATION, profile_outer, result); \
   }
 #define RUN(CHILD) run_node((CHILD), runtime, environment, span)
-#define REQUIRE_SUCCESS(CONTROL, TARGET) do { ChimiControl *_control = (CONTROL); \
-  if (_control->kind != CONTROL_SUCCESS) { result = _control; break; } (TARGET) = _control->value; } while (0)
-
-NODE_WRAPPER(constant, "constant", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value;
-  if (node->a == CHIMI_LITERAL_INTEGER) value = integer_value(node->integer);
-  else if (node->a == CHIMI_LITERAL_FLOAT) {
-    double raw; memcpy(&raw, &node->integer, sizeof(raw)); value = float_value(raw);
-  } else if (node->a == CHIMI_LITERAL_TEXT) value = string_text(node->b);
-  else if (node->a == CHIMI_LITERAL_VOID) value = void_value();
-  else value = boolean_value(node->integer != 0); result = success(value);
-})
-NODE_WRAPPER(reference, "reference", { result = eval_reference(runtime, node_id, environment, span); })
-NODE_WRAPPER(select, "select", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *control = RUN(node->a);
-  if (control->kind != CONTROL_SUCCESS) { result = control; break; }
-  ChimiValue *value = select_value(control->value, CHIMI_STRINGS[node->b]);
-  result = value ? success(value) : defect("verified value has no field", node_id);
-})
-NODE_WRAPPER(dependency_method, "dependency_method", {
-  const ChimiNode *node = &CHIMI_NODES[node_id];
-  ChimiValue *provider = environment->requirements[environment_slot(node->a)];
-  ChimiCallable *inner = NULL;
-  if (!provider) {
-    uint32_t standard_type = CHIMI_SYMBOLS[node->b].standard_type;
-    inner = allocate(1, sizeof(*inner)); allocation_kind(inner, ALLOCATION_CALLABLE);
-    inner->kind = CALL_HOST;
-    if (standard_type == CHIMI_TYPE_FILE_SYSTEM && node->c == 0)
-      inner->host = HOST_PROCESS_UTF8_LINES;
-    else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 0)
-      inner->host = HOST_WRITE_LINE;
-    else if (standard_type == CHIMI_TYPE_CONSOLE && node->c == 1)
-      inner->host = HOST_WRITE_ERROR;
-    else if (standard_type == CHIMI_TYPE_RANDOM && node->c == 0)
-      inner->host = HOST_RANDOM_NEXT_INT;
-    else if (standard_type == CHIMI_TYPE_CLOCK && node->c <= 2)
-      inner->host = node->c == 0 ? HOST_CLOCK_NOW : node->c == 1 ? HOST_CLOCK_TIMESTAMP : HOST_CLOCK_SLEEP_UNTIL;
-    else { result = defect("closed core has no provider", node_id); break; }
-  } else {
-    ChimiValue *method = select_value(provider, CHIMI_STRINGS[node->d]);
-    if (!method || method->kind != VALUE_CALLABLE) {
-      result = defect("provider has no callable field", node_id); break;
-    }
-    inner = method->as.callable;
-    /* A provider built from another need's methods (`let c = console`, then
-       `using { console: c }`) already holds dependency callables; one call is
-       one dependency call, of the need this node reads. */
-    if (inner->kind == CALL_DEPENDENCY) inner = inner->inner;
-  }
-  ChimiCallable *callable = allocate(1, sizeof(*callable));
-  allocation_kind(callable, ALLOCATION_CALLABLE); callable->kind = CALL_DEPENDENCY;
-  callable->inner = inner; callable->requirement = node->a; callable->interface_symbol = node->b;
-  callable->method = node->c; callable->name = CHIMI_STRINGS[node->d]; result = success(callable_value(callable));
-})
-
-static ChimiControl *construct_value(uint32_t symbol, ChimiValue **values) {
-  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor];
-  if (shape->outcome_success >= 0) return shape->outcome_success ? success(values[0]) : failure(values[0]);
-  ChimiValue *value = new_value(VALUE_CONSTRUCTED); value->as.constructed.constructor = symbol;
-  value->as.constructed.type_name = CHIMI_STRINGS[shape->type_name];
-  value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
-  value->as.constructed.length = shape->fields_length;
-  value->as.constructed.fields = allocate(shape->fields_length, sizeof(*value->as.constructed.fields));
-  allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
-  for (uint32_t field = 0; field < shape->fields_length; ++field) {
-    const char *name = CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]];
-    value->as.constructed.fields[field] = (RuntimeField){name, values[field]};
-  }
-  return success(value);
-}
-
-NODE_WRAPPER(construct, "construct", {
-  const ChimiNode *node = &CHIMI_NODES[node_id];
-  ChimiValue **values = allocate(node->length, sizeof(*values));
-  bool stopped = false;
-  for (uint32_t index = 0; index < node->length; ++index) {
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    values[index] = control->value;
-  }
-  if (stopped) break;
-  result = construct_value(node->a, values);
-  if (result->kind == CONTROL_FAILURE) result->node = node_id;
-  /* A Failure(...) or Result.Err(...) in a cause arm: `b` is the arm's cause
-     local plus one, and `c` says whether it keeps that cause. */
-  if (node->b == 0) break;
-  ChimiValue *matched = environment->locals[environment_slot(node->b - 1)];
-  if (!matched || matched->kind != VALUE_CAUSE) matched = NULL;
-  if (result->kind == CONTROL_FAILURE) {
-    ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0, result->value, node_id);
-    if (cause) result = chimi_runtime_control_with_cause_v1(result, cause);
-  } else if (result->kind == CONTROL_SUCCESS && result->value->kind == VALUE_CONSTRUCTED &&
-             result->value->as.constructed.length == 1) {
-    ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0,
-                                                       result->value->as.constructed.fields[0].value, node_id);
-    if (cause) result = success(chimi_runtime_with_stored_cause_v1(result->value, cause));
-  }
-})
-
-NODE_WRAPPER(call, "call", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *callee = RUN(node->a);
-  if (callee->kind != CONTROL_SUCCESS) { result = callee; break; }
-  if (callee->value->kind != VALUE_CALLABLE) { result = defect("verified call target is not callable", node_id); break; }
-  ChimiValue **arguments = allocate(node->length, sizeof(*arguments)); bool stopped = false;
-  for (uint32_t index = 0; index < node->length; ++index) {
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + index]);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    arguments[index] = control->value;
-  }
-  if (stopped) break;
-  result = invoke(runtime, callee->value->as.callable, arguments, node->length, span, node_id, environment);
-  /* A failure an operation raised without a source construction starts at its call. */
-  if (result->kind == CONTROL_FAILURE && !result->cause && result->node < 0) {
-    result = new_control(CONTROL_FAILURE, result->value, NULL, node_id);
-  }
-})
-
-NODE_WRAPPER(list, "list", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue **items = new_value_slots(node->length);
-  bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + i]);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    items[i] = control->value;
-  } if (!stopped) result = success(list_from_values(items, node->length));
-})
-
-NODE_WRAPPER(record, "record", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_RECORD);
-  value->as.record.length = node->length; value->as.record.fields = allocate(node->length, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
-    const ChimiNamedNode *field = &CHIMI_NAMED_NODES[node->offset + i]; ChimiControl *control = RUN(field->node);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    value->as.record.fields[i] = (RuntimeField){CHIMI_STRINGS[field->name], control->value};
-  } if (!stopped) result = success(value);
-})
-
-NODE_WRAPPER(tuple, "tuple", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *value = new_value(VALUE_TUPLE);
-  value->as.record.length = node->length; value->as.record.fields = allocate(node->length, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  bool stopped = false; for (uint32_t i = 0; i < node->length; ++i) {
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + i]);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    value->as.record.fields[i] = (RuntimeField){NULL, control->value};
-  } if (!stopped) result = success(value);
-})
-
-NODE_WRAPPER(unary, "unary", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *control = RUN(node->a);
-  if (control->kind != CONTROL_SUCCESS) { result = control; break; }
-  if (control->value->kind == VALUE_FLOAT) { result = success(float_value(-control->value->as.floating)); break; }
-  if (control->value->kind == VALUE_DECIMAL) { result = success(decimal_negated(control->value)); break; }
-  if (control->value->kind != VALUE_INTEGER) { result = defect("verified unary operand is not an integer", node_id); break; }
-  if (control->value->as.integer == INT64_MIN) {
-    result = defect(numeric_message("integer overflow in unary `-`: -(%" PRId64 ")", INT64_MIN), node_id); break;
-  }
-  result = success(integer_value(-control->value->as.integer));
-})
-
-NODE_WRAPPER(binary, "binary", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiControl *left = RUN(node->b);
-  if (left->kind != CONTROL_SUCCESS) { result = left; break; }
-  ChimiControl *right = RUN(node->c); if (right->kind != CONTROL_SUCCESS) { result = right; break; }
-  if (is_arithmetic(node->a)) {
-    if (left->value->kind == VALUE_INTEGER && right->value->kind == VALUE_INTEGER)
-      result = integer_arithmetic(node->a, left->value->as.integer, right->value->as.integer, node_id);
-    else if (left->value->kind == VALUE_FLOAT && right->value->kind == VALUE_FLOAT)
-      result = float_arithmetic(node->a, left->value->as.floating, right->value->as.floating, node_id);
-    else if (left->value->kind == VALUE_DECIMAL && right->value->kind == VALUE_DECIMAL)
-      result = decimal_arithmetic(node->a, left->value, right->value, node_id);
-    else
-      result = defect("verified binary operands are not numbers", node_id);
-    break;
-  }
-  if (node->a == CHIMI_BINARY_RANGE || node->a == CHIMI_BINARY_RANGE_INCLUSIVE) {
-    if (left->value->kind != VALUE_INTEGER || right->value->kind != VALUE_INTEGER) {
-      result = defect("verified range bounds are not integers", node_id); break;
-    }
-    int64_t end = right->value->as.integer;
-    if (node->a == CHIMI_BINARY_RANGE_INCLUSIVE) {
-      if (end == INT64_MAX) {
-        result = defect("the inclusive range `..=` ends at the largest Int, so its exclusive end overflows", node_id);
-        break;
-      }
-      ++end;
-    }
-    result = success(range_value(left->value->as.integer, end)); break;
-  }
-  int order = chimi_value_compare(left->value, right->value);
-  switch (node->a) {
-    case CHIMI_BINARY_EQUAL: result = success(boolean_value(order == 0)); break;
-    case CHIMI_BINARY_LESS: result = success(boolean_value(order < 0)); break;
-    case CHIMI_BINARY_LESS_EQUAL: result = success(boolean_value(order <= 0)); break;
-    case CHIMI_BINARY_GREATER: result = success(boolean_value(order > 0)); break;
-    case CHIMI_BINARY_GREATER_EQUAL: result = success(boolean_value(order >= 0)); break;
-    default: result = defect("verified binary operator is unknown", node_id); break;
-  }
-})
-
-NODE_WRAPPER(identity, "identity", { result = RUN(CHIMI_NODES[node_id].a); })
-
-NODE_WRAPPER(provision, "provision", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; bool stopped = false;
-  environment = clone_requirement_environment(incoming);
-  for (uint32_t i = 0; i < node->length; ++i) {
-    /* Each provider runs in the enclosing scope, as typing gives its own needs
-       to the enclosing expression: no provider sees another of this clause. */
-    const ChimiNamedNode *provider = &CHIMI_NAMED_NODES[node->offset + i];
-    ChimiControl *control = run_node(provider->node, runtime, incoming, span);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    const char *name = CHIMI_STRINGS[provider->name];
-    for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
-      if (CHIMI_SYMBOLS[symbol].kind == CHIMI_SYMBOL_REQUIREMENT &&
-          strcmp(CHIMI_STRINGS[CHIMI_SYMBOLS[symbol].name], name) == 0)
-        environment->requirements[CHIMI_SYMBOLS[symbol].environment_slot] = control->value;
-    if (strcmp(name, "clock") == 0) environment->requirements[CHIMI_CLOCK_REQUIREMENT_SLOT] = control->value;
-  } if (!stopped) result = RUN(node->a);
-})
-
-NODE_WRAPPER(sequence, "sequence", {
-  /* The locals are cloned at the first binding step, so a block that binds nothing
-     (a loop body such as `{ case ... }`) allocates no environment. Steps before that
-     one read the incoming locals, which the clone would have copied unchanged. */
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiValue *last = NULL; bool stopped = false;
-  for (uint32_t i = 0; i < node->length; ++i) {
-    const ChimiStep *step = &CHIMI_STEPS[node->offset + i]; ChimiControl *control = RUN(step->node);
-    if (control->kind != CONTROL_SUCCESS) { result = control; stopped = true; break; }
-    last = control->value;
-    if (step->kind == 0) {
-      if (environment == incoming) environment = clone_local_environment(incoming);
-      environment->locals[environment_slot(step->symbol)] = last;
-    }
-  } if (!stopped) result = success(last);
-})
-
-NODE_WRAPPER(closure, "closure", {
-  const ChimiNode *node = &CHIMI_NODES[node_id]; ChimiCallable *callable = allocate(1, sizeof(*callable));
-  allocation_kind(callable, ALLOCATION_CALLABLE);
-  callable->kind = CALL_CLOSURE; callable->body = node->a; callable->parameters_offset = node->offset;
-  callable->parameters_length = node->length;
-  callable->environment = capture_closure_environment(environment, node);
-  callable->name = "closure"; result = success(callable_value(callable));
-})
-
-typedef enum { MATCH_PLAIN, MATCH_SUCCESS, MATCH_FAILURE } MatchKind;
-/* `control` is the subject's outcome, which holds a failure's cause. */
-typedef struct { MatchKind kind; ChimiValue *value; ChimiControl *control; } MatchValue;
-
-static bool literal_matches(const ChimiPattern *pattern, const ChimiValue *value) {
-  if (pattern->a == CHIMI_LITERAL_INTEGER) return value->kind == VALUE_INTEGER && value->as.integer == pattern->integer;
-  if (pattern->a == CHIMI_LITERAL_TEXT)
-    return value->kind == VALUE_TEXT && text_equals(value, CHIMI_STRINGS[pattern->offset], CHIMI_STRING_LENGTHS[pattern->offset]);
-  return value->kind == VALUE_BOOLEAN && value->as.boolean == (pattern->integer != 0);
-}
-/* The binding pass of a match. `view_failed` records a list view that could not be
-   taken, which the match reports as a defect. */
-typedef struct { ChimiEnvironment *environment; bool view_failed; } PatternBinder;
-
-static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *binder);
-/* Checks the length first, then reads each fixed element by index. In the binding
-   pass a named rest receives the view between the prefix and the suffix. */
-static bool match_list(const ChimiPattern *pattern, ChimiValue *value, PatternBinder *binder) {
-  if (value->kind != VALUE_LIST) return false;
-  uint32_t length = list_length(value), prefix = pattern->a, has_rest = pattern->integer != 0;
-  uint32_t suffix = pattern->length - prefix - has_rest;
-  if (has_rest ? length < prefix + suffix : length != prefix) return false;
-  uint32_t suffix_start = length - suffix;
-  for (uint32_t index = 0; index < prefix; ++index)
-    if (!match_plain(CHIMI_IDS[pattern->offset + index], list_get(value, index), binder)) return false;
-  for (uint32_t index = 0; index < suffix; ++index)
-    if (!match_plain(CHIMI_IDS[pattern->offset + prefix + has_rest + index],
-                     list_get(value, suffix_start + index), binder))
-      return false;
-  if (!has_rest || !binder) return true;
-  uint32_t rest_id = CHIMI_IDS[pattern->offset + prefix];
-  if (CHIMI_PATTERNS[rest_id].kind == CHIMI_PATTERN_WILDCARD) return true;
-  ChimiValue *view = list_slice(value, prefix, suffix_start);
-  if (!view) { binder->view_failed = true; return false; }
-  return match_plain(rest_id, view, binder);
-}
-static bool match_plain(uint32_t pattern_id, ChimiValue *value, PatternBinder *binder) {
-  const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
-  switch (pattern->kind) {
-    case CHIMI_PATTERN_WILDCARD: return true;
-    case CHIMI_PATTERN_BINDING:
-      if (binder) binder->environment->locals[environment_slot(pattern->a)] = value;
-      return true;
-    case CHIMI_PATTERN_LITERAL: return literal_matches(pattern, value);
-    case CHIMI_PATTERN_CONSTRUCTOR:
-      if (value->kind != VALUE_CONSTRUCTED || value->as.constructed.constructor != pattern->a ||
-          value->as.constructed.length != pattern->length) return false;
-      for (uint32_t i = 0; i < pattern->length; ++i)
-        if (!match_plain(CHIMI_IDS[pattern->offset + i], value->as.constructed.fields[i].value, binder)) return false;
-      return true;
-    case CHIMI_PATTERN_OUTCOME: return false;
-    case CHIMI_PATTERN_LIST: return match_list(pattern, value, binder);
-    case CHIMI_PATTERN_TUPLE:
-      if (value->kind != VALUE_TUPLE || value->as.record.length != pattern->length) return false;
-      for (uint32_t i = 0; i < pattern->length; ++i)
-        if (!match_plain(CHIMI_IDS[pattern->offset + i], value->as.record.fields[i].value, binder)) return false;
-      return true;
-    case CHIMI_PATTERN_ALIAS:
-      if (!match_plain(pattern->offset, value, binder)) return false;
-      if (binder) binder->environment->locals[environment_slot(pattern->a)] = value;
-      return true;
-  }
-  return false;
-}
-static bool match_value(uint32_t pattern_id, MatchValue value, PatternBinder *binder) {
-  const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
-  if (pattern->kind == CHIMI_PATTERN_OUTCOME) {
-    MatchKind expected = pattern->a ? MATCH_SUCCESS : MATCH_FAILURE;
-    return value.kind == expected && match_plain(pattern->offset, value.value, binder);
-  }
-  return value.kind == MATCH_PLAIN && match_plain(pattern_id, value.value, binder);
-}
-static bool pattern_binds(uint32_t pattern_id) {
-  const ChimiPattern *pattern = &CHIMI_PATTERNS[pattern_id];
-  if (pattern->kind == CHIMI_PATTERN_BINDING || pattern->kind == CHIMI_PATTERN_ALIAS) return true;
-  if (pattern->kind == CHIMI_PATTERN_OUTCOME) return pattern_binds(pattern->offset);
-  if (pattern->kind != CHIMI_PATTERN_CONSTRUCTOR && pattern->kind != CHIMI_PATTERN_LIST &&
-      pattern->kind != CHIMI_PATTERN_TUPLE) return false;
-  for (uint32_t index = 0; index < pattern->length; ++index)
-    if (pattern_binds(CHIMI_IDS[pattern->offset + index])) return true;
-  return false;
-}
-
-NODE_WRAPPER(match, "match", {
-  /* Most matches have one or two subjects, so their values live on the C stack. */
-  enum { MATCH_STACK_SUBJECTS = 8 };
-  const ChimiNode *node = &CHIMI_NODES[node_id]; MatchValue stack_values[MATCH_STACK_SUBJECTS];
-  MatchValue *values = node->length <= MATCH_STACK_SUBJECTS ? stack_values
-                                                              : allocate(node->length, sizeof(*values));
-  bool stopped = false;
-  for (uint32_t subject = 0; subject < node->length; ++subject) {
-    bool contextual = false;
-    for (uint32_t arm_index = 0; arm_index < node->b; ++arm_index) {
-      const ChimiArm *arm = &CHIMI_ARMS[node->a + arm_index];
-      if (CHIMI_PATTERNS[CHIMI_IDS[arm->patterns_offset + subject]].kind == CHIMI_PATTERN_OUTCOME) contextual = true;
-    }
-    ChimiControl *control = RUN(CHIMI_IDS[node->offset + subject]);
-    if (contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_SUCCESS, control->value, control};
-    else if (contextual && control->kind == CONTROL_FAILURE) values[subject] = (MatchValue){MATCH_FAILURE, control->value, control};
-    else if (!contextual && control->kind == CONTROL_SUCCESS) values[subject] = (MatchValue){MATCH_PLAIN, control->value, control};
-    else { result = control; stopped = true; break; }
-  }
-  if (stopped) break;
-  for (uint32_t arm_index = 0; arm_index < node->b; ++arm_index) {
-    const ChimiArm *arm = &CHIMI_ARMS[node->a + arm_index]; bool matched = true;
-    for (uint32_t subject = 0; subject < node->length; ++subject)
-      if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], NULL)) { matched = false; break; }
-    if (!matched) continue;
-    bool binds = arm->cause_local != UINT32_MAX;
-    for (uint32_t subject = 0; subject < node->length; ++subject)
-      if (pattern_binds(CHIMI_IDS[arm->patterns_offset + subject])) { binds = true; break; }
-    ChimiEnvironment *arm_environment = binds ? clone_local_environment(environment) : environment;
-    PatternBinder binder = {arm_environment, false};
-    for (uint32_t subject = 0; binds && subject < node->length; ++subject)
-      if (!match_value(CHIMI_IDS[arm->patterns_offset + subject], values[subject], &binder)) {
-        result = defect(binder.view_failed ? "verified list pattern took a view outside its list"
-                                           : "verified pattern changed while binding", node_id);
-        stopped = true; break;
-      }
-    if (stopped) break;
-    if (arm->guard != UINT32_MAX) {
-      ChimiControl *guard = run_node(arm->guard, runtime, arm_environment, span);
-      if (guard->kind != CONTROL_SUCCESS) { result = guard; stopped = true; break; }
-      if (guard->value->kind != VALUE_BOOLEAN) { result = defect("verified case guard is not Boolean", node_id); stopped = true; break; }
-      if (!guard->value->as.boolean) continue;
-    }
-    if (arm->cause_local != UINT32_MAX)
-      arm_environment->locals[environment_slot(arm->cause_local)] =
-        chimi_runtime_matched_cause_value_v1(values[arm->cause_subject].control);
-    result = run_node(arm->body, runtime, arm_environment, span); stopped = true; break;
-  }
-  if (!stopped) {
-    for (uint32_t i = 0; i < node->length; ++i) if (values[i].kind == MATCH_FAILURE) { result = values[i].control; stopped = true; break; }
-    if (!stopped) result = defect("verified exhaustive match had no matching arm", node_id);
-  }
-})
 
 /* Runs passes in a C loop so stack use is independent of the pass count. The loop owns
    one cloned environment and rebinds only its state slot between passes; that is safe
@@ -7331,17 +6814,6 @@ ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
     }
   }
 }
-NODE_WRAPPER(break, "break", {
-  const ChimiNode *node = &CHIMI_NODES[node_id];
-  ChimiValue *value = void_value();
-  if (node->b != UINT32_MAX) {
-    ChimiControl *control = RUN(node->b);
-    if (control->kind != CONTROL_SUCCESS) { result = control; break; }
-    value = control->value;
-  }
-  result = new_control(CONTROL_BREAK, value, NULL, node->a);
-})
-
 static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("{\"schema\":\"chimi.runtime.v1\",", output);
   switch (control->kind) {

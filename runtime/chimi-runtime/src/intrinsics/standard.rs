@@ -6,6 +6,7 @@
 
 use core::ffi::{CStr, c_char};
 use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 
 use crate::heap::layout::{
     AllocationKind, Constructor, Control, ControlKind, Field, StandardConstructor, Symbol, Value, ValueKind,
@@ -18,8 +19,12 @@ unsafe extern "C" {
     static CHIMI_SYMBOLS: [Symbol; 0];
     static CHIMI_SYMBOL_COUNT: u32;
     static CHIMI_CONSTRUCTORS: [Constructor; 0];
-    /// The shared Void (0), False (1) or True (2) in the static area.
+    /// The shared Void (0), False (1) or True (2) in the static area, made
+    /// on first use.
     fn chimi_runtime_shared_value_v1(index: u32) -> *mut Value;
+    /// The shared values made so far; startup makes all three before any
+    /// carrier runs, and nothing changes them after.
+    static chimi_runtime_shared_values: [AtomicPtr<Value>; 3];
 }
 
 /// The program's string `id`.
@@ -98,13 +103,27 @@ pub unsafe fn standard_value(standard: u32, values: &[*mut Value]) -> *mut Value
     }
 }
 
+/// The shared value `index`: read where startup left it, so a condition
+/// costs no call into C.
+///
+/// # Safety
+/// Runs on a fiber.
+#[inline(always)]
+unsafe fn shared_value(index: u32) -> *mut Value {
+    // SAFETY: a global of runtime.c; the caller's contract.
+    unsafe {
+        let value = chimi_runtime_shared_values[index as usize].load(Relaxed);
+        if value.is_null() { chimi_runtime_shared_value_v1(index) } else { value }
+    }
+}
+
 /// The shared Void.
 ///
 /// # Safety
 /// Runs on a fiber.
 pub unsafe fn void_value() -> *mut Value {
     // SAFETY: the caller's contract.
-    unsafe { chimi_runtime_shared_value_v1(0) }
+    unsafe { shared_value(0) }
 }
 
 /// The shared True or False.
@@ -113,7 +132,7 @@ pub unsafe fn void_value() -> *mut Value {
 /// Runs on a fiber.
 pub unsafe fn boolean_value(raw: bool) -> *mut Value {
     // SAFETY: the caller's contract.
-    unsafe { chimi_runtime_shared_value_v1(if raw { 2 } else { 1 }) }
+    unsafe { shared_value(if raw { 2 } else { 1 }) }
 }
 
 /// A successful control holding `value`.

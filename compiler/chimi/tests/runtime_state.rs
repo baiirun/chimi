@@ -35,8 +35,8 @@ const SHARED: &[&str] = &[
     // Heaps and constants every fiber shares.
     "main_heap",
     "static_area",
-    "shared_values",
-    "constant_values",
+    "chimi_runtime_shared_values",
+    "chimi_runtime_constant_values",
     // Whether this execution counted any native handle (an atomic flag, set
     // once and cleared before the next run); the counts and their lock live
     // in Rust (chimi-runtime handle_counts_abi.rs).

@@ -356,7 +356,8 @@ static void *carrier_thread(void *raw_index) {
       RuntimeFragment *fragment;
       while ((fragment = ring_take(ring))) consume(fragment, &taken);
     }
-    uint64_t span = begin_node(&runtime, 0, 1, "carrier_round");
+    uint32_t profile_outer;
+    uint64_t span = chimi_runtime_node_begin_v1(&runtime, 0, 1, "carrier_round", &profile_outer);
     spans[index * ROUNDS + round] = span;
     RuntimeHeap *scratch = heap_create();
     owners[index * ROUNDS + round] = scratch->owner;
@@ -366,7 +367,7 @@ static void *carrier_thread(void *raw_index) {
     emit_event(&runtime, "operation_started", 0, span, 1, "carrier_round", NULL);
     ChimiSchedulerTraceEvent started = {.task = index + 1};
     chimi_trace_scheduler_event_v1(&runtime, &started);
-    profile_leave(profile_enter(0, "carrier_round"));
+    (void)chimi_runtime_node_finish_v1(&runtime, 0, 1, span, "carrier_round", profile_outer, NULL);
     draws[index * ROUNDS + round] = random_next();
     ChimiValue *arguments[] = {recorder, list};
     CHECK(chimi_intrinsic_test_log_v1(CHIMI_INTRINSIC_TEST_RECORD, arguments, 2, 0)->kind == CONTROL_SUCCESS,

@@ -99,7 +99,7 @@ pub unsafe fn clone_value_slots(source: *const *mut Value, count: u32) -> *mut *
 }
 
 /// The requirement slot count of the running program.
-fn requirement_slots() -> u32 {
+pub(crate) fn requirement_slots() -> u32 {
     // SAFETY: a constant the program defines.
     unsafe { CHIMI_REQUIREMENT_SLOT_COUNT }
 }
@@ -109,7 +109,7 @@ fn requirement_slots() -> u32 {
 /// # Safety
 /// The running carrier's fiber has a live heap.
 #[inline(always)]
-unsafe fn environment(
+pub(crate) unsafe fn environment(
     kind: AllocationKind,
     local_count: u32,
     locals: *mut *mut Value,

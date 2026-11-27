@@ -21,6 +21,8 @@ pub mod decimal;
 mod decimal_abi;
 pub mod duration;
 mod duration_abi;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod eval;
 pub mod files;
 pub mod float;
 mod float_abi;
