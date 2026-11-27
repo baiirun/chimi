@@ -213,7 +213,7 @@ pub struct Frame {
 /// Runs on a fiber; `id` is a node of the program; `operation` lives as
 /// long as the program, since a profile row keeps it.
 #[inline(always)]
-pub unsafe fn begin(runtime: *mut Runtime, id: u32, parent: u64, operation: &CStr) -> Frame {
+pub unsafe fn begin(runtime: *mut Runtime, id: u32, parent: u64, operation: *const c_char) -> Frame {
     // SAFETY: the caller's contract; a profile has a row per node.
     unsafe {
         let mut outer = 0;
@@ -221,7 +221,7 @@ pub unsafe fn begin(runtime: *mut Runtime, id: u32, parent: u64, operation: &CSt
         if !rows.is_null() {
             let row = rows.add(id as usize);
             AtomicPtr::from_ptr(ptr::addr_of_mut!((*row).operation).cast::<*mut c_char>())
-                .store(operation.as_ptr().cast_mut(), Relaxed);
+                .store(operation.cast_mut(), Relaxed);
             AtomicU64::from_ptr(ptr::addr_of_mut!((*row).evaluations)).fetch_add(1, Relaxed);
             let heap = (*current_carrier()).fiber.heap;
             outer = (*heap).profiled_node_plus_one;
@@ -248,7 +248,7 @@ pub unsafe fn finish(
     id: u32,
     parent: u64,
     frame: Frame,
-    operation: &CStr,
+    operation: *const c_char,
     result: *mut Control,
 ) -> *mut Control {
     // SAFETY: the caller's contract.
@@ -272,11 +272,11 @@ unsafe fn trace(
     id: u32,
     span: u64,
     parent: u64,
-    operation: &CStr,
+    operation: *const c_char,
     outcome: *const Control,
 ) {
     // SAFETY: the caller's contract.
-    unsafe { chimi_trace_event_v1(runtime, event.as_ptr(), id, span, parent as i64, operation.as_ptr(), outcome) }
+    unsafe { chimi_trace_event_v1(runtime, event.as_ptr(), id, span, parent as i64, operation, outcome) }
 }
 
 /// One node's evaluation: its runtime, the environment it reads, and its
@@ -343,10 +343,10 @@ macro_rules! node_entry {
             };
             // SAFETY: the caller's contract.
             unsafe {
-                let frame = begin(runtime, node_id, parent, OPERATION);
+                let frame = begin(runtime, node_id, parent, OPERATION.as_ptr());
                 let eval = Eval { runtime, environment: incoming, span: frame.span };
                 let result = $body(eval, node_id);
-                finish(runtime, node_id, parent, frame, OPERATION, result)
+                finish(runtime, node_id, parent, frame, OPERATION.as_ptr(), result)
             }
         }
     )*};
@@ -552,6 +552,10 @@ unsafe fn dependency_method(eval: Eval, id: u32) -> *mut Control {
         let provider = *(*eval.environment).requirements.add(slot(node.a));
         let inner;
         if provider.is_null() {
+            // Allocated before the defect below can return, as the C did, so
+            // a memory report counts the same allocations.
+            inner = allocate_kind::<Callable>(1, AllocationKind::CALLABLE);
+            (*inner).kind = CallableKind::HOST;
             let host = match (symbol(node.b).standard_type, node.c) {
                 (Core::TYPE_FILE_SYSTEM, 0) => Core::HOST_PROCESS_UTF8_LINES,
                 (Core::TYPE_CONSOLE, 0) => Core::HOST_WRITE_LINE,
@@ -562,8 +566,6 @@ unsafe fn dependency_method(eval: Eval, id: u32) -> *mut Control {
                 (Core::TYPE_CLOCK, 2) => Core::HOST_CLOCK_SLEEP_UNTIL,
                 _ => return defect(c"closed core has no provider", i64::from(id)),
             };
-            inner = allocate_kind::<Callable>(1, AllocationKind::CALLABLE);
-            (*inner).kind = CallableKind::HOST;
             (*inner).host = host;
         } else {
             let method = select_value(provider, string(node.d));
@@ -1293,16 +1295,21 @@ unsafe fn match_plain(pattern_id: u32, value: *mut Value, binder: Option<&mut Pa
             }
             Core::PATTERN_LITERAL => literal_matches(pattern, value),
             Core::PATTERN_CONSTRUCTOR => {
+                if (*value).kind != ValueKind::CONSTRUCTED {
+                    return false;
+                }
                 let constructed = (*value).payload.constructed;
-                (*value).kind == ValueKind::CONSTRUCTED
-                    && constructed.constructor == pattern.a
+                constructed.constructor == pattern.a
                     && constructed.length == pattern.length
                     && fields(constructed.fields, binder)
             }
             Core::PATTERN_LIST => match_list(pattern, value, binder),
             Core::PATTERN_TUPLE => {
+                if (*value).kind != ValueKind::TUPLE {
+                    return false;
+                }
                 let record = (*value).payload.record;
-                (*value).kind == ValueKind::TUPLE && record.length == pattern.length && fields(record.fields, binder)
+                record.length == pattern.length && fields(record.fields, binder)
             }
             Core::PATTERN_ALIAS => {
                 if !match_plain(pattern.offset, value, binder.as_deref_mut()) {
@@ -1365,7 +1372,9 @@ unsafe fn match_node(eval: Eval, node_id: u32) -> *mut Control {
         let values: *mut MatchValue = if subjects <= MATCH_STACK_SUBJECTS {
             stack_values.as_mut_ptr()
         } else {
-            allocate_kind::<MatchValue>(subjects, AllocationKind::BYTES)
+            // Three words a subject, as the C's array was, so a memory report
+            // counts the same bytes; the values use the first two.
+            allocate_kind::<[usize; 3]>(subjects, AllocationKind::BYTES).cast::<MatchValue>()
         };
         for subject in 0..node.length {
             let contextual = (0..node.b)
@@ -1604,7 +1613,7 @@ pub unsafe extern "C" fn chimi_runtime_node_begin_v1(
 ) -> u64 {
     // SAFETY: the caller's contract.
     unsafe {
-        let frame = begin(runtime, id, parent, CStr::from_ptr(operation));
+        let frame = begin(runtime, id, parent, operation);
         *outer = frame.outer;
         frame.span
     }
@@ -1625,5 +1634,5 @@ pub unsafe extern "C" fn chimi_runtime_node_finish_v1(
     result: *mut Control,
 ) -> *mut Control {
     // SAFETY: the caller's contract.
-    unsafe { finish(runtime, id, parent, Frame { outer, span }, CStr::from_ptr(operation), result) }
+    unsafe { finish(runtime, id, parent, Frame { outer, span }, operation, result) }
 }
