@@ -1,0 +1,9 @@
+# mutation run at 7c468099638e5fc708c98a6913fca22279ceb15c
+# process_kernel_mutations.py: 5 mutants against compiler/chimi
+BASELINE ok  [process_lab cli] (256s)
+KILLED       a monitor notice is returned as the message [process_lab cli] (162s)
+KILLED       every notice is Down.Returned [process_lab cli] (163s)
+SURVIVED     a forced receive is a defect [process_lab cli] (160s)
+SURVIVED     a cancelled receive keeps its message [process_lab cli] (161s)
+SURVIVED     an escalated wait reports a failed request [process_lab cli] (161s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

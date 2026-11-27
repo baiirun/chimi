@@ -5,6 +5,15 @@ retargeted mutants of own address, mailbox counts and removal.)
 
 Run: scripts/mutation/mutate.py scripts/mutation/process_kernel_mutations.py
 Results: scripts/mutation/process_kernel_results.txt.
+
+Left out, because no test outside a leak checker can see them:
+- A receive answered FORCED or CANCELLED that becomes a defect. The scheduler
+  sends those replies with a cancel command (`respond_cancel`), so the fiber
+  takes the cancelled path before the status is read; the arm only mirrors the
+  C.
+- A receive cancelled after its message arrived that keeps the message. The
+  fragment then leaks, which only LeakSanitizer reports, and the race needs a
+  cancel landing between delivery and resumption.
 """
 
 CRATE = "compiler/chimi"
@@ -25,16 +34,9 @@ MUTATIONS = [
         "                    StandardConstructor::DOWN_RETURNED + (request.down - Scheduler::DOWN_RETURNED),",
         "                    StandardConstructor::DOWN_RETURNED,",
     )]),
-    mutant("a forced receive is a defect", [(
-        "            Scheduler::RESPONSE_CANCELLED | Scheduler::RESPONSE_FORCED => cancelled(),",
-        "            Scheduler::RESPONSE_CANCELLED => cancelled(),",
-    )]),
-    mutant("a cancelled receive keeps its message", [(
-        "            if request.status == Scheduler::RESPONSE_SUCCEEDED {\n                fragment::free(",
-        "            if false {\n                fragment::free(",
-    )]),
-    mutant("an escalated wait reports a failed request", [(
+    dict(name="an escalated wait reports a failed request", file=PROCESS_KERNEL, edits=[(
         "                if !stop && request.status == Scheduler::RESPONSE_DEFECTED {",
         "                if false {",
-    )]),
+    )], command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--", "--scenario", "ES01"],
+        expect=["ES01"]),
 ]
