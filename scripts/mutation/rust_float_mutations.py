@@ -19,6 +19,12 @@ def fuzz(name, file, edits):
     return dict(name=name, file=file, edits=edits, targets=["runtime_fuzz"], filter="")
 
 
+def digits(name, edits):
+    """A mutant of the digit choice, which the corpus samples too sparsely to
+    pin; tests/float_text.rs compares it with core's shortest digits."""
+    return dict(name=name, file=FLOAT, edits=edits, targets=["float_text"], filter="")
+
+
 MUTATIONS = [
     fuzz("positional up to exponent 16", FLOAT,
          [("if (-5..16).contains(&exponent) {", "if (-5..17).contains(&exponent) {")]),
@@ -37,9 +43,26 @@ MUTATIONS = [
     fuzz("negative exponents lose their sign", FLOAT,
          [("        if exponent < 0 {\n            text.push(b'-');\n        }\n        text.push_digits",
            "        text.push_digits")]),
-    fuzz("exponent sign ignored when read", FLOAT,
-         [("let exponent = if negative { -magnitude_exponent } else { magnitude_exponent };",
-           "let exponent = magnitude_exponent;")]),
+    digits("ties round down",
+           [("r.sum(&r).order(&s).is_ge()", "r.sum(&r).order(&s).is_gt()")]),
+    digits("even significands exclude the interval's ends",
+           [("let inclusive = significand % 2 == 0;", "let inclusive = false;")]),
+    digits("a power of two keeps an even interval",
+           [("if biased > 1 && fraction == 0 {", "if false && biased > 1 && fraction == 0 {")]),
+    digits("the low end is open for even significands",
+           [("if inclusive { r.order(&m_minus).is_le() }", "if inclusive { r.order(&m_minus).is_lt() }")]),
+    digits("the estimate is never stepped up",
+           [("    while beyond_top(&r, &m_plus, &s, inclusive) {\n", "    while false && beyond_top(&r, &m_plus, &s, inclusive) {\n")]),
+    digits("rounding up keeps the last digit",
+           [("            digits[count - 1] += 1;\n", "")]),
+    digits("every value takes the u128 path",
+           [("if s.length < 4 || (s.length == 4 && s.limbs[3] < 1 << 24) {", "if true {")]),
+    digits("big subtraction drops the borrow",
+           [("borrow = i64::from(difference < 0);", "borrow = 0;")]),
+    digits("big shifts drop the carried bits",
+           [("carry = *limb >> (32 - bits);", "carry = 0;")]),
+    digits("big sums drop the carry",
+           [("            sum.limbs[length] = 1;\n", "")]),
     fuzz("C glue drops the text", RUNTIME,
          [("static void float_text(double value, char *output) { chimi_float_text_v1(value, output); }",
            "static void float_text(double value, char *output) { chimi_float_text_v1(value, output); output[0] = '0'; }")]),
