@@ -17,6 +17,7 @@ EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 LOWERING = "src/executable.rs"
 CAUSES = "src/execution/causes.rs"
 RUNTIME = "runtime/native/runtime.c"
+SCOPES = "../../runtime/chimi-runtime/src/intrinsics/scopes.rs"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 RUST_CAUSES = "../../runtime/chimi-runtime/src/intrinsics/causes.rs"
 
@@ -96,9 +97,9 @@ MUTATIONS = [
     # No mutant for Cause.summary of a defect or a cancellation: a program can
     # bind only an expected failure's cause (cause arms, Cause.of, Task.all's
     # siblings), so that branch is unreachable from Chimi code.
-    programs("C: Cause.context adds no frame", RUNTIME, [
-        ("  return chimi_runtime_control_with_cause_v1(control, chimi_runtime_cause_with_frame_v1(cause, arguments[1], call_node));",
-         "  return chimi_runtime_control_with_cause_v1(control, cause);")]),
+    programs("native: Cause.context adds no frame", SCOPES, [
+        ("        control_with_cause(control, cause_with_frame(cause, arguments[1], i64::from(call.call_node)))",
+         "        control_with_cause(control, cause)")]),
     programs("native: a stored Err drops its cause", EVAL, [
         ("                return success(with_stored_cause((*result).value, cause));",
          "                return result;")]),

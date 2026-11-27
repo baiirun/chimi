@@ -25,3 +25,10 @@ exit=0
 BASELINE ok  [clock] (55s)
 KILLED       a busy loop never polls for scope deadlines [clock] (113s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/intrinsics/scopes.rs and eval.rs when the scope intrinsics moved (CHI-305 phase 7, PR 273):
+# mutation run at 9d729f536b82954a3904fa2ab1bd4cdb432057fc
+# clock_timeout_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [clock] (57s)
+KILLED       a terminal cancellation still exits its scopes [clock] (47s)
+# result: every mutant killed

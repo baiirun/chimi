@@ -35,3 +35,10 @@ BASELINE ok  [std_modules -- standard_programs] (57s)
 KILLED       native: re-raising the bound error links [std_modules -- standard_programs] (56s)
 KILLED       native: a stored Err drops its cause [std_modules -- standard_programs] (56s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/intrinsics/scopes.rs and eval.rs when the scope intrinsics moved (CHI-305 phase 7, PR 273):
+# mutation run at 9d729f536b82954a3904fa2ab1bd4cdb432057fc
+# cause_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [std_modules -- standard_programs] (58s)
+KILLED       native: Cause.context adds no frame [std_modules -- standard_programs] (57s)
+# result: every mutant killed

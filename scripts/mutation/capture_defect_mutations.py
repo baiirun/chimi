@@ -11,6 +11,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+SCOPES = "../../runtime/chimi-runtime/src/intrinsics/scopes.rs"
 I = "src/execution/core_operations.rs"
 E = "src/executable.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
@@ -21,25 +22,25 @@ def mutant(name, file, edits, targets=("testing",), filter=""):
 
 
 MUTATIONS = [
-    mutant("native: an inner assertion is captured", C, [(
-        "bool captured = control->kind == CONTROL_DEFECT && !is_assertion_call(control->node);",
-        "bool captured = control->kind == CONTROL_DEFECT;",
+    mutant("native: an inner assertion is captured", SCOPES, [(
+        "        let captured = (*control).kind == ControlKind::DEFECT && !is_assertion_call((*control).node);",
+        "        let captured = (*control).kind == ControlKind::DEFECT;",
     )]),
-    mutant("native: the operation's tasks are not cancelled", C, [(
-        "    if (captured) {\n      ChimiSchedulerRequest cancel",
-        "    if (0) {\n      ChimiSchedulerRequest cancel",
+    mutant("native: the operation's tasks are not cancelled", SCOPES, [(
+        "            if captured {\n                let mut cancel",
+        "            if false {\n                let mut cancel",
     )]),
-    mutant("native: a success is returned as the message", C, [(
-        "  if (control->kind == CONTROL_SUCCESS)\n    return capture_outcome_defect(",
-        "  if (control->kind == CONTROL_SUCCESS)\n    return control;\n  if (0)\n    return capture_outcome_defect(",
+    mutant("native: a success is returned as the message", SCOPES, [(
+        "            ControlKind::SUCCESS => capture_outcome_defect(",
+        "            ControlKind::SUCCESS if false => capture_outcome_defect(",
     )]),
-    mutant("native: an expected failure escapes", C, [(
-        "  if (control->kind == CONTROL_FAILURE)\n    return capture_outcome_defect(",
-        "  if (0)\n    return capture_outcome_defect(",
+    mutant("native: an expected failure escapes", SCOPES, [(
+        "            ControlKind::FAILURE => capture_outcome_defect(",
+        "            ControlKind::FAILURE if false => capture_outcome_defect(",
     )]),
-    mutant("native: the node search misses the last entry", C, [(
-        "  return low < CHIMI_ASSERTION_NODE_COUNT && (int64_t)CHIMI_ASSERTION_NODES[low] == node;",
-        "  return low + 1 < CHIMI_ASSERTION_NODE_COUNT && (int64_t)CHIMI_ASSERTION_NODES[low] == node;",
+    mutant("native: the node search misses the last entry", SCOPES, [(
+        "    u32::try_from(node).is_ok_and(|node| nodes.binary_search(&node).is_ok())",
+        "    u32::try_from(node).is_ok_and(|node| nodes[..nodes.len().saturating_sub(1)].binary_search(&node).is_ok())",
     )]),
     mutant("interpreter: an inner assertion is captured", I, [(
         "                if !node.is_some_and(|node| self.is_assertion_call(node)) =>",

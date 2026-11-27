@@ -22,6 +22,7 @@ SCHEDULER = f"{FIBER}/scheduler.rs"
 CHANNEL = f"{FIBER}/channel.rs"
 PROCESS = f"{FIBER}/scheduler/process.rs"
 RUNTIME = "runtime/native/runtime.c"
+SCOPES = "../../runtime/chimi-runtime/src/intrinsics/scopes.rs"
 INTERPRETER = "src/execution/resource_operations.rs"
 
 
@@ -66,22 +67,22 @@ MUTATIONS = [
         "        if record.parent == Some(new_owner) {",
         "        if false && record.parent == Some(new_owner) {")]),
     # The native boundary.
-    resources("resource_scoped ignores the cancellation its exit delivers", RUNTIME, [(
-        "    if (cancel || exit.value == 1) return cancelled_unless_defect(outcome);",
-        "    if (cancel) return cancelled_unless_defect(outcome);")]),
-    resources("a cancelled use skips its release", RUNTIME, [(
-        "  if (used->kind == CONTROL_CANCEL && chimi_fiber_cancel_is_terminal()) return used;",
-        "  if (used->kind == CONTROL_CANCEL) return used;")]),
+    resources("resource_scoped ignores the cancellation its exit delivers", SCOPES, [(
+        "            if cancel || exit.value == 1 {\n                return cancelled_unless_defect(outcome);",
+        "            if cancel {\n                return cancelled_unless_defect(outcome);")]),
+    resources("a cancelled use skips its release", SCOPES, [(
+        "        if (*used).kind == ControlKind::CANCEL && cancel_is_terminal() {\n            return used;",
+        "        if (*used).kind == ControlKind::CANCEL {\n            return used;")]),
     # Outcome order, on both backends.
-    outcomes("native: a release failure does not replace the use's outcome", RUNTIME, [(
-        "  if (released->kind == CONTROL_FAILURE || released->kind == CONTROL_CANCEL) return released;",
-        "  if (released->kind == CONTROL_CANCEL) return released;")]),
-    outcomes("native: a release defect outranks a use defect", RUNTIME, [(
-        "  if (used->kind == CONTROL_DEFECT) return used;\n  if (released->kind == CONTROL_DEFECT) return released;",
-        "  if (released->kind == CONTROL_DEFECT) return released;\n  if (used->kind == CONTROL_DEFECT) return used;")]),
-    outcomes("native: a release defect does not replace a use failure", RUNTIME, [(
-        "  if (released->kind == CONTROL_DEFECT) return released;\n  if (used->kind == CONTROL_CANCEL) return used;",
-        "  if (used->kind == CONTROL_CANCEL) return used;")]),
+    outcomes("native: a release failure does not replace the use's outcome", SCOPES, [(
+        "        if matches!((*released).kind, ControlKind::FAILURE | ControlKind::CANCEL) {",
+        "        if matches!((*released).kind, ControlKind::CANCEL) {")]),
+    outcomes("native: a release defect outranks a use defect", SCOPES, [(
+        "        if (*used).kind == ControlKind::DEFECT {\n            return used;\n        }\n        if (*released).kind == ControlKind::DEFECT {\n            return released;\n        }",
+        "        if (*released).kind == ControlKind::DEFECT {\n            return released;\n        }\n        if (*used).kind == ControlKind::DEFECT {\n            return used;\n        }")]),
+    outcomes("native: a release defect does not replace a use failure", SCOPES, [(
+        "        if (*released).kind == ControlKind::DEFECT {\n            return released;\n        }\n        if (*used).kind == ControlKind::CANCEL {",
+        "        if (*used).kind == ControlKind::CANCEL {")]),
     outcomes("interpreter: a release failure does not replace the use's outcome", INTERPRETER, [(
         "        (_, released @ (Control::Failure(..) | Control::Cancellation(_))) => released,",
         "        (_, released @ Control::Cancellation(_)) => released,")]),

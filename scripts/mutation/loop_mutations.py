@@ -29,8 +29,8 @@ MUTATIONS = [
         "            if cancel_requested(runtime) {\n                break cancelled();\n            }\n            if scheduled",
         "            if scheduled")], ("cli", "clock")),
     m("a fired scope does not stop a loop", [(
-        "            if scheduled && scope_check_due(&mut polls) && chimi_runtime_loop_scope_check_v1() {",
-        "            if scheduled && scope_check_due(&mut polls) && !chimi_runtime_loop_scope_check_v1() {")],
+        "&& scheduler::request(&mut SchedulerRequest::of(Scheduler::REQUEST_SCOPE_CHECK)) {",
+        "&& !scheduler::request(&mut SchedulerRequest::of(Scheduler::REQUEST_SCOPE_CHECK)) {")],
       ("language", "cli", "clock")),
     m("a pass keeps all it allocated", [(
         "                if collector::collect(current_carrier(), passes, &raw mut state, ptr::null_mut()) != HeapStatus::OK {",

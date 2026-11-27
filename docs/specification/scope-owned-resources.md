@@ -206,7 +206,8 @@ with that call's span.
 
 - **Interpreter** (`execution/resource_operations.rs`). The interpreter has
   no scheduler, so there is nothing to mask; it applies the outcome order.
-- **Native runtime** (`runtime.c` `resource_scoped`). It issues
+- **Native runtime** (`runtime/chimi-runtime/src/intrinsics/scopes.rs`
+  `resource_scoped`). It issues
   `REQUEST_RESOURCE_ENTER` before `acquire`, `REQUEST_RESOURCE_USE` once it
   succeeds, `REQUEST_RESOURCE_RELEASE` before `release`, and
   `REQUEST_RESOURCE_EXIT` after it. When the use reply says a cancellation
