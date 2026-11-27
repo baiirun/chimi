@@ -27,7 +27,9 @@ native-backend = [
 chimi-fiber = { path = "../../runtime/chimi-fiber", optional = true }
 chimi-runtime = { path = "../../runtime/chimi-runtime" }
 blake3 = { version = "=1.8.6", optional = true }
-cranelift-codegen = { version = "=0.131.3", optional = true }
+# `arm64` and `x86` beside the host's own: `chimi build --target` emits code
+# for both architectures (backend/target.rs).
+cranelift-codegen = { version = "=0.131.3", optional = true, features = ["arm64", "x86"] }
 cranelift-frontend = { version = "=0.131.3", optional = true }
 cranelift-module = { version = "=0.131.3", optional = true }
 cranelift-native = { version = "=0.131.3", optional = true }

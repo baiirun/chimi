@@ -11,6 +11,42 @@
 pub const RUNTIME_C_COMPILER: &str = "cc";
 pub const RUNTIME_C_FLAGS: [&str; 2] = ["-std=c11", "-O2"];
 
+/// The C compiler and archiver of one build, each a program and its leading
+/// arguments: the host's `cc` and `ar`, or Zig's for another target
+/// (`cross_targets.rs`). The keys below name the compiler by its identity
+/// (`--version` output and, for another target, its target), so archives
+/// from different tools never share a key.
+pub struct CTools {
+    pub cc: Vec<std::ffi::OsString>,
+    pub ar: Vec<std::ffi::OsString>,
+}
+
+impl CTools {
+    pub fn host() -> Self {
+        Self {
+            cc: vec![RUNTIME_C_COMPILER.into()],
+            ar: vec!["ar".into()],
+        }
+    }
+
+    /// A command running the C compiler, ready for its flags.
+    pub fn cc_command(&self) -> std::process::Command {
+        tool_command(&self.cc)
+    }
+
+    /// A command running the archiver, ready for `rcs <archive> <objects>`.
+    pub fn ar_command(&self) -> std::process::Command {
+        tool_command(&self.ar)
+    }
+}
+
+fn tool_command(tool: &[std::ffi::OsString]) -> std::process::Command {
+    let (program, arguments) = tool.split_first().expect("a tool names its program");
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+    command
+}
+
 /// Added to `RUNTIME_C_FLAGS` for the process-kernel variant of the runtime,
 /// which only programs that reach `std/process` or `std/supervisor` link
 /// (pay-for-play; supervised-process-conformance.md, MF06).
@@ -184,6 +220,7 @@ pub fn compile_binding_archive(
     directory: &std::path::Path,
     archive: &std::path::Path,
     extra_flags: &[String],
+    tools: &CTools,
 ) -> Result<(), String> {
     // A fresh directory, so a file removed from the package is not compiled.
     let _ = std::fs::remove_dir_all(directory);
@@ -245,7 +282,8 @@ pub fn compile_binding_archive(
                     if failure.lock().map_or(true, |seen| seen.is_some()) {
                         break;
                     }
-                    let output = std::process::Command::new(RUNTIME_C_COMPILER)
+                    let output = tools
+                        .cc_command()
                         .args(RUNTIME_C_FLAGS)
                         .args(extra_flags)
                         .arg("-I")
@@ -272,7 +310,7 @@ pub fn compile_binding_archive(
                             source.display(),
                             String::from_utf8_lossy(&output.stderr).trim()
                         )),
-                        Err(error) => Some(format!("run {RUNTIME_C_COMPILER}: {error}")),
+                        Err(error) => Some(format!("run {:?}: {error}", tools.cc)),
                     };
                     if let Some(problem) = problem {
                         if let Ok(mut seen) = failure.lock() {
@@ -288,7 +326,8 @@ pub fn compile_binding_archive(
         return Err(problem);
     }
     let _ = std::fs::remove_file(archive);
-    let output = std::process::Command::new("ar")
+    let output = tools
+        .ar_command()
         .arg("rcs")
         .arg(archive)
         .args(units.iter().map(|(_, object)| object))

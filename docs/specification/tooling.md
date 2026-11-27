@@ -445,13 +445,17 @@ Tests: `compiler/chimi/tests/std_metrics.rs`.
 
 ## Cross-compilation: `chimi build --target`
 
-Purpose: name the platform a build is for, so that building for another
-platform than the one running `chimi` is one flag once it is supported.
+Purpose: build an executable for another platform than the one running
+`chimi`, such as a Linux server binary from a Mac, with one flag.
 
 ```text
 chimi build <path> [-o <executable>] [--target <triple>]
 chimi build --root <project> <entry> [-o <executable>] [--target <triple>]
 ```
+
+Targets: the host, and Linux (glibc) and macOS on x86_64 and arm64:
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-apple-darwin` and `aarch64-apple-darwin`.
 
 Rules:
 
@@ -461,19 +465,48 @@ Rules:
   environment and object format agree: the vendor is ignored, as are
   `darwin` against `macosx` and a macOS version, so `x86_64-linux-gnu`,
   `x86_64-pc-linux-gnu`, `arm64-apple-darwin` and `aarch64-apple-macosx14.0`
-  name the hosts they look like. A partial triple, such as `x86_64` alone,
-  names a bare-metal target and is refused as another target.
-- The host's triple MUST build exactly as a build without `--target`.
-- Any other target MUST fail with exit status 1 before compiling anything,
-  naming the target, what building for it needs (the Chimi runtime compiled
-  for it, and a linker and C library for it) and the host it can build for.
+  name the targets they look like. A partial triple, such as `x86_64` alone,
+  names a bare-metal target and is refused.
+- The host's triple MUST build exactly as a build without `--target`: the
+  host's `cc` and `ar`, and the runtime archives built into the compiler.
+- Another supported target builds with Cranelift's code generator for it,
+  at its architecture's baseline features (the host build uses the host
+  CPU's), and with Zig as its C compiler, linker and archiver. Zig is
+  `CHIMI_ZIG` when set, else `zig` on `PATH`. The C runtime and binding
+  packages compile per project into the project cache, keyed by the target
+  and Zig's version, so another target never reuses a host archive.
+- A Linux executable links glibc 2.34 or newer and runs on any glibc from
+  2.34; it links Zig's libunwind statically, which the Rust runtime unwinds
+  with. A macOS executable runs on macOS 11 or newer. Neither needs
+  anything installed beyond what a host-built executable needs there.
+- The Rust runtime archives for another target come from its runtime pack,
+  built into the compiler when it was built with `CHIMI_CROSS_TARGETS`
+  naming the target (a comma-separated list of the triples above, or
+  `all`). Building a pack needs the target's Rust standard library
+  (`rustup target add <triple>`) and Zig. Each pack adds 20 to 30 MB to a
+  release compiler, so none is built by default.
+- A target that is not supported, a supported target whose pack this
+  compiler lacks, and a missing Zig MUST each fail with exit status 1
+  before compiling anything, naming the target and what to do: the
+  supported targets, the rebuild that adds the pack, or how to get Zig.
   A string that is not a target triple fails naming the host as an example.
+- The build report (`build.json`) names the target as `target.os` and
+  `target.arch`, spelled as Rust's `std::env::consts` spells them there
+  (`linux`, `macos`; `x86_64`, `aarch64`), and `target.triple`. For another
+  target, `dynamic_dependencies` lists the shared libraries the executable
+  names (`libc.so.6`, `/usr/lib/libSystem.B.dylib`), read from the file
+  rather than from `ldd` or `otool`, which cannot inspect it.
 - `-o` and `--target` may come in either order, each at most once.
 
-Not yet: building for another target. That needs a runtime pack per target
-(the C runtime and fiber library built for it) and a linker and C library for
-it, such as clang with lld and a sysroot, and Cranelift's code generators for
-the other architectures, which this build leaves out.
+Not yet: Windows, musl Linux, and a pack installed apart from the compiler
+(`chimi` downloading one, as `rustup target add` does).
 
-Implementation: `check_build_target` in `compiler/chimi/src/backend/native.rs`
-and `chimi build` in `main.rs`. Tests: `compiler/chimi/tests/build_target.rs`.
+Implementation: `BuildTarget` in `compiler/chimi/src/backend/target.rs`, the
+target table in `backend/cross_targets.rs`, the packs in
+`compiler/chimi/build.rs`, and `chimi build` in `main.rs`.
+`scripts/compare-programs.sh build` builds the example programs for a
+target. Tests: `compiler/chimi/tests/build_target.rs`, and
+`compiler/chimi/tests/cross_build.rs` for the packs a compiler embeds; CI's
+`cross` jobs build the example programs on Linux for arm64 Linux (run under
+QEMU) and for macOS, and on macOS for Linux, and check each against the
+outputs of the same programs built on that platform.

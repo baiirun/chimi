@@ -228,6 +228,7 @@ mod tests {
             &directory.join("package"),
             &directory.join("p.a"),
             &[],
+            &crate::backend::runtime_archive_key::CTools::host(),
         );
         let _ = std::fs::remove_dir_all(&directory);
         assert!(
@@ -250,6 +251,7 @@ mod tests {
             &directory.join("package"),
             &directory.join("p.a"),
             &[],
+            &crate::backend::runtime_archive_key::CTools::host(),
         );
         let _ = std::fs::remove_dir_all(&directory);
         assert!(
