@@ -145,7 +145,7 @@ unsafe fn new_tuple(length: usize) -> (*mut Value, *mut Field) {
 /// # Safety
 /// Runs on a fiber that may allocate; `values` are live.
 #[inline(never)]
-unsafe fn tuple(values: &[*mut Value]) -> *mut Value {
+pub(super) unsafe fn tuple(values: &[*mut Value]) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
         let (tuple, fields) = new_tuple(values.len());

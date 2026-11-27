@@ -179,6 +179,17 @@ pub struct ListVector {
     pub length: u32,
 }
 
+/// `struct ChimiBindingCall`: one call of a C binding function. A binding
+/// sees it only through the `chimi_binding_*` functions.
+#[repr(C)]
+pub struct BindingCall {
+    pub runtime: *mut c_void,
+    pub arguments: *mut *mut Value,
+    pub argument_count: u32,
+    pub call_node: u32,
+    pub held: *mut bool,
+}
+
 /// `ChimiSymbol` (runtime.h): one entry of the program's symbol table.
 #[repr(C)]
 pub struct Symbol {
@@ -361,6 +372,8 @@ pub struct StandardConstructor;
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
     pub const OPTION_NONE: u32 = 7;
+    pub const RESULT_OK: u32 = 49;
+    pub const RESULT_ERR: u32 = 50;
     pub const JSON_NULL: u32 = 8;
     pub const JSON_BOOLEAN: u32 = 9;
     pub const JSON_NUMBER: u32 = 10;
@@ -936,6 +949,12 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ListVector" ListVector, "root", root)
     field("ListVector" ListVector, "tail", tail)
     field("ListVector" ListVector, "length", length)
+    size("ChimiBindingCall" BindingCall)
+    field("ChimiBindingCall" BindingCall, "runtime", runtime)
+    field("ChimiBindingCall" BindingCall, "arguments", arguments)
+    field("ChimiBindingCall" BindingCall, "argument_count", argument_count)
+    field("ChimiBindingCall" BindingCall, "call_node", call_node)
+    field("ChimiBindingCall" BindingCall, "held", held)
     size("ChimiSymbol" Symbol)
     field("ChimiSymbol" Symbol, "kind", kind)
     field("ChimiSymbol" Symbol, "name", name)
@@ -977,6 +996,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER" StandardConstructor::FLOAT_NOT_INTEGER)
     constant("CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE" StandardConstructor::FLOAT_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
+    constant("CHIMI_CONSTRUCTOR_RESULT_OK" StandardConstructor::RESULT_OK)
+    constant("CHIMI_CONSTRUCTOR_RESULT_ERR" StandardConstructor::RESULT_ERR)
     constant("CHIMI_INTRINSIC_JSON_DECODE" Intrinsic::JSON_DECODE)
     constant("CHIMI_INTRINSIC_JSON_ENCODE" Intrinsic::JSON_ENCODE)
     constant("CHIMI_INTRINSIC_JSON_INT" Intrinsic::JSON_INT)

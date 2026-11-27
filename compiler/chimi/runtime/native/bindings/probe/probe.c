@@ -58,6 +58,39 @@ ChimiBindingResult *chimi_probe_crash(ChimiBindingCall *call) {
   return chimi_binding_defect(call, message);
 }
 
+/* `Some((text, [text]))` for the Text the bytes spell: a value refused
+   anywhere inside makes the whole result refused. */
+ChimiBindingResult *chimi_probe_decode(ChimiBindingCall *call) {
+  const unsigned char *bytes;
+  size_t length;
+  int64_t integer;
+  if (!chimi_binding_bytes(call, 0, &bytes, &length))
+    return chimi_binding_defect(call, "decode takes Bytes");
+  if (chimi_binding_integer(call, 0, &integer))
+    return chimi_binding_defect(call, "Bytes read as an Int");
+  ChimiBindingValue *text = chimi_binding_make_text(call, (const char *)bytes, length);
+  ChimiBindingValue *items[] = {text, chimi_binding_make_list(call, &text, 1)};
+  return chimi_binding_success(call, chimi_binding_some(call, chimi_binding_make_tuple(call, items, 2)));
+}
+
+/* Fails (or, when the Bool is true, defects) with the bytes as its message,
+   up to their first U+0000, as a C string ends there. */
+ChimiBindingResult *chimi_probe_refuse(ChimiBindingCall *call) {
+  const unsigned char *bytes;
+  size_t length;
+  int as_defect;
+  if (!chimi_binding_bytes(call, 0, &bytes, &length) || !chimi_binding_boolean(call, 1, &as_defect))
+    return chimi_binding_defect(call, "refuse takes Bytes and a Bool");
+  char *message = malloc(length + 1);
+  if (message == NULL) return chimi_binding_defect(call, "out of memory");
+  memcpy(message, bytes, length);
+  message[length] = 0;
+  ChimiBindingResult *result =
+    as_defect ? chimi_binding_defect(call, message) : chimi_binding_failure(call, PROBE_INVALID, message);
+  free(message);
+  return result;
+}
+
 typedef struct {
   int read_end;
   int write_end;

@@ -381,6 +381,20 @@ pub(crate) const OPERATIONS: &[Operation] = &[
         true,
     ),
     binding(
+        "std/binding_probe.native_decode",
+        1,
+        "probe",
+        "chimi_probe_decode",
+        true,
+    ),
+    binding(
+        "std/binding_probe.native_refuse",
+        2,
+        "probe",
+        "chimi_probe_refuse",
+        true,
+    ),
+    binding(
         "std/binding_probe.native_open_pipe",
         0,
         "probe",

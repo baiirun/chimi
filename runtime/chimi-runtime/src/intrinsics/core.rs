@@ -77,7 +77,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// A copy of `message` up to its first U+0000, outside every heap: a
 /// control's message is not traced, and a loop region or a child task's heap
 /// may be freed while the defect it ended with is still read.
-fn lasting_message(message: &[u8]) -> *const c_char {
+pub(super) fn lasting_message(message: &[u8]) -> *const c_char {
     let length = message.iter().position(|&byte| byte == 0).unwrap_or(message.len());
     // SAFETY: a plain allocation; failure exits.
     let copy = unsafe { libc::malloc(length + 1) }.cast::<u8>();

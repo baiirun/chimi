@@ -4,8 +4,9 @@
 //! which [`api`] wraps.
 //!
 //! The module is built only into the runtime archives (the `bindings`
-//! feature), because it imports the binding API from `runtime.c`. A program
-//! links only the functions it reaches: the link drops unreferenced sections.
+//! feature), because it imports the parts of the binding API `runtime.c`
+//! still exports. A program links only the functions it reaches: the link
+//! drops unreferenced sections.
 //!
 //! Two rules C did not need:
 //!
