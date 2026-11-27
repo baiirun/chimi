@@ -1,13 +1,18 @@
-# mutation run at d1d9ef471ef8d45cbe1dff1775abdf6deb498b60
-# rust_float_mutations.py: 9 mutants against compiler/chimi
-BASELINE ok  [runtime_fuzz] (62s)
-KILLED       positional up to exponent 16 [runtime_fuzz] (51s)
-KILLED       positional from exponent -4 [runtime_fuzz] (54s)
-KILLED       negative zero loses its sign [runtime_fuzz] (52s)
-KILLED       one zero short after the point [runtime_fuzz] (51s)
-KILLED       whole numbers lose their .0 [runtime_fuzz] (53s)
-KILLED       single digits keep a point [runtime_fuzz] (52s)
-KILLED       negative exponents lose their sign [runtime_fuzz] (51s)
-KILLED       exponent sign ignored when read [runtime_fuzz] (52s)
-KILLED       C glue drops the text [runtime_fuzz] (53s)
-# result: every mutant killed
+# mutation run at 6765f8f3cf7010a9b80b9d436a7e1c7a1e7826a1
+# rust_float_mutations.py: 14 mutants against compiler/chimi
+BASELINE ok  [runtime_fuzz] (205s)
+KILLED       positional up to exponent 16 [runtime_fuzz] (63s)
+KILLED       positional from exponent -4 [runtime_fuzz] (62s)
+KILLED       negative zero loses its sign [runtime_fuzz] (61s)
+KILLED       one zero short after the point [runtime_fuzz] (61s)
+KILLED       whole numbers lose their .0 [runtime_fuzz] (61s)
+KILLED       single digits keep a point [runtime_fuzz] (62s)
+KILLED       negative exponents lose their sign [runtime_fuzz] (63s)
+KILLED       exponent sign ignored when read [runtime_fuzz] (60s)
+SURVIVED     no candidate above the nearest [runtime_fuzz] (61s)
+SURVIVED     no candidate below the nearest [runtime_fuzz] (60s)
+SURVIVED     a tie keeps the smaller candidate [runtime_fuzz] (59s)
+SURVIVED     a carry keeps its trailing zero [runtime_fuzz] (62s)
+SURVIVED     the 17-digit fallback keeps its zeros [runtime_fuzz] (62s)
+KILLED       C glue drops the text [runtime_fuzz] (60s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

@@ -1,8 +1,9 @@
 //! Float text against core's `{:e}`: both backends print a Float with
-//! `chimi_runtime::float::text`, which finds the shortest round-trip digits
-//! through the C library, so comparing the backends cannot see a wrong
-//! digit. core picks the same digits by another method: the shortest that
-//! parse back, the closest at that length, and the larger on an exact tie.
+//! `chimi_runtime::float::text`, which generates the shortest round-trip
+//! digits itself, so comparing the backends cannot see a wrong digit. core
+//! picks them by its own method (Grisu, falling back to exact digits): the
+//! shortest that parse back, the closest at that length, and the larger on
+//! an exact tie.
 
 /// The significand digits and decimal exponent `text` spells.
 fn digits_of(text: &str) -> (String, i32) {
