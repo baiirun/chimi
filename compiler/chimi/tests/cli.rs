@@ -6946,6 +6946,104 @@ fn native_a_deadlocked_root_names_the_last_process_defect() {
     }
 }
 
+// The process and supervisor data constructors check computed values when
+// they run natively, with the interpreter's defect texts (CHI-305 step 5,
+// phase 7: they are Rust now). Each run takes the index of the check to
+// trip. Rejects a constructor that skips a range check, reports another
+// value, or lets a spec be registered twice.
+#[test]
+fn native_process_data_constructors_check_values_when_they_run() {
+    let scratch = scratch_directory("native-process-data");
+    let source = scratch.join("main.chimi");
+    let executable = scratch.join("program");
+    std::fs::write(
+        &source,
+        concat!(
+            "import std/int as Int\n",
+            "import std/duration as Duration\n",
+            "import std/process as Process\n",
+            "import std/supervisor as Supervisor\n",
+            "import std/process.{Inbox}\n",
+            "import std/list as List\n",
+            "pub enum Message {\n  Ping\n}\n",
+            "pub process name first: Message\n",
+            "pub process name second: Message\n",
+            "fn work(inbox: Inbox<Message>) -> Void {\n  Void\n}\n",
+            "fn spec(capacity: Int, seconds: Int) -> Int {\n",
+            "  let _ = Process.spec(work, capacity, Duration.seconds(seconds))\n  0\n}\n",
+            "fn handoff(capacity: Int) -> Int {\n",
+            "  let _ = Process.handoff_spec(fn(inbox: Inbox<Message>, n: Int) { Void }, capacity, Duration.seconds(1))\n",
+            "  0\n}\n",
+            "fn restarts(limit: Int, seconds: Int) -> Int {\n",
+            "  let _ = Supervisor.restarts(limit, Duration.seconds(seconds))\n  0\n}\n",
+            "fn policy(members: Int, capacity: Int) -> Int {\n",
+            "  let member = Process.spec(work, 1, Duration.seconds(1)) |> Supervisor.process(Supervisor.Restart.Never)\n",
+            "  let all = case members {\n    1 -> [member]\n    _ -> [member, member]\n  }\n",
+            "  let _ = Supervisor.policy(all, capacity, Supervisor.restarts(1, Duration.seconds(1)))\n  0\n}\n",
+            "fn register_twice(capacity: Int) -> Int {\n",
+            "  let named = Process.spec(work, capacity, Duration.seconds(1)) |> Process.register(first)\n",
+            "  let _ = named |> Process.register(second)\n  0\n}\n",
+            "pub fn main(arguments: List<Text>) -> Int {\n",
+            "  let pick = case List.first(arguments) {\n    Some(text) -> Int.parse(text)\n    None -> 0\n  }\n",
+            "  let zero = pick - pick\n",
+            "  case pick {\n",
+            "    0 -> spec(zero, 1)\n",
+            "    1 -> spec(zero + 1, zero - 1)\n",
+            "    2 -> handoff(zero)\n",
+            "    3 -> restarts(zero + 1, zero)\n",
+            "    4 -> restarts(zero - 1, 1)\n",
+            "    5 -> policy(1, zero)\n",
+            "    6 -> policy(2, zero + 1)\n",
+            "    7 -> register_twice(zero + 1)\n",
+            "    _ -> spec(zero + 1, zero)\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_chimi"))
+        .current_dir(&scratch)
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    for (pick, defect) in [
+        ("0", Some("Process.spec: mailbox capacity must be at least 1, got 0")),
+        ("1", Some("Process.spec: shutdown_within must be at least zero, got -1s")),
+        ("2", Some("Process.handoff_spec: mailbox capacity must be at least 1, got 0")),
+        ("3", Some("Supervisor.restarts: restart window must be positive, got 0s")),
+        ("4", Some("Supervisor.restarts: restart limit must be at least 0, got -1")),
+        ("5", Some("Supervisor.policy: capacity must be at least 1, got 0")),
+        ("6", Some("Supervisor.policy: members must not exceed capacity 1, got 2")),
+        ("7", Some("Process.register: spec already has a name")),
+        ("8", None),
+    ] {
+        let outcome = scratch.join(format!("outcome-{pick}.json"));
+        let run = Command::new(&executable)
+            .arg("--chimi-runner")
+            .arg(format!("--outcome-file={}", outcome.display()))
+            .arg("--")
+            .arg(pick)
+            .output()
+            .unwrap();
+        let written = std::fs::read_to_string(&outcome).unwrap();
+        match defect {
+            Some(defect) => {
+                assert_eq!(run.status.code(), Some(70), "pick {pick}: {run:?}");
+                assert!(
+                    written.contains("\"outcome\":\"defect\"") && written.contains(defect),
+                    "pick {pick}: {written}"
+                );
+            }
+            None => assert!(written.contains("\"outcome\":\"success\""), "pick {pick}: {written}"),
+        }
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn native_process_stack_depth_and_named_defects() {
     let scratch = scratch_directory("native-process-stack");
