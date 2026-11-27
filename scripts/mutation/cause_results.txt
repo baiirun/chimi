@@ -1,8 +1,29 @@
-# cause_mutations.py (CHI-204), 2026-11-15
-# First run at e12a4f1: 13 of 14 killed. "every conversion keeps the matched
-# cause" survived: no test converted to a named, non-matched value. Added that
-# case to std-tests/cause/chain_scope.chimi, plus three mutants for the
-# review fixes (nested case scope, function-literal barrier, NUL in the root
-# report). Rerun of those four: all killed. A last mutant for the Debug.crash
-# message fix (a message left in the loop's heap) was killed too.
-# Result: 18 of 18 killed.
+# mutation run at 8c2d267d3f7ba450a1489df3f2662557ad2384db
+# cause_mutations.py: 23 mutants against compiler/chimi
+BASELINE ok  [std_modules -- standard_programs] (132s)
+BASELINE ok  [language -- a_cause_crosses_heaps] (8s)
+KILLED       re-raising the bound error links [std_modules -- standard_programs] (20s)
+KILLED       every conversion keeps the matched cause [std_modules -- standard_programs] (21s)
+KILLED       a nested case hides the enclosing cause arm [std_modules -- standard_programs] (36s)
+KILLED       a function literal links to the enclosing arm [std_modules -- standard_programs] (35s)
+KILLED       native: a crash message lives in the loop's heap [std_modules -- standard_programs] (67s)
+KILLED       C: the root report stops at a NUL [std_modules -- standard_programs] (53s)
+KILLED       an Err arm is not a cause source [std_modules -- standard_programs] (53s)
+KILLED       Rust: a plain failure reports its cause [std_modules -- standard_programs] (21s)
+KILLED       Rust: frames drop the oldest [std_modules -- standard_programs] (13s)
+KILLED       Rust: chains are unbounded [std_modules -- standard_programs] (35s)
+KILLED       Rust: a context frame forgets its text [std_modules -- standard_programs] (33s)
+KILLED       C: re-raising the bound error links [std_modules -- standard_programs] (58s)
+KILLED       native: a plain failure reports its cause [std_modules -- standard_programs] (52s)
+KILLED       native: frames drop the oldest [std_modules -- standard_programs] (53s)
+KILLED       native: the chain drop forgets its count [std_modules -- standard_programs] (51s)
+KILLED       native: chains are unbounded [std_modules -- standard_programs] (51s)
+KILLED       native: a dropped-frames line is missing [std_modules -- standard_programs] (53s)
+KILLED       native: a suppressed cause shows no reason [task_combinators -- a_root_task_all_failure_reports_its_sibling_causes] (52s; rerun after the new test)
+KILLED       native: a frame's location is missing [std_modules -- standard_programs] (53s)
+KILLED       native: Cause.frames forgets the texts [std_modules -- standard_programs] (59s)
+KILLED       C: Cause.context adds no frame [std_modules -- standard_programs] (55s)
+KILLED       C: a stored Err drops its cause [std_modules -- standard_programs] (45s)
+KILLED       native: Cause.of finds no stored cause [language -- a_cause_crosses_heaps] (51s)
+# result: every mutant killed (the suppressed-reason mutant was rerun after its test was added;
+# the defect-summary mutant was dropped as unreachable from Chimi code)
