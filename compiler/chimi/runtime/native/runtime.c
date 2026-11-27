@@ -236,7 +236,7 @@ struct ChimiEnvironment {
 
 /* `node` is where a failure or defect started (-1 when unknown), or a break's
    target. `cause` is a failure's, defect's or cancellation's cause once built;
-   NULL means the fresh cause of the outcome itself (see control_cause). */
+   NULL means the fresh cause of the outcome itself (see control_cause in intrinsics/causes.rs). */
 struct ChimiControl {
   ControlKind kind;
   ChimiValue *value;

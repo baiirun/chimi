@@ -504,7 +504,8 @@ impl Writer {
                 let reason = integer(child, Slot::REASON);
                 self.indent(depth);
                 self.text(b"suppressed (");
-                self.text(usize::try_from(reason).ok().and_then(|reason| SUPPRESSION_LABELS.get(reason)).map_or(b"unknown", |label| label));
+                let label = usize::try_from(reason).ok().and_then(|reason| SUPPRESSION_LABELS.get(reason));
+                self.text(label.map_or(b"unknown", |label| label));
                 self.text(b"): ");
                 self.cause(child, depth + 1);
             }
