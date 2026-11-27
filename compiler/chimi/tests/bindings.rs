@@ -116,7 +116,7 @@ test "a defect raised in C" {
 // not UTF-8 never become Text, nor a failure's or a defect's message.
 test "Text C builds is UTF-8" {
   let not_utf8 = Bytes.append(Bytes.from_text("a"), Bytes.from_int(255, Bytes.IntLayout.U8))
-  BindingProbe.decode(Bytes.from_text("a\u{0}é")) |> Test.assert_equal("a\u{0}é")
+  BindingProbe.decode(Bytes.from_text("a\u{0}é")) |> Test.assert_equal(Some(("a\u{0}é", ["a\u{0}é"])))
   Test.capture_defect(fn() { BindingProbe.decode(not_utf8) })
     |> Test.assert_equal("a C binding built an invalid value")
   Result.capture(fn() { BindingProbe.refuse(Bytes.from_text("no\u{0}pe"), False) })

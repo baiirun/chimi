@@ -191,6 +191,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `List.first` and std/order ones; signals, log and metrics wait for
       phase 8.
    6. The binding argument readers and value and result builders.
+      First PR: the value half of `chimi_binding.h` (argument readers,
+      value builders, results) in `intrinsics/binding_values.rs`; handles,
+      waits and cancellation checks stay in runtime.c with the handle lock
+      and the scheduler requests until dispatch moves.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a
       cross-language call on every node), then match.

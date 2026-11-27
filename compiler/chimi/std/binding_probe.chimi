@@ -50,8 +50,9 @@ pub fn crash(message: Text) -> Void {
   native_crash(message)
 }
 
-/// The Text `bytes` spell, built in C. Defects when they are not UTF-8.
-pub fn decode(bytes: Bytes) -> Text {
+/// The Text `bytes` spell, built in C, beside a List holding it, inside
+/// `Some`. Defects when the bytes are not UTF-8.
+pub fn decode(bytes: Bytes) -> Option<(Text, List<Text>)> {
   native_decode(bytes)
 }
 
@@ -103,7 +104,7 @@ native fn native_echo(bytes: Bytes) -> Bytes
 native fn native_add(left: Int, right: Int) -> Int
 native fn native_try_parse(text: Text) -> Result<Int, (Int, Text)>
 native fn native_crash(message: Text) -> Void
-native fn native_decode(bytes: Bytes) -> Text
+native fn native_decode(bytes: Bytes) -> Option<(Text, List<Text>)>
 native fn native_refuse(message: Bytes, defect: Bool) -> Result<Void, (Int, Text)>
 native fn native_open_pipe() -> Pipe
 native fn native_write_pipe(pipe: Pipe, bytes: Bytes) -> Result<Void, (Int, Text)>
