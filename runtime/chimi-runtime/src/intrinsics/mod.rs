@@ -14,6 +14,7 @@ pub mod clocks;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod channels;
 pub mod collections;
+pub mod console_io;
 pub mod core;
 pub mod debug;
 pub mod decimals;

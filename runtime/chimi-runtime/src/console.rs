@@ -6,14 +6,16 @@
 //! line's end. Offsets count every byte ever queued, so a line's end stays
 //! valid while the front of the queue is written and dropped. A failed write
 //! drops every queued byte and fails each line not yet fully written; a line
-//! already written stays written. `runtime.c` makes the system calls and
-//! holds the lock; this keeps the state.
+//! already written stays written. `intrinsics/console_io.rs` makes the
+//! system calls and holds the lock; this keeps the state.
 //!
 //! Growing the queue reports running out of memory instead of aborting, so
-//! `runtime.c` exits as it does for any exhausted allocation and still writes
-//! the lines already queued.
+//! the runtime exits as it does for any exhausted allocation and still
+//! writes the lines already queued.
 
 use alloc::vec::Vec;
+
+use crate::timestamp;
 
 /// Where a waiting line stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +142,32 @@ impl ConsoleQueue {
     }
 }
 
+/// The line std/log writes, `{"time":..,"level":..,"message":..,"fields":..}`,
+/// for a message and fields already encoded as JSON, logged `millis` into
+/// second `seconds` since the epoch. A level outside 0 (debug) through 3
+/// (error) is clamped. None when the line cannot be allocated.
+pub fn log_line(seconds: i64, millis: i64, level: i64, message: &[u8], fields: &[u8]) -> Option<Vec<u8>> {
+    const LEVELS: [&[u8]; 4] = [b"debug", b"info", b"warn", b"error"];
+    let (date, of_day) = timestamp::civil_seconds(seconds);
+    let mut time = timestamp::TimestampText::new();
+    timestamp::push_date_time(&mut time, date, of_day);
+    let mut line = Vec::new();
+    line.try_reserve_exact(64 + message.len() + fields.len()).ok()?;
+    line.extend_from_slice(b"{\"time\":\"");
+    line.extend_from_slice(time.as_bytes());
+    let millis = millis.clamp(0, 999);
+    let digit = |value: i64| b'0' + (value % 10) as u8;
+    line.extend_from_slice(&[b'.', digit(millis / 100), digit(millis / 10), digit(millis)]);
+    line.extend_from_slice(b"Z\",\"level\":\"");
+    line.extend_from_slice(LEVELS[level.clamp(0, 3) as usize]);
+    line.extend_from_slice(b"\",\"message\":");
+    line.extend_from_slice(message);
+    line.extend_from_slice(b",\"fields\":");
+    line.extend_from_slice(fields);
+    line.push(b'}');
+    Some(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +234,24 @@ mod tests {
         queue.fail(5);
         assert_eq!(queue.line_state(line), LineState::Written);
         assert!(queue.lines.is_empty());
+    }
+    #[test]
+    fn a_log_line_is_one_json_object() {
+        let line = log_line(1_700_000_000, 7, 1, b"\"hi\"", b"{\"a\":1}").unwrap();
+        assert_eq!(
+            line,
+            b"{\"time\":\"2023-11-14T22:13:20.007Z\",\"level\":\"info\",\"message\":\"hi\",\"fields\":{\"a\":1}}"
+        );
+    }
+
+    #[test]
+    fn a_level_outside_the_four_is_clamped() {
+        let level = |raw| {
+            let line = log_line(0, 999, raw, b"1", b"2").unwrap();
+            String::from_utf8(line).unwrap()
+        };
+        assert!(level(-5).contains("\"level\":\"debug\""), "{}", level(-5));
+        assert!(level(9).contains("\"level\":\"error\""));
+        assert!(level(9).starts_with("{\"time\":\"1970-01-01T00:00:00.999Z\""), "{}", level(9));
     }
 }

@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (the process kernel, signals, the log and metrics hosts, the other host
+//! (the process kernel, signals, the metrics host, the other host
 //! functions, and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
@@ -17,6 +17,7 @@ use super::causes::cause_operation;
 use super::channels::channel_operation;
 use super::clocks::{ClockCall, clock_host, clock_operation};
 use super::collections::{Call, map_operation, set_operation};
+use super::console_io::{console_host, log_operation};
 use super::core::core_operation;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
@@ -101,6 +102,11 @@ pub unsafe fn invoke_native(
                 let call = ClockCall { runtime, span, call_node, environment };
                 return clock_host(call, callable, arguments(values, count));
             }
+            if (*callable).kind == CallableKind::HOST
+                && matches!((*callable).host, Core::HOST_WRITE_LINE | Core::HOST_WRITE_ERROR)
+            {
+                return console_host(runtime, (*callable).host, arguments(values, count), call_node);
+            }
             return chimi_runtime_invoke_native_v1(runtime, callable, values, count, span, call_node, environment);
         }
         let intrinsic = (*callable).intrinsic;
@@ -155,6 +161,9 @@ pub unsafe fn invoke_native(
             Intrinsic::ENV_HOST_VARIABLES..=Intrinsic::FS_TEST_ROOT => {
                 let cancel = ptr::read_volatile(&raw const (*runtime).cancel) != 0;
                 host_operation(runtime.cast::<c_void>(), cancel, intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::LOG_HOST_MINIMUM_LEVEL | Intrinsic::LOG_HOST_WRITE => {
+                log_operation(runtime, intrinsic, arguments(values, count), call_node)
             }
             Intrinsic::DURATION_NANOSECONDS..=Intrinsic::DURATION_PARSE => {
                 duration_operation(intrinsic, arguments(values, count), call_node)

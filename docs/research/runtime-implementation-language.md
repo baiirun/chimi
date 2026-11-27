@@ -270,6 +270,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       process kernel is now that entry, the release of a spec's context and a
       one-line call into Rust.
    8. Startup, CLI parsing, signals and reports.
+      First PR: console output and std/log (`intrinsics/console_io.rs`):
+      the streams, their queues and the console lock, the direct and queued
+      write paths, and the log line, which is built without `core::fmt`.
+      A direct line is one `writev(2)` of the text and its newline instead of
+      a stdio write and flush. runtime.c keeps the exit drain's `atexit`
+      registration and points the log stream at `--log-file`.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

@@ -9,20 +9,20 @@ Run: scripts/mutation/mutate.py scripts/mutation/console_output_mutations.py
 
 CRATE = "compiler/chimi"
 
-RUNTIME = "runtime/native/runtime.c"
+IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
 CONSOLE = "../../runtime/chimi-runtime/src/console.rs"
 
 MUTATIONS = [
     dict(
         name="every stream writes directly, blocking the scheduler",
-        file=RUNTIME,
-        edits=[("    ? CONSOLE_QUEUED : CONSOLE_DIRECT;", "    ? CONSOLE_DIRECT : CONSOLE_DIRECT;")],
+        file=IO,
+        edits=[("    stream.mode = if queued { Mode::Queued } else { Mode::Direct };", "    stream.mode = Mode::Direct;")],
         targets=["console_output"],
     ),
     dict(
         name="a write after poll takes the whole queue, not PIPE_BUF",
-        file=RUNTIME,
-        edits=[("!console_write_front(stream, PIPE_BUF)", "!console_write_front(stream, SIZE_MAX)")],
+        file=IO,
+        edits=[("!write_front(console, index, libc::PIPE_BUF)", "!write_front(console, index, usize::MAX)")],
         targets=["console_output"],
     ),
     dict(
@@ -33,34 +33,32 @@ MUTATIONS = [
     ),
     dict(
         name="a writer does not wait for its line",
-        file=RUNTIME,
-        edits=[("  while ((outcome = chimi_console_line_state_v1(queue, line)) < 0)", "  while ((outcome = chimi_console_line_state_v1(queue, line)) < 0 && false)")],
+        file=IO,
+        edits=[("            LineState::Pending => {\n                if let Waited::Cancelled", "            LineState::Pending => {\n                break 0;\n                #[allow(unreachable_code)]\n                if let Waited::Cancelled")],
         targets=["console_output"],
     ),
     dict(
         name="a written count does not advance the queue",
-        file=RUNTIME,
-        edits=[("  chimi_console_advance_v1(stream->queue, (size_t)count);\n", "")],
+        file=IO,
+        edits=[("            queue.advance(count);\n", "            let _ = count;\n")],
         targets=["console_output"],
     ),
     dict(
         name="the end of the program drops lines still queued",
-        file=RUNTIME,
-        edits=[
-            ("static void console_drain_all(void) {\n", "static void console_drain_all(void) {\n  return;\n"),
-        ],
+        file=IO,
+        edits=[("pub extern \"C\" fn chimi_runtime_console_drain_v1() {\n", "pub extern \"C\" fn chimi_runtime_console_drain_v1() {\n    if true {\n        return;\n    }\n")],
         targets=["console_output"],
     ),
     dict(
         name="a writer waits for readable instead of writable",
-        file=RUNTIME,
-        edits=[(".value = stream->fd, .token = CHIMI_IO_WRITABLE}", ".value = stream->fd, .token = CHIMI_IO_READABLE}")],
+        file=IO,
+        edits=[("    request.token = Scheduler::IO_WRITABLE;", "    request.token = 1;")],
         targets=["console_output"],
     ),
     dict(
         name="standard error keeps its own queue when it names standard output's file",
-        file=RUNTIME,
-        edits=[("      stream->queue = other_stream->queue;\n", "      (void)other_stream;\n")],
+        file=IO,
+        edits=[("                console.streams[index].queue = console.streams[earlier].queue;\n", "")],
         targets=["console_output"],
     ),
     dict(
@@ -70,9 +68,15 @@ MUTATIONS = [
         targets=["console_output"],
     ),
     dict(
-        name="the streams are not listed as shared runtime state",
-        file="tests/runtime_state.rs",
-        edits=[('    "console_streams",\n', "")],
-        targets=["runtime_state"],
+        name="a direct line loses its newline",
+        file=IO,
+        edits=[("    let (mut body, mut tail): (&[u8], &[u8]) = (text, &newline);", "    let (mut body, mut tail): (&[u8], &[u8]) = (text, &newline[..0]);")],
+        targets=["console_output"],
+    ),
+    dict(
+        name="a failed direct write reports success",
+        file=IO,
+        edits=[("                error = if failed == 0 { libc::EIO } else { failed };", "                error = 0;")],
+        targets=["console_output"],
     ),
 ]
