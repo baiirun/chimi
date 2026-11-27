@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (processes, waits, signals, the log and metrics hosts, the other host
+//! (the process kernel, signals, the log and metrics hosts, the other host
 //! functions, and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
@@ -22,10 +22,12 @@ use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
 use super::json::json_operation;
+use super::processes::process_data_operation;
 use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
 use super::tasks::{TaskCall, task_operation};
 use super::test_log::test_log_operation;
+use super::waits::wait_operation;
 use crate::heap::layout::{Callable, CallableKind, Control, Core, Environment, Intrinsic, Runtime, Value};
 
 unsafe extern "C" {
@@ -131,8 +133,16 @@ pub unsafe fn invoke_native(
             Intrinsic::CLOCK_SLEEP..=Intrinsic::TASK_DEADLINE => {
                 clock_operation(ClockCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))
             }
+            Intrinsic::SELECT_RECEIVE..=Intrinsic::SELECT_FIRST | Intrinsic::SELECT_WATCH => {
+                wait_operation(ClockCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))
+            }
             Intrinsic::TASK_START | Intrinsic::TASK_ALL..=Intrinsic::TASK_RACE => {
                 task_operation(TaskCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count))
+            }
+            Intrinsic::PROCESS_SPEC
+            | Intrinsic::PROCESS_REGISTER
+            | Intrinsic::PROCESS_HANDOFF_SPEC..=Intrinsic::SUPERVISOR_RESTARTS => {
+                process_data_operation(intrinsic, arguments(values, count), call_node)
             }
             Intrinsic::RESOURCE_SCOPED => resource_scoped(scope(), arguments(values, count)),
             Intrinsic::TEST_CAPTURE_DEFECT => capture_defect(scope(), arguments(values, count)),

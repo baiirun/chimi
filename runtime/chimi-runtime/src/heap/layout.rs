@@ -410,6 +410,19 @@ impl SchedulerRequest {
     }
 }
 
+/// `ChimiSelectSource` (chimi_fiber.h): one event of a select request; the
+/// fields its `kind` names are set, the rest are zero.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SelectSource {
+    pub kind: u32,
+    pub channel: u64,
+    pub owner: u64,
+    pub token: u64,
+    pub task: u64,
+    pub deadline: i64,
+}
+
 /// `ChimiMessageCapabilities` (chimi_fiber.h): the Receivers and Completions a
 /// sent message carries, as a send request's context.
 #[repr(C)]
@@ -460,6 +473,11 @@ impl Scheduler {
     pub const REQUEST_TIMER_NOW: u32 = 11;
     pub const REQUEST_TIMER_SLEEP_UNTIL: u32 = 12;
     pub const REQUEST_TASK_DRAIN: u32 = 43;
+    pub const REQUEST_SELECT: u32 = 32;
+    pub const SELECT_RECEIVE: u32 = 1;
+    pub const SELECT_INBOX: u32 = 2;
+    pub const SELECT_TASK: u32 = 3;
+    pub const SELECT_TIMER: u32 = 4;
     pub const RESPONSE_UNSET: u32 = 0;
     pub const RESPONSE_OK: u32 = 1;
     pub const RESPONSE_PENDING: u32 = 2;
@@ -663,6 +681,20 @@ impl Intrinsic {
     pub const CLOCK_STARTING_AT: u32 = 70;
     pub const TASK_TIMEOUT: u32 = 71;
     pub const TASK_DEADLINE: u32 = 72;
+    pub const SELECT_RECEIVE: u32 = 76;
+    pub const SELECT_INBOX: u32 = 77;
+    pub const SELECT_TASK: u32 = 78;
+    pub const SELECT_AFTER: u32 = 79;
+    pub const SELECT_AT: u32 = 80;
+    pub const SELECT_FIRST: u32 = 81;
+    pub const SELECT_WATCH: u32 = 90;
+    pub const PROCESS_SPEC: u32 = 91;
+    pub const PROCESS_REGISTER: u32 = 92;
+    pub const PROCESS_HANDOFF_SPEC: u32 = 100;
+    pub const SUPERVISOR_PROCESS: u32 = 101;
+    pub const SUPERVISOR_SUPERVISOR: u32 = 102;
+    pub const SUPERVISOR_POLICY: u32 = 103;
+    pub const SUPERVISOR_RESTARTS: u32 = 104;
     pub const TASK_ALL: u32 = 73;
     pub const TASK_RESULTS: u32 = 74;
     pub const TASK_RACE: u32 = 75;
@@ -1438,6 +1470,18 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_TIMER_NOW" Scheduler::REQUEST_TIMER_NOW)
     constant("CHIMI_REQUEST_TIMER_SLEEP_UNTIL" Scheduler::REQUEST_TIMER_SLEEP_UNTIL)
     constant("CHIMI_REQUEST_TASK_DRAIN" Scheduler::REQUEST_TASK_DRAIN)
+    constant("CHIMI_REQUEST_SELECT" Scheduler::REQUEST_SELECT)
+    constant("CHIMI_SELECT_RECEIVE" Scheduler::SELECT_RECEIVE)
+    constant("CHIMI_SELECT_INBOX" Scheduler::SELECT_INBOX)
+    constant("CHIMI_SELECT_TASK" Scheduler::SELECT_TASK)
+    constant("CHIMI_SELECT_TIMER" Scheduler::SELECT_TIMER)
+    size("ChimiSelectSource" SelectSource)
+    field("ChimiSelectSource" SelectSource, "kind", kind)
+    field("ChimiSelectSource" SelectSource, "channel", channel)
+    field("ChimiSelectSource" SelectSource, "owner", owner)
+    field("ChimiSelectSource" SelectSource, "token", token)
+    field("ChimiSelectSource" SelectSource, "task", task)
+    field("ChimiSelectSource" SelectSource, "deadline", deadline)
     constant("CHIMI_RESPONSE_ERROR" Scheduler::RESPONSE_ERROR)
     size("ChimiTaskContext" TaskContext)
     field("ChimiTaskContext" TaskContext, "runtime", runtime)
@@ -1643,6 +1687,20 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_CLOCK_STARTING_AT" Intrinsic::CLOCK_STARTING_AT)
     constant("CHIMI_INTRINSIC_TASK_TIMEOUT" Intrinsic::TASK_TIMEOUT)
     constant("CHIMI_INTRINSIC_TASK_DEADLINE" Intrinsic::TASK_DEADLINE)
+    constant("CHIMI_INTRINSIC_SELECT_RECEIVE" Intrinsic::SELECT_RECEIVE)
+    constant("CHIMI_INTRINSIC_SELECT_INBOX" Intrinsic::SELECT_INBOX)
+    constant("CHIMI_INTRINSIC_SELECT_TASK" Intrinsic::SELECT_TASK)
+    constant("CHIMI_INTRINSIC_SELECT_AFTER" Intrinsic::SELECT_AFTER)
+    constant("CHIMI_INTRINSIC_SELECT_AT" Intrinsic::SELECT_AT)
+    constant("CHIMI_INTRINSIC_SELECT_FIRST" Intrinsic::SELECT_FIRST)
+    constant("CHIMI_INTRINSIC_SELECT_WATCH" Intrinsic::SELECT_WATCH)
+    constant("CHIMI_INTRINSIC_PROCESS_SPEC" Intrinsic::PROCESS_SPEC)
+    constant("CHIMI_INTRINSIC_PROCESS_REGISTER" Intrinsic::PROCESS_REGISTER)
+    constant("CHIMI_INTRINSIC_PROCESS_HANDOFF_SPEC" Intrinsic::PROCESS_HANDOFF_SPEC)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_PROCESS" Intrinsic::SUPERVISOR_PROCESS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR" Intrinsic::SUPERVISOR_SUPERVISOR)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_POLICY" Intrinsic::SUPERVISOR_POLICY)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_RESTARTS" Intrinsic::SUPERVISOR_RESTARTS)
     constant("CHIMI_INTRINSIC_TASK_ALL" Intrinsic::TASK_ALL)
     constant("CHIMI_INTRINSIC_TASK_RESULTS" Intrinsic::TASK_RESULTS)
     constant("CHIMI_INTRINSIC_TASK_RACE" Intrinsic::TASK_RACE)

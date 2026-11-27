@@ -17,7 +17,6 @@
 use core::ffi::{CStr, c_void};
 use core::ptr;
 
-use super::abi::arguments;
 use super::message::Message;
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
@@ -443,21 +442,4 @@ unsafe fn receive(receiver: *mut Value, node: i64) -> *mut Control {
             }
         }
     }
-}
-
-/// [`channel_operation`] for `runtime.c`'s own callers: the waits take a
-/// committed event's value with `Channel.receive` or `Task.result`, and
-/// cancel their timer children with `Task.cancel`.
-///
-/// # Safety
-/// As for [`channel_operation`]; `values` holds `count` live values.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_channel_operation_v1(
-    intrinsic: u32,
-    values: *mut *mut Value,
-    count: u32,
-    call_node: u32,
-) -> *mut Control {
-    // SAFETY: the caller's contract.
-    unsafe { channel_operation(intrinsic, arguments(values, count), call_node) }
 }

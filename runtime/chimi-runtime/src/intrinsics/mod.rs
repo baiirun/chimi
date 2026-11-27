@@ -23,6 +23,7 @@ pub mod durations;
 pub mod host;
 pub mod json;
 pub(crate) mod message;
+pub mod processes;
 pub mod scalars;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scopes;
@@ -31,3 +32,5 @@ pub mod standard;
 pub mod tasks;
 pub mod test_log;
 mod text;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod waits;

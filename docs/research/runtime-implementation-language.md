@@ -240,7 +240,16 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       clock's host methods (`intrinsics/clocks.rs`); the evaluator now sends
       the clock host callables to Rust too. runtime.c keeps only what its
       waits use: building a clock host callable and reading the execution
-      source's now.
+      source's now. Eighth PR: std/wait, the event builders and
+      `Wait.first` (`intrinsics/waits.rs`). Its takes call the Rust channel
+      and task operations directly, so runtime.c's forwards of those ids,
+      and the exports they used, are gone; it keeps one export for the
+      inbox take, `Process.receive`, until processes move.
+      Ninth PR: the std/process and std/supervisor data constructors
+      (`Process.spec`, `handoff_spec` and `register`, and `Supervisor.process`,
+      `supervisor`, `policy` and `restarts`, in `intrinsics/processes.rs`).
+      They are pure, so every build reaches them in Rust; the process
+      kernel, which only process programs link, stays in C for the next PR.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
