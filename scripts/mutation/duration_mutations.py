@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 D = "src/duration.rs"
 C = "runtime/native/runtime.c"
+DURATION_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/durations.rs"
 S = "src/execution/structural.rs"
 T = "src/typing/durations.rs"
 Y = "src/typing.rs"
@@ -81,12 +82,8 @@ MUTATIONS = [
     m("C: no range check on the total", C, [(
         "if (total > INT64_MAX || total < INT64_MIN) return CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE;",
         "")]),
-    m("C: constructors wrap", C, [(
-        "if (__builtin_mul_overflow(count, DURATION_UNITS[unit], &result))",
-        "result = count * DURATION_UNITS[unit]; if (0)")]),
-    m("C: negate and absolute of the minimum wrap", C, [(
-        "      if (value == INT64_MIN) {\n        snprintf(operation, sizeof(operation), negate ? \"-(%s)\" : \"|%s|\", left);",
-        "      if (0) {\n        snprintf(operation, sizeof(operation), negate ? \"-(%s)\" : \"|%s|\", left);")]),
+    m('native: constructors wrap', DURATION_INTRINSICS, [('return match count.checked_mul(unit.nanoseconds()) {', 'return match Some(count.wrapping_mul(unit.nanoseconds())) {')]),
+    m('native: negate and absolute of the minimum wrap', DURATION_INTRINSICS, [('if value == i64::MIN {\n                    return if negate {', 'if false {\n                    return if negate {')]),
     m("C: Duration order reversed", C, [(
         "      case VALUE_INTEGER:\n      case VALUE_DURATION: order = order_of(left->as.integer, right->as.integer); break;",
         "      case VALUE_INTEGER: order = order_of(left->as.integer, right->as.integer); break;\n"
