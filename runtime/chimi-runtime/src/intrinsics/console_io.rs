@@ -102,12 +102,19 @@ static SHARED: Shared = Shared {
     }),
 };
 
-/// The console state.
+/// The console state. ThreadSanitizer cannot see inside this crate, so a
+/// caller that forgot the lock would race unseen: this aborts instead
+/// unless this carrier holds the lock or one carrier runs.
 ///
 /// # Safety
 /// The caller holds the console lock (see [`enter`]), and drops the
 /// reference before it leaves.
 unsafe fn state<'a>() -> &'a mut Console {
+    // SAFETY: this thread's carrier is live.
+    if carrier_count() != 1 && !unsafe { (*current_carrier()).console_lock_held } {
+        // SAFETY: no arguments; never returns.
+        unsafe { abort() }
+    }
     // SAFETY: the caller's contract.
     unsafe { &mut *SHARED.console.get() }
 }
@@ -195,7 +202,7 @@ fn mode(console: &mut Console, virtual_clock: bool, index: usize) -> Mode {
 
 /// Writes `text` and a newline straight to `fd`. 0, or the errno of the
 /// failed write. The newline goes out even after a failed write, so a later
-/// line never joins a broken one.
+/// line never joins a broken one, unless a signal interrupted it.
 fn write_direct(fd: c_int, text: &[u8]) -> c_int {
     let newline = *b"\n";
     let (mut body, mut tail): (&[u8], &[u8]) = (text, &newline);
@@ -210,8 +217,10 @@ fn write_direct(fd: c_int, text: &[u8]) -> c_int {
         let count = unsafe { libc::writev(fd, parts[from..].as_ptr(), (2 - from) as c_int) };
         let Ok(mut count) = usize::try_from(count) else {
             let failed = errno();
+            // Without the scheduler a stop signal interrupts the write (no
+            // SA_RESTART), so the line fails and the program can end.
             if failed == libc::EINTR {
-                continue;
+                return libc::EINTR;
             }
             if error == 0 {
                 error = if failed == 0 { libc::EIO } else { failed };
@@ -300,7 +309,7 @@ pub extern "C" fn chimi_runtime_console_drain_v1() {
 #[unsafe(no_mangle)]
 pub extern "C" fn chimi_runtime_console_set_v1(index: usize, fd: c_int, direct: bool) {
     // SAFETY: no writer runs.
-    let console = unsafe { state() };
+    let console = unsafe { &mut *SHARED.console.get() };
     if let Some(stream) = console.streams.get_mut(index) {
         stream.fd = fd;
         stream.mode = if direct { Mode::Direct } else { Mode::Unknown };

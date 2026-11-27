@@ -142,6 +142,9 @@ impl ConsoleQueue {
     }
 }
 
+/// Room for a log line's text besides its message and fields.
+const FIXED_LOG_BYTES: usize = 96;
+
 /// The line std/log writes, `{"time":..,"level":..,"message":..,"fields":..}`,
 /// for a message and fields already encoded as JSON, logged `millis` into
 /// second `seconds` since the epoch. A level outside 0 (debug) through 3
@@ -152,7 +155,9 @@ pub fn log_line(seconds: i64, millis: i64, level: i64, message: &[u8], fields: &
     let mut time = timestamp::TimestampText::new();
     timestamp::push_date_time(&mut time, date, of_day);
     let mut line = Vec::new();
-    line.try_reserve_exact(64 + message.len() + fields.len()).ok()?;
+    // The fixed part is 68 bytes and the level name at most 5: the rest is
+    // room for a year past 9999, so the line never grows after this.
+    line.try_reserve_exact(FIXED_LOG_BYTES + message.len() + fields.len()).ok()?;
     line.extend_from_slice(b"{\"time\":\"");
     line.extend_from_slice(time.as_bytes());
     let millis = millis.clamp(0, 999);
@@ -238,6 +243,9 @@ mod tests {
     #[test]
     fn a_log_line_is_one_json_object() {
         let line = log_line(1_700_000_000, 7, 1, b"\"hi\"", b"{\"a\":1}").unwrap();
+        assert!(line.len() <= FIXED_LOG_BYTES + 11, "the reservation covers the line");
+        let far = log_line(i64::MAX / 2, 999, 3, b"", b"").unwrap();
+        assert!(far.len() <= FIXED_LOG_BYTES, "{}", far.len());
         assert_eq!(
             line,
             b"{\"time\":\"2023-11-14T22:13:20.007Z\",\"level\":\"info\",\"message\":\"hi\",\"fields\":{\"a\":1}}"

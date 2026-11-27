@@ -12,8 +12,8 @@
 //! one store per call.
 //!
 //! One overlap is allowed: without the scheduler, the allocator ends the
-//! program from inside a call when memory runs out, and the exit handler then
-//! drains the console queues (`console_drain_all`). The allocator marks the
+//! program from inside a call when memory runs out, and the exit handlers
+//! may then reach the value. The allocator marks the
 //! program as ending first ([`note_exiting`]), and the failed allocation has
 //! not changed the value, so the drain may read it.
 
