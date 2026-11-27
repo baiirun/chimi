@@ -402,3 +402,36 @@ pub fn main() -> Int needs { console: Console } {
     drop(child.stdout.take());
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// Without the scheduler a line goes straight to the descriptor, and a
+/// failed write is the line's failure: here standard output is closed.
+#[test]
+fn a_direct_write_to_a_closed_stdout_fails() {
+    let scratch = scratch_directory("closed-stdout");
+    let executable = build_native(
+        &scratch,
+        "closed",
+        r#"import std/debug as Debug
+import std/io.{Console}
+import std/result as Result
+
+pub fn main() -> Int needs { console: Console } {
+  console.write_error(Debug.render(Result.capture(fn() { console.write_line("lost") })))
+  0
+}
+"#,
+    );
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("exec \"$0\" >&-")
+        .arg(&executable)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run native program");
+    assert!(output.status.success(), "{}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Result.Err(ConsoleError.WriteFailed(stream: \"stdout\", message: \"Bad file descriptor\"))\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
