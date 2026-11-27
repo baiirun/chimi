@@ -1680,6 +1680,7 @@ _Static_assert(CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY == 163, "layout: CHIMI_INTRIN
 _Static_assert(CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH == 164, "layout: CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH");
 _Static_assert(CHIMI_INTRINSIC_BYTES_READ_INT_CODE == 165, "layout: CHIMI_INTRINSIC_BYTES_READ_INT_CODE");
 _Static_assert(CHIMI_INTRINSIC_BYTES_INT_BYTES == 166, "layout: CHIMI_INTRINSIC_BYTES_INT_BYTES");
+_Static_assert(CHIMI_INTRINSIC_EMBED_BYTES == 168, "layout: CHIMI_INTRINSIC_EMBED_BYTES");
 _Static_assert(CHIMI_INTRINSIC_HTTP_COUNT_ENDS == 216, "layout: CHIMI_INTRINSIC_HTTP_COUNT_ENDS");
 _Static_assert(CHIMI_INTRINSIC_DURATION_NANOSECONDS == 41, "layout: CHIMI_INTRINSIC_DURATION_NANOSECONDS");
 _Static_assert(CHIMI_INTRINSIC_DURATION_MICROSECONDS == 42, "layout: CHIMI_INTRINSIC_DURATION_MICROSECONDS");
@@ -6173,34 +6174,18 @@ bool chimi_runtime_fs_wait_v1(ChimiRuntime *runtime, int fd, bool writable) {
 static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
                                              uint32_t argument_count, uint32_t call_node);
 
+/* The intrinsics runtime.c still serves; the evaluator calls the Rust families
+   directly (chimi-runtime intrinsics/dispatch.rs). */
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  if ((intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES) ||
-      (intrinsic >= CHIMI_INTRINSIC_MAP_EMPTY && intrinsic <= CHIMI_INTRINSIC_MAP_PUT))
-    return chimi_intrinsic_map_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
-    return chimi_intrinsic_set_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_JSON_DECODE && intrinsic <= CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
-    return chimi_intrinsic_json_v1(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
-    return chimi_intrinsic_decimal_v1(intrinsic, arguments, argument_count, call_node);
-  if ((intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES) ||
-      intrinsic == CHIMI_INTRINSIC_HTTP_COUNT_ENDS)
-    return chimi_intrinsic_bytes_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
-    return chimi_intrinsic_assertion_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
     return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_TEST_RECORDER && intrinsic <= CHIMI_INTRINSIC_TEST_RECEIVED)
-    return chimi_intrinsic_test_log_v1(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_ENV_HOST_VARIABLES && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
-    return chimi_intrinsic_host_v1(runtime, runtime->cancel, intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
@@ -6208,8 +6193,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD ||
       intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
     return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
-    return chimi_intrinsic_duration_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if ((intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST) ||
@@ -6217,39 +6200,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
-    return chimi_intrinsic_core_v1(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
-    /* The intrinsics over single values are Rust (chimi-runtime intrinsics/scalars.rs). */
-    case CHIMI_INTRINSIC_IO_PATH:
-    case CHIMI_INTRINSIC_PATH_FROM:
-    case CHIMI_INTRINSIC_PATH_TO_TEXT:
-    case CHIMI_INTRINSIC_LIST_LENGTH:
-    case CHIMI_INTRINSIC_TEXT_APPEND:
-    case CHIMI_INTRINSIC_TEXT_EQUAL:
-    case CHIMI_INTRINSIC_INT_PARSE:
-    case CHIMI_INTRINSIC_INT_TO_TEXT:
-    case CHIMI_INTRINSIC_INT_ADD_CHECKED:
-    case CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED:
-    case CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED:
-    case CHIMI_INTRINSIC_INT_DIVIDE_CHECKED:
-    case CHIMI_INTRINSIC_INT_REMAINDER_CHECKED:
-    case CHIMI_INTRINSIC_INT_MODULO:
-    case CHIMI_INTRINSIC_RANGE_START:
-    case CHIMI_INTRINSIC_RANGE_END:
-    case CHIMI_INTRINSIC_RANGE_LENGTH:
-    case CHIMI_INTRINSIC_RANGE_CONTAINS:
-    case CHIMI_INTRINSIC_FLOAT_FROM_INT:
-    case CHIMI_INTRINSIC_FLOAT_TRUNCATE:
-    case CHIMI_INTRINSIC_FLOAT_FLOOR:
-    case CHIMI_INTRINSIC_FLOAT_CEILING:
-    case CHIMI_INTRINSIC_FLOAT_ROUND:
-    case CHIMI_INTRINSIC_FLOAT_TO_INT:
-    case CHIMI_INTRINSIC_DEBUG_RENDER:
-    case CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED:
-    case CHIMI_INTRINSIC_FLOAT_TO_TEXT:
-    case CHIMI_INTRINSIC_FLOAT_PARSE:
-      return chimi_intrinsic_scalar_v1(intrinsic, arguments, argument_count, call_node);
     case CHIMI_INTRINSIC_TASK_START:
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);

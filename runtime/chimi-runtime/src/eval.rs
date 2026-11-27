@@ -2,11 +2,9 @@
 //! half of each core node, `chimi_rt_<operation>`, which the compiler's node
 //! functions call when they do not lower a node themselves; `run_node`, which
 //! calls a child's node function; the span and profile row each node takes;
-//! and `invoke` for the calls a program defines. The intrinsics, host
-//! functions and C bindings `invoke` reaches stay behind
-//! `chimi_runtime_invoke_native_v1` in `runtime.c`. The loop nodes are here
-//! too; a pass asks the scheduler about its scope through
-//! `chimi_runtime_loop_scope_check_v1`.
+//! the loop nodes; and `invoke` for the calls a program defines. The
+//! intrinsics, host functions and C bindings `invoke` reaches go through
+//! `intrinsics::dispatch`.
 //!
 //! Core nodes share their incoming environment because ordinary evaluation
 //! only reads it. Sequence and provision clone before binding locals or
@@ -37,6 +35,7 @@ use crate::heap::values::{
 };
 use crate::intrinsics::causes::{cause_derived, control_with_cause, matched_cause_value, with_stored_cause};
 use crate::intrinsics::decimals;
+use crate::intrinsics::dispatch::invoke_native;
 use crate::intrinsics::message::Message;
 use crate::intrinsics::standard::{boolean_value, defect, defect_with, failure, string, success, symbol, void_value};
 use crate::telemetry::{chimi_trace_dependency_v1, chimi_trace_event_v1};
@@ -62,16 +61,6 @@ unsafe extern "C" {
     static chimi_runtime_constant_values: AtomicPtr<*mut Value>;
     /// The runner's execution clock provider, as the `clock` need's value.
     fn chimi_runtime_execution_clock_value_v1() -> *mut Value;
-    /// `invoke` for an intrinsic, a host function or a C binding.
-    fn chimi_runtime_invoke_native_v1(
-        runtime: *mut Runtime,
-        callable: *mut Callable,
-        arguments: *mut *mut Value,
-        argument_count: u32,
-        span: u64,
-        call_node: u32,
-        environment: *mut Environment,
-    ) -> *mut Control;
     /// Whether the program starts the scheduler (program data).
     static CHIMI_REQUIRES_SCHEDULER: u32;
     /// Asks the scheduler whether the running fiber's scope was cancelled.
@@ -1701,7 +1690,7 @@ pub unsafe fn invoke(
                     callable = (*callable).inner;
                 }
                 CallableKind::INTRINSIC | CallableKind::HOST => {
-                    return chimi_runtime_invoke_native_v1(
+                    return invoke_native(
                         runtime,
                         callable,
                         arguments,
