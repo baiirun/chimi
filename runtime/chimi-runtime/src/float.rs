@@ -69,92 +69,257 @@ fn push_bytes(text: &mut FloatText, bytes: &[u8]) {
 /// The shortest round-trip significand digits of a positive finite
 /// `magnitude` and its decimal exponent, chosen as core's `{:e}` chooses
 /// them: at the shortest length, the candidate closest to the value, and the
-/// larger one on an exact tie. The C library's correctly rounded `%.*e`
-/// gives the closest candidate at each length; at a power of two the
-/// interval below the value is half as wide, so that candidate can miss it
-/// while a neighbor fits, and the neighbors are tried too. This is the C
-/// the fuzz oracle keeps (tests/fuzz/float-c-reference.c), and it leaves
-/// core's float formatting, about 12 KiB, out of every program.
+/// larger one on an exact tie. This is the exact digit generation core falls
+/// back to (Steele and White's, as Burger and Dybvig state it) over a fixed
+/// big integer; it leaves core's float formatting, about 12 KiB, out of
+/// every program.
+///
+/// The value is `r / s`, and the doubles next to it lie `m_minus` below and
+/// `m_plus` above, so any decimal closer than halfway to them reads back as
+/// this value; the interval includes its ends when the significand is even,
+/// as round-half-even parsing does.
 fn shortest_digits(magnitude: f64) -> (TextBuffer<24>, i32) {
-    let mut precision = -1;
-    loop {
-        precision += 1;
-        let mut scientific = [0u8; 40];
-        // SAFETY: the buffer holds 40 bytes, and `%.16e` of a finite double
-        // needs at most 24 with its NUL.
-        unsafe {
-            libc::snprintf(scientific.as_mut_ptr().cast(), scientific.len(), c"%.*e".as_ptr(), precision, magnitude);
-        }
-        let split = scientific.iter().position(|&byte| byte == b'e').unwrap_or(0);
-        let nearest = scientific[..split]
-            .iter()
-            .filter(|&&byte| byte != b'.')
-            .fold(0u64, |value, &digit| value * 10 + u64::from(digit - b'0'));
-        let scale = exponent_of(&scientific[split + 1..]) - precision;
-        let smallest = 10u64.pow(precision as u32);
-        // 17 significant digits always round-trip, so the loop ends there.
-        let chosen = if precision == 16 || round_trips(nearest, scale, magnitude) {
-            if round_trips(nearest + 1, scale, magnitude) && is_tie(magnitude, nearest) { nearest + 1 } else { nearest }
-        } else if round_trips(nearest + 1, scale, magnitude) {
-            nearest + 1
-        } else if nearest > smallest && round_trips(nearest - 1, scale, magnitude) {
-            nearest - 1
-        } else {
-            continue;
-        };
-        let mut digits = TextBuffer::<24>::new();
-        digits.push_digits(u128::from(chosen), 1);
-        // A carry such as 99 + 1 adds a digit; the zero it leaves is dropped.
-        let exponent = scale + digits.len() as i32 - 1;
-        digits.trim_end(b'0', 1);
-        return (digits, exponent);
+    let bits = magnitude.to_bits();
+    let fraction = bits & ((1 << 52) - 1);
+    let biased = (bits >> 52) as i32;
+    let (significand, exponent) = if biased == 0 { (fraction, -1074) } else { (fraction | 1 << 52, biased - 1075) };
+    let inclusive = significand % 2 == 0;
+    // Doubled so that the halfway points are whole; at a power of two the
+    // double below is half as far away, so the scale doubles again.
+    let (significand, plus, exponent) =
+        if biased > 1 && fraction == 0 { (significand << 2, 2, exponent - 2) } else { (significand << 1, 1, exponent - 1) };
+    let mut r = Big::from(significand);
+    let mut s = Big::from(1);
+    let mut m_minus = Big::from(1);
+    let mut m_plus = Big::from(plus);
+    if exponent >= 0 {
+        r.mul_pow2(exponent as u32);
+        m_minus.mul_pow2(exponent as u32);
+        m_plus.mul_pow2(exponent as u32);
+    } else {
+        s.mul_pow2(exponent.unsigned_abs());
     }
-}
-
-/// The exponent `%e` wrote after its `e`, up to the NUL.
-fn exponent_of(written: &[u8]) -> i32 {
-    let (negative, digits) = match written {
-        [b'-', rest @ ..] => (true, rest),
-        [b'+', rest @ ..] => (false, rest),
-        rest => (false, rest),
+    // 10^k bounds the interval's top; start from an estimate no larger than
+    // it (log10 2 is a little over 1292913986 / 2^32) and step up.
+    let top_bits = 64 - (significand + plus).leading_zeros() as i64 + i64::from(exponent);
+    let mut k = (-((-(top_bits - 1) * 1_292_913_986) >> 32)) as i32;
+    if k >= 0 {
+        s.mul_pow10(k as u32);
+    } else {
+        r.mul_pow10(k.unsigned_abs());
+        m_minus.mul_pow10(k.unsigned_abs());
+        m_plus.mul_pow10(k.unsigned_abs());
+    }
+    while beyond_top(&r, &m_plus, &s, inclusive) {
+        s.mul_pow10(1);
+        k += 1;
+    }
+    // Every number the digits need is below 10s, so a value within 120 bits
+    // of precision, as most are, runs in plain u128 arithmetic.
+    let (digits, count, carried) = if s.length < 4 || (s.length == 4 && s.limbs[3] < 1 << 24) {
+        generate(r.low(), s.low(), m_minus.low(), m_plus.low(), inclusive)
+    } else {
+        generate(r, s, m_minus, m_plus, inclusive)
     };
-    let value = digits
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .fold(0i32, |value, &digit| value * 10 + i32::from(digit - b'0'));
-    if negative { -value } else { value }
+    let mut text = TextBuffer::<24>::new();
+    for &digit in &digits[..count] {
+        text.push(digit);
+    }
+    text.trim_end(b'0', 1);
+    (text, k - 1 + i32::from(carried))
 }
 
-/// Whether `significand` x 10^`exponent` parses back to `magnitude`.
-fn round_trips(significand: u64, exponent: i32, magnitude: f64) -> bool {
-    let mut text = TextBuffer::<48>::new();
-    text.push_digits(u128::from(significand), 1);
-    text.push(b'e');
-    if exponent < 0 {
-        text.push(b'-');
-    }
-    text.push_digits(u128::from(exponent.unsigned_abs()), 1);
-    text.push(0);
-    // SAFETY: the text ends with the NUL just pushed.
-    unsafe { libc::strtod(text.as_bytes().as_ptr().cast(), core::ptr::null_mut()) == magnitude }
+/// Whether `r + m_plus` reaches past `s`, the top of the interval.
+fn beyond_top<N: Natural>(r: &N, m_plus: &N, s: &N, inclusive: bool) -> bool {
+    let top = r.sum(m_plus).order(s);
+    if inclusive { top.is_ge() } else { top.is_gt() }
 }
 
-/// Whether `magnitude` is exactly halfway between `nearest` and the next
-/// candidate: its exact digits are `nearest`'s, then a 5, then only zeros.
-fn is_tie(magnitude: f64, nearest: u64) -> bool {
-    let mut exact = [0u8; 800];
-    // SAFETY: the buffer holds 800 bytes; a double's exact digits number at
-    // most 767, written after one digit and a point.
-    unsafe {
-        libc::snprintf(exact.as_mut_ptr().cast(), exact.len(), c"%.770e".as_ptr(), magnitude);
+/// The digits of `r / s`, which is below 1, up to the first that leaves the
+/// value within its interval, rounded as core rounds them; how many there
+/// are, and whether rounding carried past the first, which makes the value
+/// the next power of ten. At most 17 come out: 17 always single out a double.
+fn generate<N: Natural>(mut r: N, s: N, mut m_minus: N, mut m_plus: N, inclusive: bool) -> ([u8; 17], usize, bool) {
+    let mut digits = [0u8; 17];
+    let mut count = 0;
+    loop {
+        r.times_ten();
+        m_minus.times_ten();
+        m_plus.times_ten();
+        let mut digit = b'0';
+        while r.order(&s).is_ge() {
+            r.reduce(&s);
+            digit += 1;
+        }
+        digits[count] = digit;
+        count += 1;
+        let low = if inclusive { r.order(&m_minus).is_le() } else { r.order(&m_minus).is_lt() };
+        let high = beyond_top(&r, &m_plus, &s, inclusive);
+        if !(low || high) {
+            continue;
+        }
+        if high && (!low || r.sum(&r).order(&s).is_ge()) {
+            // Round the last digit up; nines carry left.
+            let mut last = count;
+            while last > 0 && digits[last - 1] == b'9' {
+                last -= 1;
+            }
+            if last == 0 {
+                digits[0] = b'1';
+                return (digits, 1, true);
+            }
+            digits[last - 1] += 1;
+            count = last;
+        }
+        return (digits, count, false);
     }
-    let split = exact.iter().position(|&byte| byte == b'e').unwrap_or(0);
-    let mut wanted = TextBuffer::<24>::new();
-    wanted.push_digits(u128::from(nearest), 1);
-    let mut actual = exact[..split].iter().copied().filter(|&byte| byte != b'.');
-    wanted.as_bytes().iter().all(|&digit| actual.next() == Some(digit))
-        && actual.next() == Some(b'5')
-        && actual.all(|byte| byte == b'0')
+}
+
+/// The arithmetic the digit generation needs on non-negative integers.
+trait Natural: Copy {
+    fn times_ten(&mut self);
+    fn order(&self, other: &Self) -> core::cmp::Ordering;
+    fn sum(&self, other: &Self) -> Self;
+    /// `self - other`. Requires: `self >= other`.
+    fn reduce(&mut self, other: &Self);
+}
+
+impl Natural for u128 {
+    fn times_ten(&mut self) {
+        *self *= 10;
+    }
+    fn order(&self, other: &Self) -> core::cmp::Ordering {
+        self.cmp(other)
+    }
+    fn sum(&self, other: &Self) -> Self {
+        self + other
+    }
+    fn reduce(&mut self, other: &Self) {
+        *self -= other;
+    }
+}
+
+impl Natural for Big {
+    fn times_ten(&mut self) {
+        self.multiply(10);
+    }
+    fn order(&self, other: &Self) -> core::cmp::Ordering {
+        self.compare(other)
+    }
+    fn sum(&self, other: &Self) -> Self {
+        self.plus(other)
+    }
+    fn reduce(&mut self, other: &Self) {
+        self.subtract(other);
+    }
+}
+
+/// The limbs a value of the digit generation can need: the smallest
+/// subnormal scaled by 10^324, times 10, is under 1,140 bits.
+const LIMBS: usize = 36;
+
+/// A non-negative integer of up to `LIMBS` 32-bit limbs, least significant
+/// first; limbs at and past `length` are zero.
+#[derive(Clone, Copy)]
+struct Big {
+    limbs: [u32; LIMBS],
+    length: usize,
+}
+
+impl Big {
+    fn from(value: u64) -> Big {
+        let mut big = Big { limbs: [0; LIMBS], length: 2 };
+        big.limbs[0] = value as u32;
+        big.limbs[1] = (value >> 32) as u32;
+        big.trim();
+        big
+    }
+
+    /// The low 128 bits.
+    fn low(&self) -> u128 {
+        self.limbs[..4].iter().rev().fold(0, |value, &limb| value << 32 | u128::from(limb))
+    }
+
+    fn trim(&mut self) {
+        while self.length > 0 && self.limbs[self.length - 1] == 0 {
+            self.length -= 1;
+        }
+    }
+
+    fn multiply(&mut self, factor: u32) {
+        let mut carry = 0u64;
+        for limb in &mut self.limbs[..self.length] {
+            let product = u64::from(*limb) * u64::from(factor) + carry;
+            *limb = product as u32;
+            carry = product >> 32;
+        }
+        if carry != 0 {
+            self.limbs[self.length] = carry as u32;
+            self.length += 1;
+        }
+    }
+
+    fn mul_pow10(&mut self, mut power: u32) {
+        while power >= 9 {
+            self.multiply(1_000_000_000);
+            power -= 9;
+        }
+        self.multiply(10u32.pow(power));
+    }
+
+    fn mul_pow2(&mut self, power: u32) {
+        let (words, bits) = ((power / 32) as usize, power % 32);
+        if self.length == 0 {
+            return;
+        }
+        self.limbs.copy_within(..self.length, words);
+        self.limbs[..words].fill(0);
+        self.length += words;
+        if bits != 0 {
+            let mut carry = 0;
+            for limb in &mut self.limbs[words..self.length] {
+                let shifted = (*limb << bits) | carry;
+                carry = *limb >> (32 - bits);
+                *limb = shifted;
+            }
+            if carry != 0 {
+                self.limbs[self.length] = carry;
+                self.length += 1;
+            }
+        }
+    }
+
+    fn plus(&self, other: &Big) -> Big {
+        let mut sum = *self;
+        let length = self.length.max(other.length);
+        let mut carry = 0u64;
+        for (limb, &addend) in sum.limbs[..length].iter_mut().zip(&other.limbs[..length]) {
+            let total = u64::from(*limb) + u64::from(addend) + carry;
+            *limb = total as u32;
+            carry = total >> 32;
+        }
+        sum.length = length;
+        if carry != 0 {
+            sum.limbs[length] = 1;
+            sum.length += 1;
+        }
+        sum
+    }
+
+    /// `self - other`. Requires: `self >= other`.
+    fn subtract(&mut self, other: &Big) {
+        let mut borrow = 0i64;
+        for (limb, &subtrahend) in self.limbs[..self.length].iter_mut().zip(&other.limbs[..self.length]) {
+            let difference = i64::from(*limb) - i64::from(subtrahend) - borrow;
+            *limb = difference as u32;
+            borrow = i64::from(difference < 0);
+        }
+        self.trim();
+    }
+
+    fn compare(&self, other: &Big) -> core::cmp::Ordering {
+        self.length.cmp(&other.length).then_with(|| self.limbs[..self.length].iter().rev().cmp(other.limbs[..self.length].iter().rev()))
+    }
 }
 
 #[cfg(test)]
