@@ -1,6 +1,6 @@
 //! The files `std/fs` has open, shared by the interpreter (which keeps
-//! `std::fs::File`s) and the native runtime (which keeps descriptors, through
-//! `files_abi`).
+//! `std::fs::File`s) and the native runtime (which keeps descriptors, in
+//! `intrinsics/host.rs`).
 //!
 //! A handle is `slot | generation << 32`, so a handle used after its file was
 //! closed names a slot whose generation moved on and fails as closed instead

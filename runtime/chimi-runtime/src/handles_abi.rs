@@ -1,7 +1,6 @@
 //! The C view of [`crate::handles`]: the native runtime's binding handle
 //! slots. A handle value may reach tasks on any carrier, so `runtime.c`
-//! makes every call under `binding_handle_lock`, as it does for the open-file
-//! table (see `files_abi`). That lock is taken after the scheduler's kernel
+//! makes every call under `binding_handle_lock`. That lock is taken after the scheduler's kernel
 //! lock and is never held across a scheduler request or a release; no call
 //! here makes one. A kind is a `const ChimiBindingType *`, a state the
 //! binding's `void *`, and a runner the running `ChimiBindingCall *`, all
