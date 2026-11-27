@@ -5681,8 +5681,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       (intrinsic >= CHIMI_INTRINSIC_TASK_ALL && intrinsic <= CHIMI_INTRINSIC_TASK_RACE))
     return chimi_runtime_task_operation_v1(runtime, intrinsic, arguments, argument_count, span, call_node,
                                            environment);
-  switch (intrinsic) {
-  }
   return defect("unknown standard intrinsic", call_node);
 }
 

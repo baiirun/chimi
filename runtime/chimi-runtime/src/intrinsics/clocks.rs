@@ -121,7 +121,7 @@ unsafe fn clock_record(now: *mut Value, sleep_until: *mut Value, timestamp: *mut
 /// # Safety
 /// Runs on a fiber that may allocate.
 pub(crate) unsafe fn execution_clock_value() -> *mut Value {
-    // SAFETY: the caller's contract; the arguments are made in the C's order.
+    // SAFETY: the caller's contract.
     unsafe {
         let now = clock_host_value(Core::HOST_CLOCK_NOW);
         let sleep_until = clock_host_value(Core::HOST_CLOCK_SLEEP_UNTIL);

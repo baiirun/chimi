@@ -1,8 +1,8 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (processes, waits, signals, log and metrics hosts, and the other host
-//! functions and C bindings) go to `runtime.c`'s `chimi_runtime_invoke_native_v1`, as host
-//! functions do.
+//! (processes, waits, signals, the log and metrics hosts, the other host
+//! functions, and C bindings) go to `runtime.c`'s
+//! `chimi_runtime_invoke_native_v1`.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
 //! each family contiguous; heap/layout.rs pins every bound.
