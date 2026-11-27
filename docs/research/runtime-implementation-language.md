@@ -211,13 +211,20 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Third PR: the loop nodes (`chimi_rt_loop`, `chimi_rt_direct_loop` and
       their passes) and the region totals (`end_measured_scope`) in
       `eval.rs`; a pass asks the scheduler about its scope through one C
-      call, `chimi_runtime_loop_scope_check_v1`, only when the program
+      call (now `scheduler.rs`, see the fourth PR), only when the program
       starts the scheduler. Intrinsic routing moves too
       (`intrinsics/dispatch.rs`): the evaluator calls the Rust families
       directly, and only the intrinsics `runtime.c` still serves (tasks,
       channels, processes, waits, clocks, signals, the log and metrics
       hosts, `Cause.context`) and host functions and C bindings take the
       C call.
+      Fourth PR: the intrinsics that call back inside a scope,
+      `Cause.context`, `Test.capture_defect` and `Resource.scoped`
+      (`intrinsics/scopes.rs`), over a mirror of `ChimiSchedulerRequest`.
+      Rust intrinsics reach the scheduler through `scheduler.rs`, whose one
+      C call, `chimi_runtime_scheduler_request_v1`, restores the fiber's
+      heap and carrier as every request must; the loop's scope check uses it
+      too.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
