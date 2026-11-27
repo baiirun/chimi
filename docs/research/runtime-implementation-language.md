@@ -230,7 +230,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       keeps the handle counts), the capability walk a send collects, and the
       task result word's decoding, behind three small exports; its waits
       still take a committed event's value through these intrinsics, so
-      `invoke_intrinsic` forwards those ids to Rust.
+      `invoke_intrinsic` forwards those ids to Rust. Sixth PR: `Task.start`
+      and `Task.all`, `Task.results` and `Task.race`
+      (`intrinsics/tasks.rs`). runtime.c keeps the task's fiber entry
+      (`chimi_runtime_task_entry_v1`, which adopts the captures in the new
+      heap and moves with dispatch), the Task handle values, and the
+      capability transfer to the child.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

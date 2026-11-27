@@ -1154,9 +1154,9 @@ unsafe fn break_node(eval: Eval, id_: u32) -> *mut Control {
     }
 }
 
-/// The defect a reclaiming scope reports when a root reaches into another
-/// heap.
-const FOREIGN_POINTER_DEFECT: &CStr = c"Chimi runtime heap invariant violated: a value points into another heap";
+/// The defect a reclaiming scope, or a copy for a task or a message, reports
+/// when a value reaches into another heap.
+pub(crate) const FOREIGN_POINTER_DEFECT: &CStr = c"Chimi runtime heap invariant violated: a value points into another heap";
 
 /// Ends a reclaiming scope, keeping only what `control` reaches, and returns
 /// the control the scope's owner should produce: `control`, or a defect when

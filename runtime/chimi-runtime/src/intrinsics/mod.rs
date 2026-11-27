@@ -25,5 +25,7 @@ pub mod scalars;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scopes;
 pub mod standard;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod tasks;
 pub mod test_log;
 mod text;

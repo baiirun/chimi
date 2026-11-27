@@ -20,7 +20,7 @@ use core::ptr;
 use super::abi::arguments;
 use super::message::Message;
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
-use crate::eval::cancelled;
+use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
 use crate::heap::allocator::current_carrier;
 use crate::heap::fragment;
 use crate::heap::layout::{
@@ -40,9 +40,6 @@ unsafe extern "C" {
     /// The control a task's result word names.
     fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
 }
-
-/// The defect a copy reports when a value points into another heap.
-const FOREIGN_POINTER_DEFECT: &CStr = c"Chimi runtime heap invariant violated: a value points into another heap";
 
 /// # Safety
 /// Runs on a fiber that may allocate.
