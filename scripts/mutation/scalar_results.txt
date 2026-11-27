@@ -1,0 +1,14 @@
+# mutation run at 4ecff826f49e76f159822829eca9601c53c2c20a
+# scalar_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [language] (187s)
+KILLED       remainder by -1 overflows [language] (83s)
+KILLED       modulo keeps the dividend's sign [language] (81s)
+KILLED       Int.parse refuses the smallest Int [language] (82s)
+KILLED       Int.parse accepts a lone minus [language] (79s)
+KILLED       Float.parse accepts a bare point [language] (79s)
+KILLED       Float.to_int accepts 2^63 [language] (99s, rerun at 74118ae9 with the boundary test)
+KILLED       Range.length of a reversed range is negative [language] (80s)
+KILLED       Range.contains includes its end [language] (79s)
+KILLED       round goes half up [language] (79s)
+TIMEOUT      Text.append drops the second [language] (650s)
+# result: every mutant killed (List.first and Order.min mutants survived against unreachable intrinsics, which were then removed)

@@ -9,6 +9,7 @@ Each mutant must turn the named language or cli test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+SCALARS = "../../runtime/chimi-runtime/src/intrinsics/scalars.rs"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
@@ -93,13 +94,13 @@ MUTATIONS = [
     nul("Duration.parse reads a C string", [(
         "    int64_t value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID",
         "    int64_t value = 0; uint32_t error = false ? CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID")]),
-    language("Int.parse reads a C string", RUNTIME, [(
-        "      int64_t value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT",
-        "      int64_t value = 0; uint32_t error = false ? CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT")],
+    language("Int.parse reads a C string", SCALARS, [(
+        "!digits.iter().all(u8::is_ascii_digit)",
+        "!digits.iter().take_while(|&&byte| byte != 0).all(u8::is_ascii_digit)")],
         "int_parse_accepts_decimal_text_and_names_each_failure"),
-    language("Float.parse reads a C string", RUNTIME, [(
-        "      double value = 0; uint32_t error = text_holds_nul(arguments[0]) ? CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID",
-        "      double value = 0; uint32_t error = false ? CHIMI_CONSTRUCTOR_FLOAT_PARSE_INVALID")],
+    language("Float.parse reads a C string", SCALARS, [(
+        "    cursor == text.len()\n",
+        "    cursor == text.len() || text.get(cursor) == Some(&0)\n")],
         "float_parse_rejects_text_outside_the_finite_literal_grammar"),
     cli("a path holding U+0000 opens its prefix", RUNTIME, [(
         "  if (text_holds_nul(arguments[0]))\n"

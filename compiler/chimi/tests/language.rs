@@ -2118,11 +2118,12 @@ fn std_number_failure_types_are_named_through_their_module() {
                 "pub fn main() -> List<Text> {\n",
                 "  let empty = Int.ParseError.Empty\n",
                 "  [parse_with(Float.parse, \"1e400\"), parse_with(Float.parse, \"x\"),\n",
-                "   describe(empty), describe(Int.ParseError.InvalidDigit), to_int(2.5)]\n",
+                "   describe(empty), describe(Int.ParseError.InvalidDigit), to_int(2.5),\n",
+                "   to_int(9223372036854775808.0), to_int(-9223372036854775808.0)]\n",
                 "}",
             )
         ),
-        "\"outcome\":\"success\",\"value\":[\"range\",\"other\",\"empty\",\"digit\",\"fraction\"]"
+        "\"outcome\":\"success\",\"value\":[\"range\",\"other\",\"empty\",\"digit\",\"fraction\",\"range\",\"int\"]"
     );
     assert_eq!(
         check_codes(concat!(
