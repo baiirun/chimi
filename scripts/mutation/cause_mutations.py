@@ -1,6 +1,7 @@
 """Mutants of failure causes (G25, CHI-204): the chain rule in lowering
 (src/executable.rs), the reference interpreter's causes (src/execution/causes.rs),
-and the native runtime's copy (runtime.c). The std-tests/cause programs run on
+and the native runtime's copy (chimi-runtime intrinsics/causes.rs, with
+Cause.context and the callers in runtime.c). The std-tests/cause programs run on
 both backends, so a mutant on either side shows as a mismatch or a wrong
 expected record; the cross-heap test covers native transfer.
 
@@ -13,6 +14,7 @@ LOWERING = "src/executable.rs"
 CAUSES = "src/execution/causes.rs"
 RUNTIME = "runtime/native/runtime.c"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
+RUST_CAUSES = "../../runtime/chimi-runtime/src/intrinsics/causes.rs"
 
 
 def programs(name, file, edits):
@@ -60,24 +62,42 @@ MUTATIONS = [
         ("            .map(|frame| RuntimeValue::Text(frame.text.clone()))",
          "            .map(|_| RuntimeValue::Text(String::new()))")]),
     programs("C: re-raising the bound error links", RUNTIME, [
-        ("ChimiValue *cause = cause_derived(matched, node->c != 0, result->value, node_id);",
-         "ChimiValue *cause = cause_derived(matched, false, result->value, node_id);")]),
-    programs("C: a plain failure reports its cause", RUNTIME, [
-        ("  return list_length(cause_field(cause, CAUSE_FRAMES)) > 0 || cause_below(cause) ||",
-         "  return true ||")]),
-    programs("C: frames drop the oldest", RUNTIME, [
-        ("    if (index != limit / 2) kept[count++] = list_get(items, index);",
-         "    if (index != 0) kept[count++] = list_get(items, index);")]),
-    programs("C: the chain drop forgets its count", RUNTIME, [
-        ("  int64_t dropped = cause_integer(link, CAUSE_DROPPED_LINKS) + 1;",
-         "  int64_t dropped = cause_integer(link, CAUSE_DROPPED_LINKS);")]),
+        ("ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0, result->value, node_id);",
+         "ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, false, result->value, node_id);")]),
+    programs("native: a plain failure reports its cause", RUST_CAUSES, [
+        ("        (*field(cause, Slot::FRAMES)).payload.list.length > 0\n",
+         "        true\n")]),
+    programs("native: frames drop the oldest", RUST_CAUSES, [
+        ("        for index in (0..length).filter(|&index| index != limit / 2) {",
+         "        for index in (0..length).filter(|&index| index != 0) {")]),
+    programs("native: the chain drop forgets its count", RUST_CAUSES, [
+        ("        let dropped = integer(current, Slot::DROPPED_LINKS) + 1;",
+         "        let dropped = integer(current, Slot::DROPPED_LINKS);")]),
+    programs("native: chains are unbounded", RUST_CAUSES, [
+        ("        if integer(cause, Slot::LINKS) <= LINK_LIMIT {",
+         "        if true {")]),
+    programs("native: a dropped-frames line is missing", RUST_CAUSES, [
+        ("                    self.dropped(depth, dropped_frames, b\"context frame\");",
+         "                    let _ = dropped_frames;")]),
+    programs("native: a suppressed cause shows no reason", RUST_CAUSES, [
+        ("                self.text(b\"suppressed (\");",
+         "                self.text(b\"suppressed \");")]),
+    programs("native: a frame's location is missing", RUST_CAUSES, [
+        ("                self.location((*(*frame.add(1)).value).payload.integer);",
+         "                let _ = frame;")]),
+    programs("native: Cause.frames forgets the texts", RUST_CAUSES, [
+        ("                    *texts.add(index as usize) = (*(*list::get(frames, index)).payload.record.fields).value;",
+         "                    *texts.add(index as usize) = void_value();")]),
+    programs("native: a defect's summary is rendered", RUST_CAUSES, [
+        ("                success(if integer(cause, Slot::KIND) == EXPECTED_FAILURE { render(payload, false) } else { payload })",
+         "                success(render(payload, false))")]),
     programs("C: Cause.context adds no frame", RUNTIME, [
-        ("    return control_with_cause(control, cause_with_frame(cause, arguments[1], call_node));",
-         "    return control_with_cause(control, cause);")]),
+        ("  return chimi_runtime_control_with_cause_v1(control, chimi_runtime_cause_with_frame_v1(cause, arguments[1], call_node));",
+         "  return chimi_runtime_control_with_cause_v1(control, cause);")]),
     programs("C: a stored Err drops its cause", RUNTIME, [
-        ("    if (cause) result = success(with_stored_cause(result->value, cause));",
+        ("    if (cause) result = success(chimi_runtime_with_stored_cause_v1(result->value, cause));",
          "    (void)cause;")]),
-    heaps("C: Cause.of finds no stored cause", RUNTIME, [
-        ("static ChimiValue *stored_cause(const ChimiValue *value) {\n  if (value->kind != VALUE_CONSTRUCTED) return NULL;",
-         "static ChimiValue *stored_cause(const ChimiValue *value) {\n  if (value->kind != VALUE_CONSTRUCTED || value->as.constructed.length == 1) return NULL;")]),
+    heaps("native: Cause.of finds no stored cause", RUST_CAUSES, [
+        ("        if (*value).kind != ValueKind::CONSTRUCTED {\n            return ptr::null_mut();",
+         "        if (*value).kind != ValueKind::CONSTRUCTED || (*value).payload.constructed.length == 1 {\n            return ptr::null_mut();")]),
 ]

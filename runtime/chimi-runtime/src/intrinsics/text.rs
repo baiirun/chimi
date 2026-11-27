@@ -41,7 +41,7 @@ impl HeapText {
     ///
     /// # Safety
     /// Runs on a fiber that may allocate.
-    unsafe fn reserve(&mut self, extra: usize) {
+    pub(super) unsafe fn reserve(&mut self, extra: usize) {
         if self.length + extra < self.capacity {
             return;
         }

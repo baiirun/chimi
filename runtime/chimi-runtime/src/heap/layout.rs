@@ -285,6 +285,15 @@ impl Intrinsic {
     pub const LIST_PUSH: u32 = 130;
     pub const LIST_SLICE: u32 = 131;
     pub const LIST_SET: u32 = 132;
+    pub const CAUSE_CONTEXT: u32 = 169;
+    pub const CAUSE_OF: u32 = 170;
+    pub const CAUSE_KIND_CODE: u32 = 171;
+    pub const CAUSE_SUMMARY: u32 = 172;
+    pub const CAUSE_FRAMES: u32 = 173;
+    pub const CAUSE_CAUSED_BY: u32 = 174;
+    pub const CAUSE_SUPPRESSED: u32 = 175;
+    pub const CAUSE_REASON_CODE: u32 = 176;
+    pub const CAUSE_TO_TEXT: u32 = 177;
     pub const TEST_ASSERT_EQUAL: u32 = 178;
     pub const TEST_ASSERT_NOT_EQUAL: u32 = 179;
     pub const TEST_ASSERT: u32 = 180;
@@ -972,6 +981,15 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_LIST_PUSH" Intrinsic::LIST_PUSH)
     constant("CHIMI_INTRINSIC_LIST_SLICE" Intrinsic::LIST_SLICE)
     constant("CHIMI_INTRINSIC_LIST_SET" Intrinsic::LIST_SET)
+    constant("CHIMI_INTRINSIC_CAUSE_CONTEXT" Intrinsic::CAUSE_CONTEXT)
+    constant("CHIMI_INTRINSIC_CAUSE_OF" Intrinsic::CAUSE_OF)
+    constant("CHIMI_INTRINSIC_CAUSE_KIND_CODE" Intrinsic::CAUSE_KIND_CODE)
+    constant("CHIMI_INTRINSIC_CAUSE_SUMMARY" Intrinsic::CAUSE_SUMMARY)
+    constant("CHIMI_INTRINSIC_CAUSE_FRAMES" Intrinsic::CAUSE_FRAMES)
+    constant("CHIMI_INTRINSIC_CAUSE_CAUSED_BY" Intrinsic::CAUSE_CAUSED_BY)
+    constant("CHIMI_INTRINSIC_CAUSE_SUPPRESSED" Intrinsic::CAUSE_SUPPRESSED)
+    constant("CHIMI_INTRINSIC_CAUSE_REASON_CODE" Intrinsic::CAUSE_REASON_CODE)
+    constant("CHIMI_INTRINSIC_CAUSE_TO_TEXT" Intrinsic::CAUSE_TO_TEXT)
     constant("CHIMI_INTRINSIC_TEST_ASSERT_EQUAL" Intrinsic::TEST_ASSERT_EQUAL)
     constant("CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL" Intrinsic::TEST_ASSERT_NOT_EQUAL)
     constant("CHIMI_INTRINSIC_TEST_ASSERT" Intrinsic::TEST_ASSERT)

@@ -110,7 +110,7 @@ typedef enum { VALUE_VOID, VALUE_INTEGER, VALUE_FLOAT, VALUE_TEXT, VALUE_BOOLEAN
                VALUE_SET,
                /* A `std/bytes.Bytes` in `as.text`, which holds any bytes. */
                VALUE_BYTES,
-               /* A `std/cause.Cause` in `as.record`: the CAUSE_* fields, unnamed. */
+               /* A `std/cause.Cause` in `as.record`: its slots, unnamed (intrinsics/causes.rs). */
                VALUE_CAUSE,
                /* A `std/test.Recorder`, `Script` or `Mailbox`: its log id in
                   `as.address.target`. */
@@ -1380,6 +1380,15 @@ _Static_assert(CHIMI_INTRINSIC_LIST_GET == 129, "layout: CHIMI_INTRINSIC_LIST_GE
 _Static_assert(CHIMI_INTRINSIC_LIST_PUSH == 130, "layout: CHIMI_INTRINSIC_LIST_PUSH");
 _Static_assert(CHIMI_INTRINSIC_LIST_SLICE == 131, "layout: CHIMI_INTRINSIC_LIST_SLICE");
 _Static_assert(CHIMI_INTRINSIC_LIST_SET == 132, "layout: CHIMI_INTRINSIC_LIST_SET");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_CONTEXT == 169, "layout: CHIMI_INTRINSIC_CAUSE_CONTEXT");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_OF == 170, "layout: CHIMI_INTRINSIC_CAUSE_OF");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_KIND_CODE == 171, "layout: CHIMI_INTRINSIC_CAUSE_KIND_CODE");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_SUMMARY == 172, "layout: CHIMI_INTRINSIC_CAUSE_SUMMARY");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_FRAMES == 173, "layout: CHIMI_INTRINSIC_CAUSE_FRAMES");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_CAUSED_BY == 174, "layout: CHIMI_INTRINSIC_CAUSE_CAUSED_BY");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_SUPPRESSED == 175, "layout: CHIMI_INTRINSIC_CAUSE_SUPPRESSED");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_REASON_CODE == 176, "layout: CHIMI_INTRINSIC_CAUSE_REASON_CODE");
+_Static_assert(CHIMI_INTRINSIC_CAUSE_TO_TEXT == 177, "layout: CHIMI_INTRINSIC_CAUSE_TO_TEXT");
 _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_EQUAL == 178, "layout: CHIMI_INTRINSIC_TEST_ASSERT_EQUAL");
 _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL == 179, "layout: CHIMI_INTRINSIC_TEST_ASSERT_NOT_EQUAL");
 _Static_assert(CHIMI_INTRINSIC_TEST_ASSERT == 180, "layout: CHIMI_INTRINSIC_TEST_ASSERT");
@@ -4644,322 +4653,46 @@ static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
   return defect("verified standard function has invalid runtime arguments", call_node);
 }
 
-/* Failure causes (time-and-outcomes.md, "Failure context"). The interpreter's
-   execution/causes.rs is the reference; the language tests run every cause
-   program on both backends.
+/* Failure causes (time-and-outcomes.md, "Failure context") are built and read in
+   intrinsics/causes.rs; the interpreter's execution/causes.rs is the reference.
+   A live outcome holds its cause in `ChimiControl.cause`; NULL means the fresh
+   cause of the outcome itself, built only when read. */
+ChimiValue *chimi_runtime_control_cause_v1(const ChimiControl *control);
+ChimiControl *chimi_runtime_control_with_cause_v1(const ChimiControl *control, ChimiValue *cause);
+ChimiValue *chimi_runtime_cause_with_frame_v1(const ChimiValue *cause, ChimiValue *text, int64_t node);
+ChimiValue *chimi_runtime_cause_with_sibling_v1(const ChimiValue *cause, const ChimiValue *sibling);
+ChimiValue *chimi_runtime_cause_derived_v1(ChimiValue *matched, bool keep, ChimiValue *error, int64_t node);
+ChimiValue *chimi_runtime_with_stored_cause_v1(const ChimiValue *value, ChimiValue *cause);
+ChimiValue *chimi_runtime_matched_cause_value_v1(const ChimiControl *subject);
+ChimiValue *chimi_runtime_cause_text_v1(const ChimiValue *cause);
+bool chimi_runtime_cause_has_detail_v1(const ChimiValue *cause);
+ChimiControl *chimi_intrinsic_cause_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                       uint32_t call_node);
 
-   A cause is a VALUE_CAUSE, immutable once built: adding a frame or a link
-   builds a new one, so a cause shared by a stored Err and a live failure never
-   changes under either. Its unnamed fields are the CAUSE_* slots below; a frame
-   is a tuple of its text and its node (-1 when unknown), and `caused_by` is a
-   cause or Void. A live outcome holds its cause in `ChimiControl.cause`; NULL
-   means the fresh cause of the outcome itself, built only when read. */
-enum {
-  CAUSE_KIND, CAUSE_PAYLOAD, CAUSE_ORIGIN, CAUSE_FRAMES, CAUSE_DROPPED_FRAMES,
-  CAUSE_CAUSED_BY, CAUSE_LINKS, CAUSE_DROPPED_LINKS, CAUSE_SUPPRESSED,
-  CAUSE_DROPPED_SUPPRESSED, CAUSE_REASON, CAUSE_FIELD_COUNT
-};
-enum { CAUSE_EXPECTED_FAILURE, CAUSE_DEFECT, CAUSE_CANCELLATION };
-enum { CAUSE_FRAME_LIMIT = 32, CAUSE_SUPPRESSED_LIMIT = 16, CAUSE_LINK_LIMIT = 64 };
+/* A cancellation's reason in an outcome record; a cancellation's cause
+   (intrinsics/causes.rs) carries the same text. */
 static const char CANCELLATION_REASON[] = "requested before the next semantic operation";
-/* The name of the hidden field after a stored Err's own fields that holds its
-   cause. Equality, order, rendering and patterns read only `length` fields. */
-static const char STORED_CAUSE_FIELD[] = "cause";
 
-static ChimiValue *cause_field(const ChimiValue *cause, uint32_t field) {
-  return cause->as.record.fields[field].value;
-}
-static int64_t cause_integer(const ChimiValue *cause, uint32_t field) {
-  return cause_field(cause, field)->as.integer;
+/* The source location of node `node`, for a rendered cause (intrinsics/causes.rs). */
+const char *chimi_runtime_node_location_v1(int64_t node);
+const char *chimi_runtime_node_location_v1(int64_t node) {
+  return CHIMI_STRINGS[CHIMI_ORIGINS[CHIMI_NODES[node].origin].location];
 }
 
-static ChimiValue *cause_new(int64_t kind, ChimiValue *payload, int64_t origin) {
-  ChimiValue *cause = new_value(VALUE_CAUSE);
-  cause->as.record.length = CAUSE_FIELD_COUNT;
-  cause->as.record.fields = allocate(CAUSE_FIELD_COUNT, sizeof(*cause->as.record.fields));
-  allocation_kind(cause->as.record.fields, ALLOCATION_FIELDS);
-  ChimiValue *zero = integer_value(0), *empty = list_from_values(NULL, 0);
-  ChimiValue *values[CAUSE_FIELD_COUNT] = {
-    integer_value(kind), payload, integer_value(origin), empty, zero,
-    void_value(), zero, zero, empty, zero, integer_value(-1),
-  };
-  for (uint32_t field = 0; field < CAUSE_FIELD_COUNT; ++field)
-    cause->as.record.fields[field] = (RuntimeField){NULL, values[field]};
-  return cause;
-}
-
-static ChimiValue *cause_copy(const ChimiValue *cause) {
-  ChimiValue *copy = cause_new(0, NULL, 0);
-  for (uint32_t field = 0; field < CAUSE_FIELD_COUNT; ++field)
-    copy->as.record.fields[field].value = cause_field(cause, field);
-  return copy;
-}
-
-static void cause_set(ChimiValue *cause, uint32_t field, ChimiValue *value) {
-  cause->as.record.fields[field].value = value;
-}
-
-/* The outcome's cause, built from the outcome when it is still implicit. */
-static ChimiValue *control_cause(const ChimiControl *control) {
-  if (control->cause) return control->cause;
-  switch (control->kind) {
-    case CONTROL_FAILURE: return cause_new(CAUSE_EXPECTED_FAILURE, control->value, control->node);
-    case CONTROL_DEFECT: return cause_new(CAUSE_DEFECT, text_value(control->message), control->node);
-    case CONTROL_CANCEL: return cause_new(CAUSE_CANCELLATION, text_value(CANCELLATION_REASON), -1);
-    case CONTROL_SUCCESS:
-    case CONTROL_BREAK: break;
-  }
-  return NULL;
-}
-
-/* A copy of the outcome with `cause` as its cause. */
-static ChimiControl *control_with_cause(const ChimiControl *control, ChimiValue *cause) {
-  ChimiControl *copy = new_control(control->kind, control->value, control->message, control->node);
-  copy->cause = cause;
-  if (control->kind == CONTROL_FAILURE) copy->node = cause_integer(cause, CAUSE_ORIGIN);
-  return copy;
-}
-
-/* `items` with `item` pushed; at `limit` it first drops the entry just past the
-   kept oldest half. Sets `*dropped` when it drops one. */
-static ChimiValue *cause_push_bounded(const ChimiValue *items, ChimiValue *item, uint32_t limit,
-                                      bool *dropped) {
-  uint32_t length = list_length(items);
-  *dropped = length == limit;
-  if (!*dropped) return list_push(items, item);
-  ChimiValue **kept = new_value_slots(limit);
-  uint32_t count = 0;
-  for (uint32_t index = 0; index < length; ++index)
-    if (index != limit / 2) kept[count++] = list_get(items, index);
-  kept[count++] = item;
-  return list_from_values(kept, count);
-}
-
-static ChimiValue *cause_with_frame(const ChimiValue *cause, ChimiValue *text, int64_t node) {
-  ChimiValue *frame = new_value(VALUE_TUPLE);
-  frame->as.record.length = 2;
-  frame->as.record.fields = allocate(2, sizeof(*frame->as.record.fields));
-  allocation_kind(frame->as.record.fields, ALLOCATION_FIELDS);
-  frame->as.record.fields[0] = (RuntimeField){NULL, text};
-  frame->as.record.fields[1] = (RuntimeField){NULL, integer_value(node)};
-  ChimiValue *copy = cause_copy(cause);
-  bool dropped = false;
-  cause_set(copy, CAUSE_FRAMES, cause_push_bounded(cause_field(cause, CAUSE_FRAMES), frame,
-                                                   CAUSE_FRAME_LIMIT, &dropped));
-  if (dropped)
-    cause_set(copy, CAUSE_DROPPED_FRAMES, integer_value(cause_integer(cause, CAUSE_DROPPED_FRAMES) + 1));
-  return copy;
-}
-
-static ChimiValue *cause_below(const ChimiValue *cause) {
-  ChimiValue *below = cause_field(cause, CAUSE_CAUSED_BY);
-  return below->kind == VALUE_CAUSE ? below : NULL;
-}
-
-static void cause_link(ChimiValue *cause, ChimiValue *below) {
-  cause_set(cause, CAUSE_CAUSED_BY, below ? below : void_value());
-  cause_set(cause, CAUSE_LINKS, integer_value(below ? cause_integer(below, CAUSE_LINKS) + 1 : 0));
-}
-
-/* `cause` (fresh, unshared) linked to `below`. A chain longer than the limit
-   keeps its newest and oldest halves: the link at depth LIMIT / 2 is dropped and
-   the newer links above it are copied onto the rest of the chain. */
-static ChimiValue *cause_linked(ChimiValue *cause, ChimiValue *below) {
-  cause_link(cause, below);
-  if (cause_integer(cause, CAUSE_LINKS) <= CAUSE_LINK_LIMIT) return cause;
-  enum { KEEP_NEWEST = CAUSE_LINK_LIMIT / 2 };
-  ChimiValue *newer[KEEP_NEWEST];
-  uint32_t count = 0;
-  ChimiValue *link = below;
-  for (uint32_t depth = 1; depth < KEEP_NEWEST; ++depth) {
-    newer[count++] = link;
-    link = cause_below(link);
-  }
-  int64_t dropped = cause_integer(link, CAUSE_DROPPED_LINKS) + 1;
-  ChimiValue *resumed = cause_below(link);
-  ChimiValue *top = cause;
-  if (count == 0) {
-    cause_set(cause, CAUSE_DROPPED_LINKS, integer_value(cause_integer(cause, CAUSE_DROPPED_LINKS) + dropped));
-  }
-  for (uint32_t index = count; index-- > 0;) {
-    ChimiValue *copy = cause_copy(newer[index]);
-    if (index == count - 1)
-      cause_set(copy, CAUSE_DROPPED_LINKS, integer_value(cause_integer(copy, CAUSE_DROPPED_LINKS) + dropped));
-    cause_link(copy, resumed);
-    resumed = copy;
-  }
-  cause_link(top, resumed);
-  return top;
-}
-
-/* The cause a `Failure(...)` or `Result.Err(...)` built in a cause arm gets from
-   `matched` (a cause, or NULL): the same one when it keeps it, otherwise a new
-   cause of `error` started at `node`, linked to it. */
-static ChimiValue *cause_derived(ChimiValue *matched, bool keep, ChimiValue *error, int64_t node) {
-  if (keep) return matched;
-  ChimiValue *fresh = cause_new(CAUSE_EXPECTED_FAILURE, error, node);
-  return matched ? cause_linked(fresh, matched) : fresh;
-}
-
-/* The cause a stored Err keeps in its hidden field, or NULL. */
-static ChimiValue *stored_cause(const ChimiValue *value) {
-  if (value->kind != VALUE_CONSTRUCTED) return NULL;
-  uint32_t length = value->as.constructed.length;
-  size_t slots = allocation_header(value->as.constructed.fields)->bytes / sizeof(RuntimeField);
-  if (slots <= length || value->as.constructed.fields[length].name != STORED_CAUSE_FIELD) return NULL;
-  return value->as.constructed.fields[length].value;
-}
-
-/* A copy of the constructed `value` whose hidden field holds `cause`. */
-static ChimiValue *with_stored_cause(const ChimiValue *value, ChimiValue *cause) {
-  uint32_t length = value->as.constructed.length;
-  ChimiValue *copy = new_value(VALUE_CONSTRUCTED);
-  copy->as.constructed = value->as.constructed;
-  copy->as.constructed.fields = allocate(length + 1, sizeof(*copy->as.constructed.fields));
-  allocation_kind(copy->as.constructed.fields, ALLOCATION_FIELDS);
-  memcpy(copy->as.constructed.fields, value->as.constructed.fields, length * sizeof(RuntimeField));
-  copy->as.constructed.fields[length] = (RuntimeField){STORED_CAUSE_FIELD, cause};
-  return copy;
-}
-
-/* The cause a cause arm binds for a matched subject: the live failure's, or the
-   one a stored Err keeps, or Void. */
-static ChimiValue *matched_cause_value(const ChimiControl *subject) {
-  ChimiValue *cause = NULL;
-  if (subject->kind == CONTROL_FAILURE) cause = control_cause(subject);
-  else if (subject->kind == CONTROL_SUCCESS) cause = stored_cause(subject->value);
-  return cause ? cause : void_value();
-}
-
-static void cause_location(TextBuffer *buffer, int64_t node) {
-  if (node < 0) return;
-  debug_text(buffer, " (");
-  debug_text(buffer, CHIMI_STRINGS[CHIMI_ORIGINS[CHIMI_NODES[node].origin].location]);
-  debug_text(buffer, ")");
-}
-
-static void cause_indent(TextBuffer *buffer, uint32_t depth) {
-  buffer_char(buffer, '\n');
-  for (uint32_t level = 0; level <= depth; ++level) debug_text(buffer, "  ");
-}
-
-static void cause_dropped(TextBuffer *buffer, uint32_t depth, int64_t count, const char *what) {
-  char text[96];
-  snprintf(text, sizeof(text), "(%" PRId64 " %s%s dropped)", count, what, count == 1 ? "" : "s");
-  cause_indent(buffer, depth);
-  debug_text(buffer, text);
-}
-
-static const char *const SUPPRESSION_LABELS[] = {"cleanup", "sibling", "displaced"};
-
-/* `Cause.to_text`, as causes.rs `render` writes it. Bounded: at most 64 links,
-   each with at most 32 frames and 16 suppressed causes. */
-static void cause_render(TextBuffer *buffer, const ChimiValue *cause, uint32_t depth) {
-  static const char *const KINDS[] = {"expected failure", "defect", "cancellation"};
-  debug_text(buffer, KINDS[cause_integer(cause, CAUSE_KIND)]);
-  buffer_char(buffer, ' ');
-  ChimiValue *payload = cause_field(cause, CAUSE_PAYLOAD);
-  if (cause_integer(cause, CAUSE_KIND) == CAUSE_EXPECTED_FAILURE) {
-    ChimiValue *summary = debug_render(payload, false);
-    buffer_bytes(buffer, summary->as.text.bytes, summary->as.text.length);
-  } else {
-    buffer_bytes(buffer, payload->as.text.bytes, payload->as.text.length);
-  }
-  cause_location(buffer, cause_integer(cause, CAUSE_ORIGIN));
-  ChimiValue *frames = cause_field(cause, CAUSE_FRAMES);
-  int64_t dropped_frames = cause_integer(cause, CAUSE_DROPPED_FRAMES);
-  for (uint32_t index = 0; index < list_length(frames); ++index) {
-    if (index == CAUSE_FRAME_LIMIT / 2 && dropped_frames > 0)
-      cause_dropped(buffer, depth, dropped_frames, "context frame");
-    ChimiValue *frame = list_get(frames, index);
-    ChimiValue *text = frame->as.record.fields[0].value;
-    cause_indent(buffer, depth);
-    debug_text(buffer, "context: ");
-    buffer_bytes(buffer, text->as.text.bytes, text->as.text.length);
-    cause_location(buffer, frame->as.record.fields[1].value->as.integer);
-  }
-  ChimiValue *suppressed = cause_field(cause, CAUSE_SUPPRESSED);
-  int64_t dropped_suppressed = cause_integer(cause, CAUSE_DROPPED_SUPPRESSED);
-  for (uint32_t index = 0; index < list_length(suppressed); ++index) {
-    if (index == CAUSE_SUPPRESSED_LIMIT / 2 && dropped_suppressed > 0)
-      cause_dropped(buffer, depth, dropped_suppressed, "suppressed cause");
-    ChimiValue *child = list_get(suppressed, index);
-    int64_t reason = cause_integer(child, CAUSE_REASON);
-    cause_indent(buffer, depth);
-    debug_text(buffer, "suppressed (");
-    debug_text(buffer, reason >= 0 && reason <= 2 ? SUPPRESSION_LABELS[reason] : "unknown");
-    debug_text(buffer, "): ");
-    cause_render(buffer, child, depth + 1);
-  }
-  ChimiValue *below = cause_below(cause);
-  if (below) {
-    int64_t dropped_links = cause_integer(cause, CAUSE_DROPPED_LINKS);
-    if (dropped_links > 0) cause_dropped(buffer, depth, dropped_links, "cause");
-    cause_indent(buffer, depth);
-    debug_text(buffer, "caused by: ");
-    cause_render(buffer, below, depth + 1);
-  }
-}
-
-static ChimiValue *cause_text(const ChimiValue *cause) {
-  TextBuffer buffer = {0};
-  buffer_reserve(&buffer, 0);
-  cause_render(&buffer, cause, 0);
-  return text_from_bytes(buffer.data, buffer.length);
-}
-
-/* Whether a root outcome's record shows its cause: only when the cause says
-   more than the record already does. */
-static bool cause_has_detail(const ChimiValue *cause) {
-  return list_length(cause_field(cause, CAUSE_FRAMES)) > 0 || cause_below(cause) ||
-         list_length(cause_field(cause, CAUSE_SUPPRESSED)) > 0;
-}
-
-static ChimiValue *cause_option(ChimiValue *cause) {
-  if (!cause) return standard_value(CHIMI_CONSTRUCTOR_OPTION_NONE, NULL, 0);
-  return standard_value(CHIMI_CONSTRUCTOR_OPTION_SOME, &cause, 1);
-}
-
-/* The native core of std/cause; execution/causes.rs implements the same. */
+/* std/cause: Cause.context calls a function, so it stays with this dispatch;
+   the rest is intrinsics/causes.rs. */
 static ChimiControl *invoke_cause_operation(ChimiRuntime *runtime, uint32_t intrinsic,
                                             ChimiValue **arguments, uint32_t argument_count,
                                             uint64_t span, uint32_t call_node,
                                             ChimiEnvironment *environment) {
-  if (intrinsic == CHIMI_INTRINSIC_CAUSE_CONTEXT) {
-    if (argument_count != 2 || arguments[0]->kind != VALUE_CALLABLE || arguments[1]->kind != VALUE_TEXT)
-      return intrinsic_shape_defect(call_node);
-    ChimiControl *control = invoke(runtime, arguments[0]->as.callable, NULL, 0, span, call_node, environment);
-    ChimiValue *cause = control_cause(control);
-    if (!cause) return control;
-    return control_with_cause(control, cause_with_frame(cause, arguments[1], call_node));
-  }
-  if (intrinsic == CHIMI_INTRINSIC_CAUSE_OF) {
-    if (argument_count != 1 || arguments[0]->kind != VALUE_CONSTRUCTED) return intrinsic_shape_defect(call_node);
-    return success(cause_option(stored_cause(arguments[0])));
-  }
-  if (argument_count != 1 || arguments[0]->kind != VALUE_CAUSE) return intrinsic_shape_defect(call_node);
-  ChimiValue *cause = arguments[0];
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_CAUSE_KIND_CODE: return success(cause_field(cause, CAUSE_KIND));
-    case CHIMI_INTRINSIC_CAUSE_SUMMARY: {
-      ChimiValue *payload = cause_field(cause, CAUSE_PAYLOAD);
-      return success(cause_integer(cause, CAUSE_KIND) == CAUSE_EXPECTED_FAILURE
-                       ? debug_render(payload, false) : payload);
-    }
-    case CHIMI_INTRINSIC_CAUSE_FRAMES: {
-      ChimiValue *frames = cause_field(cause, CAUSE_FRAMES);
-      uint32_t length = list_length(frames);
-      ChimiValue **texts = new_value_slots(length);
-      for (uint32_t index = 0; index < length; ++index)
-        texts[index] = list_get(frames, index)->as.record.fields[0].value;
-      return success(list_from_values(texts, length));
-    }
-    case CHIMI_INTRINSIC_CAUSE_CAUSED_BY: return success(cause_option(cause_below(cause)));
-    case CHIMI_INTRINSIC_CAUSE_SUPPRESSED: return success(cause_field(cause, CAUSE_SUPPRESSED));
-    case CHIMI_INTRINSIC_CAUSE_REASON_CODE: return success(cause_field(cause, CAUSE_REASON));
-    case CHIMI_INTRINSIC_CAUSE_TO_TEXT: return success(cause_text(cause));
-    default: return intrinsic_shape_defect(call_node);
-  }
+  if (intrinsic != CHIMI_INTRINSIC_CAUSE_CONTEXT)
+    return chimi_intrinsic_cause_v1(intrinsic, arguments, argument_count, call_node);
+  if (argument_count != 2 || arguments[0]->kind != VALUE_CALLABLE || arguments[1]->kind != VALUE_TEXT)
+    return intrinsic_shape_defect(call_node);
+  ChimiControl *control = invoke(runtime, arguments[0]->as.callable, NULL, 0, span, call_node, environment);
+  ChimiValue *cause = chimi_runtime_control_cause_v1(control);
+  if (!cause) return control;
+  return chimi_runtime_control_with_cause_v1(control, chimi_runtime_cause_with_frame_v1(cause, arguments[1], call_node));
 }
 
 /* std/process and std/supervisor (docs/architecture/supervised-process-runtime.md,
@@ -6113,8 +5846,6 @@ typedef struct {
   uint32_t live;
 } CombinatorChildren;
 
-enum { CAUSE_REASON_SIBLING = 1 };
-
 static void combinator_children_free(CombinatorChildren *children) {
   free(children->waiting);
   free(children->positions);
@@ -6162,20 +5893,6 @@ static ChimiControl *combinator_next(CombinatorChildren *children, bool drain, u
   }
 }
 
-/* `cause` with `sibling` appended to its suppressed causes, marked Sibling. */
-static ChimiValue *cause_with_sibling(const ChimiValue *cause, const ChimiValue *sibling) {
-  ChimiValue *marked = cause_copy(sibling);
-  cause_set(marked, CAUSE_REASON, integer_value(CAUSE_REASON_SIBLING));
-  ChimiValue *copy = cause_copy(cause);
-  bool dropped = false;
-  cause_set(copy, CAUSE_SUPPRESSED, cause_push_bounded(cause_field(cause, CAUSE_SUPPRESSED), marked,
-                                                       CAUSE_SUPPRESSED_LIMIT, &dropped));
-  if (dropped)
-    cause_set(copy, CAUSE_DROPPED_SUPPRESSED,
-              integer_value(cause_integer(cause, CAUSE_DROPPED_SUPPRESSED) + 1));
-  return copy;
-}
-
 /* `Ok(value)`, or `Err(error)` keeping the failure's cause, as Result.capture
    builds them. */
 static ChimiControl *stored_outcome(ChimiControl *outcome, uint32_t call_node) {
@@ -6184,7 +5901,7 @@ static ChimiControl *stored_outcome(ChimiControl *outcome, uint32_t call_node) {
   ChimiValue *stored = standard_value(failed ? CHIMI_CONSTRUCTOR_RESULT_ERR : CHIMI_CONSTRUCTOR_RESULT_OK,
                                       fields, 1);
   if (!stored) return defect("Result is missing from the program", call_node);
-  return success(failed ? with_stored_cause(stored, control_cause(outcome)) : stored);
+  return success(failed ? chimi_runtime_with_stored_cause_v1(stored, chimi_runtime_control_cause_v1(outcome)) : stored);
 }
 
 /* Cancels every child still live; false when this task was cancelled meanwhile. */
@@ -6272,7 +5989,7 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
       return cancelled();
     }
     bool collect_siblings = intrinsic == CHIMI_INTRINSIC_TASK_ALL && decided->kind == CONTROL_FAILURE;
-    ChimiValue *cause = collect_siblings ? control_cause(decided) : NULL;
+    ChimiValue *cause = collect_siblings ? chimi_runtime_control_cause_v1(decided) : NULL;
     bool suppressed = false;
     while (children.live > 0) {
       uint32_t position = 0;
@@ -6285,11 +6002,11 @@ static ChimiControl *run_combinator(ChimiRuntime *runtime, uint32_t intrinsic, C
         return interrupted;
       }
       if (collect_siblings && outcome && outcome->kind == CONTROL_FAILURE) {
-        cause = cause_with_sibling(cause, control_cause(outcome));
+        cause = chimi_runtime_cause_with_sibling_v1(cause, chimi_runtime_control_cause_v1(outcome));
         suppressed = true;
       }
     }
-    if (suppressed) decided = control_with_cause(decided, cause);
+    if (suppressed) decided = chimi_runtime_control_with_cause_v1(decided, cause);
   }
   combinator_children_free(&children);
   if (decided) return decided;
@@ -7771,13 +7488,13 @@ NODE_WRAPPER(construct, "construct", {
   ChimiValue *matched = environment->locals[environment_slot(node->b - 1)];
   if (!matched || matched->kind != VALUE_CAUSE) matched = NULL;
   if (result->kind == CONTROL_FAILURE) {
-    ChimiValue *cause = cause_derived(matched, node->c != 0, result->value, node_id);
-    if (cause) result = control_with_cause(result, cause);
+    ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0, result->value, node_id);
+    if (cause) result = chimi_runtime_control_with_cause_v1(result, cause);
   } else if (result->kind == CONTROL_SUCCESS && result->value->kind == VALUE_CONSTRUCTED &&
              result->value->as.constructed.length == 1) {
-    ChimiValue *cause = cause_derived(matched, node->c != 0,
-                                      result->value->as.constructed.fields[0].value, node_id);
-    if (cause) result = success(with_stored_cause(result->value, cause));
+    ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0,
+                                                       result->value->as.constructed.fields[0].value, node_id);
+    if (cause) result = success(chimi_runtime_with_stored_cause_v1(result->value, cause));
   }
 })
 
@@ -8055,7 +7772,7 @@ NODE_WRAPPER(match, "match", {
     }
     if (arm->cause_local != UINT32_MAX)
       arm_environment->locals[environment_slot(arm->cause_local)] =
-        matched_cause_value(values[arm->cause_subject].control);
+        chimi_runtime_matched_cause_value_v1(values[arm->cause_subject].control);
     result = run_node(arm->body, runtime, arm_environment, span); stopped = true; break;
   }
   if (!stopped) {
@@ -8190,10 +7907,10 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
   }
   /* `chimi test` names the seed in the report of a failing test that drew one. */
   if (random_read) fputs(",\"random_read\":true", output);
-  ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : control_cause(control);
-  if (cause && cause_has_detail(cause)) {
+  ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : chimi_runtime_control_cause_v1(control);
+  if (cause && chimi_runtime_cause_has_detail_v1(cause)) {
     fputs(",\"cause\":", output);
-    ChimiValue *text = cause_text(cause);
+    ChimiValue *text = chimi_runtime_cause_text_v1(cause);
     json_bytes(output, text->as.text.bytes, text->as.text.length);
   }
   fputs("}\n", output);
