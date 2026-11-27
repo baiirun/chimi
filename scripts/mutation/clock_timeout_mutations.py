@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 RUNTIME = "runtime/native/runtime.c"
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 
 def clock(name, file, edits, filter=""):
@@ -50,9 +51,9 @@ MUTATIONS = [
         "        for entry in removed {\n            if let Some(timer) = entry.timer {\n"
         "                let _ = timer;\n            }\n")]),
     # Under the real clock a loop that never parks polls for its deadlines.
-    clock("a busy loop never polls for scope deadlines", RUNTIME, [(
-        "         (chimi_fiber_scope_polls() && (++polls & 1023u) == 0))) {",
-        "         (false && (++polls & 1023u) == 0))) {")]),
+    clock("a busy loop never polls for scope deadlines", EVAL, [(
+        "        chimi_fiber_scope_cancel_pending() != 0 || (chimi_fiber_scope_polls() != 0 && {",
+        "        chimi_fiber_scope_cancel_pending() != 0 || (false && {")]),
     clock("requests do not fire the task's due scope deadlines", SCOPE, [(
         "        if !self.polls_scope_deadlines(task) {\n            return;\n        }\n        let now",
         "        if true {\n            return;\n        }\n        let now")]),

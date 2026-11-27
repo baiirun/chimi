@@ -23,7 +23,7 @@ MUTATIONS = [
    [("            (*(*current_carrier()).fiber.heap).profiled_node_plus_one = frame.outer;",
      "            let _ = frame.outer;")], EVAL),
  m("profiling leaves direct loops on",
-   [("  if (!runtime->silent || profile_rows) return chimi_rt_loop(", "  if (!runtime->silent) return chimi_rt_loop(")]),
+   [("        if !(*runtime).silent || !profile_rows().is_null() {", "        if !(*runtime).silent {")], file=EVAL),
  m("profiling leaves direct integer roots on",
    [("{ return runtime->full_trace || profile_rows; }", "{ return runtime->full_trace; }")]),
  m("rows are written lightest first",

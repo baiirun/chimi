@@ -236,6 +236,36 @@ pub fn main() -> Int needs { console: Console, files: FileSystem } {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// A loop the backend lowers to machine passes checks for a stop before each
+// pass, as the runtime loop does, so SIGINT ends an endless counting loop.
+#[test]
+fn sigint_stops_an_endless_direct_integer_loop() {
+    let scratch = scratch_directory("direct-loop");
+    let executable = build_native(
+        &scratch,
+        "spin",
+        r#"import std/io.{Console}
+
+pub fn main() -> Int needs { console: Console } {
+  console.write_line("spinning")
+  loop count = 0 {
+    case count < 0 {
+      True -> break count
+      False -> (count + 1) % 1000
+    }
+  }
+}
+"#,
+    );
+    let mut running = Running::start(&executable);
+    assert_eq!(running.next_line(), "spinning");
+    running.signal(SIGINT);
+    let (rest, status) = running.finish();
+    assert!(rest.is_empty(), "{rest:?}");
+    assert_eq!(status.signal(), Some(SIGINT), "{status}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 /// A scheduled program (it starts a task) whose main reads standard input,
 /// while a ticker task sleeps and prints `ticked`.
 const SCHEDULED_READER: &str = r#"import std/clock as Clock

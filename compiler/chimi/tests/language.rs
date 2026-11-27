@@ -1640,6 +1640,22 @@ fn decimal_operators_take_two_decimals() {
     }
 }
 
+// A `Decimal` overflow names the operator and both operands, in order.
+#[test]
+fn a_decimal_overflow_defect_names_both_operands() {
+    let outcome = run_both(
+        "decimal-overflow",
+        &format!(
+            "{DECIMAL_IMPORTS}fn times(a: Decimal, b: Decimal) -> Decimal {{ a * b }}\n\
+             pub fn main() -> Decimal {{\n  let big = times(Decimal.of(9223372036854775807, 0), Decimal.of(9223372036854775807, 0))\n  times(big, Decimal.of(10, 0))\n}}\n"
+        ),
+    );
+    assert_eq!(
+        defect_message(&outcome),
+        "decimal overflow in `*`: 85070591730234615847396907784232501249 * 10 needs more than 38 digits or scale 38"
+    );
+}
+
 // A `Decimal` is plain data: a task's result crosses heaps with its sign,
 // its magnitude past 64 bits, and its scale intact. Native only: the
 // interpreter has no task runtime.

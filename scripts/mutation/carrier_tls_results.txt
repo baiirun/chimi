@@ -4,3 +4,10 @@ BASELINE ok  [cli -- ends_with_a_stack_overflow_defect] (89s)
 KILLED       the guard never sets the carrier's limit [cli -- ends_with_a_stack_overflow_defect] (35s)
 KILLED       the check reads no limit [cli -- ends_with_a_stack_overflow_defect] (34s)
 # result: every mutant killed
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# carrier_tls_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- ends_with_a_stack_overflow_defect] (54s)
+KILLED       the check reads no limit [cli -- ends_with_a_stack_overflow_defect] (54s)
+# result: every mutant killed

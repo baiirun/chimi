@@ -1680,6 +1680,7 @@ _Static_assert(CHIMI_INTRINSIC_BYTES_TO_TEXT_LOSSY == 163, "layout: CHIMI_INTRIN
 _Static_assert(CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH == 164, "layout: CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH");
 _Static_assert(CHIMI_INTRINSIC_BYTES_READ_INT_CODE == 165, "layout: CHIMI_INTRINSIC_BYTES_READ_INT_CODE");
 _Static_assert(CHIMI_INTRINSIC_BYTES_INT_BYTES == 166, "layout: CHIMI_INTRINSIC_BYTES_INT_BYTES");
+_Static_assert(CHIMI_INTRINSIC_EMBED_BYTES == 168, "layout: CHIMI_INTRINSIC_EMBED_BYTES");
 _Static_assert(CHIMI_INTRINSIC_HTTP_COUNT_ENDS == 216, "layout: CHIMI_INTRINSIC_HTTP_COUNT_ENDS");
 _Static_assert(CHIMI_INTRINSIC_DURATION_NANOSECONDS == 41, "layout: CHIMI_INTRINSIC_DURATION_NANOSECONDS");
 _Static_assert(CHIMI_INTRINSIC_DURATION_MICROSECONDS == 42, "layout: CHIMI_INTRINSIC_DURATION_MICROSECONDS");
@@ -2416,10 +2417,6 @@ static ChimiEnvironment *new_environment(uint32_t local_count) { return chimi_en
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   return chimi_environment_clone_v1(source, true, true);
 }
-/* A boundary copies only the table it changes (see clone_environment in values.rs). */
-static ChimiEnvironment *clone_local_environment(const ChimiEnvironment *source) {
-  return chimi_environment_clone_v1(source, true, false);
-}
 static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
   return chimi_environment_capture_requirements_v1(source);
 }
@@ -2602,12 +2599,6 @@ static const char *process_name_label(uint64_t name) {
       CHIMI_SYMBOLS[name - 1].kind != CHIMI_SYMBOL_PROCESS_NAME)
     return NULL;
   return CHIMI_STRINGS[CHIMI_SYMBOLS[name - 1].name];
-}
-
-static ChimiControl *run_node(uint32_t node, ChimiRuntime *runtime,
-                              ChimiEnvironment *environment, uint64_t parent_span) {
-  if (runtime->cancel) return cancelled();
-  return CHIMI_NODE_FUNCTIONS[node](runtime, environment, parent_span);
 }
 
 static void json_bytes(FILE *output, const char *value, size_t length) {
@@ -3388,27 +3379,14 @@ static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *
 static const char *const FOREIGN_POINTER_DEFECT =
   "Chimi runtime heap invariant violated: a value points into another heap";
 
-/* Ends a reclaiming scope, keeping only what `control` reaches, and returns the
-   control the scope's owner should produce: `control`, or a defect when the scope
-   reached into another heap. Only an outermost scope reports to the runtime,
-   because a nested scope's statistics already merge into its parent. */
+/* Ends a reclaiming scope (eval.rs end_measured_scope): keeps only what
+   `control` reaches and returns it, or a defect when the scope reached into
+   another heap. */
+ChimiControl *chimi_runtime_end_measured_scope_v1(AllocationScope *scope, ChimiControl *control);
 static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
                                                    ChimiControl *control) {
-  bool top_scope = scope->parent == NULL;
-  HeapStatus status = allocation_scope_end(scope, NULL, &control);
-  if (top_scope) {
-    (void)runtime;
-    ScopeTotals *totals = &carrier->scope_totals;
-    totals->total_allocated_bytes += scope->total_allocated_bytes;
-    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-      totals->allocated_bytes_by_kind[kind] += scope->allocated_bytes_by_kind[kind];
-    if (scope->peak_live_bytes > totals->peak_live_bytes) totals->peak_live_bytes = scope->peak_live_bytes;
-    totals->retained_bytes += scope->live_bytes;
-    totals->collections += scope->collections;
-    totals->full_collections += scope->full_collections;
-    totals->scanned_allocations += scope->scanned_allocations;
-  }
-  return status == HEAP_OK ? control : defect(FOREIGN_POINTER_DEFECT, -1);
+  (void)runtime;
+  return chimi_runtime_end_measured_scope_v1(scope, control);
 }
 
 /* Bytes read from a descriptor and not yet consumed. Standard input's buffer is
@@ -6196,34 +6174,18 @@ bool chimi_runtime_fs_wait_v1(ChimiRuntime *runtime, int fd, bool writable) {
 static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
                                              uint32_t argument_count, uint32_t call_node);
 
+/* The intrinsics runtime.c still serves; the evaluator calls the Rust families
+   directly (chimi-runtime intrinsics/dispatch.rs). */
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  if ((intrinsic >= CHIMI_INTRINSIC_MAP_REMOVE && intrinsic <= CHIMI_INTRINSIC_MAP_REDUCE_ENTRIES) ||
-      (intrinsic >= CHIMI_INTRINSIC_MAP_EMPTY && intrinsic <= CHIMI_INTRINSIC_MAP_PUT))
-    return chimi_intrinsic_map_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_SET_EMPTY && intrinsic <= CHIMI_INTRINSIC_SET_REDUCE_ITEMS)
-    return chimi_intrinsic_set_v1(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_JSON_DECODE && intrinsic <= CHIMI_INTRINSIC_JSON_NUMBER_TO_DECIMAL)
-    return chimi_intrinsic_json_v1(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_DECIMAL_SCALED && intrinsic <= CHIMI_INTRINSIC_DECIMAL_TO_FLOAT)
-    return chimi_intrinsic_decimal_v1(intrinsic, arguments, argument_count, call_node);
-  if ((intrinsic >= CHIMI_INTRINSIC_BYTES_FROM && intrinsic <= CHIMI_INTRINSIC_EMBED_BYTES) ||
-      intrinsic == CHIMI_INTRINSIC_HTTP_COUNT_ENDS)
-    return chimi_intrinsic_bytes_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_CAUSE_CONTEXT && intrinsic <= CHIMI_INTRINSIC_CAUSE_TO_TEXT)
     return invoke_cause_operation(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_TEST_ASSERT_EQUAL && intrinsic <= CHIMI_INTRINSIC_TEST_FAIL)
-    return chimi_intrinsic_assertion_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_RESOURCE_SCOPED)
     return resource_scoped(runtime, arguments, argument_count, span, call_node, environment);
   if (intrinsic == CHIMI_INTRINSIC_TEST_CAPTURE_DEFECT)
     return capture_defect(runtime, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_TEST_RECORDER && intrinsic <= CHIMI_INTRINSIC_TEST_RECEIVED)
-    return chimi_intrinsic_test_log_v1(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_ENV_HOST_VARIABLES && intrinsic <= CHIMI_INTRINSIC_FS_TEST_ROOT)
-    return chimi_intrinsic_host_v1(runtime, runtime->cancel, intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
@@ -6231,8 +6193,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD ||
       intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
     return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
-  if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
-    return chimi_intrinsic_duration_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if ((intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST) ||
@@ -6240,39 +6200,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
-  if (intrinsic >= CHIMI_INTRINSIC_DEBUG_CRASH && intrinsic <= CHIMI_INTRINSIC_LIST_SET)
-    return chimi_intrinsic_core_v1(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
-    /* The intrinsics over single values are Rust (chimi-runtime intrinsics/scalars.rs). */
-    case CHIMI_INTRINSIC_IO_PATH:
-    case CHIMI_INTRINSIC_PATH_FROM:
-    case CHIMI_INTRINSIC_PATH_TO_TEXT:
-    case CHIMI_INTRINSIC_LIST_LENGTH:
-    case CHIMI_INTRINSIC_TEXT_APPEND:
-    case CHIMI_INTRINSIC_TEXT_EQUAL:
-    case CHIMI_INTRINSIC_INT_PARSE:
-    case CHIMI_INTRINSIC_INT_TO_TEXT:
-    case CHIMI_INTRINSIC_INT_ADD_CHECKED:
-    case CHIMI_INTRINSIC_INT_SUBTRACT_CHECKED:
-    case CHIMI_INTRINSIC_INT_MULTIPLY_CHECKED:
-    case CHIMI_INTRINSIC_INT_DIVIDE_CHECKED:
-    case CHIMI_INTRINSIC_INT_REMAINDER_CHECKED:
-    case CHIMI_INTRINSIC_INT_MODULO:
-    case CHIMI_INTRINSIC_RANGE_START:
-    case CHIMI_INTRINSIC_RANGE_END:
-    case CHIMI_INTRINSIC_RANGE_LENGTH:
-    case CHIMI_INTRINSIC_RANGE_CONTAINS:
-    case CHIMI_INTRINSIC_FLOAT_FROM_INT:
-    case CHIMI_INTRINSIC_FLOAT_TRUNCATE:
-    case CHIMI_INTRINSIC_FLOAT_FLOOR:
-    case CHIMI_INTRINSIC_FLOAT_CEILING:
-    case CHIMI_INTRINSIC_FLOAT_ROUND:
-    case CHIMI_INTRINSIC_FLOAT_TO_INT:
-    case CHIMI_INTRINSIC_DEBUG_RENDER:
-    case CHIMI_INTRINSIC_DEBUG_RENDER_INDENTED:
-    case CHIMI_INTRINSIC_FLOAT_TO_TEXT:
-    case CHIMI_INTRINSIC_FLOAT_PARSE:
-      return chimi_intrinsic_scalar_v1(intrinsic, arguments, argument_count, call_node);
     case CHIMI_INTRINSIC_TASK_START:
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
         return intrinsic_shape_defect(call_node);
@@ -6714,105 +6642,13 @@ static void decode_constants(void) {
   carrier->fiber.target = previous;
 }
 
-/* The loop nodes stay here with their passes, which talk to the scheduler; the
-   other core nodes are Rust (eval.rs). */
-#define NODE_WRAPPER(NAME, OPERATION, ...) \
-  ChimiControl *chimi_rt_##NAME(ChimiRuntime *runtime, uint32_t node_id, ChimiEnvironment *incoming, uint64_t parent) { \
-    uint32_t profile_outer; \
-    uint64_t span = chimi_runtime_node_begin_v1(runtime, node_id, parent, OPERATION, &profile_outer); \
-    ChimiEnvironment *environment = incoming; (void)environment; \
-    ChimiControl *result = NULL; do { __VA_ARGS__ } while (0); \
-    return chimi_runtime_node_finish_v1(runtime, node_id, parent, span, OPERATION, profile_outer, result); \
-  }
-#define RUN(CHILD) run_node((CHILD), runtime, environment, span)
-
-/* Runs passes in a C loop so stack use is independent of the pass count. The loop owns
-   one cloned environment and rebinds only its state slot between passes; that is safe
-   because closures copy captured slots and binding nodes clone before writing. Each
-   pass checks cancellation first and runs under this node's span, so pass operations
-   are siblings.
-
-   A pass's allocations are reclaimed once it ends, keeping only what the next state
-   reaches. Values are immutable and the loop environment lives in the enclosing area,
-   so the state is the only path from one pass to the next. Under the scheduler each
-   task has its own heap, and values cross between tasks only as fragment copies, so a
-   pass never frees what another task can reach. */
-static ChimiControl *run_loop_passes(ChimiRuntime *runtime, uint32_t node_id,
-                                     ChimiEnvironment *incoming, uint64_t span, ChimiValue *state) {
-  const ChimiNode *node = &CHIMI_NODES[node_id];
-  ChimiEnvironment *environment = clone_local_environment(incoming);
-  uint32_t state_slot = environment_slot(node->a);
-  ChimiControl *result = NULL;
-  AllocationScope passes;
-  allocation_scope_begin(&passes);
-  uint32_t polls = 0;
-  for (;;) {
-    if (runtime->cancel) { result = cancelled(); break; }
-    if (CHIMI_REQUIRES_SCHEDULER &&
-        (chimi_fiber_scope_cancel_pending() ||
-         (chimi_fiber_scope_polls() && (++polls & 1023u) == 0))) {
-      /* A fired timeout scope, or one whose real-clock deadline may have
-         passed while this loop never parked: a loop pass is a cancellation
-         point. */
-      ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
-      if (scheduler_request(&check) == CHIMI_FIBER_CANCEL) { result = cancelled(); break; }
-    }
-    environment->locals[state_slot] = state;
-    ChimiControl *pass = RUN(node->c);
-    if (pass->kind == CONTROL_SUCCESS) {
-      state = pass->value;
-      if (allocation_scope_collect(&passes, &state, NULL) != HEAP_OK) {
-        result = defect(FOREIGN_POINTER_DEFECT, (int64_t)node_id);
-        break;
-      }
-      continue;
-    }
-    if (pass->kind == CONTROL_BREAK && pass->node == (int64_t)node->a) {
-      result = success(pass->value);
-    } else {
-      result = pass;
-    }
-    break;
-  }
-  return end_measured_allocation_scope(runtime, &passes, result);
-}
-
-NODE_WRAPPER(loop, "loop", {
-  ChimiControl *initial = RUN(CHIMI_NODES[node_id].b);
-  if (initial->kind != CONTROL_SUCCESS) { result = initial; break; }
-  result = run_loop_passes(runtime, node_id, incoming, span, initial->value);
-})
-
-/* A loop whose state is an Int and whose body is integer arithmetic and matches over
-   literals (CHI-90). The compiler emits one pass as `pass`, which returns
-   CHIMI_DIRECT_PASS_CONTINUE with the next state, CHIMI_DIRECT_PASS_BREAK with the
-   loop's value, or CHIMI_DIRECT_PASS_FALLBACK when the pass would defect (overflow,
-   division by zero, no matching arm). A pass that falls back is rerun from the same
-   state by the runtime loop, which reports the defect exactly as it would have. The
-   passes allocate nothing, and cancellation is checked before each one, as the
-   runtime loop does. Only trace-off, unprofiled runs take this path: tracing keeps
-   every node's span and profiling counts every node, so both run the runtime loop
-   from the start. */
-ChimiControl *chimi_rt_direct_loop(ChimiRuntime *runtime, uint32_t node_id,
-                                   ChimiEnvironment *incoming, uint64_t parent,
-                                   ChimiDirectPass pass) {
-  if (!runtime->silent || profile_rows) return chimi_rt_loop(runtime, node_id, incoming, parent);
-  ChimiControl *initial = run_node(CHIMI_NODES[node_id].b, runtime, incoming, parent);
-  if (initial->kind != CONTROL_SUCCESS) return initial;
-  /* A body that never reads its state (`loop s = "x" { break 5 }`) lowers whatever
-     the state's type, so a state that is not an Int runs on the runtime loop. */
-  if (initial->value->kind != VALUE_INTEGER)
-    return run_loop_passes(runtime, node_id, incoming, parent, initial->value);
-  int64_t state = initial->value->as.integer;
-  for (;;) {
-    if (runtime->cancel) return cancelled();
-    int64_t next = 0;
-    switch (pass(state, &next)) {
-      case CHIMI_DIRECT_PASS_CONTINUE: state = next; continue;
-      case CHIMI_DIRECT_PASS_BREAK: return success(integer_value(next));
-      default: return run_loop_passes(runtime, node_id, incoming, parent, integer_value(state));
-    }
-  }
+/* The loop nodes are Rust (eval.rs). A pass asks the scheduler here whether a
+   fired timeout scope, or one whose real-clock deadline may have passed while
+   the loop never parked, cancelled it: a loop pass is a cancellation point. */
+bool chimi_runtime_loop_scope_check_v1(void);
+bool chimi_runtime_loop_scope_check_v1(void) {
+  ChimiSchedulerRequest check = {.kind = CHIMI_REQUEST_SCOPE_CHECK};
+  return scheduler_request(&check) == CHIMI_FIBER_CANCEL;
 }
 static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("{\"schema\":\"chimi.runtime.v1\",", output);

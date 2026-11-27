@@ -30,3 +30,11 @@ exit 1
 KILLED       a carrier never takes a block [runtime_state -- across_carrier_threads] (57s)
 KILLED       blocks overlap between carriers [runtime_state -- across_carrier_threads] (57s)
 KILLED       one carrier's epochs restart at every block [runtime_state -- across_carrier_threads] (58s)
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the evaluator moved (CHI-305 phase 7, PR 271):
+# mutation run at f833be6721e73d67e89300119a8e3b8818c9604e
+# carrier_measure_mutations.py: 2 mutants against compiler/chimi
+BASELINE ok  [runtime_state -- across_carrier_threads] (55s)
+KILLED       a carrier never takes a span block [runtime_state -- across_carrier_threads] (55s)
+KILLED       span blocks overlap between carriers [runtime_state -- across_carrier_threads] (55s)
+# result: every mutant killed

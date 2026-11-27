@@ -28,7 +28,7 @@ use crate::heap::layout::{Control, Environment, Value};
 ///
 /// # Safety
 /// `arguments` holds `count` values, or `count` is 0.
-unsafe fn arguments<'a>(arguments: *mut *mut Value, count: u32) -> &'a [*mut Value] {
+pub(super) unsafe fn arguments<'a>(arguments: *mut *mut Value, count: u32) -> &'a [*mut Value] {
     if count == 0 {
         &[]
     } else {

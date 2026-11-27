@@ -1,0 +1,12 @@
+
+# Retargeted to runtime/chimi-runtime/src/eval.rs when the loop nodes moved (CHI-305 phase 7, PR 272):
+# mutation run at 54125fee9e4961d32dd35a33555adbb88202430e
+# direct_loop_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [language -- direct_loops_over_other_states] (52s)
+KILLED       a state that is not an Int defects [language -- direct_loops_over_other_states] (51s)
+# result: every mutant killed
+# mutation run at 54125fee9e4961d32dd35a33555adbb88202430e
+# direct_loop_mutations.py: 1 mutants against compiler/chimi
+BASELINE ok  [cli -- native_traced_integer_loop_reports_every_pass] (53s)
+KILLED       tracing runs the direct passes [cli -- native_traced_integer_loop_reports_every_pass] (50s)
+# result: every mutant killed
