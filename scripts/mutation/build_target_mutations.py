@@ -77,8 +77,8 @@ MUTATIONS = [
         "            Toolchain::Cross { .. } => (std::env::consts::OS, std::env::consts::ARCH),",
     )]),
     cross("an ELF file's dependencies are not read", N, [(
-        "                    if entry.tag(endian) == i64::from(elf::DT_NEEDED) {",
-        "                    if entry.tag(endian) != i64::from(elf::DT_NEEDED) {",
+        "                    if entry.tag(endian) == elf::DT_NEEDED {",
+        "                    if entry.tag(endian) != elf::DT_NEEDED {",
     )]),
     cross("a Mach-O file's dependencies are not read", N, [(
         "                if let Some(dylib) = command.dylib().map_err(malformed)? {",

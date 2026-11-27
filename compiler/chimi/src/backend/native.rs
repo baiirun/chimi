@@ -1221,7 +1221,7 @@ fn declared_dependencies(executable: &Path) -> Result<Vec<String>, String> {
             if let Some((entries, link)) = sections.dynamic(endian, &*bytes).map_err(malformed)? {
                 let strings = sections.strings(endian, &*bytes, link).map_err(malformed)?;
                 for entry in entries {
-                    if entry.tag(endian) == i64::from(elf::DT_NEEDED) {
+                    if entry.tag(endian) == elf::DT_NEEDED {
                         dependencies.push(text(entry.string(endian, strings).map_err(malformed)?));
                     }
                 }

@@ -381,7 +381,16 @@ fn build_cross_runtime_pack(out: &Path, target: &CrossTarget) -> Result<(PathBuf
     let directory = out.join("cross").join(target.triple);
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    // The scripts and archiver run in other directories, so a relative path
+    // in CHIMI_ZIG is made absolute; a bare name stays a PATH lookup.
     let zig = zig_program();
+    let zig = if Path::new(&zig).components().count() > 1 {
+        std::fs::canonicalize(&zig)
+            .map_err(|error| format!("{ZIG_VARIABLE} {}: {error}", zig.to_string_lossy()))?
+            .into_os_string()
+    } else {
+        zig
+    };
     let zig_text = zig.to_string_lossy().into_owned();
     let cc = directory.join("cc");
     let ar = directory.join("ar");
@@ -646,7 +655,7 @@ fn abi_version(header: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "runtime.h does not define CHIMI_RUNTIME_ABI_VERSION".to_owned())
 }
 
-/// Must match `command_identity` in `src/backend/native.rs`.
+/// Must match `command_identity` in `src/backend/target.rs`.
 fn compiler_identity() -> Result<String, String> {
     let output = Command::new(RUNTIME_C_COMPILER)
         .arg("--version")
