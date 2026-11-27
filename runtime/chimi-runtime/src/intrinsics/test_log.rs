@@ -103,7 +103,7 @@ unsafe fn detach(value: *mut Value, operation: &[u8], node: i64) -> Result<*mut 
 ///
 /// # Safety
 /// Right after a [`fragment::copy`] that returned `FOREIGN_POINTER`.
-unsafe fn foreign_message(operation: &[u8], subject: &[u8], side: &[u8]) -> *const core::ffi::c_char {
+pub(crate) unsafe fn foreign_message(operation: &[u8], subject: &[u8], side: &[u8]) -> *const core::ffi::c_char {
     // SAFETY: the caller's contract; the carrier's fiber has a live heap.
     unsafe {
         let here = current_carrier();

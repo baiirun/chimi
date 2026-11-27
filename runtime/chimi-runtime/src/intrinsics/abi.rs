@@ -21,7 +21,7 @@ use super::durations::duration_operation;
 use super::host::host_operation;
 use super::scalars::scalar_operation;
 use super::json::json_operation;
-use super::test_log::{release, send_to_test_mailbox, test_log_operation};
+use super::test_log::{release, test_log_operation};
 use crate::heap::layout::{Control, Environment, Value};
 
 /// The arguments as a slice.
@@ -188,20 +188,6 @@ pub unsafe extern "C" fn chimi_intrinsic_test_log_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { test_log_operation(intrinsic, arguments(values, count), call_node) }
-}
-
-/// [`send_to_test_mailbox`].
-///
-/// # Safety
-/// As for `send_to_test_mailbox`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_send_to_test_mailbox_v1(
-    address: *const Value,
-    message: *mut Value,
-    call_node: u32,
-) -> *mut Control {
-    // SAFETY: the caller's contract.
-    unsafe { send_to_test_mailbox(address, message, call_node) }
 }
 
 /// [`release`].
