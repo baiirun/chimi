@@ -79,18 +79,19 @@ MUTATIONS = [
     programs("native: a dropped-frames line is missing", RUST_CAUSES, [
         ("                    self.dropped(depth, dropped_frames, b\"context frame\");",
          "                    let _ = dropped_frames;")]),
-    programs("native: a suppressed cause shows no reason", RUST_CAUSES, [
+    dict(name="native: a suppressed cause shows no reason", file=RUST_CAUSES, edits=[
         ("                self.text(b\"suppressed (\");",
-         "                self.text(b\"suppressed \");")]),
+         "                self.text(b\"suppressed \");")],
+        targets=["task_combinators"], filter="a_root_task_all_failure_reports_its_sibling_causes"),
     programs("native: a frame's location is missing", RUST_CAUSES, [
         ("                self.location((*(*frame.add(1)).value).payload.integer);",
          "                let _ = frame;")]),
     programs("native: Cause.frames forgets the texts", RUST_CAUSES, [
         ("                    *texts.add(index as usize) = (*(*list::get(frames, index)).payload.record.fields).value;",
          "                    *texts.add(index as usize) = void_value();")]),
-    programs("native: a defect's summary is rendered", RUST_CAUSES, [
-        ("                success(if integer(cause, Slot::KIND) == EXPECTED_FAILURE { render(payload, false) } else { payload })",
-         "                success(render(payload, false))")]),
+    # No mutant for Cause.summary of a defect or a cancellation: a program can
+    # bind only an expected failure's cause (cause arms, Cause.of, Task.all's
+    # siblings), so that branch is unreachable from Chimi code.
     programs("C: Cause.context adds no frame", RUNTIME, [
         ("  return chimi_runtime_control_with_cause_v1(control, chimi_runtime_cause_with_frame_v1(cause, arguments[1], call_node));",
          "  return chimi_runtime_control_with_cause_v1(control, cause);")]),
