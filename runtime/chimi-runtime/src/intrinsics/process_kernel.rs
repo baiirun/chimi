@@ -1,9 +1,10 @@
 //! The std/process and std/supervisor operations that run on the scheduler
 //! (docs/architecture/supervised-process-runtime.md, "Mapping onto the
 //! native runtime"), as they move from `runtime.c`. This file holds the
-//! requests that carry no message: a process's own address and mailbox
-//! counts, `Process.receive`, `Process.unmonitor`, and `Supervisor.address`,
-//! `remove_process`, `remove_supervisor`, `stop` and `wait`.
+//! requests that need no spec: a process's own address and mailbox counts,
+//! `Process.send`, `receive`, `monitor` and `unmonitor`, and
+//! `Supervisor.address`, `remove_process`, `remove_supervisor`, `stop` and
+//! `wait`.
 //!
 //! Only process programs link the process kernel (pay-for-play, lab
 //! scenario MF06), so nothing the evaluator always links calls this file:
@@ -15,15 +16,17 @@ use core::ffi::{CStr, c_char, c_void};
 use core::ptr;
 
 use super::abi::arguments;
+use super::channels::{Carried, fragment_of, free_fragment};
 use super::clocks::ClockCall;
 use super::message::Message;
-use super::standard::{defect, defect_with, shape_defect, standard_value, success, void_value};
+use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
+use super::test_log::{foreign_message, send_to_test_mailbox};
 use crate::eval::cancelled;
 use crate::heap::allocator::current_carrier;
 use crate::heap::fragment;
 use crate::heap::layout::{
-    Control, Environment, FRAGMENT_ROOTS, Intrinsic, ProcessRequest, Runtime, RuntimeFragment, Scheduler,
-    StandardConstructor, Trace, Value, ValueKind,
+    ADDRESS_TEST, Control, Environment, FRAGMENT_ROOTS, Intrinsic, MessageCapabilities, ProcessRequest, Runtime,
+    RuntimeFragment, Scheduler, StandardConstructor, Trace, Value, ValueKind,
 };
 use crate::heap::values::{integer_value, new_value};
 use crate::scheduler::process_request;
@@ -72,6 +75,121 @@ unsafe fn ask_until_answered(request: &mut ProcessRequest) -> bool {
         let cancel = unsafe { process_request(request) };
         if cancel || request.status != Scheduler::RESPONSE_PENDING {
             return cancel;
+        }
+    }
+}
+
+/// What a refused hand-over says: "<operation>: the <subject> points into
+/// owner N, outside the <side>'s heap (owner M)".
+struct Foreign {
+    operation: &'static [u8],
+    subject: &'static [u8],
+    side: &'static [u8],
+}
+
+/// Issues `request` once with a copy of `value` as its message, carrying the
+/// Receivers and Completions the copy holds: the scheduler keeps both when
+/// it answers OK, until the receive that adopts the copy, and any other
+/// reply leaves them with this fiber. `counting` counts the copy's bytes
+/// toward the fiber's measured copies, as a sent message does. `Ok(true)`
+/// when the fiber was cancelled.
+///
+/// # Safety
+/// Runs on a fiber of a program linked with the process kernel; `value` is
+/// live.
+unsafe fn hand_over(
+    request: &mut ProcessRequest,
+    value: *mut Value,
+    counting: bool,
+    foreign: Foreign,
+    node: i64,
+) -> Result<bool, *mut Control> {
+    // SAFETY: the caller's contract; an OK reply makes the fragment the
+    // scheduler's.
+    unsafe {
+        let here = current_carrier();
+        (*here).copy_counting = counting;
+        let copy = fragment_of(value);
+        (*here).copy_counting = false;
+        let Some(message) = copy else {
+            return Err(defect_with(foreign_message(foreign.operation, foreign.subject, foreign.side), node));
+        };
+        let mut carried = Carried::of((*message).roots[0]);
+        let capabilities = MessageCapabilities { items: carried.items, count: carried.count };
+        request.message = message as u64;
+        request.carried = if capabilities.count != 0 { (&raw const capabilities).cast() } else { ptr::null() };
+        let cancel = process_request(request);
+        carried.release();
+        if request.status != Scheduler::RESPONSE_OK {
+            free_fragment(message);
+        }
+        Ok(cancel)
+    }
+}
+
+/// `Process.send`: a copy of the message to the address's mailbox, or a
+/// test Mailbox.
+///
+/// # Safety
+/// Runs on a fiber of a program linked with the process kernel; `address`
+/// is a live process address and `message` live.
+unsafe fn send(address: *mut Value, message: *mut Value, call_node: u32) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let node = i64::from(call_node);
+        let target = (*address).payload.address;
+        if target.kind == ADDRESS_TEST {
+            return send_to_test_mailbox(address, message, call_node);
+        }
+        let mut request = ProcessRequest::of(Scheduler::REQUEST_PROCESS_SEND);
+        request.address_kind = target.kind;
+        request.address = target.target;
+        let foreign = Foreign { operation: b"Process.send", subject: b"message", side: b"sender" };
+        match hand_over(&mut request, message, true, foreign, node) {
+            Err(refused) => refused,
+            Ok(true) => cancelled(),
+            Ok(false) => match request.status {
+                Scheduler::RESPONSE_OK => success(void_value()),
+                Scheduler::RESPONSE_FULL => {
+                    failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))
+                }
+                Scheduler::RESPONSE_UNAVAILABLE => {
+                    failure(standard_value(StandardConstructor::PROCESS_SEND_UNAVAILABLE, &[message]))
+                }
+                _ => defect(c"Process.send scheduler request failed", node),
+            },
+        }
+    }
+}
+
+/// `Process.monitor`: a monitor of the address, whose notice the scheduler
+/// holds until the receive that runs it.
+///
+/// # Safety
+/// Runs on a process body's fiber of a program linked with the process
+/// kernel; `address` is a live process address and `notice` a live
+/// callable.
+unsafe fn monitor(address: *mut Value, notice: *mut Value, call_node: u32) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let node = i64::from(call_node);
+        let target = (*address).payload.address;
+        if target.kind == ADDRESS_TEST {
+            return defect(c"Process.monitor: a test address has no process to watch", node);
+        }
+        let mut request = ProcessRequest::of(Scheduler::REQUEST_PROCESS_MONITOR);
+        request.address_kind = target.kind;
+        request.address = target.target;
+        let foreign = Foreign { operation: b"Process.monitor", subject: b"notice", side: b"watcher" };
+        match hand_over(&mut request, notice, false, foreign, node) {
+            Err(refused) => refused,
+            Ok(true) => cancelled(),
+            Ok(false) if request.status == Scheduler::RESPONSE_OK => {
+                let value = new_value(ValueKind::PROCESS_MONITOR);
+                (*value).payload.address.target = request.monitor;
+                success(value)
+            }
+            Ok(false) => defect(c"Process.monitor scheduler request failed", node),
         }
     }
 }
@@ -185,6 +303,18 @@ unsafe fn process_kernel_operation(call: ClockCall, intrinsic: u32, arguments: &
                     i64::from(request.capacity)
                 };
                 success(integer_value(ValueKind::INTEGER, count))
+            }
+            Intrinsic::PROCESS_SEND => {
+                if arguments.len() != 2 || (*arguments[0]).kind != ValueKind::PROCESS_ADDRESS {
+                    return shape_defect(call.call_node);
+                }
+                send(arguments[0], arguments[1], call.call_node)
+            }
+            Intrinsic::PROCESS_MONITOR => {
+                if !shape(&[ValueKind::PROCESS_INBOX, ValueKind::PROCESS_ADDRESS, ValueKind::CALLABLE]) {
+                    return shape_defect(call.call_node);
+                }
+                monitor(arguments[1], arguments[2], call.call_node)
             }
             Intrinsic::PROCESS_UNMONITOR => {
                 if !shape(&[ValueKind::PROCESS_INBOX, ValueKind::PROCESS_MONITOR]) {

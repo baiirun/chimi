@@ -1592,7 +1592,9 @@ _Static_assert(CHIMI_SELECT_INBOX == 2, "layout: CHIMI_SELECT_INBOX");
 _Static_assert(CHIMI_SELECT_TASK == 3, "layout: CHIMI_SELECT_TASK");
 _Static_assert(CHIMI_SELECT_TIMER == 4, "layout: CHIMI_SELECT_TIMER");
 _Static_assert(CHIMI_REQUEST_PROCESS_SELF == 13, "layout: CHIMI_REQUEST_PROCESS_SELF");
+_Static_assert(CHIMI_REQUEST_PROCESS_SEND == 14, "layout: CHIMI_REQUEST_PROCESS_SEND");
 _Static_assert(CHIMI_REQUEST_PROCESS_RECEIVE == 15, "layout: CHIMI_REQUEST_PROCESS_RECEIVE");
+_Static_assert(CHIMI_REQUEST_PROCESS_MONITOR == 28, "layout: CHIMI_REQUEST_PROCESS_MONITOR");
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_ADDRESS == 18, "layout: CHIMI_REQUEST_SUPERVISOR_ADDRESS");
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS == 19, "layout: CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS");
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_STOP == 20, "layout: CHIMI_REQUEST_SUPERVISOR_STOP");
@@ -1600,6 +1602,8 @@ _Static_assert(CHIMI_REQUEST_SUPERVISOR_WAIT == 21, "layout: CHIMI_REQUEST_SUPER
 _Static_assert(CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR == 23, "layout: CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR");
 _Static_assert(CHIMI_REQUEST_PROCESS_UNMONITOR == 29, "layout: CHIMI_REQUEST_PROCESS_UNMONITOR");
 _Static_assert(CHIMI_REQUEST_PROCESS_MAILBOX == 30, "layout: CHIMI_REQUEST_PROCESS_MAILBOX");
+_Static_assert(CHIMI_RESPONSE_FULL == 11, "layout: CHIMI_RESPONSE_FULL");
+_Static_assert(CHIMI_RESPONSE_UNAVAILABLE == 12, "layout: CHIMI_RESPONSE_UNAVAILABLE");
 _Static_assert(CHIMI_RESPONSE_FORCED == 16, "layout: CHIMI_RESPONSE_FORCED");
 _Static_assert(CHIMI_DOWN_RETURNED == 1, "layout: CHIMI_DOWN_RETURNED");
 _Static_assert(CHIMI_DOWN_UNAVAILABLE == 5, "layout: CHIMI_DOWN_UNAVAILABLE");
@@ -1924,9 +1928,11 @@ _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR == 102, "layout: CHIMI_INTR
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_POLICY == 103, "layout: CHIMI_INTRINSIC_SUPERVISOR_POLICY");
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_RESTARTS == 104, "layout: CHIMI_INTRINSIC_SUPERVISOR_RESTARTS");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_RECEIVE == 93, "layout: CHIMI_INTRINSIC_PROCESS_RECEIVE");
+_Static_assert(CHIMI_INTRINSIC_PROCESS_SEND == 94, "layout: CHIMI_INTRINSIC_PROCESS_SEND");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS == 95, "layout: CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_QUEUED == 96, "layout: CHIMI_INTRINSIC_PROCESS_QUEUED");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_CAPACITY == 97, "layout: CHIMI_INTRINSIC_PROCESS_CAPACITY");
+_Static_assert(CHIMI_INTRINSIC_PROCESS_MONITOR == 98, "layout: CHIMI_INTRINSIC_PROCESS_MONITOR");
 _Static_assert(CHIMI_INTRINSIC_PROCESS_UNMONITOR == 99, "layout: CHIMI_INTRINSIC_PROCESS_UNMONITOR");
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_ADDRESS == 109, "layout: CHIMI_INTRINSIC_SUPERVISOR_ADDRESS");
 _Static_assert(CHIMI_INTRINSIC_SUPERVISOR_REMOVE_PROCESS == 110, "layout: CHIMI_INTRINSIC_SUPERVISOR_REMOVE_PROCESS");
@@ -2019,6 +2025,7 @@ _Static_assert(CHIMI_ADDRESS_TEST == 3, "layout: CHIMI_ADDRESS_TEST");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
 _Static_assert(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL == 36, "layout: CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL");
+_Static_assert(CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE == 37, "layout: CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE == 35, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
@@ -3478,9 +3485,6 @@ ChimiControl *chimi_intrinsic_assertion_v1(uint32_t intrinsic, ChimiValue **argu
    handle counts' lock. */
 ChimiControl *chimi_intrinsic_test_log_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
                                           uint32_t call_node);
-/* Process.send to a test address, in intrinsics/test_log.rs. */
-ChimiControl *chimi_runtime_send_to_test_mailbox_v1(const ChimiValue *address, ChimiValue *message,
-                                                    uint32_t call_node);
 
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
@@ -5006,11 +5010,11 @@ static bool is_kind(ChimiValue **arguments, uint32_t index, ValueKind kind) {
   return arguments[index]->kind == kind;
 }
 
-/* The process kernel's requests that carry no message are Rust (chimi-runtime
-   intrinsics/process_kernel.rs): own address, mailbox counts, receive, unmonitor,
-   and Supervisor.address, remove_*, stop and wait. Only this runtime variant
-   calls it, so programs without processes do not link it (MF06). NULL for the
-   intrinsics still served below. */
+/* The process kernel's requests that need no spec are Rust (chimi-runtime
+   intrinsics/process_kernel.rs): own address, mailbox counts, send, receive,
+   monitor, unmonitor, and Supervisor.address, remove_*, stop and wait. Only this
+   runtime variant calls it, so programs without processes do not link it (MF06).
+   NULL for the supervisor starts, still served below. */
 ChimiControl *chimi_runtime_process_kernel_v1(ChimiRuntime *runtime, uint32_t intrinsic, ChimiValue **arguments,
                                               uint32_t argument_count, uint64_t span, uint32_t call_node,
                                               ChimiEnvironment *environment);
@@ -5023,86 +5027,6 @@ static ChimiControl *invoke_process_kernel(ChimiRuntime *runtime, uint32_t intri
                                                          call_node, environment);
   if (served) return served;
   switch (intrinsic) {
-    case CHIMI_INTRINSIC_PROCESS_MONITOR: {
-      if (argument_count != 3 || !is_kind(arguments, 0, VALUE_PROCESS_INBOX) ||
-          !is_kind(arguments, 1, VALUE_PROCESS_ADDRESS) || !is_kind(arguments, 2, VALUE_CALLABLE))
-        return intrinsic_shape_defect(call_node);
-      if (arguments[1]->as.address.kind == CHIMI_ADDRESS_TEST)
-        return defect("Process.monitor: a test address has no process to watch", call_node);
-      /* The notice outlives this call in the scheduler, like an accepted message,
-         until the receive that runs it adopts it back into this heap. */
-      void *roots[] = {arguments[2]};
-      AllocationKind kinds[] = {ALLOCATION_VALUE};
-      RuntimeFragment *notice = NULL;
-      if (fragment_copy(roots, kinds, 1, &notice) != HEAP_OK)
-        return defect(numeric_message("Process.monitor: the notice points into owner %" PRIu64
-                                      ", outside the watcher's heap (owner %" PRIu64 ")",
-                                      carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
-                      call_node);
-      /* Receivers and Completions the notice captures travel with it, as in a
-         Process.send message, until the receive that runs it. */
-      CapabilityTransfer carried = {.collect = true};
-      transfer_captures(&carried, notice->roots[0]);
-      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
-      ChimiProcessRequest request = {
-        .kind = CHIMI_REQUEST_PROCESS_MONITOR,
-        .address_kind = arguments[1]->as.address.kind,
-        .address = arguments[1]->as.address.target,
-        .message = (uint64_t)(uintptr_t)notice,
-        .carried = capabilities.count ? &capabilities : NULL,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      free(carried.carried);
-      if (request.status != CHIMI_RESPONSE_OK) fragment_free(notice);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      if (request.status != CHIMI_RESPONSE_OK) return defect("Process.monitor scheduler request failed", call_node);
-      ChimiValue *monitor = new_value(VALUE_PROCESS_MONITOR);
-      monitor->as.address.target = request.monitor;
-      return success(monitor);
-    }
-    case CHIMI_INTRINSIC_PROCESS_SEND: {
-      if (argument_count != 2 || !is_kind(arguments, 0, VALUE_PROCESS_ADDRESS))
-        return intrinsic_shape_defect(call_node);
-      if (arguments[0]->as.address.kind == CHIMI_ADDRESS_TEST)
-        return chimi_runtime_send_to_test_mailbox_v1(arguments[0], arguments[1], call_node);
-      void *roots[] = {arguments[1]};
-      AllocationKind kinds[] = {ALLOCATION_VALUE};
-      RuntimeFragment *message = NULL;
-      carrier->copy_counting = true;
-      HeapStatus status = fragment_copy(roots, kinds, 1, &message);
-      carrier->copy_counting = false;
-      if (status != HEAP_OK)
-        return defect(numeric_message("Process.send: the message points into owner %" PRIu64
-                                      ", outside the sender's heap (owner %" PRIu64 ")",
-                                      carrier->fragment_copy_foreign_owner, carrier->fiber.heap->owner),
-                      call_node);
-      /* Receivers and Completions in the message travel with it, as through a
-         channel: an accepted message puts them in flight, and the process that
-         receives it owns them. A refused one leaves them with the sender. */
-      CapabilityTransfer carried = {.collect = true};
-      transfer_captures(&carried, message->roots[0]);
-      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
-      ChimiProcessRequest request = {
-        .kind = CHIMI_REQUEST_PROCESS_SEND,
-        .address_kind = arguments[0]->as.address.kind,
-        .address = arguments[0]->as.address.target,
-        .message = (uint64_t)(uintptr_t)message,
-        .carried = capabilities.count ? &capabilities : NULL,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      free(carried.carried);
-      /* Only an accepted message is the scheduler's; any other reply leaves it here. */
-      if (request.status != CHIMI_RESPONSE_OK) fragment_free(message);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      ChimiValue *fields[] = {arguments[1]};
-      switch (request.status) {
-        case CHIMI_RESPONSE_OK: return success(void_value());
-        case CHIMI_RESPONSE_FULL: return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL, fields, 1));
-        case CHIMI_RESPONSE_UNAVAILABLE:
-          return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE, fields, 1));
-      }
-      return defect("Process.send scheduler request failed", call_node);
-    }
     case CHIMI_INTRINSIC_SUPERVISOR_START:
     case CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR: {
       bool nested = intrinsic == CHIMI_INTRINSIC_SUPERVISOR_START_SUPERVISOR;

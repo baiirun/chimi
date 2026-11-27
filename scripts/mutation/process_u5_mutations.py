@@ -24,6 +24,10 @@ TYPING = "src/typing.rs"
 FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
 FIXTURE = "src/process_lab/fixture.rs"
 PROCESSES = "src/execution/processes.rs"
+# Process.send and monitor hand their copies over in Rust since CHI-305
+# step 5, phase 7; the foreign-pointer message is shared with test mailboxes.
+KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
+TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 
 TRANSCRIPT = "expected.transcript line"
 OUTCOME = "expected.outcome line"
@@ -50,28 +54,28 @@ KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 STACK_TEST = "native_process_stack_depth_and_named_defects"
 
 
-SEND_REQUEST = "      ChimiProcessRequest request = {\n        .kind = CHIMI_REQUEST_PROCESS_SEND,"
-SEND_FREE = "      if (request.status != CHIMI_RESPONSE_OK) fragment_free(message);"
+SEND_COPY = "        let mut carried = Carried::of((*message).roots[0]);"
+SEND_FREE = "        if request.status != Scheduler::RESPONSE_OK {\n            free_fragment(message);\n        }"
 TRACE_MODE = ".trace_mode = runtime->silent ? 0 : (runtime->full_trace ? 2 : 1),"
 
 MUTATIONS = [
     # Messages cross as copies made in the sender's heap.
-    lab("the message is the sender's original value", RUNTIME, "CB01",
+    lab("the message is the sender's original value", KERNEL, "CB01",
         [OUTCOME, "exited with"], [(
-            SEND_REQUEST, "      message->roots[0] = arguments[1];\n" + SEND_REQUEST)]),
-    lab("an accepted message is freed by its sender", RUNTIME, "MB01",
-        [OUTCOME, TRANSCRIPT, "exited with"], [(SEND_FREE, "      fragment_free(message);")]),
-    lab("a refused message is never freed", RUNTIME, "CB03",
+            SEND_COPY, "        (*message).roots[0] = value.cast();\n" + SEND_COPY)]),
+    lab("an accepted message is freed by its sender", KERNEL, "MB01",
+        [OUTCOME, TRANSCRIPT, "exited with"], [(SEND_FREE, "        free_fragment(message);")]),
+    lab("a refused message is never freed", KERNEL, "CB03",
         ["fragments_live is not 0"], [(
-            SEND_FREE, "      if (request.status == CHIMI_RESPONSE_UNSET) fragment_free(message);")]),
+            SEND_FREE, SEND_FREE.replace("!= Scheduler::RESPONSE_OK", "== Scheduler::RESPONSE_UNSET"))]),
     lab("a message copy ignores sharing", FRAGMENT, "CB02",
         ["copied_values is not 21", "exceeded the 60 s run limit"], [(
             "        let existing = copy.table.find(pointer);\n        if !existing.is_null() {\n            return existing;\n        }\n",
             "")]),
-    lab("Full is reported as Unavailable", RUNTIME, "MB02",
+    lab("Full is reported as Unavailable", KERNEL, "MB02",
         [OUTCOME], [(
-            "case CHIMI_RESPONSE_FULL: return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_FULL, fields, 1));",
-            "case CHIMI_RESPONSE_FULL: return failure(standard_value(CHIMI_CONSTRUCTOR_PROCESS_SEND_UNAVAILABLE, fields, 1));")]),
+            "failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))",
+            "failure(standard_value(StandardConstructor::PROCESS_SEND_UNAVAILABLE, &[message]))")]),
     # Messages the scheduler discards unread come back through release_message.
     lab("discarded messages are never freed", RUNTIME, "MB06",
         ["fragments_live is not 0"], [(
@@ -90,14 +94,14 @@ MUTATIONS = [
     cli("a body's defect message is dropped", RUNTIME, STACK_TEST, [(
         "      chimi_fiber_report_defect(control->message);\n", "")]),
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
-    lab("a send skips the foreign-pointer check", RUNTIME, "CB07",
+    lab("a send skips the foreign-pointer check", KERNEL, "CB07",
         ["did not defect"], [(
-            "      carrier->copy_counting = false;\n      if (status != HEAP_OK)",
-            "      carrier->copy_counting = false;\n      if (status != HEAP_OK && false)")]),
-    lab("the defect names only the sender", RUNTIME, "CB07",
+            "            return Err(defect_with(foreign_message(foreign.operation, foreign.subject, foreign.side), node));",
+            "            return Err(success(void_value()));")]),
+    lab("the defect names only the sender", TEST_LOG, "CB07",
         ["does not name both owners"], [(
-            "fragment_copy_foreign_owner, carrier->fiber.heap->owner),",
-            "current_heap->owner, carrier->fiber.heap->owner),")]),
+            "            .integer((*here).fragment_copy_foreign_owner as i64)",
+            "            .integer((*(*here).fiber.heap).owner as i64)")]),
     # Adopted messages join the receiver's region, so its heap stays flat.
     lab("received messages join the heap's base area", FRAGMENT, "MF01",
         ["process_heap_peak_value_bytes differs", "heap_chunks_live differs"], [(

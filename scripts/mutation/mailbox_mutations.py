@@ -13,6 +13,8 @@ C = "runtime/native/runtime.c"
 TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 X = "src/execution.rs"
+# Process.send is Rust since CHI-305 step 5, phase 7.
+KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 
 
 def mutant(name, file, edits, targets=("testing",), filter="mailbox"):
@@ -20,9 +22,9 @@ def mutant(name, file, edits, targets=("testing",), filter="mailbox"):
 
 
 MUTATIONS = [
-    mutant("native: a send to a test address goes to the scheduler", C, [(
-        "      if (arguments[0]->as.address.kind == CHIMI_ADDRESS_TEST)\n        return chimi_runtime_send_to_test_mailbox_v1(",
-        "      if (0)\n        return chimi_runtime_send_to_test_mailbox_v1(",
+    mutant("native: a send to a test address goes to the scheduler", KERNEL, [(
+        "        if target.kind == ADDRESS_TEST {\n            return send_to_test_mailbox(",
+        "        if false {\n            return send_to_test_mailbox(",
     )]),
     mutant("native: a mailbox holds one more than its capacity", TEST_LOG, [(
         "        if log.values.len() as i64 >= log.limit {",

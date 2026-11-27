@@ -104,7 +104,7 @@ unsafe fn publisher_bundle(channel: u64, owner: u64, token: u64) -> *mut Value {
 ///
 /// # Safety
 /// Runs on a fiber; `value` is live.
-unsafe fn fragment_of(value: *mut Value) -> Option<*mut RuntimeFragment> {
+pub(crate) unsafe fn fragment_of(value: *mut Value) -> Option<*mut RuntimeFragment> {
     // SAFETY: the caller's contract.
     unsafe {
         let roots = [value.cast::<c_void>()];
@@ -117,29 +117,29 @@ unsafe fn fragment_of(value: *mut Value) -> Option<*mut RuntimeFragment> {
 
 /// # Safety
 /// `fragment` is live and unadopted.
-unsafe fn free_fragment(fragment: *mut RuntimeFragment) {
+pub(crate) unsafe fn free_fragment(fragment: *mut RuntimeFragment) {
     // SAFETY: the caller's contract.
     unsafe { fragment::free(current_carrier(), fragment) }
 }
 
 /// The capabilities a message's copy carries.
-struct Carried {
-    items: *mut c_void,
-    count: usize,
-    managed: usize,
+pub(crate) struct Carried {
+    pub(crate) items: *mut c_void,
+    pub(crate) count: usize,
+    pub(crate) managed: usize,
 }
 
 impl Carried {
     /// # Safety
     /// Runs on a fiber; `root` is live.
-    unsafe fn of(root: *mut c_void) -> Self {
+    pub(crate) unsafe fn of(root: *mut c_void) -> Self {
         let (mut count, mut managed) = (0, 0);
         // SAFETY: the caller's contract.
         let items = unsafe { chimi_runtime_carried_capabilities_v1(root.cast(), &raw mut count, &raw mut managed) };
         Self { items, count, managed }
     }
 
-    fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         // SAFETY: the list came from malloc, or is null.
         unsafe { libc::free(self.items) };
         self.items = ptr::null_mut();
