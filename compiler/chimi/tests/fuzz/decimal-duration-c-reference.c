@@ -6,6 +6,9 @@
    its names prefixed. */
 
 #define REFERENCE_DECIMAL_MAX_SCALE 38u
+static const int64_t REFERENCE_DURATION_UNITS[6] = {
+  3600000000000, 60000000000, 1000000000, 1000000, 1000, 1
+};
 typedef unsigned __int128 ReferenceDecimalMagnitude;
 typedef struct { bool negative; ReferenceDecimalMagnitude magnitude; uint32_t scale; } ReferenceDecimal;
 typedef enum { REFERENCE_DECIMAL_REMAINDER_ZERO, REFERENCE_DECIMAL_BELOW_HALF, REFERENCE_DECIMAL_HALF, REFERENCE_DECIMAL_ABOVE_HALF } ReferenceDecimalRemainder;
@@ -206,19 +209,19 @@ static void reference_duration_text(int64_t duration, char *text) {
   if (duration < 0) *out++ = '-';
   /* The magnitude of the minimum value does not fit int64_t. */
   uint64_t magnitude = duration < 0 ? (uint64_t)0 - (uint64_t)duration : (uint64_t)duration;
-  if (magnitude < (uint64_t)DURATION_UNITS[2]) {
-    int unit = magnitude >= (uint64_t)DURATION_UNITS[3] ? 3 : magnitude >= (uint64_t)DURATION_UNITS[4] ? 4 : 5;
-    out = reference_duration_decimal(out, magnitude, (uint64_t)DURATION_UNITS[unit]);
+  if (magnitude < (uint64_t)REFERENCE_DURATION_UNITS[2]) {
+    int unit = magnitude >= (uint64_t)REFERENCE_DURATION_UNITS[3] ? 3 : magnitude >= (uint64_t)REFERENCE_DURATION_UNITS[4] ? 4 : 5;
+    out = reference_duration_decimal(out, magnitude, (uint64_t)REFERENCE_DURATION_UNITS[unit]);
     strcpy(out, REFERENCE_DURATION_SUFFIXES[unit]); return;
   }
-  uint64_t hour = (uint64_t)DURATION_UNITS[0], minute = (uint64_t)DURATION_UNITS[1];
+  uint64_t hour = (uint64_t)REFERENCE_DURATION_UNITS[0], minute = (uint64_t)REFERENCE_DURATION_UNITS[1];
   /* Seconds stay in nanoseconds, so the fraction is exact. */
   uint64_t parts[3] = { magnitude / hour, magnitude % hour / minute, magnitude % minute };
   int first = 0, last = 2;
   while (parts[first] == 0) ++first;
   while (parts[last] == 0) --last;
   for (int part = first; part <= last; ++part) {
-    if (part == 2) out = reference_duration_decimal(out, parts[part], (uint64_t)DURATION_UNITS[2]);
+    if (part == 2) out = reference_duration_decimal(out, parts[part], (uint64_t)REFERENCE_DURATION_UNITS[2]);
     else out += sprintf(out, "%" PRIu64, parts[part]);
     out += sprintf(out, "%s", REFERENCE_DURATION_SUFFIXES[part]);
   }
@@ -257,7 +260,7 @@ static uint32_t reference_duration_parse(const char *text, int64_t *output) {
     while (fraction_length > 0 && fraction[fraction_length - 1] == '0') --fraction_length;
     /* An exact fraction has at most 13 significant digits: `h` is 2^13 * 5^11 * 9 ns. */
     if (fraction_length > 13) return CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID;
-    __int128 scale = DURATION_UNITS[unit], denominator = 1, numerator = 0;
+    __int128 scale = REFERENCE_DURATION_UNITS[unit], denominator = 1, numerator = 0;
     for (size_t i = 0; i < fraction_length; ++i) {
       denominator *= 10; numerator = numerator * 10 + (fraction[i] - '0');
     }

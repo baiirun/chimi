@@ -130,7 +130,7 @@ static ChimiControl *call_decimal(uint32_t intrinsic, ChimiValue **arguments, ui
   return fz_checked(chimi_intrinsic_decimal_v1(intrinsic, arguments, count, 0), "decimal intrinsic");
 }
 static ChimiControl *call_duration(uint32_t intrinsic, ChimiValue **arguments, uint32_t count) {
-  return fz_checked(invoke_duration(intrinsic, arguments, count, 0), "duration intrinsic");
+  return fz_checked(chimi_intrinsic_duration_v1(intrinsic, arguments, count, 0), "duration intrinsic");
 }
 static uint32_t fz_standard_of(const ChimiValue *value) {
   FUZZ_CHECK(value && value->kind == VALUE_CONSTRUCTED, "expected a constructed value");
