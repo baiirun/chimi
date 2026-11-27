@@ -4,8 +4,9 @@
 //! calls a child's node function; the span and profile row each node takes;
 //! and `invoke` for the calls a program defines. The intrinsics, host
 //! functions and C bindings `invoke` reaches stay behind
-//! `chimi_runtime_invoke_native_v1` in `runtime.c`, and so do the loop
-//! nodes, whose passes talk to the scheduler.
+//! `chimi_runtime_invoke_native_v1` in `runtime.c`. The loop nodes are here
+//! too; a pass asks the scheduler about its scope through
+//! `chimi_runtime_loop_scope_check_v1`.
 //!
 //! Core nodes share their incoming environment because ordinary evaluation
 //! only reads it. Sequence and provision clone before binding locals or
@@ -17,6 +18,7 @@
 //! order, so outputs and memory reports stay as they were.
 
 use core::ffi::{CStr, c_char, c_void};
+use core::mem::MaybeUninit;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering::Relaxed};
 
@@ -24,10 +26,10 @@ use crate::decimal::Decimal;
 use crate::heap::allocator::{current_carrier, one_thread_runs_fibers, profile_rows};
 use crate::heap::compare::compare;
 use crate::heap::layout::{
-    AllocationKind, Arm, Callable, CallableKind, Constructor, Control, ControlKind, Core, Environment, Field,
-    Function, NamedNode, Node, Pattern, Runtime, Step, Value, ValueKind,
+    AllocationKind, AllocationScope, Arm, Callable, CallableKind, Constructor, Control, ControlKind, Core, Environment, Field,
+    Function, HeapStatus, NamedNode, Node, Pattern, Runtime, Step, Value, ValueKind,
 };
-use crate::heap::list;
+use crate::heap::{collector, list, young};
 use crate::heap::values::{
     allocate_kind, clone_environment, clone_value_slots, decimal_value, environment, float_value, integer_value,
     new_control, new_environment, new_value, new_value_slots, pointer_value, range_value, requirement_slots,
@@ -70,6 +72,14 @@ unsafe extern "C" {
         call_node: u32,
         environment: *mut Environment,
     ) -> *mut Control;
+    /// Whether the program starts the scheduler (program data).
+    static CHIMI_REQUIRES_SCHEDULER: u32;
+    /// Asks the scheduler whether the running fiber's scope was cancelled.
+    fn chimi_runtime_loop_scope_check_v1() -> bool;
+    /// The scheduler's scope queries; `runtime.c` defines weak stand-ins
+    /// returning 0 for a program linked without the scheduler.
+    fn chimi_fiber_scope_cancel_pending() -> u32;
+    fn chimi_fiber_scope_polls() -> u32;
     /// `fmod` from the C library, which the `libc` crate does not declare.
     fn fmod(x: f64, y: f64) -> f64;
 }
@@ -1158,6 +1168,214 @@ unsafe fn break_node(eval: Eval, id_: u32) -> *mut Control {
     }
 }
 
+/// The defect a reclaiming scope reports when a root reaches into another
+/// heap.
+const FOREIGN_POINTER_DEFECT: &CStr = c"Chimi runtime heap invariant violated: a value points into another heap";
+
+/// Ends a reclaiming scope, keeping only what `control` reaches, and returns
+/// the control the scope's owner should produce: `control`, or a defect when
+/// the scope reached into another heap. Only an outermost scope adds to the
+/// carrier's totals, because a nested scope's statistics already merge into
+/// its parent.
+///
+/// # Safety
+/// Runs on the carrier whose innermost scope is `scope`.
+pub unsafe fn end_measured_scope(scope: *mut AllocationScope, control: *mut Control) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let here = current_carrier();
+        let mut control = control;
+        let top_scope = (*scope).parent.is_null();
+        let status = collector::end(here, scope, ptr::null_mut(), &raw mut control);
+        if top_scope {
+            let totals = &mut (*here).scope_totals;
+            let scope = &*scope;
+            totals.total_allocated_bytes = totals.total_allocated_bytes.wrapping_add(scope.total_allocated_bytes);
+            for (total, bytes) in totals.allocated_bytes_by_kind.iter_mut().zip(scope.allocated_bytes_by_kind) {
+                *total = total.wrapping_add(bytes);
+            }
+            if scope.peak_live_bytes > totals.peak_live_bytes {
+                totals.peak_live_bytes = scope.peak_live_bytes;
+            }
+            totals.retained_bytes = totals.retained_bytes.wrapping_add(scope.live_bytes);
+            totals.collections = totals.collections.wrapping_add(scope.collections);
+            totals.full_collections = totals.full_collections.wrapping_add(scope.full_collections);
+            totals.scanned_allocations = totals.scanned_allocations.wrapping_add(scope.scanned_allocations);
+        }
+        if status == HeapStatus::OK { control } else { defect(FOREIGN_POINTER_DEFECT, -1) }
+    }
+}
+
+/// Runs a loop's passes from `state` without recursing, so stack use does
+/// not grow with the pass count. The loop owns one cloned environment and
+/// rebinds only its state slot between passes; that is safe because
+/// closures copy captured slots and binding nodes clone before writing.
+/// Each pass checks cancellation first and runs under `span`, so pass
+/// operations are siblings.
+///
+/// A pass's allocations are reclaimed once it ends, keeping only what the
+/// next state reaches. Values are immutable and the loop environment lives
+/// in the enclosing area, so the state is the only path from one pass to the
+/// next. Under the scheduler each task has its own heap, and values cross
+/// between tasks only as fragment copies, so a pass never frees what another
+/// task can reach.
+///
+/// # Safety
+/// As for a node body; `node_id` is a loop node.
+#[inline(never)]
+unsafe fn run_loop_passes(
+    runtime: *mut Runtime,
+    node_id: u32,
+    incoming: *mut Environment,
+    span: u64,
+    state: *mut Value,
+) -> *mut Control {
+    // SAFETY: the caller's contract; `passes` is begun before any use and
+    // ended before it goes out of scope.
+    unsafe {
+        let node = node(node_id);
+        let environment = clone_environment(incoming, true, false);
+        let state_slot = (*environment).locals.add(slot(node.a));
+        let mut state = state;
+        let mut passes = MaybeUninit::<AllocationScope>::uninit();
+        let passes = passes.as_mut_ptr();
+        young::scope_begin(current_carrier(), passes);
+        let scheduled = CHIMI_REQUIRES_SCHEDULER != 0;
+        let mut polls = 0u32;
+        let result = loop {
+            if cancel_requested(runtime) {
+                break cancelled();
+            }
+            if scheduled && scope_check_due(&mut polls) && chimi_runtime_loop_scope_check_v1() {
+                break cancelled();
+            }
+            *state_slot = state;
+            let pass = run_node(node.c, runtime, environment, span);
+            if (*pass).kind == ControlKind::SUCCESS {
+                state = (*pass).value;
+                if collector::collect(current_carrier(), passes, &raw mut state, ptr::null_mut()) != HeapStatus::OK {
+                    break defect(FOREIGN_POINTER_DEFECT, i64::from(node_id));
+                }
+                continue;
+            }
+            if (*pass).kind == ControlKind::BREAK && (*pass).node == i64::from(node.a) {
+                break success((*pass).value);
+            }
+            break pass;
+        };
+        end_measured_scope(passes, result)
+    }
+}
+
+/// Whether a loop pass must ask the scheduler about its scope: a fired
+/// timeout scope, or, every 1024th pass, one whose real-clock deadline may
+/// have passed while this loop never parked. A loop pass is a cancellation
+/// point.
+#[inline(always)]
+fn scope_check_due(polls: &mut u32) -> bool {
+    // SAFETY: the scheduler's scope queries read the running fiber's scope.
+    unsafe {
+        chimi_fiber_scope_cancel_pending() != 0 || (chimi_fiber_scope_polls() != 0 && {
+            *polls = polls.wrapping_add(1);
+            *polls & 1023 == 0
+        })
+    }
+}
+
+/// The `loop` node `node_id`, under `parent`.
+///
+/// # Safety
+/// Runs on a fiber; `node_id` is a loop node of the program and `incoming`
+/// its live environment.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_rt_loop(
+    runtime: *mut Runtime,
+    node_id: u32,
+    incoming: *mut Environment,
+    parent: u64,
+) -> *mut Control {
+    const OPERATION: &CStr = c"loop";
+    // SAFETY: the caller's contract.
+    unsafe {
+        let frame = begin(runtime, node_id, parent, OPERATION.as_ptr());
+        let initial = run_node(node(node_id).b, runtime, incoming, frame.span);
+        let result = if (*initial).kind == ControlKind::SUCCESS {
+            run_loop_passes(runtime, node_id, incoming, frame.span, (*initial).value)
+        } else {
+            initial
+        };
+        finish(runtime, node_id, parent, frame, OPERATION.as_ptr(), result)
+    }
+}
+
+/// `ChimiDirectPass`: one compiled pass of a loop over an Int state.
+type DirectPass = unsafe extern "C" fn(i64, *mut i64) -> i32;
+
+/// The pass results a [`DirectPass`] returns (runtime.h).
+const DIRECT_PASS_CONTINUE: i32 = 0;
+const DIRECT_PASS_BREAK: i32 = 1;
+
+/// A loop whose state is an Int and whose body is integer arithmetic and
+/// matches over literals (CHI-90). The compiler emits one pass as `pass`,
+/// which returns `DIRECT_PASS_CONTINUE` with the next state,
+/// `DIRECT_PASS_BREAK` with the loop's value, or a fallback when the pass
+/// would defect (overflow, division by zero, no matching arm). A pass that
+/// falls back is rerun from the same state by [`run_loop_passes`], which
+/// reports the defect exactly as it would have. The passes allocate
+/// nothing, and cancellation is checked before each one, as the runtime
+/// loop does. Only trace-off, unprofiled runs take this path: tracing keeps
+/// every node's span and profiling counts every node, so both run
+/// [`chimi_rt_loop`] from the start.
+///
+/// # Safety
+/// As for [`chimi_rt_loop`]; `pass` is the node's compiled pass.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_rt_direct_loop(
+    runtime: *mut Runtime,
+    node_id: u32,
+    incoming: *mut Environment,
+    parent: u64,
+    pass: DirectPass,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if !(*runtime).silent || !profile_rows().is_null() {
+            return chimi_rt_loop(runtime, node_id, incoming, parent);
+        }
+        let initial = run_node(node(node_id).b, runtime, incoming, parent);
+        if (*initial).kind != ControlKind::SUCCESS {
+            return initial;
+        }
+        // A body that never reads its state (`loop s = "x" { break 5 }`)
+        // lowers whatever the state's type, so a state that is not an Int
+        // runs on the runtime loop.
+        let initial = (*initial).value;
+        if (*initial).kind != ValueKind::INTEGER {
+            return run_loop_passes(runtime, node_id, incoming, parent, initial);
+        }
+        let mut state = (*initial).payload.integer;
+        loop {
+            if cancel_requested(runtime) {
+                return cancelled();
+            }
+            let mut next = 0i64;
+            match pass(state, &raw mut next) {
+                DIRECT_PASS_CONTINUE => state = next,
+                DIRECT_PASS_BREAK => return success(integer_value(ValueKind::INTEGER, next)),
+                _ => {
+                    return run_loop_passes(
+                        runtime,
+                        node_id,
+                        incoming,
+                        parent,
+                        integer_value(ValueKind::INTEGER, state),
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// What a match subject produced, as its arms see it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MatchKind {
@@ -1635,4 +1853,17 @@ pub unsafe extern "C" fn chimi_runtime_node_finish_v1(
 ) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe { finish(runtime, id, parent, Frame { outer, span }, operation, result) }
+}
+
+/// [`end_measured_scope`], for the C regions that read lines and files.
+///
+/// # Safety
+/// As for `end_measured_scope`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_end_measured_scope_v1(
+    scope: *mut AllocationScope,
+    control: *mut Control,
+) -> *mut Control {
+    // SAFETY: the caller's contract.
+    unsafe { end_measured_scope(scope, control) }
 }
