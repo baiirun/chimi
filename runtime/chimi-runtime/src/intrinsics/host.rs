@@ -123,6 +123,23 @@ unsafe fn empty_list() -> *mut Value {
     unsafe { list::list_value(list::from_values(ptr::null(), 0), 0, 0) }
 }
 
+/// A tuple of `length` fields, which the caller fills; the allocator's fast
+/// path inlines into every caller, so this one keeps it out of line.
+///
+/// # Safety
+/// Runs on a fiber that may allocate.
+#[inline(never)]
+unsafe fn new_tuple(length: usize) -> (*mut Value, *mut Field) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let tuple = new_value(ValueKind::TUPLE);
+        (*tuple).payload.record.length = length as u32;
+        let fields = allocate_kind::<Field>(length, AllocationKind::FIELDS);
+        (*tuple).payload.record.fields = fields;
+        (tuple, fields)
+    }
+}
+
 /// A tuple of `values`.
 ///
 /// # Safety
@@ -131,10 +148,7 @@ unsafe fn empty_list() -> *mut Value {
 unsafe fn tuple(values: &[*mut Value]) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
-        let tuple = new_value(ValueKind::TUPLE);
-        (*tuple).payload.record.length = values.len() as u32;
-        let fields = allocate_kind::<Field>(values.len(), AllocationKind::FIELDS);
-        (*tuple).payload.record.fields = fields;
+        let (tuple, fields) = new_tuple(values.len());
         for (index, &value) in values.iter().enumerate() {
             *fields.add(index) = Field { name: ptr::null(), value };
         }
@@ -475,10 +489,7 @@ unsafe fn variables() -> *mut Control {
             if core::str::from_utf8(name).is_err() || core::str::from_utf8(value).is_err() {
                 continue;
             }
-            let pair = new_value(ValueKind::TUPLE);
-            (*pair).payload.record.length = 2;
-            let fields = allocate_kind::<Field>(2, AllocationKind::FIELDS);
-            (*pair).payload.record.fields = fields;
+            let (pair, fields) = new_tuple(2);
             *fields = Field { name: ptr::null(), value: text_value(name.as_ptr().cast(), name.len()) };
             *fields.add(1) = Field { name: ptr::null(), value: text_value(value.as_ptr().cast(), value.len()) };
             list = list::list_push(list, pair);
