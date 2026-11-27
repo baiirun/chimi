@@ -1,0 +1,12 @@
+# mutation run at ccc3d4130e7b59b1a47a220efe4996cbfaaddca9
+# waits_mutations.py: 6 mutants against compiler/chimi
+BASELINE ok  [wait channel_variants] (156s)
+BASELINE ok  [wait language] (40s)
+BASELINE ok  [wait] (4s)
+KILLED       a watch event goes to C [wait channel_variants] (59s)
+KILLED       an inbox event takes a task result [wait language] (87s)
+KILLED       Wait.at measures from now [wait] (58s)
+KILLED       a timer ignores the bound clock [wait] (51s)
+KILLED       a user clock's own now is ignored [wait] (65s)
+SURVIVED     an overflowing Wait.after wraps [wait] (60s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

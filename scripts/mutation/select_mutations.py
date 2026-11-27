@@ -11,6 +11,11 @@ Left out as equivalent: waking the watcher on abort (only the selecting task
 owns the receiver, so it cannot be parked when its channel aborts), cancelling
 the committed user timer too (its child has already ended), and the
 `clear_select` in `disarm_wake_sources` (every later request clears it).
+Cancelling the losing user timers before the take is also left out: the
+scheduler takes a committed receive's value in the same step as its answer
+(`commit_receive`), and an inbox or task source has this task as its only
+consumer, so nothing another task does while a cancel reply yields can change
+what the take gives.
 Withdrawing an abandoned select on any request is in
 select_fiber_mutations.py, because its proof is a scheduler test.
 """
@@ -86,10 +91,6 @@ MUTATIONS = [
     select("a committed receive skips the mapping function", WAITS, [(
         "        if (*taken).kind != ControlKind::SUCCESS || kind == EventKind::AFTER || kind == EventKind::AT {",
         "        if true {")]),
-    select("losing user timers are cancelled before the take", WAITS, [(
-        "        let mut taken = core::ptr::null_mut();\n",
-        "        cancel_user_timers(&sources, &user_timer, committed, call.call_node);\n"
-        "        let mut taken = core::ptr::null_mut();\n")]),
     select("Wait.first accepts an empty list at run time", WAITS, [(
         "            return defect(c\"`Wait.first` needs at least one event\", node);",
         "            return success(void_value());")]),
