@@ -61,5 +61,5 @@ MUTATIONS = [
         "                let cancel = false;")], ("cli", "clock"), file=DISPATCH),
     m("std/test recorders go to C", [(
         "            Intrinsic::TEST_RECORDER..=Intrinsic::TEST_RECEIVED => {",
-        "            Intrinsic::TEST_RECEIVED..=Intrinsic::TEST_RECEIVED => {")], ("std_modules",), "standard_", file=DISPATCH),
+        "            Intrinsic::TEST_RECEIVED..=Intrinsic::TEST_RECEIVED => {")], ("testing",), file=DISPATCH),
 ]
