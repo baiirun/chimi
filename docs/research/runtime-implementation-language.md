@@ -161,7 +161,9 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Second PR: std/json (`intrinsics/json.rs`, which builds values from
       the decoder's tape directly) and std/decimal (`intrinsics/decimals.rs`).
       Third PR: std/bytes and std/http's byte scan (`intrinsics/bytes.rs`),
-      with numbered defect messages in `intrinsics/message.rs`.
+      with numbered defect messages in `intrinsics/message.rs`. Fourth PR:
+      std/duration (`intrinsics/durations.rs`), over the parser and text form
+      `crate::duration` already had.
    6. The binding argument readers and value and result builders.
    7. Dispatch: telemetry emission, then the node helpers with `run_node`,
       `invoke` and the loop passes in one PR (splitting them would put a

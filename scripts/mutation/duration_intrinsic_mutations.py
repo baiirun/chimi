@@ -3,7 +3,8 @@ fourth PR; runtime/chimi-runtime/src/intrinsics/durations.rs). The language
 suite's duration tests run a generated set through both backends and compare
 defect messages too; the parse checks are in the runtime fuzz corpus. Mutants
 of the C these replaced were retargeted in duration and
-rust_decimal_duration.
+rust_decimal_duration. Parse's mapping of non-UTF-8 bytes to Invalid has no
+mutant: a Text value is always UTF-8, so no program or fuzz input reaches it.
 
 Run: scripts/mutation/mutate.py scripts/mutation/duration_intrinsic_mutations.py
 Results: scripts/mutation/duration_intrinsic_results.txt.
@@ -15,10 +16,6 @@ DURATIONS = "../../runtime/chimi-runtime/src/intrinsics/durations.rs"
 
 def language(name, old, new):
     return dict(name=name, file=DURATIONS, edits=[(old, new)], targets=["language"], filter="duration")
-
-
-def fuzz(name, old, new):
-    return dict(name=name, file=DURATIONS, edits=[(old, new)], targets=["runtime_fuzz"], filter="")
 
 
 MUTATIONS = [
@@ -35,6 +32,4 @@ MUTATIONS = [
              "if negate { -value } else { value }"),
     language("to_text drops the last character", "success(text_value(left.as_ptr().cast(), left.len()))",
              "success(text_value(left.as_ptr().cast(), left.len() - 1))"),
-    fuzz("text that is not UTF-8 parses as Empty", ".map_err(|_| ParseFailure::Invalid)",
-         ".map_err(|_| ParseFailure::Empty)"),
 ]
