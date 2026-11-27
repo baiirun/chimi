@@ -84,7 +84,7 @@ fn parse_int(text: &[u8]) -> Result<i64, u32> {
         [b'-', rest @ ..] => (true, rest),
         rest => (false, rest),
     };
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) || text.contains(&0) {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return Err(StandardConstructor::INT_PARSE_INVALID_DIGIT);
     }
     // Accumulated negative, so i64::MIN parses.
