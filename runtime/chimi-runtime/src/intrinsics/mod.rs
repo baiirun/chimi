@@ -15,7 +15,7 @@ pub mod decimals;
 pub mod durations;
 pub mod host;
 pub mod json;
-mod message;
+pub(crate) mod message;
 pub mod scalars;
 pub mod standard;
 pub mod test_log;

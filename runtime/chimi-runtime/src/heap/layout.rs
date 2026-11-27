@@ -332,6 +332,102 @@ pub struct Constructor {
     pub program_exit: u32,
 }
 
+/// `ChimiFunction` (runtime.h): a declared function's body and parameters.
+#[repr(C)]
+pub struct Function {
+    pub symbol: u32,
+    pub body: u32,
+    pub parameters_offset: u32,
+    pub parameters_length: u32,
+    pub local_count: u32,
+}
+
+/// `ChimiNamedNode` (runtime.h): a record field's or a provider's name and node.
+#[repr(C)]
+pub struct NamedNode {
+    pub name: u32,
+    pub node: u32,
+}
+
+/// `ChimiStep` (runtime.h): one step of a block; kind 0 binds `symbol`.
+#[repr(C)]
+pub struct Step {
+    pub kind: u32,
+    pub symbol: u32,
+    pub node: u32,
+}
+
+/// `ChimiArm` (runtime.h): one arm of a match.
+#[repr(C)]
+pub struct Arm {
+    pub patterns_offset: u32,
+    pub patterns_length: u32,
+    pub guard: u32,
+    pub body: u32,
+    pub cause_subject: u32,
+    pub cause_local: u32,
+}
+
+/// `ChimiPattern` (runtime.h): one pattern of an arm.
+#[repr(C)]
+pub struct Pattern {
+    pub kind: u32,
+    pub a: u32,
+    pub offset: u32,
+    pub length: u32,
+    pub integer: i64,
+}
+
+/// The codes of the program's core tree (runtime.h) the evaluator reads, and
+/// the `HostFunction`s (runtime.c) a dependency method may name.
+pub struct Core;
+
+impl Core {
+    pub const SYMBOL_FUNCTION: u32 = 0;
+    pub const SYMBOL_CONSTANT: u32 = 1;
+    pub const SYMBOL_REQUIREMENT: u32 = 2;
+    pub const SYMBOL_LOCAL: u32 = 3;
+    pub const SYMBOL_CONSTRUCTOR: u32 = 4;
+    pub const SYMBOL_INTRINSIC: u32 = 5;
+    pub const SYMBOL_PROCESS_NAME: u32 = 7;
+    pub const LITERAL_INTEGER: u32 = 0;
+    pub const LITERAL_TEXT: u32 = 1;
+    pub const LITERAL_BOOLEAN: u32 = 2;
+    pub const LITERAL_FLOAT: u32 = 3;
+    pub const LITERAL_VOID: u32 = 4;
+    pub const BINARY_ADD: u32 = 0;
+    pub const BINARY_SUBTRACT: u32 = 1;
+    pub const BINARY_MULTIPLY: u32 = 2;
+    pub const BINARY_DIVIDE: u32 = 3;
+    pub const BINARY_LESS: u32 = 4;
+    pub const BINARY_LESS_EQUAL: u32 = 5;
+    pub const BINARY_GREATER: u32 = 6;
+    pub const BINARY_GREATER_EQUAL: u32 = 7;
+    pub const BINARY_REMAINDER: u32 = 8;
+    pub const BINARY_EQUAL: u32 = 9;
+    pub const BINARY_RANGE: u32 = 10;
+    pub const BINARY_RANGE_INCLUSIVE: u32 = 11;
+    pub const PATTERN_WILDCARD: u32 = 0;
+    pub const PATTERN_BINDING: u32 = 1;
+    pub const PATTERN_LITERAL: u32 = 2;
+    pub const PATTERN_CONSTRUCTOR: u32 = 3;
+    pub const PATTERN_OUTCOME: u32 = 4;
+    pub const PATTERN_LIST: u32 = 5;
+    pub const PATTERN_ALIAS: u32 = 6;
+    pub const PATTERN_TUPLE: u32 = 7;
+    pub const TYPE_CONSOLE: u32 = 0;
+    pub const TYPE_FILE_SYSTEM: u32 = 3;
+    pub const TYPE_CLOCK: u32 = 37;
+    pub const TYPE_RANDOM: u32 = 38;
+    pub const HOST_PROCESS_UTF8_LINES: u32 = 0;
+    pub const HOST_WRITE_LINE: u32 = 1;
+    pub const HOST_WRITE_ERROR: u32 = 2;
+    pub const HOST_RANDOM_NEXT_INT: u32 = 3;
+    pub const HOST_CLOCK_NOW: u32 = 4;
+    pub const HOST_CLOCK_TIMESTAMP: u32 = 5;
+    pub const HOST_CLOCK_SLEEP_UNTIL: u32 = 6;
+}
+
 /// The `CHIMI_INTRINSIC_*` ids (runtime.h) of the intrinsics Rust serves.
 pub struct Intrinsic;
 
@@ -1163,6 +1259,75 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSymbol" Symbol, "standard_type", standard_type)
     field("ChimiSymbol" Symbol, "environment_slot", environment_slot)
     field("ChimiSymbol" Symbol, "binding", binding)
+    size("ChimiFunction" Function)
+    field("ChimiFunction" Function, "symbol", symbol)
+    field("ChimiFunction" Function, "body", body)
+    field("ChimiFunction" Function, "parameters_offset", parameters_offset)
+    field("ChimiFunction" Function, "parameters_length", parameters_length)
+    field("ChimiFunction" Function, "local_count", local_count)
+    size("ChimiNamedNode" NamedNode)
+    field("ChimiNamedNode" NamedNode, "name", name)
+    field("ChimiNamedNode" NamedNode, "node", node)
+    size("ChimiStep" Step)
+    field("ChimiStep" Step, "kind", kind)
+    field("ChimiStep" Step, "symbol", symbol)
+    field("ChimiStep" Step, "node", node)
+    size("ChimiArm" Arm)
+    field("ChimiArm" Arm, "patterns_offset", patterns_offset)
+    field("ChimiArm" Arm, "patterns_length", patterns_length)
+    field("ChimiArm" Arm, "guard", guard)
+    field("ChimiArm" Arm, "body", body)
+    field("ChimiArm" Arm, "cause_subject", cause_subject)
+    field("ChimiArm" Arm, "cause_local", cause_local)
+    size("ChimiPattern" Pattern)
+    field("ChimiPattern" Pattern, "kind", kind)
+    field("ChimiPattern" Pattern, "a", a)
+    field("ChimiPattern" Pattern, "offset", offset)
+    field("ChimiPattern" Pattern, "length", length)
+    field("ChimiPattern" Pattern, "integer", integer)
+    constant("CHIMI_SYMBOL_FUNCTION" Core::SYMBOL_FUNCTION)
+    constant("CHIMI_SYMBOL_CONSTANT" Core::SYMBOL_CONSTANT)
+    constant("CHIMI_SYMBOL_REQUIREMENT" Core::SYMBOL_REQUIREMENT)
+    constant("CHIMI_SYMBOL_LOCAL" Core::SYMBOL_LOCAL)
+    constant("CHIMI_SYMBOL_CONSTRUCTOR" Core::SYMBOL_CONSTRUCTOR)
+    constant("CHIMI_SYMBOL_INTRINSIC" Core::SYMBOL_INTRINSIC)
+    constant("CHIMI_SYMBOL_PROCESS_NAME" Core::SYMBOL_PROCESS_NAME)
+    constant("CHIMI_LITERAL_INTEGER" Core::LITERAL_INTEGER)
+    constant("CHIMI_LITERAL_TEXT" Core::LITERAL_TEXT)
+    constant("CHIMI_LITERAL_BOOLEAN" Core::LITERAL_BOOLEAN)
+    constant("CHIMI_LITERAL_FLOAT" Core::LITERAL_FLOAT)
+    constant("CHIMI_LITERAL_VOID" Core::LITERAL_VOID)
+    constant("CHIMI_BINARY_ADD" Core::BINARY_ADD)
+    constant("CHIMI_BINARY_SUBTRACT" Core::BINARY_SUBTRACT)
+    constant("CHIMI_BINARY_MULTIPLY" Core::BINARY_MULTIPLY)
+    constant("CHIMI_BINARY_DIVIDE" Core::BINARY_DIVIDE)
+    constant("CHIMI_BINARY_LESS" Core::BINARY_LESS)
+    constant("CHIMI_BINARY_LESS_EQUAL" Core::BINARY_LESS_EQUAL)
+    constant("CHIMI_BINARY_GREATER" Core::BINARY_GREATER)
+    constant("CHIMI_BINARY_GREATER_EQUAL" Core::BINARY_GREATER_EQUAL)
+    constant("CHIMI_BINARY_REMAINDER" Core::BINARY_REMAINDER)
+    constant("CHIMI_BINARY_EQUAL" Core::BINARY_EQUAL)
+    constant("CHIMI_BINARY_RANGE" Core::BINARY_RANGE)
+    constant("CHIMI_BINARY_RANGE_INCLUSIVE" Core::BINARY_RANGE_INCLUSIVE)
+    constant("CHIMI_PATTERN_WILDCARD" Core::PATTERN_WILDCARD)
+    constant("CHIMI_PATTERN_BINDING" Core::PATTERN_BINDING)
+    constant("CHIMI_PATTERN_LITERAL" Core::PATTERN_LITERAL)
+    constant("CHIMI_PATTERN_CONSTRUCTOR" Core::PATTERN_CONSTRUCTOR)
+    constant("CHIMI_PATTERN_OUTCOME" Core::PATTERN_OUTCOME)
+    constant("CHIMI_PATTERN_LIST" Core::PATTERN_LIST)
+    constant("CHIMI_PATTERN_ALIAS" Core::PATTERN_ALIAS)
+    constant("CHIMI_PATTERN_TUPLE" Core::PATTERN_TUPLE)
+    constant("CHIMI_TYPE_CONSOLE" Core::TYPE_CONSOLE)
+    constant("CHIMI_TYPE_FILE_SYSTEM" Core::TYPE_FILE_SYSTEM)
+    constant("CHIMI_TYPE_CLOCK" Core::TYPE_CLOCK)
+    constant("CHIMI_TYPE_RANDOM" Core::TYPE_RANDOM)
+    constant("HOST_PROCESS_UTF8_LINES" Core::HOST_PROCESS_UTF8_LINES)
+    constant("HOST_WRITE_LINE" Core::HOST_WRITE_LINE)
+    constant("HOST_WRITE_ERROR" Core::HOST_WRITE_ERROR)
+    constant("HOST_RANDOM_NEXT_INT" Core::HOST_RANDOM_NEXT_INT)
+    constant("HOST_CLOCK_NOW" Core::HOST_CLOCK_NOW)
+    constant("HOST_CLOCK_TIMESTAMP" Core::HOST_CLOCK_TIMESTAMP)
+    constant("HOST_CLOCK_SLEEP_UNTIL" Core::HOST_CLOCK_SLEEP_UNTIL)
     size("ChimiConstructor" Constructor)
     field("ChimiConstructor" Constructor, "type_name", type_name)
     field("ChimiConstructor" Constructor, "variant_name", variant_name)

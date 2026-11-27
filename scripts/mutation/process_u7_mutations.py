@@ -12,6 +12,10 @@ Every mutant runs one scenario through the lab binary with `--through U7`.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 RUNTIME = "runtime/native/runtime.c"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 
@@ -53,10 +57,10 @@ MUTATIONS = [
     # Names.
     lab("NameTaken carries a text other than the trace label", RUNTIME, "RT03",
         [OUTCOME], [('{text_value(label ? label : "")}', '{text_value("counter")}')]),
-    lab("every process name is one scheduler name", RUNTIME, "RT04",
+    lab("every process name is one scheduler name", EVAL, "RT04",
         [TRANSCRIPT, OUTCOME, EXITED], [(
-            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)symbol + 1));",
-            "      return success(process_address_value(CHIMI_ADDRESS_NAMED, 1));")]),
+            "                (*value).payload.address.target = u64::from(symbol_index) + 1;",
+            "                (*value).payload.address.target = 1;")]),
     lab("a root whose member start fails is left running", KERNEL, "RT06",
         [TRANSCRIPT, OUTCOME, EXITED], [(ROLLBACK, "")]),
     lab("a second register replaces the name", RUNTIME, "RT07",

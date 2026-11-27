@@ -10,6 +10,10 @@ Run: scripts/mutation/mutate.py scripts/mutation/cause_mutations.py
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 LOWERING = "src/executable.rs"
 CAUSES = "src/execution/causes.rs"
 RUNTIME = "runtime/native/runtime.c"
@@ -61,9 +65,9 @@ MUTATIONS = [
     programs("Rust: a context frame forgets its text", CAUSES, [
         ("            .map(|frame| RuntimeValue::Text(frame.text.clone()))",
          "            .map(|_| RuntimeValue::Text(String::new()))")]),
-    programs("C: re-raising the bound error links", RUNTIME, [
-        ("ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, node->c != 0, result->value, node_id);",
-         "ChimiValue *cause = chimi_runtime_cause_derived_v1(matched, false, result->value, node_id);")]),
+    programs("native: re-raising the bound error links", EVAL, [
+        ("            let cause = cause_derived(matched, node.c != 0, (*result).value, i64::from(node_id));",
+         "            let cause = cause_derived(matched, false, (*result).value, i64::from(node_id));")]),
     programs("native: a plain failure reports its cause", RUST_CAUSES, [
         ("        (*field(cause, Slot::FRAMES)).payload.list.length > 0\n",
          "        true\n")]),
@@ -95,9 +99,9 @@ MUTATIONS = [
     programs("C: Cause.context adds no frame", RUNTIME, [
         ("  return chimi_runtime_control_with_cause_v1(control, chimi_runtime_cause_with_frame_v1(cause, arguments[1], call_node));",
          "  return chimi_runtime_control_with_cause_v1(control, cause);")]),
-    programs("C: a stored Err drops its cause", RUNTIME, [
-        ("    if (cause) result = success(chimi_runtime_with_stored_cause_v1(result->value, cause));",
-         "    (void)cause;")]),
+    programs("native: a stored Err drops its cause", EVAL, [
+        ("                return success(with_stored_cause((*result).value, cause));",
+         "                return result;")]),
     heaps("native: Cause.of finds no stored cause", RUST_CAUSES, [
         ("        if (*value).kind != ValueKind::CONSTRUCTED {\n            return ptr::null_mut();",
          "        if (*value).kind != ValueKind::CONSTRUCTED || (*value).payload.constructed.length == 1 {\n            return ptr::null_mut();")]),

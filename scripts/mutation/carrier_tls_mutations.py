@@ -11,11 +11,15 @@ PR 5 runs a second carrier thread.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 R = "runtime/native/runtime.c"
 
 
-def m(name, edits):
-    return dict(name=name, file=R, edits=edits, targets=["cli"],
+def m(name, edits, file=R):
+    return dict(name=name, file=file, edits=edits, targets=["cli"],
                 filter="ends_with_a_stack_overflow_defect")
 
 
@@ -24,6 +28,6 @@ MUTATIONS = [
         "  carrier->host_stack_limit = here - bottom > STACK_UNLIMITED_BYTES",
         "  uintptr_t unused_limit = here - bottom > STACK_UNLIMITED_BYTES")]),
     m("the check reads no limit", [(
-        "  return (uintptr_t)__builtin_frame_address(0) < carrier->host_stack_limit;",
-        "  return false;")]),
+        "    unsafe { here < (*current_carrier()).host_stack_limit }",
+        "    here == 0")], EVAL),
 ]

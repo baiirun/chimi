@@ -103,6 +103,18 @@ fn carrier_count() -> usize {
     unsafe { chimi_runtime_carrier_count.load(Relaxed) }
 }
 
+/// Whether one thread runs every fiber: a single carrier, or the carrier
+/// simulation's two, which share one thread.
+pub(crate) fn one_thread_runs_fibers() -> bool {
+    mode() == SIMULATION || carrier_count() == 1
+}
+
+/// The operation profile's rows, indexed by node; null unless profiling.
+pub(crate) fn profile_rows() -> *mut ProfileRow {
+    // SAFETY: a global of runtime.c.
+    unsafe { chimi_runtime_profile_rows.load(Relaxed) }
+}
+
 /// The running carrier, outside the carrier simulation. On Linux on x86-64
 /// and AArch64 it reads `runtime.c`'s initial-exec thread-local the way
 /// `runtime.c` does, from the thread pointer plus the variable's fixed

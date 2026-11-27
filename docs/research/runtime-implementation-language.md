@@ -201,6 +201,13 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       First PR: the telemetry event writers (`telemetry.rs`), with the
       trace lock, over mirrors of `ChimiRuntime`, the node and origin tables
       and the scheduler's trace event.
+      Second PR: the evaluator (`eval.rs`): every core node but the loops,
+      `run_node`, each node's span and profile frame, match, and `invoke`
+      for declared functions, closures, constructors and dependency calls.
+      Intrinsics, host functions and C bindings go back to `runtime.c`
+      through one call, `chimi_runtime_invoke_native_v1`, until their
+      dispatch moves. The loop nodes stay C for now, with their passes,
+      which make scheduler requests; they open their frame through Rust.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

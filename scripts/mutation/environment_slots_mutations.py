@@ -12,6 +12,10 @@ equivalent mutant, in the first run).
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 RUNTIME = "runtime/native/runtime.c"
 TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
 DATA = "src/backend/program_data.rs"
@@ -34,10 +38,8 @@ MUTATIONS = [
     language("a closure's environment is sized by nothing", DATA, [(
         "            *count = next.max(*count);\n",
         "            *count = 0;\n")]),
-    language("a function value's calls get no local slots", RUNTIME, [(
-        "      callable->local_count = function->local_count;\n"
-        "      callable->environment = capture_requirements(environment);",
-        "      callable->environment = capture_requirements(environment);")]),
+    language("a function value's calls get no local slots", EVAL, [(
+        "                (*callable).local_count = (*function).local_count;\n", "")]),
     # The capture walk is Rust since CHI-305 step 5, phase 3.
     dict(name="a task capture skips the environment's locals", file=TRANSFER, edits=[(
         "                    for slot in (0..(*environment).local_count as usize).rev() {",

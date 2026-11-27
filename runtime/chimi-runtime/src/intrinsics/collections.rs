@@ -8,19 +8,6 @@ use crate::heap::layout::{Callable, Control, ControlKind, Environment, Intrinsic
 use crate::heap::map;
 use crate::heap::values::{integer_value, pointer_value};
 
-unsafe extern "C" {
-    /// `runtime.c`'s `invoke`: calls `callable` with `arguments`.
-    fn chimi_runtime_invoke_v1(
-        runtime: *mut c_void,
-        callable: *mut Callable,
-        arguments: *mut *mut Value,
-        argument_count: u32,
-        span: u64,
-        call_node: u32,
-        environment: *mut Environment,
-    ) -> *mut Control;
-}
-
 /// One intrinsic call's context, passed through to callbacks.
 pub struct Call {
     pub runtime: *mut c_void,
@@ -49,8 +36,8 @@ unsafe fn reduce_in_order(
         let mut control = success(initial);
         for &node in &entries {
             let mut arguments = [(*control).value, (*node).key, (*node).value];
-            control = chimi_runtime_invoke_v1(
-                call.runtime,
+            control = crate::eval::invoke(
+                call.runtime.cast(),
                 step,
                 arguments.as_mut_ptr(),
                 if with_value { 3 } else { 2 },

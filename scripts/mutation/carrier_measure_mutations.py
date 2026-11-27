@@ -6,6 +6,10 @@ Results: scripts/mutation/carrier_measure_results.txt.
 
 CRATE = "compiler/chimi"
 
+# The core node evaluators, `invoke` and the node frame are Rust since
+# CHI-305 step 5, phase 7.
+EVAL = "../../runtime/chimi-runtime/src/eval.rs"
+
 C = "runtime/native/runtime.c"
 PERFORMANCE = "src/process_lab/performance.rs"
 MOD = "src/process_lab/mod.rs"
@@ -69,11 +73,11 @@ MUTATIONS = [
           "            let start = NEXT_MARK_EPOCH.fetch_add(block, Relaxed);",
           "            let start = NEXT_MARK_EPOCH.fetch_add(1, Relaxed);", COLLECTOR),
     epoch("a carrier never takes a span block",
-          "  if (carrier->end_span - carrier->next_span < count) {",
-          "  if (false) {"),
+          "        if (*here).end_span.wrapping_sub((*here).next_span) < count {",
+          "        if false {", EVAL),
     epoch("span blocks overlap between carriers",
-          "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, size, memory_order_relaxed);",
-          "    carrier->next_span = atomic_fetch_add_explicit(&runtime->next_span, 1, memory_order_relaxed);"),
+          "            (*here).next_span = counter.fetch_add(size, Relaxed);",
+          "            (*here).next_span = counter.fetch_add(1, Relaxed);", EVAL),
     epoch("one carrier's epochs restart at every block",
           "            (*here).next_epoch = start;\n",
           "            (*here).next_epoch = start - u64::from(start > 1);\n", COLLECTOR),
