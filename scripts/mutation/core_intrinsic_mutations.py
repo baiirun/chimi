@@ -3,7 +3,9 @@ std/text and std/list in Rust (CHI-305 step 5, phase 5, fifth PR;
 runtime/chimi-runtime/src/intrinsics/core.rs). The std module tests run
 std/text and std/list on both backends and compare them; the language suite
 compares defect messages. Mutants of the C these replaced were retargeted in
-cause, lane_fixes, rust_text and std_modules.
+cause, lane_fixes, rust_text and std_modules. Debug.crash's copy stopping at
+U+0000 has no mutant: a control's message is a C string, read up to its first
+NUL, so the bytes after it are never seen either way.
 
 Run: scripts/mutation/mutate.py scripts/mutation/core_intrinsic_mutations.py
 Results: scripts/mutation/core_intrinsic_results.txt.
@@ -44,6 +46,4 @@ MUTATIONS = [
         "let vector = list::set(window.vector, window.start + index + (index + 1 < window.length) as u32, arguments[2]);"),
     language("List.set names the index as the bound", ".integer(i64::from(window.length))", ".integer(index)"),
     language("byte_slice names the wrong bound", ".integer(bound as i64)", ".integer(bound as i64 + 1)"),
-    language("Debug.crash keeps bytes after U+0000",
-        ".position(|&byte| byte == 0).unwrap_or(message.len())", ".len()"),
 ]

@@ -28,7 +28,7 @@ MUTATIONS = [
     # Native cores: each must agree with its expected outcome on both backends.
     std("native byte_slice skips the UTF-8 boundary check", CORE_INTRINSICS, [(
         "if !utf8_boundary(bytes, bound) {",
-        "if false {")], filter="standard_programs"),
+        "if false {")], filter="standard_"),
     std("interpreter byte_slice skips the UTF-8 boundary check", CORE, [(
         "                    if !value.is_char_boundary(bound) {",
         "                    if bound > value.len() {")], filter="standard_programs"),
@@ -43,10 +43,10 @@ MUTATIONS = [
         filter="standard_programs"),
     std("native List.set accepts the index equal to the length", CORE_INTRINSICS, [(
         "Ok(index) if index < window.length =>",
-        "Ok(index) if index <= window.length =>")], filter="standard_programs"),
+        "Ok(index) if index <= window.length =>")], filter="standard_"),
     std("native unwrap_or_fail fails on Some", CORE_INTRINSICS, [(
         "if option.length == 1 {",
-        "if option.length == 0 {")], filter="standard_programs"),
+        "if option.length == 0 {")], filter="standard_"),
     std("native Debug.crash drops the caller's message", RUNTIME, [(
         "      return defect(copy_text(arguments[0]->as.text.bytes), call_node);",
         "      return defect(\"Debug.crash\", call_node);")], filter="standard_programs"),
