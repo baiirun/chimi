@@ -7164,7 +7164,10 @@ fn native_supervisor_starts_refuse_counts_past_32_bits() {
                     "pick {pick}: {written}"
                 );
             }
-            None => assert!(written.contains("\"outcome\":\"success\""), "pick {pick}: {written}"),
+            None => {
+                assert_eq!(run.status.code(), Some(0), "pick {pick}: {run:?}");
+                assert!(written.contains("\"outcome\":\"success\""), "pick {pick}: {written}");
+            }
         }
     }
     std::fs::remove_dir_all(scratch).unwrap();

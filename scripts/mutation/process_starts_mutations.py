@@ -37,7 +37,7 @@ MUTATIONS = [
         "            if limit > i64::from(u32::MAX) {",
         "            if limit > i64::from(u32::MAX) + 1 {",
     )]),
-    mutant("the limits stop one short of 32 bits", [(
+    mutant("the restart limit stops one short of 32 bits", [(
         "            if limit > i64::from(u32::MAX) {",
         "            if limit >= i64::from(u32::MAX) {",
     )]),
