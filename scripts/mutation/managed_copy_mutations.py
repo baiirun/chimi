@@ -8,10 +8,11 @@ Results: scripts/mutation/managed_copy_results.txt.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+CHANNELS = "../../runtime/chimi-runtime/src/intrinsics/channels.rs"
 
 
-def variant(name, edits):
-    return dict(name=name, file=RUNTIME, edits=edits, targets=["channel_variants"], filter="managed")
+def variant(name, edits, file=RUNTIME):
+    return dict(name=name, file=file, edits=edits, targets=["channel_variants"], filter="managed")
 
 
 MUTATIONS = [
@@ -19,17 +20,17 @@ MUTATIONS = [
         "      if (transfer->collect) ++transfer->managed_count;\n",
         "")]),
     variant("broadcast publishes a managed handle", [(
-        "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
-        "      if (carried.managed_count && false) {")]),
+        "        if carried.managed != 0 && intrinsic != Intrinsic::CHANNEL_SEND {",
+        "        if carried.managed != 0 && false {")], CHANNELS),
     variant("a watch publishes a managed handle", [(
-        "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
-        "      if (carried.managed_count && intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH) {")]),
+        "        if carried.managed != 0 && intrinsic != Intrinsic::CHANNEL_SEND {",
+        "        if carried.managed != 0 && intrinsic == Intrinsic::BROADCAST_PUBLISH {")], CHANNELS),
     variant("an ordinary channel refuses a managed handle too", [(
-        "      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {",
-        "      if (carried.managed_count) {")]),
+        "        if carried.managed != 0 && intrinsic != Intrinsic::CHANNEL_SEND {",
+        "        if carried.managed != 0 {")], CHANNELS),
     variant("a watch starts with a managed handle", [(
-        "      if (carried_count || carried.managed_count) {",
-        "      if (carried_count) {")]),
+        "        if count != 0 || managed != 0 {",
+        "        if count != 0 {")], CHANNELS),
     variant("a second remove keeps the generic message", [(
         "                                    \"; it was removed already, through this handle or a copy of it, \"",
         "                                    \"; scheduler request failed \"")]),

@@ -1573,7 +1573,31 @@ _Static_assert(offsetof(ChimiSchedulerRequest, entry) == 48, "layout: offsetof(C
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->entry) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->entry)");
 _Static_assert(offsetof(ChimiSchedulerRequest, context) == 56, "layout: offsetof(ChimiSchedulerRequest, context)");
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->context) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->context)");
+_Static_assert(sizeof(ChimiMessageCapabilities) == 16, "layout: sizeof(ChimiMessageCapabilities)");
+_Static_assert(offsetof(ChimiMessageCapabilities, items) == 0, "layout: offsetof(ChimiMessageCapabilities, items)");
+_Static_assert(sizeof(((ChimiMessageCapabilities *)0)->items) == 8, "layout: sizeof(((ChimiMessageCapabilities *)0)->items)");
+_Static_assert(offsetof(ChimiMessageCapabilities, count) == 8, "layout: offsetof(ChimiMessageCapabilities, count)");
+_Static_assert(sizeof(((ChimiMessageCapabilities *)0)->count) == 8, "layout: sizeof(((ChimiMessageCapabilities *)0)->count)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiMessageCapabilities *)0)->count) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiMessageCapabilities *)0)->count)");
 _Static_assert(CHIMI_FIBER_CANCEL == 2, "layout: CHIMI_FIBER_CANCEL");
+_Static_assert(CHIMI_REQUEST_TASK_RESULT == 2, "layout: CHIMI_REQUEST_TASK_RESULT");
+_Static_assert(CHIMI_REQUEST_TASK_CANCEL == 3, "layout: CHIMI_REQUEST_TASK_CANCEL");
+_Static_assert(CHIMI_REQUEST_CHANNEL_BOUNDED == 4, "layout: CHIMI_REQUEST_CHANNEL_BOUNDED");
+_Static_assert(CHIMI_REQUEST_CHANNEL_SEND == 5, "layout: CHIMI_REQUEST_CHANNEL_SEND");
+_Static_assert(CHIMI_REQUEST_CHANNEL_RECEIVE == 6, "layout: CHIMI_REQUEST_CHANNEL_RECEIVE");
+_Static_assert(CHIMI_REQUEST_CHANNEL_CLOSE == 7, "layout: CHIMI_REQUEST_CHANNEL_CLOSE");
+_Static_assert(CHIMI_REQUEST_CHANNEL_ABORT == 8, "layout: CHIMI_REQUEST_CHANNEL_ABORT");
+_Static_assert(CHIMI_REQUEST_CHANNEL_ADD_RECEIVER == 36, "layout: CHIMI_REQUEST_CHANNEL_ADD_RECEIVER");
+_Static_assert(CHIMI_REQUEST_CHANNEL_BROADCAST == 37, "layout: CHIMI_REQUEST_CHANNEL_BROADCAST");
+_Static_assert(CHIMI_REQUEST_CHANNEL_WATCH == 38, "layout: CHIMI_REQUEST_CHANNEL_WATCH");
+_Static_assert(CHIMI_REQUEST_CHANNEL_SUBSCRIBE == 39, "layout: CHIMI_REQUEST_CHANNEL_SUBSCRIBE");
+_Static_assert(CHIMI_RESPONSE_SUCCEEDED == 3, "layout: CHIMI_RESPONSE_SUCCEEDED");
+_Static_assert(CHIMI_RESPONSE_CANCELLED == 4, "layout: CHIMI_RESPONSE_CANCELLED");
+_Static_assert(CHIMI_RESPONSE_DEFECTED == 5, "layout: CHIMI_RESPONSE_DEFECTED");
+_Static_assert(CHIMI_RESPONSE_STACK_OVERFLOW == 6, "layout: CHIMI_RESPONSE_STACK_OVERFLOW");
+_Static_assert(CHIMI_RESPONSE_CLOSED == 8, "layout: CHIMI_RESPONSE_CLOSED");
+_Static_assert(CHIMI_RESPONSE_ABORTED == 9, "layout: CHIMI_RESPONSE_ABORTED");
+_Static_assert(CHIMI_RESPONSE_DRAINED == 10, "layout: CHIMI_RESPONSE_DRAINED");
 _Static_assert(CHIMI_REQUEST_SCOPE_ENTER == 25, "layout: CHIMI_REQUEST_SCOPE_ENTER");
 _Static_assert(CHIMI_REQUEST_SCOPE_EXIT == 26, "layout: CHIMI_REQUEST_SCOPE_EXIT");
 _Static_assert(CHIMI_REQUEST_SCOPE_CHECK == 27, "layout: CHIMI_REQUEST_SCOPE_CHECK");
@@ -1679,6 +1703,11 @@ _Static_assert(CHIMI_INTRINSIC_SET_REMOVE == 139, "layout: CHIMI_INTRINSIC_SET_R
 _Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZE");
 _Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
+_Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED == 17, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED");
+_Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED == 18, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED");
+_Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED == 19, "layout: CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED");
+_Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_DRAINED == 20, "layout: CHIMI_CONSTRUCTOR_CHANNEL_DRAINED");
+_Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_ABORTED == 21, "layout: CHIMI_CONSTRUCTOR_CHANNEL_ABORTED");
 _Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY == 22, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT == 23, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_INVALID_DIGIT");
 _Static_assert(CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE == 24, "layout: CHIMI_CONSTRUCTOR_INT_PARSE_OUT_OF_RANGE");
@@ -1754,6 +1783,21 @@ _Static_assert(CHIMI_INTRINSIC_LIST_GET == 129, "layout: CHIMI_INTRINSIC_LIST_GE
 _Static_assert(CHIMI_INTRINSIC_LIST_PUSH == 130, "layout: CHIMI_INTRINSIC_LIST_PUSH");
 _Static_assert(CHIMI_INTRINSIC_LIST_SLICE == 131, "layout: CHIMI_INTRINSIC_LIST_SLICE");
 _Static_assert(CHIMI_INTRINSIC_LIST_SET == 132, "layout: CHIMI_INTRINSIC_LIST_SET");
+_Static_assert(CHIMI_INTRINSIC_TASK_RESULT == 9, "layout: CHIMI_INTRINSIC_TASK_RESULT");
+_Static_assert(CHIMI_INTRINSIC_TASK_CANCEL == 10, "layout: CHIMI_INTRINSIC_TASK_CANCEL");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_SEND == 11, "layout: CHIMI_INTRINSIC_CHANNEL_SEND");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_RECEIVE == 12, "layout: CHIMI_INTRINSIC_CHANNEL_RECEIVE");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_CLOSE == 13, "layout: CHIMI_INTRINSIC_CHANNEL_CLOSE");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_ABORT == 14, "layout: CHIMI_INTRINSIC_CHANNEL_ABORT");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_BOUNDED == 15, "layout: CHIMI_INTRINSIC_CHANNEL_BOUNDED");
+_Static_assert(CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER == 82, "layout: CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER");
+_Static_assert(CHIMI_INTRINSIC_BROADCAST_BOUNDED == 83, "layout: CHIMI_INTRINSIC_BROADCAST_BOUNDED");
+_Static_assert(CHIMI_INTRINSIC_BROADCAST_PUBLISH == 84, "layout: CHIMI_INTRINSIC_BROADCAST_PUBLISH");
+_Static_assert(CHIMI_INTRINSIC_BROADCAST_SUBSCRIBE == 85, "layout: CHIMI_INTRINSIC_BROADCAST_SUBSCRIBE");
+_Static_assert(CHIMI_INTRINSIC_WATCH_STARTING_WITH == 86, "layout: CHIMI_INTRINSIC_WATCH_STARTING_WITH");
+_Static_assert(CHIMI_INTRINSIC_WATCH_PUBLISH == 87, "layout: CHIMI_INTRINSIC_WATCH_PUBLISH");
+_Static_assert(CHIMI_INTRINSIC_WATCH_SUBSCRIBE == 88, "layout: CHIMI_INTRINSIC_WATCH_SUBSCRIBE");
+_Static_assert(CHIMI_INTRINSIC_WATCH_RECEIVE == 89, "layout: CHIMI_INTRINSIC_WATCH_RECEIVE");
 _Static_assert(CHIMI_INTRINSIC_CAUSE_CONTEXT == 169, "layout: CHIMI_INTRINSIC_CAUSE_CONTEXT");
 _Static_assert(CHIMI_INTRINSIC_CAUSE_OF == 170, "layout: CHIMI_INTRINSIC_CAUSE_OF");
 _Static_assert(CHIMI_INTRINSIC_CAUSE_KIND_CODE == 171, "layout: CHIMI_INTRINSIC_CAUSE_KIND_CODE");
@@ -2795,38 +2839,7 @@ static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
   counted_handle_retain(channel);
   return value;
 }
-static ChimiValue *channel_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
-  ChimiValue *value = new_value(VALUE_RECORD);
-  value->as.record.length = 3;
-  value->as.record.fields = allocate(3, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  value->as.record.fields[0] = (RuntimeField){
-    "completion", channel_capability_value(VALUE_CHANNEL_COMPLETION, channel, owner, token)
-  };
-  value->as.record.fields[1] = (RuntimeField){
-    "receiver", channel_capability_value(VALUE_CHANNEL_RECEIVER, channel, owner, token)
-  };
-  value->as.record.fields[2] = (RuntimeField){
-    "sender", channel_capability_value(VALUE_CHANNEL_SENDER, channel, 0, 0)
-  };
-  return value;
-}
 
-/* The `{ completion, publisher }` record of a broadcast or watch: its publisher is a
-   Sender of the hub's id. */
-static ChimiValue *publisher_bundle_value(uint64_t channel, uint64_t owner, uint64_t token) {
-  ChimiValue *value = new_value(VALUE_RECORD);
-  value->as.record.length = 2;
-  value->as.record.fields = allocate(2, sizeof(*value->as.record.fields));
-  allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-  value->as.record.fields[0] = (RuntimeField){
-    "completion", channel_capability_value(VALUE_CHANNEL_COMPLETION, channel, owner, token)
-  };
-  value->as.record.fields[1] = (RuntimeField){
-    "publisher", channel_capability_value(VALUE_CHANNEL_SENDER, channel, 0, 0)
-  };
-  return value;
-}
 
 /* Parks the running fiber with `request`. The fiber may resume on another
    carrier, so nothing read through `carrier` before this call is used after it. */
@@ -2953,6 +2966,27 @@ static bool transfer_captures(CapabilityTransfer *transfer, ChimiValue *root) {
   bool transferred = chimi_transfer_captures_v1(transfer, root, &probes);
   carrier->capture_transfer_probes += probes;
   return transferred;
+}
+
+/* For the Rust channel intrinsics (chimi-runtime intrinsics/channels.rs): a
+   Receiver, Completion or Sender value, which counts as a live reference to
+   its channel; the Receivers and Completions a message carries, collected as
+   for a send (free the list), with the number of managed handles met; and
+   the control a task's result word names. */
+ChimiValue *chimi_runtime_capability_value_v1(uint32_t kind, uint64_t channel, uint64_t owner, uint64_t token);
+ChimiCarriedCapability *chimi_runtime_carried_capabilities_v1(ChimiValue *root, size_t *count, size_t *managed);
+ChimiControl *chimi_runtime_task_reply_v1(int64_t raw);
+ChimiControl *chimi_runtime_channel_operation_v1(uint32_t intrinsic, ChimiValue **arguments,
+                                                 uint32_t argument_count, uint32_t call_node);
+ChimiValue *chimi_runtime_capability_value_v1(uint32_t kind, uint64_t channel, uint64_t owner, uint64_t token) {
+  return channel_capability_value((ValueKind)kind, channel, owner, token);
+}
+ChimiCarriedCapability *chimi_runtime_carried_capabilities_v1(ChimiValue *root, size_t *count, size_t *managed) {
+  CapabilityTransfer carried = {.collect = true};
+  transfer_captures(&carried, root);
+  *count = carried.carried_count;
+  *managed = carried.managed_count;
+  return carried.carried;
 }
 
 /* Whether `root` reaches a Receiver or Completion: a std/test Mailbox refuses a
@@ -4471,6 +4505,7 @@ static ChimiControl *task_reply(int64_t raw) {
   fragment_copy_into_current((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);
   return roots[0];
 }
+ChimiControl *chimi_runtime_task_reply_v1(int64_t raw) { return task_reply(raw); }
 
 /* The scheduler's release hooks. It calls them on the host stack with no task
    running, so they free fragments without touching the fiber context. A task word is
@@ -6046,6 +6081,9 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
     return invoke_select(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if (intrinsic >= CHIMI_INTRINSIC_CLOCK_NOW && intrinsic <= CHIMI_INTRINSIC_TASK_DEADLINE)
     return invoke_clock(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
+  if ((intrinsic >= CHIMI_INTRINSIC_TASK_RESULT && intrinsic <= CHIMI_INTRINSIC_CHANNEL_BOUNDED) ||
+      (intrinsic >= CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER && intrinsic <= CHIMI_INTRINSIC_WATCH_RECEIVE))
+    return chimi_runtime_channel_operation_v1(intrinsic, arguments, argument_count, call_node);
   switch (intrinsic) {
     case CHIMI_INTRINSIC_TASK_START:
       if (argument_count != 1 || arguments[0]->kind != VALUE_CALLABLE)
@@ -6057,249 +6095,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       if (argument_count != 1 || arguments[0]->kind != VALUE_LIST)
         return intrinsic_shape_defect(call_node);
       return run_combinator(runtime, intrinsic, arguments[0], span, call_node, environment);
-    case CHIMI_INTRINSIC_TASK_RESULT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TASK)
-        return intrinsic_shape_defect(call_node);
-      for (;;) {
-        ChimiSchedulerRequest request = {
-          .kind = CHIMI_REQUEST_TASK_RESULT,
-          .task = arguments[0]->as.task,
-        };
-        ChimiFiberCommand command = scheduler_request(&request);
-        if (command == CHIMI_FIBER_CANCEL) return cancelled();
-        if (request.status == CHIMI_RESPONSE_PENDING) continue;
-        if (request.status == CHIMI_RESPONSE_SUCCEEDED) return task_reply(request.value);
-        if (request.status == CHIMI_RESPONSE_CANCELLED) return cancelled();
-        if (request.status == CHIMI_RESPONSE_DEFECTED && request.value > 0)
-          return task_reply(request.value);
-        if (request.status == CHIMI_RESPONSE_STACK_OVERFLOW)
-          return defect("Task stack overflow", call_node);
-        return defect("Task.result scheduler request failed", call_node);
-      }
-    }
-    case CHIMI_INTRINSIC_TASK_CANCEL: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_TASK)
-        return intrinsic_shape_defect(call_node);
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_TASK_CANCEL,
-        .task = arguments[0]->as.task,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(void_value())
-        : defect("Task.cancel scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_CHANNEL_BOUNDED: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER ||
-          arguments[0]->as.integer < 0)
-        return intrinsic_shape_defect(call_node);
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_BOUNDED,
-        .value = arguments[0]->as.integer,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(channel_bundle_value(request.channel, request.owner, request.token))
-        : defect("Channel.bounded scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_CHANNEL_ADD_RECEIVER: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
-        return intrinsic_shape_defect(call_node);
-      RuntimeCapability capability = arguments[0]->as.capability;
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_ADD_RECEIVER,
-        .channel = capability.channel,
-        .owner = capability.owner,
-        .token = capability.token,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(channel_capability_value(VALUE_CHANNEL_RECEIVER, request.channel,
-                                           request.owner, request.token))
-        : defect("Channel.add_receiver scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_BROADCAST_SUBSCRIBE:
-    case CHIMI_INTRINSIC_WATCH_SUBSCRIBE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
-        return intrinsic_shape_defect(call_node);
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_SUBSCRIBE,
-        .channel = arguments[0]->as.capability.channel,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(channel_capability_value(VALUE_CHANNEL_RECEIVER, request.channel,
-                                           request.owner, request.token))
-        : defect("subscribe scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_BROADCAST_BOUNDED: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER)
-        return intrinsic_shape_defect(call_node);
-      if (arguments[0]->as.integer < 1)
-        return defect(numeric_message("`Broadcast.bounded(%" PRId64 ")` needs a positive capacity",
-                                      arguments[0]->as.integer),
-                      call_node);
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_BROADCAST,
-        .value = arguments[0]->as.integer,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(publisher_bundle_value(request.channel, request.owner, request.token))
-        : defect("Broadcast.bounded scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_WATCH_STARTING_WITH: {
-      if (argument_count != 1) return intrinsic_shape_defect(call_node);
-      void *roots[] = {arguments[0]};
-      AllocationKind kinds[] = {ALLOCATION_VALUE};
-      RuntimeFragment *initial = NULL;
-      if (fragment_copy(roots, kinds, 1, &initial) != HEAP_OK)
-        return defect(FOREIGN_POINTER_DEFECT, call_node);
-      CapabilityTransfer carried = {.collect = true};
-      transfer_captures(&carried, initial->roots[0]);
-      size_t carried_count = carried.carried_count;
-      free(carried.carried);
-      if (carried_count || carried.managed_count) {
-        fragment_free(initial);
-        return defect(carried_count
-                        ? "channel capability violation: Watch.starting_with cannot hold a value "
-                          "with a Receiver or Completion, because every subscriber gets a copy"
-                        : MANAGED_COPY_DEFECT("Watch.starting_with"),
-                      call_node);
-      }
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_WATCH,
-        .value = (int64_t)(intptr_t)initial,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      /* The scheduler takes the initial value only with an OK reply. */
-      if (request.status != CHIMI_RESPONSE_OK) fragment_free(initial);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(publisher_bundle_value(request.channel, request.owner, request.token))
-        : defect("Watch.starting_with scheduler request failed", call_node);
-    }
-    case CHIMI_INTRINSIC_BROADCAST_PUBLISH:
-    case CHIMI_INTRINSIC_WATCH_PUBLISH:
-    /* A publisher is a Sender of its broadcast or watch: the scheduler
-       publishes a send to one, and defects the task if the message carries a
-       Receiver or Completion, which every subscriber's copy would duplicate. */
-    case CHIMI_INTRINSIC_CHANNEL_SEND: {
-      if (argument_count != 2 || arguments[0]->kind != VALUE_CHANNEL_SENDER)
-        return intrinsic_shape_defect(call_node);
-      /* The message travels as a fragment. Once the channel accepts it, the
-         scheduler owns it and releases it if it is discarded. One the channel
-         refuses comes back, and the sender frees it and recovers its own original
-         value instead. */
-      void *roots[] = {arguments[1]};
-      AllocationKind kinds[] = {ALLOCATION_VALUE};
-      RuntimeFragment *message = NULL;
-      if (fragment_copy(roots, kinds, 1, &message) != HEAP_OK)
-        return defect(FOREIGN_POINTER_DEFECT, call_node);
-      /* Receivers and Completions in the message travel with it: the scheduler
-         puts them in flight, and the message's copies take the in-flight token
-         before anything can receive them. */
-      CapabilityTransfer carried = {.collect = true};
-      transfer_captures(&carried, message->roots[0]);
-      if (carried.managed_count && intrinsic != CHIMI_INTRINSIC_CHANNEL_SEND) {
-        free(carried.carried);
-        fragment_free(message);
-        return defect(intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH
-                        ? MANAGED_COPY_DEFECT("Broadcast.publish")
-                        : MANAGED_COPY_DEFECT("Watch.publish"),
-                      call_node);
-      }
-      ChimiMessageCapabilities capabilities = {carried.carried, carried.carried_count};
-      bool first = true;
-      for (;;) {
-        ChimiSchedulerRequest request = {
-          .kind = CHIMI_REQUEST_CHANNEL_SEND,
-          .channel = arguments[0]->as.capability.channel,
-          .value = (int64_t)(intptr_t)message,
-          .context = first && capabilities.count ? &capabilities : NULL,
-        };
-        first = false;
-        ChimiFiberCommand command = scheduler_request(&request);
-        /* The scheduler takes the message on OK or PENDING and hands it back on
-           CLOSED or ABORTED; any other reply leaves it with the sender. Either way
-           the sender frees it, even when it is being cancelled. */
-        bool taken = request.status == CHIMI_RESPONSE_OK ||
-                     request.status == CHIMI_RESPONSE_PENDING;
-        bool returned = request.status == CHIMI_RESPONSE_CLOSED ||
-                        request.status == CHIMI_RESPONSE_ABORTED;
-        if (returned) fragment_free((RuntimeFragment *)(intptr_t)request.value);
-        else if (!taken) fragment_free(message);
-        free(carried.carried);
-        carried.carried = NULL;
-        if (command == CHIMI_FIBER_CANCEL) return cancelled();
-        if (request.status == CHIMI_RESPONSE_PENDING) continue;
-        if (request.status == CHIMI_RESPONSE_OK)
-          return success(intrinsic == CHIMI_INTRINSIC_BROADCAST_PUBLISH
-                           ? integer_value(request.value)
-                           : void_value());
-        ChimiValue *fields[] = {arguments[1]};
-        if (request.status == CHIMI_RESPONSE_CLOSED)
-          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED, fields, 1));
-        if (request.status == CHIMI_RESPONSE_ABORTED)
-          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED, fields, 1));
-        return defect("Channel.send scheduler request failed", call_node);
-      }
-    }
-    /* A watch subscription is a receiver of a queue that keeps only the
-       latest value. */
-    case CHIMI_INTRINSIC_WATCH_RECEIVE:
-    case CHIMI_INTRINSIC_CHANNEL_RECEIVE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
-        return intrinsic_shape_defect(call_node);
-      RuntimeCapability capability = arguments[0]->as.capability;
-      for (;;) {
-        ChimiSchedulerRequest request = {
-          .kind = CHIMI_REQUEST_CHANNEL_RECEIVE,
-          .channel = capability.channel,
-          .owner = capability.owner,
-          .token = capability.token,
-        };
-        ChimiFiberCommand command = scheduler_request(&request);
-        if (command == CHIMI_FIBER_CANCEL) {
-          if (request.status == CHIMI_RESPONSE_SUCCEEDED)
-            fragment_free((RuntimeFragment *)(intptr_t)request.value);
-          return cancelled();
-        }
-        if (request.status == CHIMI_RESPONSE_PENDING) continue;
-        if (request.status == CHIMI_RESPONSE_SUCCEEDED) {
-          void *roots[FRAGMENT_ROOTS];
-          fragment_adopt((RuntimeFragment *)(intptr_t)request.value, roots);
-          ChimiValue *fields[] = {roots[0]};
-          return success(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED, fields, 1));
-        }
-        if (request.status == CHIMI_RESPONSE_DRAINED)
-          return success(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_DRAINED, NULL, 0));
-        if (request.status == CHIMI_RESPONSE_ABORTED)
-          return failure(standard_value(CHIMI_CONSTRUCTOR_CHANNEL_ABORTED, NULL, 0));
-        return defect("Channel.receive scheduler request failed", call_node);
-      }
-    }
-    case CHIMI_INTRINSIC_CHANNEL_CLOSE: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_COMPLETION)
-        return intrinsic_shape_defect(call_node);
-      RuntimeCapability capability = arguments[0]->as.capability;
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_CLOSE,
-        .channel = capability.channel,
-        .owner = capability.owner,
-        .token = capability.token,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(void_value())
-        : defect("Channel.close scheduler request failed", call_node);
-    }
     case CHIMI_INTRINSIC_CLOCK_SLEEP: {
       /* `Clock.sleep(d)` is `sleep_until(now + d)`. Reading now checks
          cancellation; a deadline at or before now then returns without
@@ -6342,22 +6137,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
         if (request.status != CHIMI_RESPONSE_PENDING)
           return defect("Clock.sleep scheduler request failed", call_node);
       }
-    }
-    case CHIMI_INTRINSIC_CHANNEL_ABORT: {
-      if (argument_count != 1 || arguments[0]->kind != VALUE_CHANNEL_RECEIVER)
-        return intrinsic_shape_defect(call_node);
-      RuntimeCapability capability = arguments[0]->as.capability;
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_CHANNEL_ABORT,
-        .channel = capability.channel,
-        .owner = capability.owner,
-        .token = capability.token,
-      };
-      ChimiFiberCommand command = scheduler_request(&request);
-      if (command == CHIMI_FIBER_CANCEL) return cancelled();
-      return request.status == CHIMI_RESPONSE_OK
-        ? success(void_value())
-        : defect("Channel.abort scheduler request failed", call_node);
     }
   }
   return defect("unknown standard intrinsic", call_node);

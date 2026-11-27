@@ -77,10 +77,10 @@ MUTATIONS = [
     lab("loops reclaim every second pass", RUNTIME, "MF05",
         ["scoped_peak_live_bytes exceeds 7168"], [(LOOP_PASS, batched(2))]),
     # CB04's task analogue: a channel value is a copy, not a pointer into the sender's heap.
-    cli("Channel.send queues the sender's original value", RUNTIME,
+    cli("Channel.send queues the sender's original value", "../../runtime/chimi-runtime/src/intrinsics/channels.rs",
         "native_a_value_a_finished_task_put_on_a_channel_survives_its_heap", [(
-            "      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,",
-            "      message->roots[0] = arguments[1];\n      for (;;) {\n        ChimiSchedulerRequest request = {\n          .kind = CHIMI_REQUEST_CHANNEL_SEND,")]),
+            "        let mut capabilities = MessageCapabilities {",
+            "        (*message).roots[0] = value.cast();\n        let mut capabilities = MessageCapabilities {")]),
     # MF06's no-concurrency and tasks-only half: pay-for-play linking.
     cli("every program links the fiber runtime", NATIVE,
         "native_only_a_task_program_links_the_fiber_runtime", [(

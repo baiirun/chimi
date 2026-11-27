@@ -9,6 +9,8 @@ pub mod assertions;
 pub mod binding_values;
 pub mod bytes;
 pub mod causes;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod channels;
 pub mod collections;
 pub mod core;
 pub mod debug;

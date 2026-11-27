@@ -32,9 +32,9 @@ MUTATIONS = [
     # CHI-185: the channel route
     dict(
         name="a sent message carries no capabilities",
-        file=RUNTIME_C,
-        edits=[("          .context = first && capabilities.count ? &capabilities : NULL,\n",
-                "          .context = NULL,\n")],
+        file="../../runtime/chimi-runtime/src/intrinsics/channels.rs",
+        edits=[("            request.context = if first && capabilities.count != 0 {\n",
+                "            request.context = if false {\n")],
         targets=["cli"], filter=HAND_BACK,
     ),
     dict(
