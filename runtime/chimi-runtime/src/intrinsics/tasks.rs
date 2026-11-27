@@ -10,7 +10,6 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use super::abi::arguments;
 use super::causes::{cause_with_sibling, control_cause, control_with_cause, with_stored_cause};
 use super::standard::{defect, shape_defect, standard_value, success};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
@@ -38,6 +37,15 @@ unsafe extern "C" {
     fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
     /// Prints "Chimi runtime exhausted memory" and exits 70.
     fn chimi_runtime_exhausted_memory() -> !;
+}
+
+/// A Task handle value, counted as a live reference.
+///
+/// # Safety
+/// Runs on a fiber that may allocate; `raw` names a task.
+pub(crate) unsafe fn task_value(raw: u64) -> *mut Value {
+    // SAFETY: the caller's contract.
+    unsafe { chimi_runtime_task_value_v1(raw) }
 }
 
 /// `ChimiFiberResult` (chimi_fiber.h), only so the entry's type is right.
@@ -76,30 +84,11 @@ pub unsafe fn task_operation(call: TaskCall, intrinsic: u32, arguments: &[*mut V
     }
 }
 
-/// [`task_operation`] for `runtime.c`'s own callers: a wait starts a child
-/// for a timer on a user Clock with `Task.start`.
-///
-/// # Safety
-/// As for [`task_operation`]; `values` holds `count` live values.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_task_operation_v1(
-    runtime: *mut Runtime,
-    intrinsic: u32,
-    values: *mut *mut Value,
-    count: u32,
-    span: u64,
-    call_node: u32,
-    environment: *mut Environment,
-) -> *mut Control {
-    // SAFETY: the caller's contract.
-    unsafe { task_operation(TaskCall { runtime, span, call_node, environment }, intrinsic, arguments(values, count)) }
-}
-
 /// Starts `callable` as a child of this task and gives its handle.
 ///
 /// # Safety
 /// As for [`task_operation`]; `callable` is a Callable.
-unsafe fn start(call: TaskCall, callable: *mut Value) -> *mut Control {
+pub(crate) unsafe fn start(call: TaskCall, callable: *mut Value) -> *mut Control {
     // SAFETY: the caller's contract.
     unsafe {
         let node = i64::from(call.call_node);

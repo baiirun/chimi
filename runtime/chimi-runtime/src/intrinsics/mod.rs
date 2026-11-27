@@ -31,3 +31,5 @@ pub mod standard;
 pub mod tasks;
 pub mod test_log;
 mod text;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod waits;

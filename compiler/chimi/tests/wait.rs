@@ -448,6 +448,31 @@ fn after_measures_from_the_select_call() {
     assert_eq!(clock_advances(&result.telemetry), [5 * SECOND, 9 * SECOND]);
 }
 
+// A `Wait.after` whose deadline is past the Instant range is a defect naming
+// the call, not a wrapped deadline in the past that would be ready at once.
+#[test]
+fn an_after_past_the_instant_range_defects() {
+    let result = run_virtual(
+        "after-overflow",
+        concat!(
+            "pub fn main() -> Int needs { clock: Clock.Clock } {\n",
+            "  Clock.sleep(Duration.seconds(1))\n",
+            "  Wait.first([Wait.after(Duration.nanoseconds(9223372036854775807), 1)])\n",
+            "}\n",
+        ),
+        "off",
+    );
+    assert_eq!(result.process.status.code(), Some(70));
+    assert!(
+        result.outcome.contains("\"outcome\":\"defect\"")
+            && result
+                .outcome
+                .contains("`Wait.after(2562047h47m16.854775807s)` overflows the Instant range"),
+        "{}",
+        result.outcome
+    );
+}
+
 // `Wait.at` with a passed deadline is ready at once; ties keep list order.
 #[test]
 fn a_passed_deadline_is_ready_and_ties_keep_list_order() {

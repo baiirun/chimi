@@ -48,7 +48,7 @@ impl ClockCall {
     /// # Safety
     /// Runs on a fiber; `callable` and `arguments` are live.
     #[inline(never)]
-    unsafe fn call(self, callable: *mut Callable, arguments: &mut [*mut Value]) -> *mut Control {
+    pub(crate) unsafe fn call(self, callable: *mut Callable, arguments: &mut [*mut Value]) -> *mut Control {
         let values = if arguments.is_empty() { ptr::null_mut() } else { arguments.as_mut_ptr() };
         // SAFETY: the caller's contract.
         unsafe {
@@ -134,7 +134,7 @@ pub(crate) unsafe fn execution_clock_value() -> *mut Value {
 ///
 /// # Safety
 /// Runs on a fiber of a scheduled program.
-unsafe fn execution_now(node: i64) -> Result<i64, *mut Control> {
+pub(crate) unsafe fn execution_now(node: i64) -> Result<i64, *mut Control> {
     let mut request = SchedulerRequest::of(Scheduler::REQUEST_TIMER_NOW);
     // SAFETY: the caller's contract.
     unsafe {
@@ -329,7 +329,7 @@ unsafe fn run_in_scope(call: ClockCall, operation: *mut Value, now: i64, deadlin
 ///
 /// # Safety
 /// Runs on a fiber that may allocate.
-unsafe fn overflow_defect(call: &[u8], nanoseconds: i64, node: i64) -> *mut Control {
+pub(crate) unsafe fn overflow_defect(call: &[u8], nanoseconds: i64, node: i64) -> *mut Control {
     let text = duration::text(nanoseconds);
     let message: *const c_char =
         Message::new().text(call).text(text.as_bytes()).text(b")` overflows the Instant range").finish();
