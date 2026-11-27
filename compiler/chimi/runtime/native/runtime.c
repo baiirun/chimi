@@ -1339,6 +1339,27 @@ _Static_assert(CHIMI_INTRINSIC_BYTES_VALID_UTF8_LENGTH == 164, "layout: CHIMI_IN
 _Static_assert(CHIMI_INTRINSIC_BYTES_READ_INT_CODE == 165, "layout: CHIMI_INTRINSIC_BYTES_READ_INT_CODE");
 _Static_assert(CHIMI_INTRINSIC_BYTES_INT_BYTES == 166, "layout: CHIMI_INTRINSIC_BYTES_INT_BYTES");
 _Static_assert(CHIMI_INTRINSIC_HTTP_COUNT_ENDS == 216, "layout: CHIMI_INTRINSIC_HTTP_COUNT_ENDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_NANOSECONDS == 41, "layout: CHIMI_INTRINSIC_DURATION_NANOSECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_MICROSECONDS == 42, "layout: CHIMI_INTRINSIC_DURATION_MICROSECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_MILLISECONDS == 43, "layout: CHIMI_INTRINSIC_DURATION_MILLISECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_SECONDS == 44, "layout: CHIMI_INTRINSIC_DURATION_SECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_MINUTES == 45, "layout: CHIMI_INTRINSIC_DURATION_MINUTES");
+_Static_assert(CHIMI_INTRINSIC_DURATION_HOURS == 46, "layout: CHIMI_INTRINSIC_DURATION_HOURS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_TO_NANOSECONDS == 47, "layout: CHIMI_INTRINSIC_DURATION_TO_NANOSECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_TO_MICROSECONDS == 48, "layout: CHIMI_INTRINSIC_DURATION_TO_MICROSECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_TO_MILLISECONDS == 49, "layout: CHIMI_INTRINSIC_DURATION_TO_MILLISECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_TO_SECONDS == 50, "layout: CHIMI_INTRINSIC_DURATION_TO_SECONDS");
+_Static_assert(CHIMI_INTRINSIC_DURATION_ADD == 51, "layout: CHIMI_INTRINSIC_DURATION_ADD");
+_Static_assert(CHIMI_INTRINSIC_DURATION_SUBTRACT == 52, "layout: CHIMI_INTRINSIC_DURATION_SUBTRACT");
+_Static_assert(CHIMI_INTRINSIC_DURATION_MULTIPLY == 53, "layout: CHIMI_INTRINSIC_DURATION_MULTIPLY");
+_Static_assert(CHIMI_INTRINSIC_DURATION_DIVIDE == 54, "layout: CHIMI_INTRINSIC_DURATION_DIVIDE");
+_Static_assert(CHIMI_INTRINSIC_DURATION_NEGATE == 55, "layout: CHIMI_INTRINSIC_DURATION_NEGATE");
+_Static_assert(CHIMI_INTRINSIC_DURATION_ABSOLUTE == 56, "layout: CHIMI_INTRINSIC_DURATION_ABSOLUTE");
+_Static_assert(CHIMI_INTRINSIC_DURATION_TO_TEXT == 57, "layout: CHIMI_INTRINSIC_DURATION_TO_TEXT");
+_Static_assert(CHIMI_INTRINSIC_DURATION_PARSE == 58, "layout: CHIMI_INTRINSIC_DURATION_PARSE");
+_Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
+_Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
+_Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE == 35, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NULL == 8, "layout: CHIMI_CONSTRUCTOR_JSON_NULL");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_BOOLEAN == 9, "layout: CHIMI_CONSTRUCTOR_JSON_BOOLEAN");
 _Static_assert(CHIMI_CONSTRUCTOR_JSON_NUMBER == 10, "layout: CHIMI_CONSTRUCTOR_JSON_NUMBER");
@@ -4907,19 +4928,11 @@ static uint32_t parse_float_text(const char *text, double *output) {
   return isfinite(*output) ? 0 : CHIMI_CONSTRUCTOR_FLOAT_PARSE_OUT_OF_RANGE;
 }
 
-/* `std/duration`. The text form and the parser are chimi-runtime's duration.rs, which
-   the interpreter uses too; the arithmetic and its defect messages here mirror that
-   file's, and the language tests run a generated set through both. */
-static const int64_t DURATION_UNITS[6] = {
-  3600000000000, 60000000000, 1000000000, 1000000, 1000, 1
-};
-static const char *const DURATION_CONSTRUCTORS[6] = {
-  "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"
-};
+/* `std/duration`'s intrinsics are Rust (intrinsics/durations.rs); the text form is
+   chimi-runtime's duration.rs, which the debug renderer and messages here use too. */
 static ChimiValue *duration_value(int64_t nanoseconds) { return chimi_value_integer_v1(VALUE_DURATION, nanoseconds); }
 
 size_t chimi_duration_text_v1(int64_t nanoseconds, char *out);
-uint32_t chimi_duration_parse_v1(const char *text, size_t length, int64_t *out);
 
 /* The canonical text form (chimi-runtime's duration.rs) into `text`, which holds
    at least 32 bytes. */
@@ -4927,86 +4940,6 @@ static void duration_text(int64_t duration, char *text) { chimi_duration_text_v1
 
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
-static ChimiControl *duration_overflow(const char *function, const char *operation, int64_t node) {
-  return defect(numeric_message("`Duration.%s` overflows the Duration range: %s", function, operation), node);
-}
-
-static ChimiControl *invoke_duration(uint32_t intrinsic, ChimiValue **arguments,
-                                     uint32_t argument_count, uint32_t call_node) {
-  char left[32], right[32], operation[96];
-  if (intrinsic <= CHIMI_INTRINSIC_DURATION_HOURS) {
-    if (argument_count != 1 || arguments[0]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-    int unit = 5 - (int)(intrinsic - CHIMI_INTRINSIC_DURATION_NANOSECONDS);
-    int64_t count = arguments[0]->as.integer, result;
-    if (__builtin_mul_overflow(count, DURATION_UNITS[unit], &result))
-      return defect(numeric_message("`Duration.%s(%" PRId64 ")` overflows the Duration range",
-                                    DURATION_CONSTRUCTORS[unit], count), call_node);
-    return success(duration_value(result));
-  }
-  if (intrinsic == CHIMI_INTRINSIC_DURATION_PARSE) {
-    if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT) return intrinsic_shape_defect(call_node);
-    /* duration_abi.rs: 0, or 1 Empty, 2 Invalid, 3 OutOfRange. */
-    static const uint32_t failures[] = {0, CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY, CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID,
-                                        CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE};
-    int64_t value = 0;
-    uint32_t outcome = chimi_duration_parse_v1(arguments[0]->as.text.bytes, (size_t)arguments[0]->as.text.length, &value);
-    if (outcome >= COUNT_OF(failures)) return intrinsic_shape_defect(call_node);
-    return outcome ? failure(standard_value(failures[outcome], NULL, 0)) : success(duration_value(value));
-  }
-  if (argument_count < 1 || arguments[0]->kind != VALUE_DURATION) return intrinsic_shape_defect(call_node);
-  int64_t value = arguments[0]->as.integer, result;
-  duration_text(value, left);
-  if (intrinsic <= CHIMI_INTRINSIC_DURATION_TO_SECONDS) {
-    if (argument_count != 1) return intrinsic_shape_defect(call_node);
-    int unit = 5 - (int)(intrinsic - CHIMI_INTRINSIC_DURATION_TO_NANOSECONDS);
-    return success(integer_value(value / DURATION_UNITS[unit]));
-  }
-  switch (intrinsic) {
-    case CHIMI_INTRINSIC_DURATION_ADD:
-    case CHIMI_INTRINSIC_DURATION_SUBTRACT: {
-      if (argument_count != 2 || arguments[1]->kind != VALUE_DURATION) return intrinsic_shape_defect(call_node);
-      bool add = intrinsic == CHIMI_INTRINSIC_DURATION_ADD;
-      int64_t other = arguments[1]->as.integer;
-      bool overflow = add ? __builtin_add_overflow(value, other, &result)
-                          : __builtin_sub_overflow(value, other, &result);
-      if (!overflow) return success(duration_value(result));
-      duration_text(other, right);
-      snprintf(operation, sizeof(operation), "%s %s %s", left, add ? "+" : "-", right);
-      return duration_overflow(add ? "add" : "subtract", operation, call_node);
-    }
-    case CHIMI_INTRINSIC_DURATION_MULTIPLY:
-    case CHIMI_INTRINSIC_DURATION_DIVIDE: {
-      if (argument_count != 2 || arguments[1]->kind != VALUE_INTEGER) return intrinsic_shape_defect(call_node);
-      int64_t other = arguments[1]->as.integer;
-      if (intrinsic == CHIMI_INTRINSIC_DURATION_MULTIPLY) {
-        if (!__builtin_mul_overflow(value, other, &result)) return success(duration_value(result));
-        snprintf(operation, sizeof(operation), "%s * %" PRId64, left, other);
-        return duration_overflow("multiply", operation, call_node);
-      }
-      if (other == 0)
-        return defect(numeric_message("`Duration.divide` by zero: %s / 0", left), call_node);
-      if (value == INT64_MIN && other == -1) {
-        snprintf(operation, sizeof(operation), "%s / %" PRId64, left, other);
-        return duration_overflow("divide", operation, call_node);
-      }
-      return success(duration_value(value / other));
-    }
-    case CHIMI_INTRINSIC_DURATION_NEGATE:
-    case CHIMI_INTRINSIC_DURATION_ABSOLUTE: {
-      if (argument_count != 1) return intrinsic_shape_defect(call_node);
-      bool negate = intrinsic == CHIMI_INTRINSIC_DURATION_NEGATE;
-      if (value == INT64_MIN) {
-        snprintf(operation, sizeof(operation), negate ? "-(%s)" : "|%s|", left);
-        return duration_overflow(negate ? "negate" : "absolute", operation, call_node);
-      }
-      return success(duration_value(negate || value < 0 ? -value : value));
-    }
-    case CHIMI_INTRINSIC_DURATION_TO_TEXT:
-      if (argument_count != 1) return intrinsic_shape_defect(call_node);
-      return success(text_value(left));
-    default: return intrinsic_shape_defect(call_node);
-  }
-}
 
 /* The debug format of `std/debug` (G10). It MUST match the interpreter's renderer in
    execution/debug.rs byte for byte; the language tests compare both. Captures and
@@ -6424,6 +6357,9 @@ ChimiControl *chimi_intrinsic_decimal_v1(uint32_t intrinsic, ChimiValue **argume
 /* The native core of std/bytes and std/http's byte scan, in intrinsics/bytes.rs. */
 ChimiControl *chimi_intrinsic_bytes_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
                                        uint32_t call_node);
+/* The native core of std/duration, in intrinsics/durations.rs. */
+ChimiControl *chimi_intrinsic_duration_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
+                                          uint32_t call_node);
 /* `invoke` and the shared Void, False and True, for the intrinsics in Rust. */
 ChimiControl *chimi_runtime_invoke_v1(ChimiRuntime *runtime, ChimiCallable *callable, ChimiValue **arguments,
                                       uint32_t argument_count, uint64_t span, uint32_t call_node,
@@ -7747,7 +7683,7 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
       intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
     return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_DURATION_NANOSECONDS && intrinsic <= CHIMI_INTRINSIC_DURATION_PARSE)
-    return invoke_duration(intrinsic, arguments, argument_count, call_node);
+    return chimi_intrinsic_duration_v1(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   if ((intrinsic >= CHIMI_INTRINSIC_SELECT_RECEIVE && intrinsic <= CHIMI_INTRINSIC_SELECT_FIRST) ||

@@ -9768,6 +9768,20 @@ fn duration_constructors_accept_their_boundary_counts() {
     );
 }
 
+// `negate` flips the sign and `absolute` drops it, on both backends.
+#[test]
+fn duration_negate_and_absolute_follow_the_sign() {
+    let source = duration_program(
+        "  let values = [\n\
+             Duration.absolute(Duration.seconds(id(-5))), Duration.absolute(Duration.seconds(id(5))),\n\
+             Duration.negate(Duration.seconds(id(5))), Duration.negate(Duration.seconds(id(-5))),\n\
+           ]\n\
+           Debug.render(values)",
+    );
+    let outcome = run_both("duration-sign", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"[5s, 5s, -5s, 5s]\"");
+}
+
 // Conformance matrix "Duration range": one more unit defects, as do arithmetic results
 // outside the range, a zero divisor, and `negate` / `absolute` of the minimum. The
 // defect is the same on both backends, so neither wraps nor saturates.

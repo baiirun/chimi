@@ -21,6 +21,7 @@ DURATION = RT + "duration.rs"
 DURATION_ABI = RT + "duration_abi.rs"
 TEXT = RT + "text_buffer.rs"
 RUNTIME = "runtime/native/runtime.c"
+DURATION_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/durations.rs"
 DECIMAL_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/decimals.rs"
 
 
@@ -73,13 +74,10 @@ MUTATIONS = [
     fuzz("duration rounds an inexact fraction", DURATION,
          [("        if numerator % denominator != 0 {\n            return Err(ParseFailure::Invalid);\n        }\n",
            "")]),
-    fuzz("ABI parse reports Empty as Invalid", DURATION_ABI,
-         [("Err(ParseFailure::Empty) => 1,", "Err(ParseFailure::Empty) => 2,")]),
+    fuzz('native parse reports Empty as Invalid', DURATION_INTRINSICS, [('ParseFailure::Empty => StandardConstructor::DURATION_PARSE_EMPTY,', 'ParseFailure::Empty => StandardConstructor::DURATION_PARSE_INVALID,')]),
     fuzz('native checked subtract adds', DECIMAL_INTRINSICS, [('optional(decimal(0).subtract(decimal(1)))',
         'optional(decimal(0).add(decimal(1)))')]),
-    fuzz("C maps OutOfRange to Invalid", RUNTIME,
-         [("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID,\n                                        CHIMI_CONSTRUCTOR_DURATION_PARSE_OUT_OF_RANGE};",
-           "CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID,\n                                        CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID};")]),
+    fuzz('native maps OutOfRange to Invalid', DURATION_INTRINSICS, [('ParseFailure::OutOfRange => StandardConstructor::DURATION_PARSE_OUT_OF_RANGE,', 'ParseFailure::OutOfRange => StandardConstructor::DURATION_PARSE_INVALID,')]),
     fuzz('native reads the text one byte short', DECIMAL_INTRINSICS, [('text.bytes.cast::<u8>(), text.length) }',
         'text.bytes.cast::<u8>(), text.length - 1) }')]),
 ]
