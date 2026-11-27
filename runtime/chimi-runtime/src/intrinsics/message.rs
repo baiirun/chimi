@@ -46,6 +46,21 @@ impl Message {
         self.text(digits)
     }
 
+    /// Appends `value` in decimal, as `%PRIu64` writes it.
+    pub fn unsigned(self, mut value: u64) -> Self {
+        let mut spelling = [0; 20];
+        let mut start = spelling.len();
+        loop {
+            start -= 1;
+            spelling[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.text(&spelling[start..])
+    }
+
     /// The NUL-terminated message, which lives until the program ends.
     pub fn finish(self) -> *const c_char {
         // SAFETY: `length` stays below CAPACITY.

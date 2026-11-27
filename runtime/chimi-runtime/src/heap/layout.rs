@@ -423,6 +423,55 @@ pub struct SelectSource {
     pub deadline: i64,
 }
 
+/// `ChimiProcessRequest` (chimi_fiber.h): a process or supervisor request,
+/// answered in place. Its `kind` and `status` share their offsets with
+/// [`SchedulerRequest`]; the fields a kind names are set, the rest are zero.
+#[repr(C)]
+pub struct ProcessRequest {
+    pub kind: u32,
+    pub status: u32,
+    pub address_kind: u32,
+    pub restart: u32,
+    pub address: u64,
+    pub supervisor: u64,
+    pub membership: u64,
+    pub message: u64,
+    pub name: u64,
+    pub owner: u64,
+    pub policy: *const c_void,
+    pub spec: *const c_void,
+    pub monitor: u64,
+    pub queued: u64,
+    pub capacity: u32,
+    pub down: u32,
+    pub carried: *const c_void,
+}
+
+impl ProcessRequest {
+    /// A request of `kind`, every other field zero.
+    pub const fn of(kind: u32) -> Self {
+        Self {
+            kind,
+            status: Scheduler::RESPONSE_UNSET,
+            address_kind: 0,
+            restart: 0,
+            address: 0,
+            supervisor: 0,
+            membership: 0,
+            message: 0,
+            name: 0,
+            owner: 0,
+            policy: core::ptr::null(),
+            spec: core::ptr::null(),
+            monitor: 0,
+            queued: 0,
+            capacity: 0,
+            down: 0,
+            carried: core::ptr::null(),
+        }
+    }
+}
+
 /// `ChimiMessageCapabilities` (chimi_fiber.h): the Receivers and Completions a
 /// sent message carries, as a send request's context.
 #[repr(C)]
@@ -478,6 +527,18 @@ impl Scheduler {
     pub const SELECT_INBOX: u32 = 2;
     pub const SELECT_TASK: u32 = 3;
     pub const SELECT_TIMER: u32 = 4;
+    pub const REQUEST_PROCESS_SELF: u32 = 13;
+    pub const REQUEST_PROCESS_RECEIVE: u32 = 15;
+    pub const REQUEST_SUPERVISOR_ADDRESS: u32 = 18;
+    pub const REQUEST_SUPERVISOR_REMOVE_PROCESS: u32 = 19;
+    pub const REQUEST_SUPERVISOR_STOP: u32 = 20;
+    pub const REQUEST_SUPERVISOR_WAIT: u32 = 21;
+    pub const REQUEST_SUPERVISOR_REMOVE_SUPERVISOR: u32 = 23;
+    pub const REQUEST_PROCESS_UNMONITOR: u32 = 29;
+    pub const REQUEST_PROCESS_MAILBOX: u32 = 30;
+    pub const RESPONSE_FORCED: u32 = 16;
+    pub const DOWN_RETURNED: u32 = 1;
+    pub const DOWN_UNAVAILABLE: u32 = 5;
     pub const RESPONSE_UNSET: u32 = 0;
     pub const RESPONSE_OK: u32 = 1;
     pub const RESPONSE_PENDING: u32 = 2;
@@ -695,6 +756,16 @@ impl Intrinsic {
     pub const SUPERVISOR_SUPERVISOR: u32 = 102;
     pub const SUPERVISOR_POLICY: u32 = 103;
     pub const SUPERVISOR_RESTARTS: u32 = 104;
+    pub const PROCESS_RECEIVE: u32 = 93;
+    pub const PROCESS_OWN_ADDRESS: u32 = 95;
+    pub const PROCESS_QUEUED: u32 = 96;
+    pub const PROCESS_CAPACITY: u32 = 97;
+    pub const PROCESS_UNMONITOR: u32 = 99;
+    pub const SUPERVISOR_ADDRESS: u32 = 109;
+    pub const SUPERVISOR_REMOVE_PROCESS: u32 = 110;
+    pub const SUPERVISOR_REMOVE_SUPERVISOR: u32 = 111;
+    pub const SUPERVISOR_STOP: u32 = 112;
+    pub const SUPERVISOR_WAIT: u32 = 113;
     pub const TASK_ALL: u32 = 73;
     pub const TASK_RESULTS: u32 = 74;
     pub const TASK_RACE: u32 = 75;
@@ -748,6 +819,7 @@ pub struct StandardConstructor;
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
     pub const OPTION_NONE: u32 = 7;
+    pub const DOWN_RETURNED: u32 = 44;
     pub const TIMEOUT_TIMED_OUT: u32 = 43;
     pub const RESULT_OK: u32 = 49;
     pub const RESULT_ERR: u32 = 50;
@@ -1475,6 +1547,36 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_SELECT_INBOX" Scheduler::SELECT_INBOX)
     constant("CHIMI_SELECT_TASK" Scheduler::SELECT_TASK)
     constant("CHIMI_SELECT_TIMER" Scheduler::SELECT_TIMER)
+    constant("CHIMI_REQUEST_PROCESS_SELF" Scheduler::REQUEST_PROCESS_SELF)
+    constant("CHIMI_REQUEST_PROCESS_RECEIVE" Scheduler::REQUEST_PROCESS_RECEIVE)
+    constant("CHIMI_REQUEST_SUPERVISOR_ADDRESS" Scheduler::REQUEST_SUPERVISOR_ADDRESS)
+    constant("CHIMI_REQUEST_SUPERVISOR_REMOVE_PROCESS" Scheduler::REQUEST_SUPERVISOR_REMOVE_PROCESS)
+    constant("CHIMI_REQUEST_SUPERVISOR_STOP" Scheduler::REQUEST_SUPERVISOR_STOP)
+    constant("CHIMI_REQUEST_SUPERVISOR_WAIT" Scheduler::REQUEST_SUPERVISOR_WAIT)
+    constant("CHIMI_REQUEST_SUPERVISOR_REMOVE_SUPERVISOR" Scheduler::REQUEST_SUPERVISOR_REMOVE_SUPERVISOR)
+    constant("CHIMI_REQUEST_PROCESS_UNMONITOR" Scheduler::REQUEST_PROCESS_UNMONITOR)
+    constant("CHIMI_REQUEST_PROCESS_MAILBOX" Scheduler::REQUEST_PROCESS_MAILBOX)
+    constant("CHIMI_RESPONSE_FORCED" Scheduler::RESPONSE_FORCED)
+    constant("CHIMI_DOWN_RETURNED" Scheduler::DOWN_RETURNED)
+    constant("CHIMI_DOWN_UNAVAILABLE" Scheduler::DOWN_UNAVAILABLE)
+    size("ChimiProcessRequest" ProcessRequest)
+    field("ChimiProcessRequest" ProcessRequest, "kind", kind)
+    field("ChimiProcessRequest" ProcessRequest, "status", status)
+    field("ChimiProcessRequest" ProcessRequest, "address_kind", address_kind)
+    field("ChimiProcessRequest" ProcessRequest, "restart", restart)
+    field("ChimiProcessRequest" ProcessRequest, "address", address)
+    field("ChimiProcessRequest" ProcessRequest, "supervisor", supervisor)
+    field("ChimiProcessRequest" ProcessRequest, "membership", membership)
+    field("ChimiProcessRequest" ProcessRequest, "message", message)
+    field("ChimiProcessRequest" ProcessRequest, "name", name)
+    field("ChimiProcessRequest" ProcessRequest, "owner", owner)
+    field("ChimiProcessRequest" ProcessRequest, "policy", policy)
+    field("ChimiProcessRequest" ProcessRequest, "spec", spec)
+    field("ChimiProcessRequest" ProcessRequest, "monitor", monitor)
+    field("ChimiProcessRequest" ProcessRequest, "queued", queued)
+    field("ChimiProcessRequest" ProcessRequest, "capacity", capacity)
+    field("ChimiProcessRequest" ProcessRequest, "down", down)
+    field("ChimiProcessRequest" ProcessRequest, "carried", carried)
     size("ChimiSelectSource" SelectSource)
     field("ChimiSelectSource" SelectSource, "kind", kind)
     field("ChimiSelectSource" SelectSource, "channel", channel)
@@ -1604,6 +1706,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CONSTRUCTOR_FLOAT_NOT_INTEGER" StandardConstructor::FLOAT_NOT_INTEGER)
     constant("CHIMI_CONSTRUCTOR_FLOAT_OUT_OF_RANGE" StandardConstructor::FLOAT_OUT_OF_RANGE)
     constant("CHIMI_CONSTRUCTOR_OPTION_NONE" StandardConstructor::OPTION_NONE)
+    constant("CHIMI_CONSTRUCTOR_DOWN_RETURNED" StandardConstructor::DOWN_RETURNED)
     constant("CHIMI_CONSTRUCTOR_TIMEOUT_TIMED_OUT" StandardConstructor::TIMEOUT_TIMED_OUT)
     constant("CHIMI_CONSTRUCTOR_RESULT_OK" StandardConstructor::RESULT_OK)
     constant("CHIMI_CONSTRUCTOR_RESULT_ERR" StandardConstructor::RESULT_ERR)
@@ -1701,6 +1804,16 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SUPERVISOR_SUPERVISOR" Intrinsic::SUPERVISOR_SUPERVISOR)
     constant("CHIMI_INTRINSIC_SUPERVISOR_POLICY" Intrinsic::SUPERVISOR_POLICY)
     constant("CHIMI_INTRINSIC_SUPERVISOR_RESTARTS" Intrinsic::SUPERVISOR_RESTARTS)
+    constant("CHIMI_INTRINSIC_PROCESS_RECEIVE" Intrinsic::PROCESS_RECEIVE)
+    constant("CHIMI_INTRINSIC_PROCESS_OWN_ADDRESS" Intrinsic::PROCESS_OWN_ADDRESS)
+    constant("CHIMI_INTRINSIC_PROCESS_QUEUED" Intrinsic::PROCESS_QUEUED)
+    constant("CHIMI_INTRINSIC_PROCESS_CAPACITY" Intrinsic::PROCESS_CAPACITY)
+    constant("CHIMI_INTRINSIC_PROCESS_UNMONITOR" Intrinsic::PROCESS_UNMONITOR)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_ADDRESS" Intrinsic::SUPERVISOR_ADDRESS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_REMOVE_PROCESS" Intrinsic::SUPERVISOR_REMOVE_PROCESS)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_REMOVE_SUPERVISOR" Intrinsic::SUPERVISOR_REMOVE_SUPERVISOR)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_STOP" Intrinsic::SUPERVISOR_STOP)
+    constant("CHIMI_INTRINSIC_SUPERVISOR_WAIT" Intrinsic::SUPERVISOR_WAIT)
     constant("CHIMI_INTRINSIC_TASK_ALL" Intrinsic::TASK_ALL)
     constant("CHIMI_INTRINSIC_TASK_RESULTS" Intrinsic::TASK_RESULTS)
     constant("CHIMI_INTRINSIC_TASK_RACE" Intrinsic::TASK_RACE)

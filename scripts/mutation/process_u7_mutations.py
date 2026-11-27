@@ -17,6 +17,8 @@ CRATE = "compiler/chimi"
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 RUNTIME = "runtime/native/runtime.c"
+PROCESSES = "../../runtime/chimi-runtime/src/intrinsics/processes.rs"
+PROCESS_KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 
 TRANSCRIPT = "expected.transcript line"
@@ -63,10 +65,10 @@ MUTATIONS = [
             "                (*value).payload.address.target = 1;")]),
     lab("a root whose member start fails is left running", KERNEL, "RT06",
         [TRANSCRIPT, OUTCOME, EXITED], [(ROLLBACK, "")]),
-    lab("a second register replaces the name", RUNTIME, "RT07",
+    lab("a second register replaces the name", PROCESSES, "RT07",
         [OUTCOME, EXITED], [(
-            "      if (name->as.constructed.length != 0)\n        return defect(\"Process.register: spec already has a name\", call_node);",
-            "      if (false)\n        return defect(\"Process.register: spec already has a name\", call_node);")]),
+            "                if (*name).payload.constructed.length != 0 {",
+            "                if false {")]),
     # Removal.
     # Removal answers only after its target has terminated. (A runtime.c
     # mutant that took the scheduler's PENDING reply as done survives at U7:
@@ -75,10 +77,10 @@ MUTATIONS = [
         [TRANSCRIPT, OUTCOME, EXITED], [(
             "            Some(Instance::Process(incarnation)) => Plan::from([Step::Await(incarnation), finish]),",
             "            Some(Instance::Process(incarnation)) => Plan::from([finish, Step::Await(incarnation)]),")]),
-    lab("the foreign-owner defect names one supervisor", RUNTIME, "SV12",
+    lab("the foreign-owner defect names one supervisor", PROCESS_KERNEL, "SV12",
         [OUTCOME], [(
-            "function, request.owner, arguments[0]->as.managed.supervisor),",
-            "function, request.owner, request.owner),")]),
+            "            .text(b\", not supervisor \")\n            .unsigned(supervisor)",
+            "            .text(b\", not supervisor \")\n            .unsigned(owner)")]),
     # Restart accounting with a failed replacement (C harness).
     lab("a failed replacement is refunded", KERNEL, "RA06",
         ["attempts_in_window"], [(

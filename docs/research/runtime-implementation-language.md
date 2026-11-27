@@ -250,6 +250,15 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `supervisor`, `policy` and `restarts`, in `intrinsics/processes.rs`).
       They are pure, so every build reaches them in Rust; the process
       kernel, which only process programs link, stays in C for the next PR.
+      Tenth PR: the kernel's requests that carry no message
+      (`intrinsics/process_kernel.rs`): `Process.receive` with its monitor
+      notices, a process's own address and mailbox counts,
+      `Process.unmonitor`, and `Supervisor.address`, `remove_*`, `stop` and
+      `wait`. Pay-for-play holds because only runtime.c's kernel variant
+      calls the Rust export, so the linker drops it from every other program;
+      a cli test checks the symbol is absent from plain and task programs.
+      Sends, monitors and supervisor starts, which marshal messages and
+      specs, are next.
    8. Startup, CLI parsing, signals and reports.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a

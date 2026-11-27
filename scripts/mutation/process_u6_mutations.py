@@ -15,6 +15,7 @@ same scenarios in the default suite.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+PROCESSES = "../../runtime/chimi-runtime/src/intrinsics/processes.rs"
 FIXTURE = "src/process_lab/fixture.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 
@@ -118,14 +119,14 @@ MUTATIONS = [
     lab("a root escalation ends the program as a scheduler failure", RUNTIME, "RA02",
         [OUTCOME], [(ESCALATION_OUTCOME, "")]),
     # Range checks at the call that receives the value.
-    lab("Process.spec accepts a computed zero capacity", RUNTIME, "MB10",
+    lab("Process.spec accepts a computed zero capacity", PROCESSES, "MB10",
         [OUTCOME, EXITED], [(
-            "      if (arguments[1]->as.integer < 1)\n        return process_range_defect(\"Process.spec: mailbox capacity",
-            "      if (arguments[1]->as.integer < 0)\n        return process_range_defect(\"Process.spec: mailbox capacity")]),
-    lab("Supervisor.policy accepts members over capacity", RUNTIME, "SV11",
+            "                if integer(1) < 1 {\n                    return range_defect(b\"Process.spec: mailbox capacity",
+            "                if integer(1) < 0 {\n                    return range_defect(b\"Process.spec: mailbox capacity")]),
+    lab("Supervisor.policy accepts members over capacity", PROCESSES, "SV11",
         [OUTCOME, EXITED], [(
-            "      if ((int64_t)list_length(arguments[0]) > capacity)",
-            "      if ((int64_t)list_length(arguments[0]) > capacity + 1)")]),
+            "                if i64::from(members) > capacity {",
+            "                if i64::from(members) > capacity + 1 {")]),
     # Each incarnation runs on its own copy of the body and its providers.
     lab("the first incarnation takes the spec's body instead of a copy", RUNTIME, "CB08",
         [OUTCOME, EXITED], [(
