@@ -17,6 +17,7 @@
 use core::ffi::{CStr, c_void};
 use core::ptr;
 
+use super::capabilities;
 use super::message::Message;
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
@@ -30,12 +31,6 @@ use crate::heap::values::{allocate_kind, integer_value, new_value};
 use crate::scheduler;
 
 unsafe extern "C" {
-    /// A capability value of `kind`, counted as a live reference to its
-    /// channel (`runtime.c`, which keeps the handle counts).
-    fn chimi_runtime_capability_value_v1(kind: u32, channel: u64, owner: u64, token: u64) -> *mut Value;
-    /// The Receivers and Completions under `root`, collected as for a send;
-    /// the caller frees the list.
-    fn chimi_runtime_carried_capabilities_v1(root: *mut Value, count: *mut usize, managed: *mut usize) -> *mut c_void;
     /// The control a task's result word names.
     fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
 }
@@ -44,7 +39,7 @@ unsafe extern "C" {
 /// Runs on a fiber that may allocate.
 unsafe fn capability(kind: ValueKind, channel: u64, owner: u64, token: u64) -> *mut Value {
     // SAFETY: the caller's contract.
-    unsafe { chimi_runtime_capability_value_v1(kind.0, channel, owner, token) }
+    unsafe { capabilities::capability_value(kind, channel, owner, token) }
 }
 
 /// A record of `fields`, in order.
@@ -133,10 +128,9 @@ impl Carried {
     /// # Safety
     /// Runs on a fiber; `root` is live.
     pub(crate) unsafe fn of(root: *mut c_void) -> Self {
-        let (mut count, mut managed) = (0, 0);
         // SAFETY: the caller's contract.
-        let items = unsafe { chimi_runtime_carried_capabilities_v1(root.cast(), &raw mut count, &raw mut managed) };
-        Self { items, count, managed }
+        let (items, count, managed) = unsafe { capabilities::carried_capabilities(root.cast()) };
+        Self { items: items.cast(), count, managed }
     }
 
     pub(crate) fn release(&mut self) {

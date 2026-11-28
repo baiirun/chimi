@@ -9,6 +9,7 @@ pub mod assertions;
 pub mod binding_calls;
 pub mod binding_values;
 pub mod bytes;
+pub mod capabilities;
 pub mod causes;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod clocks;

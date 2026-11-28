@@ -10,6 +10,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+CAPABILITIES = "../../runtime/chimi-runtime/src/intrinsics/capabilities.rs"
 TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 X = "src/execution.rs"
@@ -39,12 +40,12 @@ MUTATIONS = [
         "                let list = list_of(&mut log.values, true);",
     )]),
     mutant("native: a receiver is let through", TEST_LOG, [(
-        "        if chimi_runtime_carries_capability_v1((*copy).roots[0].cast()) {",
-        "        if false && chimi_runtime_carries_capability_v1((*copy).roots[0].cast()) {",
+        "        if capabilities::carries_capability((*copy).roots[0].cast()) {",
+        "        if false && capabilities::carries_capability((*copy).roots[0].cast()) {",
     )]),
-    mutant("native: the capability check sees nothing", C, [(
-        "  return carried_count != 0;",
-        "  return false;",
+    mutant("native: the capability check sees nothing", CAPABILITIES, [(
+        "    count != 0\n",
+        "    false\n",
     )]),
     mutant("native: a capacity of zero is allowed", TEST_LOG, [(
         "                if capacity < 1 {",

@@ -529,6 +529,16 @@ pub struct ProcessSpecContext {
     pub handoff: bool,
 }
 
+/// `ChimiCarriedCapability` (chimi_fiber.h): one Receiver or Completion a
+/// sent message holds, with the sender's token.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CarriedCapability {
+    pub channel: u64,
+    pub token: u64,
+    pub capability: u32,
+}
+
 /// `ChimiMessageCapabilities` (chimi_fiber.h): the Receivers and Completions a
 /// sent message carries, as a send request's context.
 #[repr(C)]
@@ -563,6 +573,8 @@ impl Scheduler {
     pub const REQUEST_CHANNEL_RECEIVE: u32 = 6;
     pub const REQUEST_CHANNEL_CLOSE: u32 = 7;
     pub const REQUEST_CHANNEL_ABORT: u32 = 8;
+    pub const REQUEST_CHANNEL_TRANSFER_RECEIVER: u32 = 9;
+    pub const REQUEST_CHANNEL_TRANSFER_COMPLETION: u32 = 10;
     pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
     pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
     pub const REQUEST_IO_WAIT: u32 = 48;
@@ -1649,6 +1661,10 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerRequest" SchedulerRequest, "value", value)
     field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
     field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
+    size("ChimiCarriedCapability" CarriedCapability)
+    field("ChimiCarriedCapability" CarriedCapability, "channel", channel)
+    field("ChimiCarriedCapability" CarriedCapability, "token", token)
+    field("ChimiCarriedCapability" CarriedCapability, "capability", capability)
     size("ChimiMessageCapabilities" MessageCapabilities)
     field("ChimiMessageCapabilities" MessageCapabilities, "items", items)
     field("ChimiMessageCapabilities" MessageCapabilities, "count", count)
@@ -1750,6 +1766,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_CHANNEL_RECEIVE" Scheduler::REQUEST_CHANNEL_RECEIVE)
     constant("CHIMI_REQUEST_CHANNEL_CLOSE" Scheduler::REQUEST_CHANNEL_CLOSE)
     constant("CHIMI_REQUEST_CHANNEL_ABORT" Scheduler::REQUEST_CHANNEL_ABORT)
+    constant("CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER" Scheduler::REQUEST_CHANNEL_TRANSFER_RECEIVER)
+    constant("CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION" Scheduler::REQUEST_CHANNEL_TRANSFER_COMPLETION)
     constant("CHIMI_REQUEST_CHANNEL_ADD_RECEIVER" Scheduler::REQUEST_CHANNEL_ADD_RECEIVER)
     constant("CHIMI_REQUEST_CHANNEL_BROADCAST" Scheduler::REQUEST_CHANNEL_BROADCAST)
     constant("CHIMI_REQUEST_IO_WAIT" Scheduler::REQUEST_IO_WAIT)

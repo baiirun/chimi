@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 RUNTIME = "runtime/native/runtime.c"
 PROCESS_KERNEL = "../../runtime/chimi-runtime/src/intrinsics/process_kernel.rs"
 CHANNELS = "../../runtime/chimi-runtime/src/intrinsics/channels.rs"
+CAPABILITIES = "../../runtime/chimi-runtime/src/intrinsics/capabilities.rs"
 
 
 def variant(name, edits, file=RUNTIME):
@@ -18,8 +19,8 @@ def variant(name, edits, file=RUNTIME):
 
 MUTATIONS = [
     variant("managed handles are not counted", [(
-        "      if (transfer->collect) ++transfer->managed_count;\n",
-        "")]),
+        "                    transfer.managed_count += 1;\n",
+        "")], CAPABILITIES),
     variant("broadcast publishes a managed handle", [(
         "        if carried.managed != 0 && intrinsic != Intrinsic::CHANNEL_SEND {",
         "        if carried.managed != 0 && false {")], CHANNELS),

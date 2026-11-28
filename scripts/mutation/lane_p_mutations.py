@@ -14,6 +14,7 @@ CHANNELS = "../../runtime/chimi-fiber/src/channel.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+CAPABILITIES = "../../runtime/chimi-runtime/src/intrinsics/capabilities.rs"
 LAB_BIN = "src/bin/process_lab.rs"
 
 HAND_BACK = "native_a_receiver_"
@@ -39,8 +40,8 @@ MUTATIONS = [
     ),
     dict(
         name="the message's copies keep the sender's token",
-        file=RUNTIME_C,
-        edits=[("  ++value->as.capability.token;\n", "")],
+        file=CAPABILITIES,
+        edits=[("            held.token = held.token.wrapping_add(1);\n", "")],
         targets=["cli"], filter=HAND_BACK,
     ),
     dict(
