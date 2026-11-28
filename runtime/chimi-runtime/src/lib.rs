@@ -37,7 +37,7 @@ mod handle_counts_abi;
 #[cfg(unix)]
 mod pthread_locked;
 pub mod handles;
-mod handles_abi;
+pub(crate) mod handles_abi;
 pub mod json;
 pub mod metrics;
 mod metrics_abi;

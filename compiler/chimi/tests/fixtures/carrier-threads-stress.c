@@ -33,6 +33,16 @@
    usage: carrier-threads-stress     prints "ok" */
 #include "runtime.c"
 
+/* The binding call path is Rust (chimi-runtime intrinsics/binding_calls.rs,
+   handles_abi.rs); these are its exports the harness reaches into. */
+extern pthread_mutex_t chimi_runtime_binding_handle_lock;
+extern void *chimi_handles_state_v1(uint32_t slot, uint32_t generation, const ChimiBindingType *type);
+extern const void *chimi_handles_runner_v1(uint32_t slot);
+extern ChimiControl *chimi_runtime_invoke_binding_v1(ChimiRuntime *runtime, uint32_t binding, ChimiValue **arguments,
+                                                     uint32_t argument_count, uint32_t call_node);
+#define binding_handle_lock chimi_runtime_binding_handle_lock
+#define invoke_binding chimi_runtime_invoke_binding_v1
+
 #include <sys/wait.h>
 
 const char *CHIMI_COMPUTATION = "carrier-test";

@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (the process kernel and C bindings) go to `runtime.c`'s
+//! (the process kernel) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
@@ -11,6 +11,7 @@ use core::ptr;
 
 use super::abi::arguments;
 use super::assertions::assertion_operation;
+use super::binding_calls::binding_call;
 use super::bytes::bytes_operation;
 use super::causes::cause_operation;
 use super::channels::channel_operation;
@@ -173,6 +174,7 @@ pub unsafe fn invoke_native(
                 let cancel = ptr::read_volatile(&raw const (*runtime).cancel) != 0;
                 host_operation(runtime.cast::<c_void>(), cancel, intrinsic, arguments(values, count), call_node)
             }
+            Intrinsic::BINDING_CALL => binding_call(runtime, (*callable).symbol, values, count, call_node),
             Intrinsic::SIGNAL_HOST_INSTALL | Intrinsic::SIGNAL_HOST_WAIT => {
                 signal_operation(intrinsic, arguments(values, count), call_node)
             }

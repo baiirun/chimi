@@ -7,3 +7,11 @@ KILLED       an unreferenced handle is not closed [net -- a_socket_no_value_name
 KILLED       an unreferenced key ignores the generation [net -- a_socket_no_value_names_is_closed_at_any_end] (54s)
 KILLED       a native key is counted like a channel [net -- a_socket_no_value_names_is_closed_at_any_end] (66s)
 # result: every mutant killed
+
+# Rerun after the binding call path moved to Rust (CHI-305 phase 8, fifth PR):
+# the count and close mutants now edit intrinsics/binding_calls.rs, and the
+# generation mutant (stale since the slots moved) edits handles.rs.
+KILLED       a new handle is not counted [net -- a_socket_no_value_names_is_closed_at_any_end] (63s)
+KILLED       an unreferenced handle is not closed [net -- a_socket_no_value_names_is_closed_at_any_end] (69s)
+KILLED       an unreferenced key ignores the generation [net -- a_socket_no_value_names_is_closed_at_any_end] (59s)
+# result: every mutant killed

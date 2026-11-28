@@ -28,3 +28,12 @@ KILLED       the probe's read ignores EAGAIN [bindings] (72s)
 # - a wait never parks: equivalent. Returning READY after a wake only makes
 #   the binding retry its read, get EAGAIN, and wait again.
 # "text stops at U+0000" is now killed: probe decode builds Text holding U+0000.
+
+# Rerun after the binding call path moved to Rust (CHI-305 phase 8, fifth PR),
+# the four wait/dispatch mutants retargeted to intrinsics/binding_calls.rs.
+# "a wait never parks" survives as before: equivalent (see above).
+SURVIVED     a wait never parks [bindings] (74s)
+KILLED       a wait ignores a close while parked [bindings] (122s)
+KILLED       a cancelled wait reports ready [bindings] (120s)
+KILLED       dispatch calls the first binding [bindings] (62s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

@@ -25,8 +25,8 @@ static HANDLES: Serialized<Handles<Opaque, Opaque, Opaque>> = Serialized::new(Ha
 /// `kind` is null when there is none.
 #[repr(C)]
 pub struct ChimiHandleRelease {
-    kind: *const c_void,
-    state: *mut c_void,
+    pub(crate) kind: *const c_void,
+    pub(crate) state: *mut c_void,
 }
 
 fn give(release: Option<Release<Opaque, Opaque>>, out: *mut ChimiHandleRelease) -> bool {
