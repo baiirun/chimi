@@ -22,3 +22,11 @@ TIMEOUT      a scheduled read blocks the scheduler [signals -- a_task_keeps_runn
 KILLED       a cancelled wait reads as a failure [signals -- the_first_sigint_cancels_a_scheduled_program_while_it_reads_input] (9s)
 # result: every mutant killed
 exit 0
+
+# Rerun after standard input's reader moved to Rust (CHI-305 phase 8, third PR),
+# the two input mutants retargeted to intrinsics/input.rs:
+BASELINE ok  [signals -- a_task_keeps_running_while_main_waits_for_standard_input] (157s)
+BASELINE ok  [signals -- the_first_sigint_cancels_a_scheduled_program_while_it_reads_input] (1s)
+TIMEOUT      a scheduled read blocks the scheduler [signals -- a_task_keeps_running_while_main_waits_for_standard_input] (656s)
+KILLED       a cancelled wait reads as a failure [signals -- the_first_sigint_cancels_a_scheduled_program_while_it_reads_input] (56s)
+# result: every mutant killed

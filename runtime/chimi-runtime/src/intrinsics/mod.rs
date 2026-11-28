@@ -22,6 +22,7 @@ pub mod decimals;
 pub mod dispatch;
 pub mod durations;
 pub mod host;
+pub mod input;
 pub mod json;
 pub(crate) mod message;
 pub mod metrics_host;
@@ -29,6 +30,7 @@ pub mod metrics_host;
 pub mod process_kernel;
 mod process_starts;
 pub mod processes;
+pub mod random_host;
 pub mod scalars;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scopes;

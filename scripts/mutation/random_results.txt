@@ -16,3 +16,22 @@ KILLED       Random.shuffle: the first item never moves [testing] (18s)
 KILLED       Random.pick: always the first item [testing] (18s)
 KILLED       bits_63: the sign is cleared off by one [testing] (18s)
 # result: every mutant killed
+
+# Rerun after the random stream moved to Rust (CHI-305 phase 8, third PR);
+# the shift, seed and read mutants now edit random.rs and random_host.rs:
+BASELINE ok  [testing] (163s)
+KILLED       both: the generator shifts by 16 [testing] (64s)
+KILLED       native: the runner's seed is ignored [testing] (62s)
+KILLED       native: the outcome never says a test drew [testing] (62s)
+KILLED       both: the generator rotates by 44 [testing] (63s)
+KILLED       seed: the test's name is not hashed [testing] (65s)
+KILLED       seed: the run seed is ignored [testing] (65s)
+KILLED       interpreter: the configured seed is ignored [testing] (66s)
+KILLED       report: the seed line is never written [testing] (27s)
+KILLED       Random.int: the range start is dropped [testing] (57s)
+KILLED       Random.int: an empty range draws [testing] (56s)
+KILLED       Random.float: 52 bits [testing] (56s)
+KILLED       Random.shuffle: the first item never moves [testing] (57s)
+KILLED       Random.pick: always the first item [testing] (56s)
+KILLED       bits_63: the sign is cleared off by one [testing] (56s)
+# result: every mutant killed

@@ -18,6 +18,7 @@ R = "runtime/native/runtime.c"
 
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
 CONSOLE_IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
+INPUT = "../../runtime/chimi-runtime/src/intrinsics/input.rs"
 
 
 def m(name, edits, file=R):
@@ -45,10 +46,10 @@ MUTATIONS = [
         "  pthread_mutex_lock(&binding_handle_lock);\n  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);\n  pthread_mutex_unlock(&binding_handle_lock);",
         "  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);")]),
     m("standard input has no lock", [(
-        "static void input_lock(ByteInput *input) {\n  if (input->lock) pthread_mutex_lock(input->lock);\n}",
-        "static void input_lock(ByteInput *input) {\n  (void)input;\n}"), (
-        "static void input_unlock(ByteInput *input) {\n  if (input->lock) pthread_mutex_unlock(input->lock);\n}",
-        "static void input_unlock(ByteInput *input) {\n  (void)input;\n}")]),
+        "        if !(*input).lock.is_null() && libc::pthread_mutex_lock((*input).lock) != 0 {",
+        "        if false && libc::pthread_mutex_lock((*input).lock) != 0 {"), (
+        "        if !(*input).lock.is_null() {\n            libc::pthread_mutex_unlock((*input).lock);",
+        "        if false {\n            libc::pthread_mutex_unlock((*input).lock);")], file=INPUT),
     m("a console line is written without the lock", [(
         "    enter();\n    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };\n    leave();",
         "    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };")], file=CONSOLE_IO),

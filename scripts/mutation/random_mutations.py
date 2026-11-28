@@ -9,7 +9,8 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
-SOURCE = "src/random_source.rs"
+RANDOM = "../../runtime/chimi-runtime/src/intrinsics/random_host.rs"
+SOURCE = "../../runtime/chimi-runtime/src/random.rs"
 EXECUTION = "src/execution.rs"
 TESTING = "src/testing.rs"
 STD = "std/random.chimi"
@@ -20,16 +21,16 @@ def mutant(name, file, edits, targets=("testing",), filter=""):
 
 
 MUTATIONS = [
-    mutant("native: the generator shifts by 16", C, [(
-        "  uint64_t shifted = state[1] << 17;",
-        "  uint64_t shifted = state[1] << 16;",
+    mutant("both: the generator shifts by 16", SOURCE, [(
+        "        let shifted = *b << 17;",
+        "        let shifted = *b << 16;",
     )]),
-    mutant("native: the runner's seed is ignored", C, [(
-        "    uint64_t mix = random_seed_given ? random_seed : os_random_seed();",
-        "    uint64_t mix = random_seed_given ? 0 : os_random_seed();",
+    mutant("native: the runner's seed is ignored", RANDOM, [(
+        "        stream.generator.get_or_insert_with(|| Generator::seeded(seed.unwrap_or_else(os_seed))).next()",
+        "        stream.generator.get_or_insert_with(|| Generator::seeded(seed.map_or_else(os_seed, |_| 0))).next()",
     )]),
     mutant("native: the outcome never says a test drew", C, [(
-        '  if (random_read) fputs(",\\"random_read\\":true", output);',
+        '  if (chimi_runtime_random_read_v1()) fputs(",\\"random_read\\":true", output);',
         "",
     )]),
     mutant("both: the generator rotates by 44", SOURCE, [(

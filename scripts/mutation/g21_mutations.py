@@ -12,6 +12,7 @@ SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 REACTOR = "../../runtime/chimi-fiber/src/scheduler/reactor.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+INPUT = "../../runtime/chimi-runtime/src/intrinsics/input.rs"
 
 
 def fiber(test):
@@ -58,11 +59,11 @@ MUTATIONS = [
     dict(name="a due timer waits behind a virtual-clock descriptor wait", file=REACTOR,
          edits=[(".filter(|deadline| *deadline <= self.clock.now())", ".filter(|_| false)")],
          **fiber("a_deadline_already_due_fires_during_a_virtual_clock_wait")),
-    dict(name="a scheduled read blocks the scheduler", file=RUNTIME_C,
-         edits=[("      if (!wait_readable(input)) return INPUT_CANCELLED;\n", "")],
+    dict(name="a scheduled read blocks the scheduler", file=INPUT,
+         edits=[("                match wait_readable(input) {\n                    Waited::Cancelled => return Next::Cancelled,\n                    Waited::Failed(error) => return Next::Failed(error),\n                    Waited::Ready => {}\n                }\n", "")],
          **signals("a_task_keeps_running_while_main_waits_for_standard_input")),
-    dict(name="a cancelled wait reads as a failure", file=RUNTIME_C,
-         edits=[("      if (!wait_readable(input)) return INPUT_CANCELLED;",
-                 "      if (!wait_readable(input)) return INPUT_FAILED;")],
+    dict(name="a cancelled wait reads as a failure", file=INPUT,
+         edits=[("                    Waited::Cancelled => return Next::Cancelled,",
+                 "                    Waited::Cancelled => return Next::Failed(libc::EIO),")],
          **signals("the_first_sigint_cancels_a_scheduled_program_while_it_reads_input")),
 ]

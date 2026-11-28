@@ -692,7 +692,7 @@ typedef struct {
      park. NULL until the first read. */
   char *fs_read_chunk;
   /* What the outermost reclaiming scopes that ended on this carrier
-     allocated and kept (end_measured_allocation_scope), summed in the memory
+     allocated and kept (eval.rs end_measured_scope), summed in the memory
      report. */
   ScopeTotals scope_totals;
   /* The address below which a call on this carrier's own thread stack
@@ -1769,6 +1769,7 @@ _Static_assert(CHIMI_REQUEST_CHANNEL_ADD_RECEIVER == 36, "layout: CHIMI_REQUEST_
 _Static_assert(CHIMI_REQUEST_CHANNEL_BROADCAST == 37, "layout: CHIMI_REQUEST_CHANNEL_BROADCAST");
 _Static_assert(CHIMI_REQUEST_IO_WAIT == 48, "layout: CHIMI_REQUEST_IO_WAIT");
 _Static_assert(CHIMI_IO_WRITABLE == 2, "layout: CHIMI_IO_WRITABLE");
+_Static_assert(CHIMI_IO_READABLE == 1, "layout: CHIMI_IO_READABLE");
 _Static_assert(CHIMI_REQUEST_CHANNEL_WATCH == 38, "layout: CHIMI_REQUEST_CHANNEL_WATCH");
 _Static_assert(CHIMI_REQUEST_CHANNEL_SUBSCRIBE == 39, "layout: CHIMI_REQUEST_CHANNEL_SUBSCRIBE");
 _Static_assert(CHIMI_RESPONSE_SUCCEEDED == 3, "layout: CHIMI_RESPONSE_SUCCEEDED");
@@ -1886,6 +1887,11 @@ _Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZ
 _Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
 _Static_assert(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED == 0, "layout: CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED");
+_Static_assert(CHIMI_CONSTRUCTOR_FILE_CLOSE == 1, "layout: CHIMI_CONSTRUCTOR_FILE_CLOSE");
+_Static_assert(CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG == 2, "layout: CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG");
+_Static_assert(CHIMI_CONSTRUCTOR_FILE_OPEN == 3, "layout: CHIMI_CONSTRUCTOR_FILE_OPEN");
+_Static_assert(CHIMI_CONSTRUCTOR_FILE_READ == 4, "layout: CHIMI_CONSTRUCTOR_FILE_READ");
+_Static_assert(CHIMI_CONSTRUCTOR_UTF8_INVALID == 5, "layout: CHIMI_CONSTRUCTOR_UTF8_INVALID");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED == 17, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED == 18, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED == 19, "layout: CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED");
@@ -2633,7 +2639,6 @@ static ChimiControl *new_control(ControlKind kind, ChimiValue *value, const char
   return chimi_control_new_v1(kind, value, message, node);
 }
 static ChimiControl *success(ChimiValue *value) { return new_control(CONTROL_SUCCESS, value, NULL, -1); }
-static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
 static ChimiControl *defect(const char *message, int64_t node) { return new_control(CONTROL_DEFECT, NULL, message, node); }
 
 /* A program without tasks runs main on the host thread, which has no overflow guard
@@ -3020,9 +3025,6 @@ static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; 
 static ChimiValue *text_value(const char *raw) { return text_from_bytes(raw, strlen(raw)); }
 /* A Text literal or constant from the string table, which may hold U+0000. */
 static ChimiValue *string_text(uint32_t id) { return text_from_bytes(CHIMI_STRINGS[id], CHIMI_STRING_LENGTHS[id]); }
-static bool text_holds_nul(const ChimiValue *text) {
-  return memchr(text->as.text.bytes, '\0', text->as.text.length) != NULL;
-}
 static ChimiValue *boolean_value(bool raw) { return shared_value(raw ? 2 : 1); }
 static ChimiValue *float_value(double raw) { return chimi_value_float_v1(raw); }
 
@@ -3468,31 +3470,6 @@ uint32_t chimi_runtime_constructor_ordinal_v1(uint32_t symbol) {
   return CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor].ordinal;
 }
 
-static uint32_t standard_constructor_symbol(uint32_t standard_constructor) {
-  for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
-    if (CHIMI_SYMBOLS[symbol].standard_constructor == standard_constructor) return symbol;
-  return UINT32_MAX;
-}
-static ChimiValue *standard_value(uint32_t standard_constructor, ChimiValue **values,
-                                  uint32_t value_count) {
-  uint32_t symbol = standard_constructor_symbol(standard_constructor);
-  if (symbol == UINT32_MAX) return NULL;
-  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor];
-  if (shape->fields_length != value_count) return NULL;
-  ChimiValue *value = new_value(VALUE_CONSTRUCTED);
-  value->as.constructed.constructor = symbol;
-  value->as.constructed.type_name = CHIMI_STRINGS[shape->type_name];
-  value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
-  value->as.constructed.length = value_count;
-  value->as.constructed.fields = allocate(value_count, sizeof(*value->as.constructed.fields));
-  allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
-  for (uint32_t field = 0; field < value_count; ++field)
-    value->as.constructed.fields[field] = (RuntimeField){
-      CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]], values[field]
-    };
-  return value;
-}
-
 typedef struct { char *data; size_t length; size_t capacity; } TextBuffer;
 static void buffer_reserve(TextBuffer *buffer, size_t extra) {
   if (buffer->length + extra + 1 <= buffer->capacity) return;
@@ -3564,331 +3541,14 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment);
 
-static char *copy_bytes(const unsigned char *source, size_t length) {
-  char *copy = allocate(length + 1, 1);
-  memcpy(copy, source, length);
-  return copy;
-}
-
-static bool valid_utf8(const unsigned char *text, size_t length) {
-  size_t offset = 0;
-  while (offset < length) {
-    unsigned char first = text[offset++];
-    if (first <= 0x7f) {
-      if (first == 0) return false;
-      continue;
-    }
-    if (first >= 0xc2 && first <= 0xdf) {
-      if (offset >= length || (text[offset++] & 0xc0) != 0x80) return false;
-      continue;
-    }
-    if (first >= 0xe0 && first <= 0xef) {
-      if (offset + 1 >= length) return false;
-      unsigned char second = text[offset++], third = text[offset++];
-      if ((third & 0xc0) != 0x80) return false;
-      if (first == 0xe0) { if (second < 0xa0 || second > 0xbf) return false; }
-      else if (first == 0xed) { if (second < 0x80 || second > 0x9f) return false; }
-      else if ((second & 0xc0) != 0x80) return false;
-      continue;
-    }
-    if (first >= 0xf0 && first <= 0xf4) {
-      if (offset + 2 >= length) return false;
-      unsigned char second = text[offset++], third = text[offset++], fourth = text[offset++];
-      if ((third & 0xc0) != 0x80 || (fourth & 0xc0) != 0x80) return false;
-      if (first == 0xf0) { if (second < 0x90 || second > 0xbf) return false; }
-      else if (first == 0xf4) { if (second < 0x80 || second > 0x8f) return false; }
-      else if ((second & 0xc0) != 0x80) return false;
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
-static ChimiControl *host_file_message(uint32_t constructor, const char *path,
-                                       const char *message) {
-  ChimiValue *fields[] = {
-    text_value(path),
-    text_value(message ? message : "unknown I/O error"),
-  };
-  return failure(standard_value(constructor, fields, 2));
-}
-
-static ChimiControl *invoke_line_callback(ChimiRuntime *runtime, ChimiCallable *callback,
-                                          ChimiValue *state, unsigned char *bytes, size_t length,
-                                          uint64_t line, const char *path, uint64_t span,
-                                          uint32_t call_node, ChimiEnvironment *environment) {
-  if (!valid_utf8(bytes, length)) {
-    ChimiValue *fields[] = {text_value(path), integer_value((int64_t)line)};
-    return failure(standard_value(CHIMI_CONSTRUCTOR_UTF8_INVALID, fields, 2));
-  }
-  ChimiValue *arguments[] = {state, text_value(copy_bytes(bytes, length))};
-  return invoke(runtime, callback, arguments, 2, span, call_node, environment);
-}
-
 static const char *const FOREIGN_POINTER_DEFECT =
   "Chimi runtime heap invariant violated: a value points into another heap";
 
-/* Ends a reclaiming scope (eval.rs end_measured_scope): keeps only what
-   `control` reaches and returns it, or a defect when the scope reached into
-   another heap. */
-ChimiControl *chimi_runtime_end_measured_scope_v1(AllocationScope *scope, ChimiControl *control);
-static ChimiControl *end_measured_allocation_scope(ChimiRuntime *runtime, AllocationScope *scope,
-                                                   ChimiControl *control) {
-  (void)runtime;
-  return chimi_runtime_end_measured_scope_v1(scope, control);
-}
-
-/* Bytes read from a descriptor and not yet consumed. Standard input's buffer is
-   process-wide, so the bytes a read takes past an early exit (a failing callback,
-   a cancellation) wait for the next read of "-", as stdio's buffer kept them. */
-typedef struct {
-  int fd;
-  unsigned char *bytes;
-  size_t capacity;
-  size_t start;
-  size_t end;
-  /* Standard input's lock, since tasks on any carrier may read "-"; NULL for a
-     file one call reads. A reader holds it while it takes a line's bytes and
-     lets go before each callback and while it waits for more input, so, as
-     with one carrier, two readers of "-" may split a line that arrives in
-     pieces; it keeps the buffer whole, not the lines. */
-  pthread_mutex_t *lock;
-} ByteInput;
-
-enum { INPUT_BUFFER_BYTES = 64 * 1024 };
-static unsigned char standard_input_bytes[INPUT_BUFFER_BYTES];
-static pthread_mutex_t standard_input_lock = PTHREAD_MUTEX_INITIALIZER;
-static ByteInput standard_input = {STDIN_FILENO, standard_input_bytes, INPUT_BUFFER_BYTES, 0, 0,
-                                   &standard_input_lock};
-
-static void input_lock(ByteInput *input) {
-  if (input->lock) pthread_mutex_lock(input->lock);
-}
-static void input_unlock(ByteInput *input) {
-  if (input->lock) pthread_mutex_unlock(input->lock);
-}
-
-enum { INPUT_END = -1, INPUT_FAILED = -2, INPUT_CANCELLED = -3 };
-
-/* Waits until `fd` is readable. Under the scheduler the task parks in
-   CHIMI_REQUEST_IO_WAIT, so other tasks run and a signal is delivered meanwhile;
-   its OK reply resumes this task before any other, so the read that follows does
-   not block unless another OS process drained the descriptor first. A closed
-   descriptor answers ERROR, and the read reports it. It also ends when another
-   task reading "-" has refilled the shared buffer meanwhile. False when
-   cancelled. */
-enum { INPUT_WAIT_READY, INPUT_WAIT_CANCELLED, INPUT_WAIT_FAILED };
-
-/* Waits until `input` may be read. INPUT_WAIT_FAILED, with errno set, when the
-   reactor cannot wait on the descriptor (it is closed, or poll failed): a
-   read then could block the scheduler thread. */
-static int wait_readable(ByteInput *input) {
-  int fd = input->fd;
-  if (CHIMI_REQUIRES_SCHEDULER) {
-    for (;;) {
-      if (input->start < input->end) return INPUT_WAIT_READY;
-      ChimiSchedulerRequest request = {
-        .kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = CHIMI_IO_READABLE,
-      };
-      /* The caller holds the input's lock, which is never held across a park. */
-      input_unlock(input);
-      bool cancel = scheduler_request(&request) == CHIMI_FIBER_CANCEL;
-      input_lock(input);
-      if (cancel) return INPUT_WAIT_CANCELLED;
-      if (request.status == CHIMI_RESPONSE_ERROR) {
-        errno = fcntl(fd, F_GETFD) < 0 ? EBADF : EIO;
-        return INPUT_WAIT_FAILED;
-      }
-      if (request.status != CHIMI_RESPONSE_PENDING) return INPUT_WAIT_READY;
-    }
-  }
-  /* Without the scheduler a signal interrupts poll with EINTR and sets `cancel`,
-     which the caller checks. */
-  struct pollfd poll_fd = {.fd = fd, .events = POLLIN};
-  input_unlock(input);
-  (void)poll(&poll_fd, 1, -1);
-  input_lock(input);
-  return INPUT_WAIT_READY;
-}
-
-/* The next byte, INPUT_END, INPUT_CANCELLED, or INPUT_FAILED with errno set.
-   The caller holds the input's lock; a wait lets go of it meanwhile. */
-static int input_next(ChimiRuntime *runtime, ByteInput *input) {
-  if (input->start < input->end) return input->bytes[input->start++];
-  for (;;) {
-    if (runtime->cancel) return INPUT_CANCELLED;
-    if (CHIMI_REQUIRES_SCHEDULER) {
-      int waited = wait_readable(input);
-      if (waited == INPUT_WAIT_CANCELLED) return INPUT_CANCELLED;
-      if (waited == INPUT_WAIT_FAILED) return INPUT_FAILED;
-      /* Another task reading "-" may have refilled the shared buffer while this
-         one waited; reading over it would lose those bytes. */
-      if (input->start < input->end) return input->bytes[input->start++];
-    }
-    errno = 0;
-    ssize_t count = read(input->fd, input->bytes, input->capacity);
-    if (count > 0) {
-      input->start = 0;
-      input->end = (size_t)count;
-      return input->bytes[input->start++];
-    }
-    if (count == 0) return INPUT_END;
-    if (errno == EINTR) continue;
-    /* A descriptor a parent left non-blocking: wait for it, then read again. */
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      if (!CHIMI_REQUIRES_SCHEDULER) (void)wait_readable(input);
-      continue;
-    }
-    return INPUT_FAILED;
-  }
-}
-
-static ChimiControl *process_utf8_lines(ChimiRuntime *runtime, ChimiValue **arguments,
-                                        uint32_t argument_count, uint64_t span,
-                                        uint32_t call_node, ChimiEnvironment *environment) {
-  if (argument_count != 3 || arguments[0]->kind != VALUE_TEXT ||
-      arguments[2]->kind != VALUE_CALLABLE)
-    return defect("verified host function has invalid runtime arguments", call_node);
-  if (runtime->cancel) return cancelled();
-  const char *path = arguments[0]->as.text.bytes;
-  /* A C path stops at U+0000, so such a path names no file; the message is the one
-     the interpreter's file system reports. */
-  if (text_holds_nul(arguments[0]))
-    return failure(standard_value(CHIMI_CONSTRUCTOR_FILE_OPEN, (ChimiValue *[]){
-      arguments[0], text_value("file name contained an unexpected NUL byte")}, 2));
-  bool owns_file = strcmp(path, "-") != 0;
-  ByteInput file_input = {-1, NULL, INPUT_BUFFER_BYTES, 0, 0, NULL};
-  ByteInput *input = &standard_input;
-  if (owns_file) {
-    file_input.fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (file_input.fd < 0)
-      return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(errno));
-    /* Freed below, so a loop over many files does not keep a buffer for each. */
-    file_input.bytes = malloc(INPUT_BUFFER_BYTES);
-    if (!file_input.bytes) {
-      close(file_input.fd);
-      return host_file_message(CHIMI_CONSTRUCTOR_FILE_OPEN, path, strerror(ENOMEM));
-    }
-    input = &file_input;
-  }
-  unsigned char *line = allocate((size_t)runtime->max_line_bytes + 1, 1);
-  size_t length = 0;
-  uint64_t line_number = 1;
-  ChimiValue *state = arguments[1];
-  ChimiControl *control = NULL;
-  AllocationScope allocation_scope;
-  allocation_scope_begin(&allocation_scope);
-  /* The input's lock is held while a line's bytes are taken (except while
-     input_next waits), and let go once the line ends (a newline, the end, a
-     failure or a line too long). */
-  bool held = false;
-  for (;;) {
-    if (!held) {
-      input_lock(input);
-      held = true;
-    }
-    if (runtime->cancel) {
-      input_unlock(input);
-      control = cancelled();
-      allocation_scope_collect(&allocation_scope, NULL, &control);
-      break;
-    }
-    int byte = input_next(runtime, input);
-    if (byte < 0 || byte == '\n' || length == runtime->max_line_bytes) {
-      input_unlock(input);
-      held = false;
-    }
-    if (byte < 0) {
-      if (byte == INPUT_CANCELLED) {
-        control = cancelled();
-        allocation_scope_collect(&allocation_scope, NULL, &control);
-      } else if (byte == INPUT_FAILED) {
-        control = host_file_message(CHIMI_CONSTRUCTOR_FILE_READ, path, strerror(errno));
-        allocation_scope_collect(&allocation_scope, NULL, &control);
-      } else if (length > 0) {
-        control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line, length,
-                                       line_number, path, span, call_node, environment);
-        allocation_scope_collect(&allocation_scope, NULL, &control);
-      } else {
-        control = success(state);
-        allocation_scope_collect(&allocation_scope, NULL, &control);
-      }
-      break;
-    }
-    if (byte == '\n') {
-      size_t content_length = length > 0 && line[length - 1] == '\r' ? length - 1 : length;
-      control = invoke_line_callback(runtime, arguments[2]->as.callable, state, line,
-                                     content_length, line_number, path, span, call_node,
-                                     environment);
-      if (control->kind != CONTROL_SUCCESS) {
-        allocation_scope_collect(&allocation_scope, NULL, &control);
-        break;
-      }
-      state = control->value;
-      allocation_scope_collect(&allocation_scope, &state, NULL);
-      length = 0;
-      ++line_number;
-      continue;
-    }
-    if (length == runtime->max_line_bytes) {
-      ChimiValue *fields[] = {text_value(path), integer_value(runtime->max_line_bytes)};
-      control = failure(standard_value(CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG, fields, 2));
-      allocation_scope_collect(&allocation_scope, NULL, &control);
-      break;
-    }
-    line[length++] = (unsigned char)byte;
-  }
-  free(file_input.bytes);
-  if (owns_file && close(file_input.fd) != 0 &&
-      (control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE)) {
-    control = host_file_message(CHIMI_CONSTRUCTOR_FILE_CLOSE, path, strerror(errno));
-    allocation_scope_collect(&allocation_scope, NULL, &control);
-  }
-  return end_measured_allocation_scope(runtime, &allocation_scope, control);
-}
-
-/* The `random` provider (testing.md, Randomness): xoshiro256** seeded through
-   SplitMix64, in chimi_runtime::random, which the interpreter uses too, so a
-   seed draws the same numbers on both backends. `--random-seed` fixes the seed
-   (`chimi test` gives each test its own); without it the first draw seeds from
-   the operating system. The seed read and the lock stay here: the Rust crate
-   has no operating system to read from. */
-typedef struct {
-  uint64_t state[4];
-} ChimiRandom;
-_Static_assert(sizeof(ChimiRandom) == 4 * sizeof(uint64_t), "ChimiRandom matches chimi_runtime::random::Generator");
-extern ChimiRandom chimi_random_seeded_v1(uint64_t seed);
-extern uint64_t chimi_random_next_v1(ChimiRandom *generator);
-
-static ChimiRandom random_generator;
-static bool random_seed_given, random_read;
-static uint64_t random_seed;
-/* Guards the stream and random_read: every carrier draws from the one stream. */
-static pthread_mutex_t random_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static uint64_t os_random_seed(void) {
-  uint64_t seed = 0;
-  FILE *source = fopen("/dev/urandom", "rb");
-  if (!source || fread(&seed, sizeof(seed), 1, source) != 1) {
-    struct timespec now;
-    clock_gettime(CLOCK_REALTIME, &now);
-    seed = ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec) ^ ((uint64_t)getpid() << 32);
-  }
-  if (source) fclose(source);
-  return seed;
-}
-
-static uint64_t random_next(void) {
-  pthread_mutex_lock(&random_lock);
-  if (!random_read) {
-    random_generator = chimi_random_seeded_v1(random_seed_given ? random_seed : os_random_seed());
-    random_read = true;
-  }
-  uint64_t result = chimi_random_next_v1(&random_generator);
-  pthread_mutex_unlock(&random_lock);
-  return result;
-}
+/* Stream.process_utf8_lines and the `random` provider are Rust (chimi-runtime
+   intrinsics/input.rs and intrinsics/random_host.rs). runtime.c gives the
+   --random-seed seed and names a read stream in the outcome report. */
+extern void chimi_runtime_random_seed_v1(uint64_t seed);
+extern bool chimi_runtime_random_read_v1(void);
 
 /* Console output (CHI-266) lives in Rust (chimi-runtime intrinsics/console_io.rs):
    write_line, write_error and std/log write through it, and it keeps the
@@ -3896,19 +3556,6 @@ static uint64_t random_next(void) {
    the queues at exit. */
 extern void chimi_runtime_console_drain_v1(void);
 extern void chimi_runtime_console_set_v1(size_t index, int fd, bool direct);
-
-static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
-                                 ChimiValue **arguments, uint32_t argument_count,
-                                 uint64_t span, uint32_t call_node,
-                                 ChimiEnvironment *environment) {
-  if (function == HOST_RANDOM_NEXT_INT) {
-    if (argument_count != 0) return defect("verified host function has invalid runtime arguments", call_node);
-    return runtime->cancel ? cancelled() : success(integer_value((int64_t)random_next()));
-  }
-  if (function == HOST_PROCESS_UTF8_LINES)
-    return process_utf8_lines(runtime, arguments, argument_count, span, call_node, environment);
-  return defect("unknown host function", call_node);
-}
 
 /* std/metrics' host core lives in Rust (chimi-runtime intrinsics/metrics_host.rs),
    with the aggregate and its lock; runtime.c notes when the aggregate began
@@ -4287,8 +3934,7 @@ ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallabl
   if (callable->kind == CALL_INTRINSIC)
     return invoke_intrinsic(runtime, callable->intrinsic, arguments, argument_count,
                             span, call_node, call_environment);
-  return invoke_host(runtime, callable->host, arguments, argument_count,
-                     span, call_node, call_environment);
+  return defect("unknown host function", call_node);
 }
 
 static ChimiFiberResult task_fiber_result(ChimiControl *control) {
@@ -4646,19 +4292,6 @@ extern ChimiControl *chimi_intrinsic_scalar_v1(uint32_t intrinsic, ChimiValue **
 extern ChimiControl *chimi_intrinsic_host_v1(ChimiRuntime *runtime, bool cancel, uint32_t intrinsic,
                                              ChimiValue **arguments, uint32_t argument_count, uint32_t call_node);
 
-/* Waits for `fd` to be readable, or writable; false when cancelled. */
-bool chimi_runtime_fs_wait_v1(ChimiRuntime *runtime, int fd, bool writable);
-bool chimi_runtime_fs_wait_v1(ChimiRuntime *runtime, int fd, bool writable) {
-  int64_t interest = writable ? CHIMI_IO_WRITABLE : CHIMI_IO_READABLE;
-  if (CHIMI_REQUIRES_SCHEDULER) {
-    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_IO_WAIT, .value = fd, .token = interest};
-    return scheduler_request(&request) != CHIMI_FIBER_CANCEL;
-  }
-  struct pollfd poll_fd = {.fd = fd, .events = writable ? POLLOUT : POLLIN};
-  (void)poll(&poll_fd, 1, -1);
-  return !runtime->cancel;
-}
-
 static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
                                              uint32_t argument_count, uint32_t call_node);
 
@@ -4826,7 +4459,7 @@ static void print_outcome(FILE *output, const ChimiControl *control) {
     case CONTROL_BREAK: break;
   }
   /* `chimi test` names the seed in the report of a failing test that drew one. */
-  if (random_read) fputs(",\"random_read\":true", output);
+  if (chimi_runtime_random_read_v1()) fputs(",\"random_read\":true", output);
   ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : chimi_runtime_control_cause_v1(control);
   if (cause && chimi_runtime_cause_has_detail_v1(cause)) {
     fputs(",\"cause\":", output);
@@ -5680,8 +5313,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         fputs("--random-seed requires an integer from 0 through 18446744073709551615\n", stderr);
         return 64;
       }
-      random_seed = (uint64_t)value;
-      random_seed_given = true;
+      chimi_runtime_random_seed_v1((uint64_t)value);
     }
     else if (strncmp(argv[index], "--carriers=", 11) == 0) {
       /* strtoul skips spaces and takes a sign, so the count must start with

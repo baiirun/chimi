@@ -279,6 +279,11 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Second PR: std/metrics' host core (`intrinsics/metrics_host.rs`): the
       aggregate behind a `PthreadLocked`, the reading flag and the start
       time; runtime.c notes the start and writes the document at exit.
+      Third PR: standard input's lines, `Process.utf8_lines`, the random
+      stream and std/fs's descriptor wait (`intrinsics/input.rs`,
+      `intrinsics/random_host.rs`); every host callable now dispatches in
+      Rust. A large all-zero buffer must be a static of its own, or it
+      lands in initialized data and the program file grows by its size.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target
