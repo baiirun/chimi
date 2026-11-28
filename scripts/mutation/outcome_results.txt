@@ -16,3 +16,6 @@ KILLED       an outcome drops its cause [std_modules] (72s, rerun at e21ffb9d ag
 KILLED       the profile keeps nodes never evaluated [cli -- native_profile_leaves_out_nodes_that_never_ran] (checked by hand at e21ffb9d plus the new test: the run crashes on the unrun row)
 KILLED       the profile counts no allocations [language cli] (102s)
 # result: every mutant killed
+
+# rerun at 014ee6e8 after the decimal writer stopped allocating
+KILLED       a decimal keeps its trailing zeros [language cli] (136s)

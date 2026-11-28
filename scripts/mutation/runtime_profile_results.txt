@@ -15,3 +15,7 @@ KILLED       profiling leaves direct loops on [cli -- native_profile_counts_eval
 # rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
 KILLED       rows are written lightest first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (64s)
 KILLED       ties are written fewest evaluations first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (65s)
+
+# rerun at 014ee6e8 after the profile moved to qsort
+KILLED       rows are written lightest first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (62s)
+KILLED       ties are written fewest evaluations first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (62s)
