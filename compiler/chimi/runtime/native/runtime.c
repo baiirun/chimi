@@ -851,8 +851,9 @@ static void carrier_migrate(Carrier *parked) { (void)parked; }
 /* Sums every carrier's counters into the process's, with the largest peak of
    each; footprint_bytes includes the young bytes still deferred. A carrier
    thread may be changing its own while this reads, so it is exact only once no
-   fiber runs (the memory report) or in the simulation, whose carriers share one
-   thread. */
+   fiber runs or in the simulation, whose carriers share one thread. For the
+   carrier-thread stress fixture (tests/fixtures/carrier-threads-stress.c),
+   which includes this file; the memory report sums in reports.rs. */
 static HeapTotals heap_totals_sum(void) {
   HeapTotals sum = {0};
   for (size_t index = 0; index < carrier_count; ++index) {
@@ -3597,108 +3598,8 @@ static bool close_output(FILE *output) {
 /* Writes the operation profile to `path`, in reports.rs; whether that failed. */
 bool chimi_runtime_write_profile_v1(const char *path);
 
-/* With several carrier threads, replaces the summed totals' peaks (each one
-   carrier's) with the process-wide peaks heap/allocator.rs folds, raised to the
-   exact sum now, which the report reads once no fiber runs. They are then
-   within carrier_count * FOOTPRINT_FOLD_SLACK of the true peak. */
-static void report_process_peaks(HeapTotals *totals) {
-#ifdef CHIMI_CARRIER_SIMULATION
-  (void)totals;
-#else
-  if (carrier_count == 1) return;
-  int64_t peak = atomic_load_explicit(&process_peak_footprint_bytes, memory_order_relaxed);
-  int64_t fragment_peak = atomic_load_explicit(&process_peak_fragment_footprint_bytes, memory_order_relaxed);
-  totals->peak_footprint_bytes = peak > totals->footprint_bytes ? peak : totals->footprint_bytes;
-  totals->peak_fragment_footprint_bytes =
-    fragment_peak > totals->fragment_footprint_bytes ? fragment_peak : totals->fragment_footprint_bytes;
-#endif
-}
-
-static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
-  if (!path) return false;
-  FILE *output = open_report(path, "wx");
-  if (!output) {
-    fprintf(stderr, "cannot open memory report file %s: %s\n", path, strerror(errno));
-    return true;
-  }
-  footprint_add(0); /* records the peak */
-  HeapTotals totals = heap_totals_sum();
-  report_process_peaks(&totals);
-  uint64_t unscoped_allocated_bytes = 0, capture_transfer_probes = 0, copied_values = 0, copied_bytes = 0;
-  size_t process_heap_peak_value_bytes = 0;
-  ScopeTotals scoped = {0};
-  for (size_t index = 0; index < carrier_count; ++index) {
-    const Carrier *own = carrier_at(index);
-    const ScopeTotals *scopes = &own->scope_totals;
-    scoped.total_allocated_bytes += scopes->total_allocated_bytes;
-    for (uint32_t kind = 0; kind < ALLOCATION_KIND_COUNT; ++kind)
-      scoped.allocated_bytes_by_kind[kind] += scopes->allocated_bytes_by_kind[kind];
-    if (scopes->peak_live_bytes > scoped.peak_live_bytes) scoped.peak_live_bytes = scopes->peak_live_bytes;
-    scoped.retained_bytes += scopes->retained_bytes;
-    scoped.collections += scopes->collections;
-    scoped.full_collections += scopes->full_collections;
-    scoped.scanned_allocations += scopes->scanned_allocations;
-    unscoped_allocated_bytes += own->unscoped_allocated_bytes;
-    capture_transfer_probes += own->capture_transfer_probes;
-    copied_values += own->copied_values;
-    copied_bytes += own->copied_bytes;
-    if (own->process_heap_peak_value_bytes > process_heap_peak_value_bytes)
-      process_heap_peak_value_bytes = own->process_heap_peak_value_bytes;
-  }
-  fprintf(output,
-          "{\"schema\":\"chimi.runtime-memory.v1\",\"scoped_total_allocated_bytes\":%zu,"
-          "\"scoped_allocated_bytes_by_kind\":{\"bytes\":%zu,\"values\":%zu,"
-          "\"controls\":%zu,\"environments\":%zu,\"value_pointers\":%zu,"
-          "\"fields\":%zu,\"callables\":%zu,\"map_nodes\":%zu,\"list_nodes\":%zu},"
-          "\"scoped_peak_live_bytes\":%zu,\"scoped_retained_bytes\":%zu,"
-          "\"scoped_collections\":%" PRIu64 ",\"scoped_full_collections\":%" PRIu64
-          ",\"scoped_scanned_allocations\":%" PRIu64 ",\"unscoped_allocated_bytes\":%" PRIu64 ",\"peak_footprint_bytes\":%zu,"
-          "\"peak_fragment_footprint_bytes\":%zu,\"capture_transfer_probes\":%" PRIu64
-          ",\"heap_chunks_live\":%zu,\"heap_chunk_bytes_peak\":%zu,\"fragments_live\":%zu"
-          ",\"fragment_bytes_peak\":%zu,\"process_heap_peak_value_bytes\":%zu"
-          ",\"copied_values\":%" PRIu64 ",\"copied_bytes\":%" PRIu64
-          ",\"trace_events_constructed\":%" PRIu64 ",\"memberships_live\":%zu,\"task_records_peak\":%zu}\n",
-          scoped.total_allocated_bytes,
-          scoped.allocated_bytes_by_kind[ALLOCATION_BYTES],
-          scoped.allocated_bytes_by_kind[ALLOCATION_VALUE],
-          scoped.allocated_bytes_by_kind[ALLOCATION_CONTROL],
-          scoped.allocated_bytes_by_kind[ALLOCATION_ENVIRONMENT] +
-            scoped.allocated_bytes_by_kind[ALLOCATION_FRAME_ENVIRONMENT],
-          scoped.allocated_bytes_by_kind[ALLOCATION_VALUE_POINTERS],
-          scoped.allocated_bytes_by_kind[ALLOCATION_FIELDS],
-          scoped.allocated_bytes_by_kind[ALLOCATION_CALLABLE],
-          scoped.allocated_bytes_by_kind[ALLOCATION_MAP_NODE],
-          scoped.allocated_bytes_by_kind[ALLOCATION_LIST_NODE],
-          scoped.peak_live_bytes,
-          scoped.retained_bytes,
-          scoped.collections,
-          scoped.full_collections,
-          scoped.scanned_allocations,
-          unscoped_allocated_bytes,
-          (size_t)totals.peak_footprint_bytes,
-          (size_t)totals.peak_fragment_footprint_bytes,
-          capture_transfer_probes,
-          /* Reported per allocation: young chunks are not counted separately. */
-          (size_t)totals.live_allocations,
-          (size_t)totals.peak_footprint_bytes,
-          (size_t)totals.live_fragments,
-          (size_t)totals.peak_fragment_footprint_bytes,
-#if CHIMI_PROCESS_KERNEL
-          process_heap_peak_value_bytes,
-#else
-          (size_t)0,
-#endif
-          copied_values,
-          copied_bytes,
-          runtime->trace_events_constructed,
-#if CHIMI_PROCESS_KERNEL
-          chimi_scheduler_live_memberships(),
-#else
-          (size_t)0,
-#endif
-          chimi_scheduler_peak_task_records());
-  return close_output(output);
-}
+/* Writes the memory report to `path`, in reports.rs; whether that failed. */
+bool chimi_runtime_write_memory_report_v1(const char *path, const ChimiRuntime *runtime, bool process_kernel);
 
 /* The scheduler's capability-violation, deadlock and process-defect reports
    and the defect messages they leave, in scheduler_reports.rs. */
@@ -4200,7 +4101,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
-    bool write_failed = write_memory_report(memory_report_path, &runtime);
+    bool write_failed = chimi_runtime_write_memory_report_v1(memory_report_path, &runtime, CHIMI_PROCESS_KERNEL);
     write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
     write_failed = write_metrics(&runtime, metrics_started, runtime.metrics_file) || write_failed;
     runtime.metrics_file = NULL;
@@ -4240,7 +4141,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
   if (runtime.outcome) chimi_runtime_print_outcome_v1(runtime.outcome, control);
-  bool write_failed = write_memory_report(memory_report_path, &runtime);
+  bool write_failed = chimi_runtime_write_memory_report_v1(memory_report_path, &runtime, CHIMI_PROCESS_KERNEL);
   write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
   write_failed = write_metrics(&runtime, runtime.start_unix_ns, runtime.metrics_file) || write_failed;
   write_failed = close_output(runtime.telemetry) || write_failed;

@@ -193,6 +193,22 @@ unsafe fn simulated_sum(count: impl Fn(*mut Carrier) -> i64) -> i64 {
     (0..carrier_count()).map(|index| count(unsafe { chimi_runtime_carrier_at(index) })).sum()
 }
 
+/// The process-wide peaks of the footprint and the fragment footprint that
+/// carrier threads fold, or `None` when one thread runs every fiber, whose
+/// carriers' own peaks are the process's.
+pub(crate) fn folded_peaks() -> Option<(i64, i64)> {
+    if one_thread_runs_fibers() {
+        return None;
+    }
+    // SAFETY: globals of runtime.c.
+    unsafe {
+        Some((
+            chimi_runtime_process_peak_footprint_bytes.load(Relaxed),
+            chimi_runtime_process_peak_fragment_footprint_bytes.load(Relaxed),
+        ))
+    }
+}
+
 /// Raises `peak` to `value` if it is lower.
 fn raise(peak: &AtomicI64, value: i64) {
     peak.fetch_max(value, Relaxed);

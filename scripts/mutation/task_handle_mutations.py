@@ -31,7 +31,8 @@ MUTATIONS = [
          edits=[("                    let _ = self.release_task(TaskId(id));",
                  "                    let _ = id;")],
          targets=["task_release"], filter=""),
-    handle("the memory report omits the task peak", [(
-        "          chimi_scheduler_peak_task_records());",
-        "          (size_t)0);")]),
+    dict(name="the memory report omits the task peak", file="../../runtime/chimi-runtime/src/reports.rs",
+         edits=[("        out.unsigned(chimi_scheduler_peak_task_records() as u64);",
+                 "        out.unsigned(0);")],
+         targets=["task_release"], filter=""),
 ]

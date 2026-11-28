@@ -538,6 +538,9 @@ static ChimiValue *constant_window(void) {
   return constant;
 }
 
+/* The memory report's peak fold (reports.rs). */
+void chimi_runtime_report_process_peaks_v1(HeapTotals *totals);
+
 /* With several carriers the report's peaks are the process's: carrier 1
    allocates what carrier 2 frees, again and again, so carrier 1's own count
    climbs to a thousand times what is ever live at once, while the process
@@ -545,7 +548,7 @@ static ChimiValue *constant_window(void) {
 static void a_peak_counts_the_whole_process(void) {
   enum { ROUNDS_OF_HANDOFF = 1000, BYTES = 100 * 1024 };
   HeapTotals start = heap_totals_sum();
-  report_process_peaks(&start);
+  chimi_runtime_report_process_peaks_v1(&start);
   int64_t live = start.footprint_bytes, fragments = start.fragment_footprint_bytes;
   for (int round = 0; round < ROUNDS_OF_HANDOFF; ++round) {
     carrier_bind(carrier_at(1));
@@ -559,7 +562,7 @@ static void a_peak_counts_the_whole_process(void) {
   CHECK(carrier_at(1)->heap_totals.peak_footprint_bytes >= (int64_t)ROUNDS_OF_HANDOFF * BYTES,
         "carrier 1's own count did not drift");
   HeapTotals end = heap_totals_sum();
-  report_process_peaks(&end);
+  chimi_runtime_report_process_peaks_v1(&end);
   int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
   int64_t peak = start.peak_footprint_bytes > live + BYTES ? start.peak_footprint_bytes : live + BYTES;
   int64_t fragment_peak = start.peak_fragment_footprint_bytes > fragments + BYTES
@@ -592,7 +595,7 @@ static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
   enum { YOUNG_VALUES = 65536, RISE = 8 * 1024 * 1024, LONE = 2 * RISE };
   int64_t slack = (int64_t)carrier_count * FOOTPRINT_FOLD_SLACK;
   HeapTotals start = heap_totals_sum();
-  report_process_peaks(&start);
+  chimi_runtime_report_process_peaks_v1(&start);
   carrier_bind(carrier_at(1));
   RuntimeHeap *heap = heap_create();
   RuntimeHeap *previous = carrier->fiber.heap;
@@ -624,7 +627,7 @@ static void a_peak_counts_unflushed_young_bytes_and_lone_falls(void) {
         "the overlap is not the program's peak");
   carrier_bind(&carrier_first);
   HeapTotals end = heap_totals_sum();
-  report_process_peaks(&end);
+  chimi_runtime_report_process_peaks_v1(&end);
   CHECK(end.peak_footprint_bytes >= true_peak - slack && end.peak_footprint_bytes <= true_peak + slack,
         "process peak %" PRId64 ", true peak %" PRId64, end.peak_footprint_bytes, true_peak);
   the_process_counts_follow_the_carriers();

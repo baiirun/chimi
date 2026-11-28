@@ -1,0 +1,10 @@
+# 2026-11-28 memory report to Rust (CHI-305 phase 8, eleventh PR)
+BASELINE ok  [cli -- native_] (228s)
+KILLED       the report leaves frame environments out of environments [cli -- native_] (89s)
+KILLED       the report writes the fragment peak as the footprint peak [cli -- native_] (86s)
+# "the report writes no unscoped bytes" survived the first run: every test compared
+# two runs or bounded the bytes. native_concurrency_pipeline_runs_in_flat_memory now
+# checks that startup's unscoped bytes are reported; rerun:
+BASELINE ok  [cli -- native_] (350s)
+KILLED       the report writes no unscoped bytes [cli -- native_] (101s)
+# result: every mutant killed

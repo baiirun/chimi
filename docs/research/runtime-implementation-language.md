@@ -309,8 +309,12 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       (`scheduler_reports.rs`): capability violations, the virtual-time
       deadlock and the latest process defect. The scheduler calls the
       Rust exports directly; runtime.c only reads the messages when the
-      root ends. The memory report follows, then startup and argument
-      parsing.
+      root ends.
+      Eleventh PR: the memory report (`reports.rs`), which sums every
+      carrier's counts and takes the folded process-wide peaks with
+      several carrier threads. runtime.c keeps `heap_totals_sum` for the
+      carrier-thread stress fixture, which also calls the Rust peak fold.
+      Startup and argument parsing follow.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target
