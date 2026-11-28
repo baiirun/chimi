@@ -326,6 +326,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       ends the program with (`intrinsics/task_entry.rs`). runtime.c still
       builds the scheduler's configuration, since some of its hooks exist
       only in a process-kernel build.
+      Fifteenth PR: the run itself (`run.rs`): the benchmark repeats, the
+      one run with its outcome record, and the reports written when it
+      ends. `chimi_rt_main` now only sets the runtime up and calls the
+      Rust steps in order.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

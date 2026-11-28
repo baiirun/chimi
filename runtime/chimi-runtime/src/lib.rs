@@ -33,6 +33,8 @@ pub mod scheduler;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scheduler_reports;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod run;
+#[cfg(all(feature = "runtime-c", unix))]
 pub mod startup;
 pub mod files;
 pub mod float;

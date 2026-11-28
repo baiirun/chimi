@@ -532,6 +532,9 @@ static void fuzz_timestamp(const uint8_t *data, size_t size, FuzzOutput *out) {
 /* The aggregate's own C view (chimi-runtime metrics_abi.rs); the runtime's
    aggregate is behind intrinsics/metrics_host.rs. */
 typedef struct ChimiMetrics ChimiMetrics;
+/* A text Rust built, which C copies and then hands back (text_abi.rs). */
+typedef struct { const char *bytes; size_t length; void *owned; } ChimiOwnedText;
+void chimi_text_release_v1(ChimiOwnedText owned);
 extern ChimiMetrics *chimi_metrics_new_v1(void);
 extern void chimi_metrics_record_v1(ChimiMetrics *aggregate, int64_t kind, const char *name, size_t name_length,
                                     double value, const char *labels, size_t labels_length);

@@ -20,7 +20,7 @@ use crate::reports::{open_report, report_open_failure};
 use crate::telemetry::unsigned_spelling;
 
 /// `ChimiNodeFn`: a node's compiled function.
-type NodeFn = unsafe extern "C" fn(*mut Runtime, *mut Environment, u64) -> *mut Control;
+pub(crate) type NodeFn = unsafe extern "C" fn(*mut Runtime, *mut Environment, u64) -> *mut Control;
 
 unsafe extern "C" {
     static CHIMI_CONSTRUCTORS: [Constructor; 0];

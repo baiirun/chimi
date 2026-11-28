@@ -1,0 +1,24 @@
+# 2026-11-28 the run to Rust (CHI-305 phase 8, fifteenth PR)
+BASELINE ok  [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (165s)
+BASELINE ok  [cli -- native_the_entry_is_main_and_refuses_arguments_it_cannot_take] (0s)
+BASELINE ok  [std_metrics -- a_failed_metrics_write_is_a_sink_failure] (0s)
+BASELINE ok  [std_cli] (2s)
+KILLED       a repeat's sequence numbers carry over [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (59s)
+KILLED       a repeat's spans carry over [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (58s)
+KILLED       the metrics start at each repeat [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (59s)
+KILLED       a benchmark writes no metrics [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (63s)
+KILLED       the outcome record is not written [cli -- native_the_entry_is_main_and_refuses_arguments_it_cannot_take] (62s)
+KILLED       a failed write exits as the outcome says [std_metrics -- a_failed_metrics_write_is_a_sink_failure] (59s)
+KILLED       the entry gets no application arguments [std_cli] (60s)
+KILLED       a run's end is not traced [trace_show] (59s)
+KILLED       the application arguments start at the runner's [std_cli] (58s)
+KILLED       a benchmark ignores a failed write [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (58s)
+KILLED       a benchmark repeat traces no end [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (62s)
+KILLED       a benchmark prints no mean [cli -- native_benchmark_repeats_run_the_entry_afresh_each_time] (60s)
+# Retargeted to run.rs (all killed): event_times' "the start ignores
+# --clock-start" and "the real start is the origin", metrics_export's "the
+# start is taken when tracing only", metrics_read's "a native read's start is
+# not the run's".
+# Dropped after the review, because no test can tell them apart: leaving the
+# log file's FILE open (log lines go to its descriptor directly, so the stream
+# holds nothing) and leaving the telemetry file open (exit flushes it).
