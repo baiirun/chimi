@@ -63,9 +63,9 @@ CHARGE_AFTER_START = """        supervision.restart_times.push_back(now);
         });
         if let Err(error) = started {"""
 STOP_ORDER = "                    for membership in declared.into_iter().chain(dynamic) {"
-ESCALATION_OUTCOME = """  if (outcome.state == CHIMI_FIBER_DEFECTED &&
-      outcome.defect_code == CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED)
-    return defect("Supervisor.RestartLimitExceeded", -1);
+ESCALATION_OUTCOME = """        if defected && code == SchedulerOutcome::DEFECT_RESTART_LIMIT_EXCEEDED {
+            return defect(c"Supervisor.RestartLimitExceeded", -1);
+        }
 """
 CLOCK_MODE = ".clock_mode = runtime->virtual_clock ? CHIMI_SCHEDULER_CLOCK_VIRTUAL : CHIMI_SCHEDULER_CLOCK_REAL,"
 
@@ -124,7 +124,7 @@ MUTATIONS = [
         [OUTCOME, EXITED], [(
             "                    && matches!(record.phase, TaskPhase::Runnable | TaskPhase::Parked)",
             "                    && matches!(record.phase, TaskPhase::Parked)")]),
-    lab("a root escalation ends the program as a scheduler failure", RUNTIME, "RA02",
+    lab("a root escalation ends the program as a scheduler failure", TASK_ENTRY, "RA02",
         [OUTCOME], [(ESCALATION_OUTCOME, "")]),
     # Range checks at the call that receives the value.
     lab("Process.spec accepts a computed zero capacity", PROCESSES, "MB10",

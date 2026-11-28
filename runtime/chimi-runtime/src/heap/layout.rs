@@ -604,12 +604,31 @@ pub struct FiberResult {
 }
 
 impl FiberResult {
+    pub const PARKED: u32 = 1;
     pub const SUCCEEDED: u32 = 2;
     pub const CANCELLED: u32 = 3;
     pub const DEFECTED: u32 = 4;
+    pub const STACK_OVERFLOW: u32 = 5;
     /// A process entry's `value` when its body returned or failed.
     pub const PROCESS_END_RETURNED: i64 = 0;
     pub const PROCESS_END_FAILED: i64 = 1;
+}
+
+/// `ChimiSchedulerOutcome` (chimi_fiber.h): how the root task ended, with
+/// its result word or defect code and the task a defect came from.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SchedulerOutcome {
+    pub state: u32,
+    pub value: i64,
+    pub origin: u64,
+    pub defect_code: i64,
+}
+
+impl SchedulerOutcome {
+    /// Defect codes the scheduler makes; a task's own codes are positive.
+    pub const DEFECT_DEADLOCK: i64 = -5;
+    pub const DEFECT_RESTART_LIMIT_EXCEEDED: i64 = -6;
 }
 
 /// `ChimiDeadlockWaiter` (chimi_fiber.h): a task parked in a detected
@@ -1835,7 +1854,6 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerRequest" SchedulerRequest, "value", value)
     field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
     field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
-    constant("CHILD_RESULT_TAG" CHILD_RESULT_TAG)
     size("ChimiDeadlockWaiter" DeadlockWaiter)
     field("ChimiDeadlockWaiter" DeadlockWaiter, "task", task)
     field("ChimiDeadlockWaiter" DeadlockWaiter, "request_kind", request_kind)
@@ -1874,6 +1892,15 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_FIBER_SUCCEEDED" FiberResult::SUCCEEDED)
     constant("CHIMI_FIBER_CANCELLED" FiberResult::CANCELLED)
     constant("CHIMI_FIBER_DEFECTED" FiberResult::DEFECTED)
+    constant("CHIMI_FIBER_PARKED" FiberResult::PARKED)
+    constant("CHIMI_FIBER_STACK_OVERFLOW" FiberResult::STACK_OVERFLOW)
+    size("ChimiSchedulerOutcome" SchedulerOutcome)
+    field("ChimiSchedulerOutcome" SchedulerOutcome, "state", state)
+    field("ChimiSchedulerOutcome" SchedulerOutcome, "value", value)
+    field("ChimiSchedulerOutcome" SchedulerOutcome, "origin", origin)
+    field("ChimiSchedulerOutcome" SchedulerOutcome, "defect_code", defect_code)
+    constant("-CHIMI_SCHEDULER_DEFECT_DEADLOCK" -SchedulerOutcome::DEFECT_DEADLOCK)
+    constant("-CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED" -SchedulerOutcome::DEFECT_RESTART_LIMIT_EXCEEDED)
     constant("CHIMI_PROCESS_END_RETURNED" FiberResult::PROCESS_END_RETURNED)
     constant("CHIMI_PROCESS_END_FAILED" FiberResult::PROCESS_END_FAILED)
     constant("CHIMI_REQUEST_PROCESS_ARGUMENT" Scheduler::REQUEST_PROCESS_ARGUMENT)

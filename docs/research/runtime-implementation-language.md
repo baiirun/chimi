@@ -321,6 +321,11 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Thirteenth PR: opening the report files the run writes as it goes,
       with their same-file checks, and the exit status, std/cli's `Exit`
       included (`startup.rs`).
+      Fourteenth PR: finding the entry function (`startup.rs`) and running
+      the root task, from the scheduler call to the control its outcome
+      ends the program with (`intrinsics/task_entry.rs`). runtime.c still
+      builds the scheduler's configuration, since some of its hooks exist
+      only in a process-kernel build.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

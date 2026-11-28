@@ -247,10 +247,6 @@ struct ChimiControl {
 /* The root task runs `entry` in the main heap. A child task gets its own heap and
    adopts `captures`, a fragment holding its callable value and the requirements it
    captured; the context is malloc'd and the child frees it. */
-/* Set in a child task's result word, a fragment pointer, to tell it from the
-   root's own ChimiControl pointer (intrinsics/task_entry.rs). */
-enum { CHILD_RESULT_TAG = 1 };
-
 struct ChimiTaskContext {
   ChimiRuntime *runtime;
   ChimiEnvironment *environment;
@@ -1682,7 +1678,6 @@ _Static_assert(offsetof(ChimiSchedulerRequest, entry) == 48, "layout: offsetof(C
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->entry) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->entry)");
 _Static_assert(offsetof(ChimiSchedulerRequest, context) == 56, "layout: offsetof(ChimiSchedulerRequest, context)");
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->context) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->context)");
-_Static_assert(CHILD_RESULT_TAG == 1, "layout: CHILD_RESULT_TAG");
 _Static_assert(sizeof(ChimiDeadlockWaiter) == 16, "layout: sizeof(ChimiDeadlockWaiter)");
 _Static_assert(offsetof(ChimiDeadlockWaiter, task) == 0, "layout: offsetof(ChimiDeadlockWaiter, task)");
 _Static_assert(sizeof(((ChimiDeadlockWaiter *)0)->task) == 8, "layout: sizeof(((ChimiDeadlockWaiter *)0)->task)");
@@ -1754,6 +1749,23 @@ _Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->defect_code) == 1, "l
 _Static_assert(CHIMI_FIBER_SUCCEEDED == 2, "layout: CHIMI_FIBER_SUCCEEDED");
 _Static_assert(CHIMI_FIBER_CANCELLED == 3, "layout: CHIMI_FIBER_CANCELLED");
 _Static_assert(CHIMI_FIBER_DEFECTED == 4, "layout: CHIMI_FIBER_DEFECTED");
+_Static_assert(CHIMI_FIBER_PARKED == 1, "layout: CHIMI_FIBER_PARKED");
+_Static_assert(CHIMI_FIBER_STACK_OVERFLOW == 5, "layout: CHIMI_FIBER_STACK_OVERFLOW");
+_Static_assert(sizeof(ChimiSchedulerOutcome) == 32, "layout: sizeof(ChimiSchedulerOutcome)");
+_Static_assert(offsetof(ChimiSchedulerOutcome, state) == 0, "layout: offsetof(ChimiSchedulerOutcome, state)");
+_Static_assert(sizeof(((ChimiSchedulerOutcome *)0)->state) == 4, "layout: sizeof(((ChimiSchedulerOutcome *)0)->state)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->state) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->state)");
+_Static_assert(offsetof(ChimiSchedulerOutcome, value) == 8, "layout: offsetof(ChimiSchedulerOutcome, value)");
+_Static_assert(sizeof(((ChimiSchedulerOutcome *)0)->value) == 8, "layout: sizeof(((ChimiSchedulerOutcome *)0)->value)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->value) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->value)");
+_Static_assert(offsetof(ChimiSchedulerOutcome, origin) == 16, "layout: offsetof(ChimiSchedulerOutcome, origin)");
+_Static_assert(sizeof(((ChimiSchedulerOutcome *)0)->origin) == 8, "layout: sizeof(((ChimiSchedulerOutcome *)0)->origin)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->origin) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->origin)");
+_Static_assert(offsetof(ChimiSchedulerOutcome, defect_code) == 24, "layout: offsetof(ChimiSchedulerOutcome, defect_code)");
+_Static_assert(sizeof(((ChimiSchedulerOutcome *)0)->defect_code) == 8, "layout: sizeof(((ChimiSchedulerOutcome *)0)->defect_code)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->defect_code) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerOutcome *)0)->defect_code)");
+_Static_assert(-CHIMI_SCHEDULER_DEFECT_DEADLOCK == 5, "layout: -CHIMI_SCHEDULER_DEFECT_DEADLOCK");
+_Static_assert(-CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED == 6, "layout: -CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED");
 _Static_assert(CHIMI_PROCESS_END_RETURNED == 0, "layout: CHIMI_PROCESS_END_RETURNED");
 _Static_assert(CHIMI_PROCESS_END_FAILED == 1, "layout: CHIMI_PROCESS_END_FAILED");
 _Static_assert(CHIMI_REQUEST_PROCESS_ARGUMENT == 31, "layout: CHIMI_REQUEST_PROCESS_ARGUMENT");
@@ -3441,12 +3453,10 @@ ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallabl
 }
 
 /* Tasks' and incarnations' fiber entries, their result words and the
-   scheduler's release hooks are Rust (intrinsics/task_entry.rs). A child's
-   result word carries CHILD_RESULT_TAG (with ChimiTaskContext) to tell it
-   from the root's own ChimiControl pointer. */
+   scheduler's release hooks are Rust (intrinsics/task_entry.rs), as is the
+   root task's outcome. */
 ChimiFiberResult chimi_runtime_task_entry_v1(void *raw_context);
 ChimiFiberResult chimi_runtime_process_entry_v1(void *raw_context);
-ChimiControl *chimi_runtime_task_reply_v1(int64_t raw);
 void chimi_runtime_release_task_word_v1(void *context, int64_t word);
 void chimi_runtime_release_channel_word_v1(void *context, int64_t word);
 int64_t chimi_runtime_copy_channel_word_v1(void *context, int64_t word);
@@ -3629,13 +3639,11 @@ bool chimi_runtime_write_profile_v1(const char *path);
 /* Writes the memory report to `path`, in reports.rs; whether that failed. */
 bool chimi_runtime_write_memory_report_v1(const char *path, const ChimiRuntime *runtime, bool process_kernel);
 
-/* The scheduler's capability-violation, deadlock and process-defect reports
-   and the defect messages they leave, in scheduler_reports.rs. */
+/* The scheduler's capability-violation, deadlock and process-defect reports,
+   in scheduler_reports.rs. */
 void chimi_runtime_record_capability_violation_v1(void *context, const ChimiCapabilityViolation *violation);
-const char *chimi_runtime_capability_violation_of_v1(const ChimiRuntime *runtime, uint64_t task);
 void chimi_runtime_record_deadlock_v1(void *context, const ChimiDeadlockWaiter *waiters, size_t count);
 void chimi_runtime_record_process_defect_v1(void *context, const ChimiProcessTermination *termination);
-const char *chimi_runtime_with_process_defect_v1(const ChimiRuntime *runtime, const char *message);
 
 /* The signal handlers and std/signal are Rust (intrinsics/signals.rs). */
 extern bool chimi_runtime_install_stop_signals_v1(ChimiRuntime *runtime);
@@ -3656,6 +3664,15 @@ int32_t chimi_runtime_open_reports_v1(ChimiRuntime *runtime, const ChimiRunnerOp
 int32_t chimi_runtime_parse_runner_v1(ChimiRuntime *runtime, int32_t argc, const char **argv, bool simulation,
                                       ChimiRunnerOptions *options);
 int32_t chimi_runtime_check_report_paths_v1(const ChimiRuntime *runtime, const ChimiRunnerOptions *options);
+
+/* Runs the root task under the scheduler `config`, and gives the control the
+   program ends with (intrinsics/task_entry.rs). */
+ChimiControl *chimi_runtime_run_root_v1(ChimiRuntime *runtime, const ChimiSchedulerConfig *config);
+
+/* Finds the entry function: the selected test's, or the one whose body is
+   `entry`; 0, or the exit status (startup.rs). */
+int32_t chimi_runtime_program_entry_v1(ChimiRuntime *runtime, ChimiNodeFn entry, const ChimiRunnerOptions *options,
+                                       int32_t argc, const ChimiFunction **function);
 
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
@@ -3704,58 +3721,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .carrier_enter = enter_carrier_thread,
   };
   channel_endpoints_reset();
-  AllocationScope *entry_scope = main_heap.innermost;
-  AllocationArea *entry_target = carrier->fiber.target;
-  ChimiSchedulerOutcome outcome = chimi_scheduler_run(&config);
-  carrier->fiber.heap = &main_heap;
-  /* The root runs on main_heap, and each region it enters records its scope in
-     its own fiber frame. A root that overflowed, parked or was ended by the
-     scheduler never closed those regions, and its frames will never run again,
-     so drop them before the outcome below allocates; an overflow during an
-     in-place list compaction also left the allocation target in such a region.
-     Their allocations are left to exit. */
-  main_heap.innermost = entry_scope;
-  carrier->fiber.target = entry_target;
-  /* The outcome's word is ours: copy a child's result fragment, then free it. */
-  if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
-    int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
-    if (word > 0 && (word & CHILD_RESULT_TAG)) {
-      ChimiControl *control = chimi_runtime_task_reply_v1(word);
-      chimi_runtime_release_task_word_v1(runtime, word);
-      return control;
-    }
-  }
-  if (outcome.state == CHIMI_FIBER_SUCCEEDED)
-    return chimi_runtime_task_reply_v1(outcome.value);
-  if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
-  /* A positive code is a task's result word. A negative code is one the scheduler
-     made, for example when nothing can run and the root is still parked. */
-  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code > 0)
-    return chimi_runtime_task_reply_v1(outcome.defect_code);
-  if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
-      runtime->deadlock_waiters)
-    return defect(chimi_runtime_with_process_defect_v1(runtime, runtime->deadlock_waiters), -1);
-  const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
-    ? chimi_runtime_capability_violation_of_v1(runtime, outcome.origin) : NULL;
-  if (violation) return defect(violation, -1);
-  /* A root supervisor escalated: the scheduler ends every root task with this code,
-     parked or runnable, and the program ends with the escalation's defect. */
-  if (outcome.state == CHIMI_FIBER_DEFECTED &&
-      outcome.defect_code == CHIMI_SCHEDULER_DEFECT_RESTART_LIMIT_EXCEEDED)
-    return defect("Supervisor.RestartLimitExceeded", -1);
-  /* Under the real clock a root parked with nothing pending stays suspended,
-     because a host event might wake it. The scheduler returns only when no
-     task waits on a descriptor either, so nothing ever will: report the same
-     deadlock as before, leaving the suspended tasks to process exit. */
-  if (outcome.state == CHIMI_FIBER_PARKED ||
-      (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
-    return defect(chimi_runtime_with_process_defect_v1(runtime,
-                                      "Task scheduler defected: the root task could not finish, "
-                                      "because every task is parked (deadlock) or the scheduler failed"),
-                  -1);
-  if (outcome.state == CHIMI_FIBER_STACK_OVERFLOW)
-    return defect("Task stack overflow", -1);
-  return defect("Task scheduler failed to produce a terminal root", -1);
+  return chimi_runtime_run_root_v1(runtime, &config);
 }
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
@@ -3797,32 +3763,17 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const char *memory_report_path = options.memory_report_path;
   const char *profile_path = options.profile_path;
   const uint32_t benchmark_repeats = options.benchmark_repeats;
-  const int64_t test_index = options.test_index;
   if (profile_path) {
     profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
     if (!profile_rows) exhausted_memory();
   }
   refused = chimi_runtime_open_reports_v1(&runtime, &options);
   if (refused) return refused;
-  uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
-  if (test_index >= 0) {
-    entry_function = &CHIMI_FUNCTIONS[CHIMI_TEST_FUNCTIONS[test_index]];
-    runtime.computation = CHIMI_TEST_COMPUTATIONS[test_index];
-    entry_node = entry_function->body;
-    entry = CHIMI_NODE_FUNCTIONS[entry_node];
-  }
-  for (uint32_t i = 0; entry_function == NULL && i < CHIMI_FUNCTION_COUNT; ++i)
-    if (CHIMI_NODE_FUNCTIONS[CHIMI_FUNCTIONS[i].body] == entry) {
-      entry_node = CHIMI_FUNCTIONS[i].body;
-      entry_function = &CHIMI_FUNCTIONS[i];
-      break;
-    }
-  if (entry_function == NULL) return 70;
-  if (entry_function->parameters_length == 0 && index < argc) {
-    fputs("program entry does not accept application arguments\n", stderr);
-    return 64;
-  }
+  refused = chimi_runtime_program_entry_v1(&runtime, entry, &options, argc, &entry_function);
+  if (refused) return refused;
+  const uint32_t entry_node = entry_function->body;
+  entry = CHIMI_NODE_FUNCTIONS[entry_node];
   if (benchmark_repeats > 0) {
     struct timespec started, finished;
     clock_gettime(CLOCK_MONOTONIC, &started);

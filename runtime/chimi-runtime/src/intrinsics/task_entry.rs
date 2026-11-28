@@ -15,16 +15,17 @@ use core::ffi::{c_char, c_void};
 use core::ptr;
 
 use super::capabilities::chimi_runtime_transfer_to_child_v1;
-use super::standard::defect;
+use super::standard::{defect, defect_with};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled, chimi_runtime_invoke_v1, take_spans};
 use crate::heap::allocator::{carrier_count, current_carrier};
 use crate::heap::fragment;
 use crate::heap::layout::{
     AllocationKind, CHILD_RESULT_TAG, Control, ControlKind, Environment, FRAGMENT_ROOTS, FiberResult, HeapStatus, ProcessRequest,
-    ProcessSpecContext, Runtime, RuntimeFragment, RuntimeHeap, Scheduler, TaskContext, Value, ValueKind,
+    ProcessSpecContext, Runtime, RuntimeFragment, RuntimeHeap, Scheduler, SchedulerOutcome, TaskContext, Value, ValueKind,
 };
 use crate::heap::values::{new_environment, new_value};
 use crate::scheduler;
+use crate::scheduler_reports::{chimi_runtime_capability_violation_of_v1, chimi_runtime_with_process_defect_v1};
 use crate::telemetry::chimi_trace_process_body_v1;
 
 
@@ -38,6 +39,9 @@ unsafe extern "C" {
     fn chimi_fiber_current_incarnation() -> u64;
     /// Records why the running process body defected (chimi_fiber.h).
     fn chimi_fiber_report_defect(message: *const c_char);
+    /// Runs the scheduler from `config`'s root task until it ends
+    /// (chimi_fiber.h).
+    fn chimi_scheduler_run(config: *const c_void) -> SchedulerOutcome;
 }
 
 /// The result of a fiber whose outcome is `control`, which lives on.
@@ -191,15 +195,98 @@ pub(crate) unsafe fn task_reply(raw: i64) -> *mut Control {
     roots[0].cast()
 }
 
-/// [`task_reply`] for runtime.c's root outcome.
+/// Runs the program's root task under the scheduler, and gives the control
+/// the program ends with. runtime.c builds `config`, a `ChimiSchedulerConfig`,
+/// because some of its hooks exist only in a process-kernel build.
 ///
 /// # Safety
-/// As for [`task_reply`].
+/// Runs on the host thread with no task running; `config` is a live
+/// scheduler configuration whose root context is a live `TaskContext`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control {
+pub unsafe extern "C" fn chimi_runtime_run_root_v1(runtime: *mut Runtime, config: *const c_void) -> *mut Control {
     // SAFETY: the caller's contract.
-    unsafe { task_reply(raw) }
+    unsafe {
+        let main_heap = &raw mut chimi_runtime_main_heap;
+        let entry_scope = (*main_heap).innermost;
+        let entry_target = (*current_carrier()).fiber.target;
+        let outcome = chimi_scheduler_run(config);
+        // The root runs on the main heap, and each region it enters records
+        // its scope in its own fiber frame. A root that overflowed, parked or
+        // was ended by the scheduler never closed those regions, and its
+        // frames will never run again, so drop them before the outcome below
+        // allocates; an overflow during an in-place list compaction also left
+        // the allocation target in such a region. Their allocations are left
+        // to exit.
+        (*current_carrier()).fiber.heap = main_heap;
+        (*main_heap).innermost = entry_scope;
+        (*current_carrier()).fiber.target = entry_target;
+        root_control(runtime, &outcome)
+    }
 }
+
+/// The control the root task's `outcome` ends the program with. The
+/// outcome's word is ours: a child's result fragment is copied, then freed.
+///
+/// # Safety
+/// Runs on the host thread, in the main heap; `outcome` is the scheduler's.
+unsafe fn root_control(runtime: *mut Runtime, outcome: &SchedulerOutcome) -> *mut Control {
+    let state = outcome.state;
+    let code = outcome.defect_code;
+    let defected = state == FiberResult::DEFECTED;
+    // SAFETY: the caller's contract.
+    unsafe {
+        if state == FiberResult::SUCCEEDED || defected {
+            let word = if defected { code } else { outcome.value };
+            if word > 0 && word & CHILD_RESULT_TAG != 0 {
+                let control = task_reply(word);
+                chimi_runtime_release_task_word_v1(runtime.cast(), word);
+                return control;
+            }
+        }
+        if state == FiberResult::SUCCEEDED {
+            return task_reply(outcome.value);
+        }
+        if state == FiberResult::CANCELLED {
+            return cancelled();
+        }
+        // A positive code is a task's result word. A negative code is one the
+        // scheduler made, for example when nothing can run and the root is
+        // still parked.
+        if defected && code > 0 {
+            return task_reply(code);
+        }
+        if defected && code == SchedulerOutcome::DEFECT_DEADLOCK && !(*runtime).deadlock_waiters.is_null() {
+            return defect_with(chimi_runtime_with_process_defect_v1(runtime, (*runtime).deadlock_waiters), -1);
+        }
+        if defected && code < 0 {
+            let violation = chimi_runtime_capability_violation_of_v1(runtime, outcome.origin);
+            if !violation.is_null() {
+                return defect_with(violation, -1);
+            }
+        }
+        // A root supervisor escalated: the scheduler ends every root task with
+        // this code, parked or runnable, and the program ends with the
+        // escalation's defect.
+        if defected && code == SchedulerOutcome::DEFECT_RESTART_LIMIT_EXCEEDED {
+            return defect(c"Supervisor.RestartLimitExceeded", -1);
+        }
+        // Under the real clock a root parked with nothing pending stays
+        // suspended, because a host event might wake it. The scheduler returns
+        // only when no task waits on a descriptor either, so nothing ever will:
+        // report the same deadlock as before, leaving the suspended tasks to
+        // process exit.
+        if state == FiberResult::PARKED || (defected && code < 0) {
+            return defect_with(chimi_runtime_with_process_defect_v1(runtime, ROOT_STUCK.as_ptr()), -1);
+        }
+        if state == FiberResult::STACK_OVERFLOW {
+            return defect(c"Task stack overflow", -1);
+        }
+        defect(c"Task scheduler failed to produce a terminal root", -1)
+    }
+}
+
+/// The defect of a root that can never finish.
+const ROOT_STUCK: &core::ffi::CStr = c"Task scheduler defected: the root task could not finish, because every task is parked (deadlock) or the scheduler failed";
 
 /// Frees a task word: a child's tagged result fragment. The root's own
 /// control lives in the main heap and is not the scheduler's to free.
