@@ -16,6 +16,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 
+use super::input::wait_for;
 use super::standard::{defect, option_value, shape_defect, success};
 use crate::files::{Closed, FileTable};
 use crate::heap::allocator::current_carrier;
@@ -26,10 +27,6 @@ use crate::pthread_locked::PthreadLocked;
 
 unsafe extern "C" {
     static environ: *const *const c_char;
-    /// Parks the running task until `fd` is readable, or writable; false
-    /// when the task was cancelled meanwhile (`runtime.c`, whose scheduler
-    /// request this is until dispatch moves).
-    fn chimi_runtime_fs_wait_v1(runtime: *mut c_void, fd: c_int, writable: bool) -> bool;
     /// Prints "Chimi runtime exhausted memory" and exits 70.
     fn chimi_runtime_exhausted_memory() -> !;
 }
@@ -692,7 +689,7 @@ unsafe fn read(runtime: *mut c_void, handle: i64) -> *mut Control {
                 continue;
             }
             if error == libc::EAGAIN || error == libc::EWOULDBLOCK {
-                if !chimi_runtime_fs_wait_v1(runtime, fd, false) {
+                if !wait_for(runtime.cast(), fd, false) {
                     return cancelled();
                 }
                 continue;
@@ -738,7 +735,7 @@ unsafe fn write(runtime: *mut c_void, handle: i64, data: *const Value) -> *mut C
                 continue;
             }
             if count < 0 && (error == libc::EAGAIN || error == libc::EWOULDBLOCK) {
-                if !chimi_runtime_fs_wait_v1(runtime, fd, true) {
+                if !wait_for(runtime.cast(), fd, true) {
                     return cancelled();
                 }
                 continue;

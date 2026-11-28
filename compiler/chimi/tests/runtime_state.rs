@@ -44,19 +44,9 @@ const SHARED: &[&str] = &[
     // Tables whose ids travel inside values, each behind its lock.
     "binding_handle_lock",
     "binding_handle_free",
-    // The `random` provider's one seeded stream, behind its lock.
-    "random_lock",
-    "random_generator",
-    "random_seed",
-    "random_seed_given",
-    "random_read",
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
     "chimi_runtime_profile_rows",
-    // Standard input, behind its lock.
-    "standard_input",
-    "standard_input_bytes",
-    "standard_input_lock",
     // Signals: the handlers' fields, and the installers' once flags.
     "received_signal",
     "signal_pipe",

@@ -1,7 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (the process kernel, signals, the other host
-//! functions, and C bindings) go to `runtime.c`'s
+//! (the process kernel, signals and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
@@ -22,11 +21,14 @@ use super::core::core_operation;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
+use super::input::process_utf8_lines;
 use super::json::json_operation;
 use super::metrics_host::metrics_operation;
 use super::processes::process_data_operation;
+use super::random_host::random_host;
 use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
+use super::standard::defect;
 use super::tasks::{TaskCall, task_operation};
 use super::test_log::test_log_operation;
 use super::waits::wait_operation;
@@ -103,10 +105,17 @@ pub unsafe fn invoke_native(
                 let call = ClockCall { runtime, span, call_node, environment };
                 return clock_host(call, callable, arguments(values, count));
             }
-            if (*callable).kind == CallableKind::HOST
-                && matches!((*callable).host, Core::HOST_WRITE_LINE | Core::HOST_WRITE_ERROR)
-            {
-                return console_host(runtime, (*callable).host, arguments(values, count), call_node);
+            if (*callable).kind == CallableKind::HOST {
+                return match (*callable).host {
+                    Core::HOST_WRITE_LINE | Core::HOST_WRITE_ERROR => {
+                        console_host(runtime, (*callable).host, arguments(values, count), call_node)
+                    }
+                    Core::HOST_PROCESS_UTF8_LINES => {
+                        process_utf8_lines(ClockCall { runtime, span, call_node, environment }, arguments(values, count))
+                    }
+                    Core::HOST_RANDOM_NEXT_INT => random_host(runtime, arguments(values, count), call_node),
+                    _ => defect(c"unknown host function", i64::from(call_node)),
+                };
             }
             return chimi_runtime_invoke_native_v1(runtime, callable, values, count, span, call_node, environment);
         }

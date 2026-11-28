@@ -272,23 +272,22 @@ static void handle_round(size_t index, uint32_t round) {
 static _Atomic uint32_t input_seen[INPUT_LINES];
 static _Atomic bool input_done;
 
+extern int64_t chimi_runtime_input_line_v1(const ChimiRuntime *runtime, char *out, size_t capacity);
+extern void chimi_runtime_random_seed_v1(uint64_t seed);
+extern uint64_t chimi_runtime_random_next_v1(void);
+
 /* Takes one line from standard input as process_utf8_lines does: the input's
    lock is held from its first byte to its newline. */
 static void input_round(void) {
   if (atomic_load(&input_done)) return;
   char line[32];
-  size_t length = 0;
-  input_lock(&standard_input);
-  int byte;
-  while ((byte = input_next(&runtime, &standard_input)) >= 0 && byte != '\n')
-    if (length < sizeof(line) - 1) line[length++] = (char)byte;
-  input_unlock(&standard_input);
-  if (byte < 0) {
-    CHECK(byte == INPUT_END && length == 0, "standard input failed or ended mid-line: %d after %zu bytes (%s)", byte, length, strerror(errno));
+  int64_t length = chimi_runtime_input_line_v1(&runtime, line, sizeof(line) - 1);
+  if (length < 0) {
+    CHECK(length == -1, "standard input failed or ended mid-line");
     atomic_store(&input_done, true);
     return;
   }
-  line[length] = '\0';
+  line[length < (int64_t)sizeof(line) - 1 ? length : (int64_t)sizeof(line) - 1] = '\0';
   unsigned number = 0;
   CHECK(sscanf(line, "input-line-%05u", &number) == 1 && number < INPUT_LINES && length == 16,
         "a torn input line: %s", line);
@@ -370,7 +369,7 @@ static void *carrier_thread(void *raw_index) {
     ChimiSchedulerTraceEvent started = {.task = index + 1};
     chimi_trace_scheduler_event_v1(&runtime, &started);
     (void)chimi_runtime_node_finish_v1(&runtime, 0, 1, span, "carrier_round", profile_outer, NULL);
-    draws[index * ROUNDS + round] = random_next();
+    draws[index * ROUNDS + round] = chimi_runtime_random_next_v1();
     ChimiValue *arguments[] = {recorder, list};
     CHECK(chimi_intrinsic_test_log_v1(CHIMI_INTRINSIC_TEST_RECORD, arguments, 2, 0)->kind == CONTROL_SUCCESS,
           "Test.record failed");
@@ -810,8 +809,7 @@ int main(void) {
   CHECK(runtime.telemetry, "tmpfile");
   profile_rows = calloc(1, sizeof(*profile_rows));
   CHECK(profile_rows, "profile rows");
-  random_seed = 7;
-  random_seed_given = true;
+  chimi_runtime_random_seed_v1(7);
   recorder = chimi_intrinsic_test_log_v1(CHIMI_INTRINSIC_TEST_RECORDER, NULL, 0, 0)->value;
   int zero = open("/dev/zero", O_RDONLY);
   CHECK(zero >= 0, "open /dev/zero");
@@ -890,8 +888,8 @@ int main(void) {
   CHECK(profile_rows[0].evaluations == THREADS * ROUNDS, "%" PRIu64 " evaluations", profile_rows[0].evaluations);
 
   uint64_t seeded[THREADS * ROUNDS];
-  random_read = false;
-  for (size_t index = 0; index < THREADS * ROUNDS; ++index) seeded[index] = random_next();
+  chimi_runtime_random_seed_v1(7);
+  for (size_t index = 0; index < THREADS * ROUNDS; ++index) seeded[index] = chimi_runtime_random_next_v1();
   qsort(seeded, THREADS * ROUNDS, sizeof(uint64_t), compare_words);
   qsort(draws, THREADS * ROUNDS, sizeof(uint64_t), compare_words);
   CHECK(memcmp(seeded, draws, sizeof(seeded)) == 0, "the draws are not the seeded stream's");

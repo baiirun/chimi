@@ -554,6 +554,8 @@ impl Scheduler {
     pub const REQUEST_IO_WAIT: u32 = 48;
     /// CHIMI_REQUEST_IO_WAIT's writable interest, in `token`.
     pub const IO_WRITABLE: u64 = 2;
+    /// CHIMI_REQUEST_IO_WAIT's readable interest, in `token`.
+    pub const IO_READABLE: u64 = 1;
     pub const REQUEST_CHANNEL_WATCH: u32 = 38;
     pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
     pub const REQUEST_SCOPE_ENTER: u32 = 25;
@@ -890,6 +892,11 @@ pub struct StandardConstructor;
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
     pub const CONSOLE_WRITE_FAILED: u32 = 0;
+    pub const FILE_CLOSE: u32 = 1;
+    pub const FILE_LINE_TOO_LONG: u32 = 2;
+    pub const FILE_OPEN: u32 = 3;
+    pub const FILE_READ: u32 = 4;
+    pub const UTF8_INVALID: u32 = 5;
     pub const OPTION_NONE: u32 = 7;
     pub const DOWN_RETURNED: u32 = 44;
     pub const TIMEOUT_TIMED_OUT: u32 = 43;
@@ -1716,6 +1723,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_CHANNEL_BROADCAST" Scheduler::REQUEST_CHANNEL_BROADCAST)
     constant("CHIMI_REQUEST_IO_WAIT" Scheduler::REQUEST_IO_WAIT)
     constant("CHIMI_IO_WRITABLE" Scheduler::IO_WRITABLE)
+    constant("CHIMI_IO_READABLE" Scheduler::IO_READABLE)
     constant("CHIMI_REQUEST_CHANNEL_WATCH" Scheduler::REQUEST_CHANNEL_WATCH)
     constant("CHIMI_REQUEST_CHANNEL_SUBSCRIBE" Scheduler::REQUEST_CHANNEL_SUBSCRIBE)
     constant("CHIMI_RESPONSE_SUCCEEDED" Scheduler::RESPONSE_SUCCEEDED)
@@ -1809,6 +1817,11 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
     constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
     constant("CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED" StandardConstructor::CONSOLE_WRITE_FAILED)
+    constant("CHIMI_CONSTRUCTOR_FILE_CLOSE" StandardConstructor::FILE_CLOSE)
+    constant("CHIMI_CONSTRUCTOR_FILE_LINE_TOO_LONG" StandardConstructor::FILE_LINE_TOO_LONG)
+    constant("CHIMI_CONSTRUCTOR_FILE_OPEN" StandardConstructor::FILE_OPEN)
+    constant("CHIMI_CONSTRUCTOR_FILE_READ" StandardConstructor::FILE_READ)
+    constant("CHIMI_CONSTRUCTOR_UTF8_INVALID" StandardConstructor::UTF8_INVALID)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED" StandardConstructor::CHANNEL_SEND_CLOSED)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED" StandardConstructor::CHANNEL_SEND_ABORTED)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED" StandardConstructor::CHANNEL_RECEIVED)

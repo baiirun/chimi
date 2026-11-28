@@ -25,6 +25,38 @@
    included whole, with the few standard constructors the targets build in
    place of a compiled program's tables. */
 #include "runtime.c"
+
+/* Value helpers the C references build with; runtime.c no longer needs them,
+   since the Rust runtime builds these values. */
+static ChimiControl *failure(ChimiValue *value) { return new_control(CONTROL_FAILURE, value, NULL, -1); }
+static bool text_holds_nul(const ChimiValue *text) {
+  return memchr(text->as.text.bytes, '\0', text->as.text.length) != NULL;
+}
+static uint32_t standard_constructor_symbol(uint32_t standard_constructor) {
+  for (uint32_t symbol = 0; symbol < CHIMI_SYMBOL_COUNT; ++symbol)
+    if (CHIMI_SYMBOLS[symbol].standard_constructor == standard_constructor) return symbol;
+  return UINT32_MAX;
+}
+static ChimiValue *standard_value(uint32_t standard_constructor, ChimiValue **values,
+                                  uint32_t value_count) {
+  uint32_t symbol = standard_constructor_symbol(standard_constructor);
+  if (symbol == UINT32_MAX) return NULL;
+  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[symbol].constructor];
+  if (shape->fields_length != value_count) return NULL;
+  ChimiValue *value = new_value(VALUE_CONSTRUCTED);
+  value->as.constructed.constructor = symbol;
+  value->as.constructed.type_name = CHIMI_STRINGS[shape->type_name];
+  value->as.constructed.variant_name = shape->variant_name == UINT32_MAX ? NULL : CHIMI_STRINGS[shape->variant_name];
+  value->as.constructed.length = value_count;
+  value->as.constructed.fields = allocate(value_count, sizeof(*value->as.constructed.fields));
+  allocation_kind(value->as.constructed.fields, ALLOCATION_FIELDS);
+  for (uint32_t field = 0; field < value_count; ++field)
+    value->as.constructed.fields[field] = (RuntimeField){
+      CHIMI_STRINGS[CHIMI_IDS[shape->fields_offset + field]], values[field]
+    };
+  return value;
+}
+
 #include "json-c-reference.c"
 #include "decimal-duration-c-reference.c"
 #include "float-c-reference.c"
