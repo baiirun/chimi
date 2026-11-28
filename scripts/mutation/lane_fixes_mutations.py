@@ -13,6 +13,7 @@ CRATE = "compiler/chimi"
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 RUNTIME = "runtime/native/runtime.c"
+OUTCOME = "../../runtime/chimi-runtime/src/outcome.rs"
 SCALARS = "../../runtime/chimi-runtime/src/intrinsics/scalars.rs"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
@@ -86,8 +87,8 @@ MUTATIONS = [
         "      size_t end = arguments[0]->as.text.length, width;",
         "      size_t end = strlen(text), width;")]),
     nul("outcome JSON stops at U+0000", [(
-        "      case VALUE_TEXT: json_bytes(output, value->as.text.bytes, value->as.text.length); break;",
-        "      case VALUE_TEXT: json_string(output, value->as.text.bytes); break;")]),
+        "                ValueKind::TEXT => out.json(text_bytes(value)),",
+        "                ValueKind::TEXT => out.json_c(payload.text.bytes),")], OUTCOME),
     language('Json.encode stops at U+0000', JSON_INTRINSICS, [('for &byte in text {',
         'for &byte in text.iter().take_while(|&&byte| byte != 0) {')], NUL),
     language("Debug.render stops at U+0000", DEBUG_RENDER, [(

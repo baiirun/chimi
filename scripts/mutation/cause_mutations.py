@@ -17,6 +17,7 @@ EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 LOWERING = "src/executable.rs"
 CAUSES = "src/execution/causes.rs"
 RUNTIME = "runtime/native/runtime.c"
+OUTCOME = "../../runtime/chimi-runtime/src/outcome.rs"
 SCOPES = "../../runtime/chimi-runtime/src/intrinsics/scopes.rs"
 CORE_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/core.rs"
 RUST_CAUSES = "../../runtime/chimi-runtime/src/intrinsics/causes.rs"
@@ -50,9 +51,9 @@ MUTATIONS = [
     programs("native: a crash message lives in the loop's heap", CORE_INTRINSICS, [
         ("defect_with(lasting_message(bytes_of(arguments[0])), node)",
          "defect_with((*new_text(bytes_of(arguments[0]))).payload.text.bytes, node)")]),
-    programs("C: the root report stops at a NUL", RUNTIME, [
-        ("    json_bytes(output, text->as.text.bytes, text->as.text.length);",
-         "    json_string(output, text->as.text.bytes);")]),
+    programs("outcome: the root report stops at a NUL", OUTCOME, [
+        ("                out.json(text_bytes(&*cause_text(cause)));",
+         "                out.json_c((*cause_text(cause)).payload.text.bytes);")]),
     programs("an Err arm is not a cause source", LOWERING, [
         ("if fields.len() == 1 && self.is_result_err(*symbol) =>",
          "if false && fields.len() == 1 && self.is_result_err(*symbol) =>")]),

@@ -30,3 +30,6 @@ KILLED       Console stops at U+0000 [cli -- native_host_io_keeps_text_bytes_aft
 BASELINE ok  [language -- text_holding_nul_keeps_every_byte_on_both_backends] (54s)
 KILLED       text patterns compare as C strings [language -- text_holding_nul_keeps_every_byte_on_both_backends] (56s)
 # result: every mutant killed
+
+# rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
+KILLED       outcome JSON stops at U+0000 [language -- text_holding_nul_keeps_every_byte_on_both_backends] (63s)

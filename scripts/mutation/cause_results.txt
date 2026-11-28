@@ -42,3 +42,6 @@ KILLED       native: a stored Err drops its cause [std_modules -- standard_progr
 BASELINE ok  [std_modules -- standard_programs] (58s)
 KILLED       native: Cause.context adds no frame [std_modules -- standard_programs] (57s)
 # result: every mutant killed
+
+# rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
+KILLED       outcome: the root report stops at a NUL [std_modules -- standard_programs] (72s)

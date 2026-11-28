@@ -9,6 +9,7 @@ Each mutant runs tests/testing.rs, the end-to-end conformance for both backends.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+OUTCOME = "../../runtime/chimi-runtime/src/outcome.rs"
 RANDOM = "../../runtime/chimi-runtime/src/intrinsics/random_host.rs"
 SOURCE = "../../runtime/chimi-runtime/src/random.rs"
 EXECUTION = "src/execution.rs"
@@ -29,8 +30,8 @@ MUTATIONS = [
         "        stream.generator.get_or_insert_with(|| Generator::seeded(seed.unwrap_or_else(os_seed))).next()",
         "        stream.generator.get_or_insert_with(|| Generator::seeded(seed.map_or_else(os_seed, |_| 0))).next()",
     )]),
-    mutant("native: the outcome never says a test drew", C, [(
-        '  if (chimi_runtime_random_read_v1()) fputs(",\\"random_read\\":true", output);',
+    mutant("native: the outcome never says a test drew", OUTCOME, [(
+        '        if chimi_runtime_random_read_v1() {\n            out.bytes(b",\\"random_read\\":true");\n        }\n',
         "",
     )]),
     mutant("both: the generator rotates by 44", SOURCE, [(

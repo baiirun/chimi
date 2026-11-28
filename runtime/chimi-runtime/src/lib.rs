@@ -25,6 +25,10 @@ pub mod constants;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod eval;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod outcome;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod reports;
+#[cfg(all(feature = "runtime-c", unix))]
 pub mod scheduler;
 pub mod files;
 pub mod float;

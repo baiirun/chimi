@@ -11,6 +11,7 @@ CRATE = "compiler/chimi"
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
 R = "runtime/native/runtime.c"
+REPORTS = "../../runtime/chimi-runtime/src/reports.rs"
 
 
 def m(name, edits, file=R):
@@ -27,9 +28,9 @@ MUTATIONS = [
  m("profiling leaves direct integer roots on",
    [("{ return runtime->full_trace || profile_rows; }", "{ return runtime->full_trace; }")]),
  m("rows are written lightest first",
-   [("return x->allocated_bytes > y->allocated_bytes ? -1 : 1;", "return x->allocated_bytes > y->allocated_bytes ? 1 : -1;")]),
+   [("y.allocated_bytes.cmp(&x.allocated_bytes)", "x.allocated_bytes.cmp(&y.allocated_bytes)")], REPORTS),
  m("ties are written fewest evaluations first",
-   [("return x->evaluations > y->evaluations ? -1 : 1;", "return x->evaluations > y->evaluations ? 1 : -1;")]),
+   [(".then(y.evaluations.cmp(&x.evaluations))", ".then(x.evaluations.cmp(&y.evaluations))")], REPORTS),
  m("a profile adds up benchmark repeats",
    [("  if (profile_path && benchmark_repeats) {", "  if (false) {")]),
  m("allocations are not counted",

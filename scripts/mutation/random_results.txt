@@ -35,3 +35,6 @@ KILLED       Random.shuffle: the first item never moves [testing] (57s)
 KILLED       Random.pick: always the first item [testing] (56s)
 KILLED       bits_63: the sign is cleared off by one [testing] (56s)
 # result: every mutant killed
+
+# rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
+KILLED       native: the outcome never says a test drew [testing] (72s)

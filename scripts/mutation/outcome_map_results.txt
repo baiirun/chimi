@@ -9,3 +9,8 @@ KILLED       interpreter writes a pair value before its key [language -- map_out
 KILLED       interpreter writes Text-keyed maps as pairs [language -- map_outcomes_render_their_entries_on_both_backends] (23s)
 # result: every mutant killed
 EXIT 0
+
+# rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
+KILLED       native writes an empty map as pairs [language -- map_outcomes_render_their_entries_on_both_backends] (62s)
+KILLED       native drops the comma between pairs [language -- map_outcomes_render_their_entries_on_both_backends] (60s)
+KILLED       native writes a pair value before its key [language -- map_outcomes_render_their_entries_on_both_backends] (61s)

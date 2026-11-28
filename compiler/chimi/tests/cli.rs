@@ -4402,6 +4402,31 @@ fn profile_total(profile: &str, operation: &str, field: &str) -> u64 {
         .sum()
 }
 
+// Guards: a profile lists only the nodes that ran, so an arm never taken has
+// no row.
+#[test]
+fn native_profile_leaves_out_nodes_that_never_ran() {
+    let scratch = scratch_directory("native-profile-unrun");
+    let executable = build_native(
+        &scratch,
+        "profile",
+        "import std/list as List\npub fn main() -> Int {\n  case 1 > 2 {\n    True -> [10, 20, 30]\n    False -> [4]\n  }\n  |> List.length\n}\n",
+    );
+    let profile_path = scratch.join("profile.json");
+    let execution = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--trace=off")
+        .arg(format!("--profile-file={}", profile_path.display()))
+        .arg("--")
+        .output()
+        .expect("run native program with a profile");
+    assert!(execution.status.success(), "{}", String::from_utf8_lossy(&execution.stderr));
+    let profile = std::fs::read_to_string(&profile_path).unwrap();
+    assert!(!profile.contains("\"evaluations\":0,"), "{profile}");
+    assert_eq!(profile_total(&profile, "list", "evaluations"), 1, "{profile}");
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // Guards: --profile-file counts every evaluation of every node, charges each
 // allocation to the node that made it, lists the heaviest allocators first, and turns
 // off the direct paths, which would hide nodes (T6).
