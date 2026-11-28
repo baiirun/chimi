@@ -42,3 +42,10 @@ KILLED       a stop signal without the scheduler does not cancel [signals -- sig
 # the drained run pass. The test now requires the end within 30 s; rerun:
 KILLED       a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (125s)
 # result: every mutant killed
+
+# 2026-11-28 report files and exit status to Rust (CHI-305 phase 8, thirteenth PR): retargeted mutants
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario SG01] (164s)
+BASELINE ok  [signals -- sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm] (4s)
+KILLED       an injected signal exits 130 [cargo run --quiet --bin chimi-process-lab -- --scenario SG01] (58s)
+KILLED       a real signal exits instead of re-raising [signals -- sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm] (62s)
+# result: every mutant killed

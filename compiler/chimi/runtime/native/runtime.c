@@ -30,7 +30,6 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <dirent.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
 
 /* The stack of every scheduler fiber: the root task, child tasks, and incarnations.
@@ -3617,19 +3616,6 @@ static void decode_constants(void) { chimi_runtime_decode_constants_v1(); }
 /* The outcome record and its value's JSON form, in outcome.rs. */
 void chimi_runtime_print_outcome_v1(FILE *output, const ChimiControl *control);
 
-/* A report file the runtime writes, closed in every child process it starts
-   (std/exec), so a child cannot hold it open or write into it. */
-static FILE *open_report(const char *path, const char *mode) {
-  FILE *output = fopen(path, mode);
-  if (output && fcntl(fileno(output), F_SETFD, FD_CLOEXEC) != 0) {
-    int error = errno;
-    fclose(output);
-    errno = error;
-    return NULL;
-  }
-  return output;
-}
-
 static bool close_output(FILE *output) {
   if (output == NULL) return false;
   bool failed = fflush(output) != 0;
@@ -3658,35 +3644,12 @@ extern int chimi_runtime_signal_fd_v1(void);
 extern uint32_t *chimi_runtime_user_signals_v1(void);
 extern _Noreturn void chimi_runtime_end_by_signal_v1(int number);
 
-/* A `std/cli.Exit` that `main` returned or failed with (CHI-252), applied
-   after every release, the drain and the outcome record: `Code(n)` exits n,
-   `Help(text)` writes text to standard output and exits 0, `Usage(_,
-   message)` writes message to standard error and exits 2. A code outside 0
-   to 255 is a defect, 70. False for any other outcome. */
-static bool program_exit(const ChimiControl *control, int *status) {
-  if (control->kind != CONTROL_SUCCESS && control->kind != CONTROL_FAILURE) return false;
-  const ChimiValue *value = control->value;
-  if (value == NULL || value->kind != VALUE_CONSTRUCTED) return false;
-  const ChimiConstructor *shape = &CHIMI_CONSTRUCTORS[CHIMI_SYMBOLS[value->as.constructed.constructor].constructor];
-  if (!shape->program_exit) return false;
-  const ChimiValue *field = value->as.constructed.fields[value->as.constructed.length - 1].value;
-  const char *variant = CHIMI_STRINGS[shape->variant_name];
-  if (strcmp(variant, "Code") == 0) {
-    if (field->as.integer < 0 || field->as.integer > 255) {
-      fprintf(stderr, "Chimi runtime: Exit.Code(%" PRId64 ") is outside 0 to 255\n", field->as.integer);
-      *status = 70;
-    } else {
-      *status = (int)field->as.integer;
-    }
-    return true;
-  }
-  bool help = strcmp(variant, "Help") == 0;
-  FILE *stream = help ? stdout : stderr;
-  bool written = fwrite(field->as.text.bytes, 1, field->as.text.length, stream) == field->as.text.length &&
-                 fputc('\n', stream) != EOF && fflush(stream) == 0;
-  *status = written ? (help ? 0 : 2) : 74;
-  return true;
-}
+/* The exit status of a run that ended with `control`, a program-exit value's
+   or its outcome's; a stop signal is re-raised (startup.rs). */
+int32_t chimi_runtime_exit_status_v1(const ChimiControl *control, int32_t injected_signal, FILE *out, FILE *err);
+/* Opens the telemetry, outcome, log and metrics files; 0, or the exit status
+   after a refusal (startup.rs). */
+int32_t chimi_runtime_open_reports_v1(ChimiRuntime *runtime, const ChimiRunnerOptions *options);
 
 /* Reads the runner's arguments, and refuses report paths that clash; 0 to
    run, else the exit status (startup.rs). */
@@ -3831,86 +3794,16 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   carriers_create(runtime.carriers);
   refused = chimi_runtime_check_report_paths_v1(&runtime, &options);
   if (refused) return refused;
-  const char *telemetry_path = options.telemetry_path;
-  const char *outcome_path = options.outcome_path;
   const char *memory_report_path = options.memory_report_path;
   const char *profile_path = options.profile_path;
-  const char *log_path = options.log_path;
-  const char *metrics_path = options.metrics_path;
   const uint32_t benchmark_repeats = options.benchmark_repeats;
   const int64_t test_index = options.test_index;
   if (profile_path) {
     profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
     if (!profile_rows) exhausted_memory();
   }
-  if (telemetry_path) {
-    runtime.telemetry = open_report(telemetry_path, strcmp(telemetry_path, "/dev/null") == 0 ? "w" : "wx");
-    if (!runtime.telemetry) {
-      fprintf(stderr, "cannot open telemetry file %s: %s\n", telemetry_path, strerror(errno));
-      return 74;
-    }
-  }
-  if (outcome_path) {
-    runtime.outcome = open_report(outcome_path, "wx");
-    if (!runtime.outcome) {
-      fprintf(stderr, "cannot open outcome file %s: %s\n", outcome_path, strerror(errno));
-      if (runtime.telemetry) fclose(runtime.telemetry);
-      return 74;
-    }
-  }
-  if (log_path) {
-    /* Appended to, unlike the runner's reports: a log outlives one run. */
-    runtime.log_file = open_report(log_path, "a");
-    if (!runtime.log_file) {
-      fprintf(stderr, "cannot open log file %s: %s\n", log_path, strerror(errno));
-      if (runtime.telemetry) fclose(runtime.telemetry);
-      if (runtime.outcome) fclose(runtime.outcome);
-      return 74;
-    }
-    /* The same file under another spelling (`./out.json`) is still a clash. */
-    struct stat log_status, report_status;
-    FILE *reports[] = {runtime.telemetry, runtime.outcome};
-    for (size_t report = 0; report < 2; ++report)
-      if (reports[report] && fstat(fileno(runtime.log_file), &log_status) == 0 &&
-          fstat(fileno(reports[report]), &report_status) == 0 && log_status.st_dev == report_status.st_dev &&
-          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {
-        fputs("the log file must be distinct from the runner's report files\n", stderr);
-        return 64;
-      }
-    chimi_runtime_console_set_v1(2, fileno(runtime.log_file), false);
-  }
-  if (metrics_path) {
-    /* Compared before opening, since opening empties the file: the same file
-       under another spelling is still a clash. */
-    struct stat metrics_status, open_status;
-    FILE *opened[] = {runtime.telemetry, runtime.outcome, runtime.log_file};
-    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))
-      for (size_t file = 0; file < 3; ++file)
-        if (opened[file] && fstat(fileno(opened[file]), &open_status) == 0 &&
-            metrics_status.st_dev == open_status.st_dev && metrics_status.st_ino == open_status.st_ino) {
-          fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
-          return 64;
-        }
-    runtime.metrics_file = open_report(metrics_path, "w");
-    if (!runtime.metrics_file) {
-      fprintf(stderr, "cannot open metrics file %s: %s\n", metrics_path, strerror(errno));
-      if (runtime.telemetry) fclose(runtime.telemetry);
-      if (runtime.outcome) fclose(runtime.outcome);
-      if (runtime.log_file) fclose(runtime.log_file);
-      return 74;
-    }
-    /* The memory report and profile are opened only at exit, so their
-       spellings are compared with the file just opened. */
-    const char *later[] = {memory_report_path, profile_path};
-    struct stat opened_status;
-    for (size_t file = 0; file < 2; ++file)
-      if (later[file] && stat(later[file], &open_status) == 0 &&
-          fstat(fileno(runtime.metrics_file), &opened_status) == 0 && !S_ISCHR(opened_status.st_mode) &&
-          open_status.st_dev == opened_status.st_dev && open_status.st_ino == opened_status.st_ino) {
-        fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
-        return 64;
-      }
-  }
+  refused = chimi_runtime_open_reports_v1(&runtime, &options);
+  if (refused) return refused;
   uint32_t entry_node = 0;
   const ChimiFunction *entry_function = NULL;
   if (test_index >= 0) {
@@ -4002,20 +3895,5 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;
   if (write_failed) return 74;
-  int exit_status;
-  if (program_exit(control, &exit_status)) return exit_status;
-  switch (control->kind) {
-    case CONTROL_SUCCESS: return 0;
-    case CONTROL_FAILURE: return 1;
-    case CONTROL_DEFECT: return 70;
-    case CONTROL_CANCEL: {
-      /* A signal ended the program: an injected one reports the shell's
-         status, a real one is re-raised. */
-      int32_t received = *chimi_runtime_stop_signal_v1();
-      if (received != 0 && runtime.injected_signal) return 128 + received;
-      if (received != 0) chimi_runtime_end_by_signal_v1(received);
-      return 130;
-    }
-  }
-  return 70;
+  return chimi_runtime_exit_status_v1(control, runtime.injected_signal, stdout, stderr);
 }

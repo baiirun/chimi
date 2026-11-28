@@ -55,9 +55,9 @@ MUTATIONS = [
         '                        b"debug" => 0,',
         '                        b"debug" => 1,',
     )]),
-    mutant("the native log file is truncated", C, [(
-        '    runtime.log_file = open_report(log_path, "a");',
-        '    runtime.log_file = open_report(log_path, "w");',
+    mutant("the native log file is truncated", STARTUP, [(
+        '            (*runtime).log_file = open_report(options.log_path, c"a").cast();',
+        '            (*runtime).log_file = open_report(options.log_path, c"w").cast();',
     )]),
     mutant("the native log file may be the outcome file", STARTUP, [(
         "if [telemetry, outcome, memory, profile].into_iter().any(|other| same(log, other)) {",
@@ -67,9 +67,9 @@ MUTATIONS = [
         "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",
         "        let index = if (*runtime).log_file.is_null() { 0 } else { LOG_STREAM };",
     )]),
-    mutant("a respelled report path is accepted as the log file", C, [(
-        "          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {",
-        "          log_status.st_ino == report_status.st_ino && false) {",
+    mutant("a respelled report path is accepted as the log file", STARTUP, [(
+        "                    && one_file(&log, &other)\n",
+        "                    && false\n",
     )]),
     mutant("the log file goes to stderr", IO, [(
         "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",

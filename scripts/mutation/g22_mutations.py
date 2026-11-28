@@ -11,6 +11,7 @@ PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 PROCESS_ABI = "../../runtime/chimi-fiber/src/scheduler/process_abi.rs"
 SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 SIGNALS = "../../runtime/chimi-runtime/src/intrinsics/signals.rs"
 
 
@@ -82,11 +83,11 @@ MUTATIONS = [
          edits=[("            && self.has_running_supervisor()\n",
                  "            && false\n")],
          **signals("an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock")),
-    dict(name="an injected signal exits 130", file=RUNTIME_C,
-         edits=[("return 128 + received;", "return 130;")],
+    dict(name="an injected signal exits 130", file=STARTUP,
+         edits=[("                    return 128 + received;", "                    return 130;")],
          **lab("SG01")),
-    dict(name="a real signal exits instead of re-raising", file=RUNTIME_C,
-         edits=[("      if (received != 0) chimi_runtime_end_by_signal_v1(received);\n", "")],
+    dict(name="a real signal exits instead of re-raising", file=STARTUP,
+         edits=[("                if received != 0 {\n                    chimi_runtime_end_by_signal_v1(received);\n                }\n", "")],
          **signals("sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm")),
     dict(name="a second signal waits for the drain", file=SIGNALS,
          edits=[("        chimi_runtime_end_by_signal_v1(number);\n", "")],

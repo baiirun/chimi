@@ -12,6 +12,7 @@ CARGO_TEST_ARGS = ["--release"]
 
 MODULE = "std/cli.chimi"
 RUNTIME = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 ORACLE = "src/execution.rs"
 DRIVER = "src/main.rs"
 LOWERING = "src/executable.rs"
@@ -78,17 +79,18 @@ MUTATIONS = [
         ("\\nTry '${command.name} --help' for more information.", "")]),
     parsing("an unparsable value is accepted as absent", [
         ("      Some(value) -> Some(convert(spec, parser, value))", "      Some(value) -> parser.read(value)")]),
-    runner("native Help goes to standard error", RUNTIME, [
-        ("  FILE *stream = help ? stdout : stderr;", "  FILE *stream = stderr;")]),
-    runner("native Usage exits 1", RUNTIME, [
-        ("  *status = written ? (help ? 0 : 2) : 74;", "  *status = written ? (help ? 0 : 1) : 74;")]),
-    runner("native codes wrap", RUNTIME, [
-        ("    if (field->as.integer < 0 || field->as.integer > 255) {", "    if (0) {")]),
-    runner("native Exit is ignored on failure", RUNTIME, [
-        ("  if (control->kind != CONTROL_SUCCESS && control->kind != CONTROL_FAILURE) return false;",
-         "  if (control->kind != CONTROL_SUCCESS) return false;")]),
-    runner("native Exit is ignored", RUNTIME, [
-        ("  int exit_status;\n  if (program_exit(control, &exit_status)) return exit_status;\n", "")]),
+    runner("native Help goes to standard error", STARTUP, [
+        ("        let stream = if help { stdout } else { stderr };", "        let stream = stderr;")]),
+    runner("native Usage exits 1", STARTUP, [
+        ("        Some(if !written { 74 } else if help { 0 } else { 2 })",
+         "        Some(if !written { 74 } else if help { 0 } else { 1 })")]),
+    runner("native codes wrap", STARTUP, [
+        ("            if !(0..=255).contains(&code) {", "            if false {")]),
+    runner("native Exit is ignored on failure", STARTUP, [
+        ("        if control.kind != ControlKind::SUCCESS && control.kind != ControlKind::FAILURE {",
+         "        if control.kind != ControlKind::SUCCESS {")]),
+    runner("native Exit is ignored", STARTUP, [
+        ("        if let Some(status) = program_exit(control, stdout, stderr) {\n            return status;\n        }\n", "")]),
     runner("interpreted Exit is ignored", DRIVER, [
         ("    match &report.program_exit {", "    match &None::<ProgramExit> {")]),
     runner("interpreted Usage goes to standard output", DRIVER, [
