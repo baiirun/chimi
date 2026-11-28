@@ -298,6 +298,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       and the scheduler's release hooks (`intrinsics/task_entry.rs`).
       `chimi_rt_process_entry` stays a one-line C wrapper, because only
       the kernel variant may define that marker name (MF06).
+      Eighth PR: module constant decoding (`constants.rs`): every
+      constant kind is decoded from `CHIMI_CONSTANT_VALUES` into the
+      static area before the entry runs; runtime.c keeps the static area
+      itself and the shared Void, False and True.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target
