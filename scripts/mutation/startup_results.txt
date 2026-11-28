@@ -1,0 +1,13 @@
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR)
+BASELINE ok  [cli -- native_runner_settings_are_checked_before_the_program_runs] (161s)
+KILLED       a missing -- is accepted [cli -- native_runner_settings_are_checked_before_the_program_runs] (59s)
+KILLED       an unknown setting is ignored [cli -- native_runner_settings_are_checked_before_the_program_runs] (59s)
+KILLED       --test takes the index one past the last test [cli -- native_runner_settings_are_checked_before_the_program_runs] (60s)
+KILLED       --max-line-bytes takes 0 [cli -- native_runner_settings_are_checked_before_the_program_runs] (59s)
+KILLED       --random-seed takes a minus sign [cli -- native_runner_settings_are_checked_before_the_program_runs] (60s)
+KILLED       a signal past the largest instant is accepted [cli -- native_runner_settings_are_checked_before_the_program_runs] (58s)
+KILLED       an empty --random-seed is seed 0 [cli -- native_runner_settings_are_checked_before_the_program_runs] (63s)
+KILLED       the signal bound ignores the unit [cli -- native_runner_settings_are_checked_before_the_program_runs] (59s)
+KILLED       a 65th user signal is taken [cli -- native_runner_settings_are_checked_before_the_program_runs] (72s)
+KILLED       telemetry and outcome may be one file [cli -- native_runner_settings_are_checked_before_the_program_runs] (89s)
+# result: every mutant killed

@@ -14,6 +14,7 @@ CRATE = "compiler/chimi"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 TIMERS = "../../runtime/chimi-fiber/src/scheduler/clock.rs"
 RUNTIME = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 REPORTS = "../../runtime/chimi-runtime/src/scheduler_reports.rs"
 CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 TYPING = "src/typing.rs"
@@ -82,9 +83,9 @@ MUTATIONS = [
         "            if request.status == Scheduler::RESPONSE_OK {\n"
         "                return success(void_value());")],
         filter="native_cancelling_a_sleeping_task"),
-    native("--clock=virtual ignored", RUNTIME, [(
-        '    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;',
-        '    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = false;')],
+    native("--clock=virtual ignored", STARTUP, [(
+        '            b"--clock=virtual" => runtime.virtual_clock = true,',
+        '            b"--clock=virtual" => runtime.virtual_clock = false,')],
         filter="native_virtual_sleepers_wake"),
     # Telemetry.
     native("timer events are boundary events", SCHEDULER, [(

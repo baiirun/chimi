@@ -314,7 +314,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       carrier's counts and takes the folded process-wide peaks with
       several carrier threads. runtime.c keeps `heap_totals_sum` for the
       carrier-thread stress fixture, which also calls the Rust peak fold.
-      Startup and argument parsing follow.
+      Twelfth PR: the runner's settings (`startup.rs`): `--chimi-runner`,
+      each setting up to `--`, and the checks that refuse clashing report
+      paths. runtime.c keeps the carrier count, opening the report files,
+      finding the entry and the exit status, which follow.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

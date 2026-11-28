@@ -42,3 +42,8 @@ KILLED       a deadline carries the deadline instead of the time to it [clock] (
 KILLED       time functions bypass the bound provider [clock] (59s)
 KILLED       starting_at ignores its timestamp [clock] (61s)
 # result: every mutant killed
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [clock] (163s)
+KILLED       --clock-start is accepted with the real clock [clock] (61s)
+# result: every mutant killed

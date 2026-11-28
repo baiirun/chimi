@@ -1,4 +1,5 @@
 6b90a5a1487cc54c typedef enum { VALUE_VOID,
+b298d2b9fd910538 typedef struct {
 332bb73a093e7255 typedef enum { CALL_DECLARED,
 7564e0bc2442766b typedef enum { HOST_PROCESS_UTF8_LINES,
 bef7386ec5bf8ada typedef enum { CONTROL_SUCCESS,

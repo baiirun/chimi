@@ -288,6 +288,9 @@ typedef enum {
 } AllocationKind;
 
 enum { CHIMI_MAX_INJECTED_SIGNALS = 64 };
+/* The most carriers `--carriers` accepts: each has a wake pipe, so this
+   bounds the descriptors they take. */
+enum { CARRIERS_MAX = 256 };
 
 struct ChimiRuntime {
   const char *execution_id;
@@ -353,6 +356,22 @@ struct ChimiRuntime {
      scheduler's. 0 under --trace=off (lab scenario OB01). */
   uint64_t trace_events_constructed;
 };
+
+/* What the runner's arguments set besides ChimiRuntime (startup.rs). */
+typedef struct {
+  const char *telemetry_path;
+  const char *outcome_path;
+  const char *memory_report_path;
+  const char *profile_path;
+  const char *log_path;
+  const char *metrics_path;
+  /* The test to run, or -1 for the program's entry. */
+  int64_t test_index;
+  uint32_t benchmark_repeats;
+  /* The index in argv of the first application argument. */
+  int32_t first_argument;
+  bool carriers_given;
+} ChimiRunnerOptions;
 
 /* Per-owner heaps (docs/architecture/supervised-process-runtime.md).
 
@@ -1494,6 +1513,32 @@ _Static_assert(offsetof(ChimiSchedulerTraceEvent, outcome) == 140, "layout: offs
 _Static_assert(sizeof(((ChimiSchedulerTraceEvent *)0)->outcome) == 4, "layout: sizeof(((ChimiSchedulerTraceEvent *)0)->outcome)");
 _Static_assert(CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->outcome) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiSchedulerTraceEvent *)0)->outcome)");
 _Static_assert(CHIMI_MAX_INJECTED_SIGNALS == 64, "layout: CHIMI_MAX_INJECTED_SIGNALS");
+_Static_assert(sizeof(ChimiRunnerOptions) == 72, "layout: sizeof(ChimiRunnerOptions)");
+_Static_assert(offsetof(ChimiRunnerOptions, telemetry_path) == 0, "layout: offsetof(ChimiRunnerOptions, telemetry_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->telemetry_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->telemetry_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, outcome_path) == 8, "layout: offsetof(ChimiRunnerOptions, outcome_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->outcome_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->outcome_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, memory_report_path) == 16, "layout: offsetof(ChimiRunnerOptions, memory_report_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->memory_report_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->memory_report_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, profile_path) == 24, "layout: offsetof(ChimiRunnerOptions, profile_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->profile_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->profile_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, log_path) == 32, "layout: offsetof(ChimiRunnerOptions, log_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->log_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->log_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, metrics_path) == 40, "layout: offsetof(ChimiRunnerOptions, metrics_path)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->metrics_path) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->metrics_path)");
+_Static_assert(offsetof(ChimiRunnerOptions, test_index) == 48, "layout: offsetof(ChimiRunnerOptions, test_index)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->test_index) == 8, "layout: sizeof(((ChimiRunnerOptions *)0)->test_index)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->test_index) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->test_index)");
+_Static_assert(offsetof(ChimiRunnerOptions, benchmark_repeats) == 56, "layout: offsetof(ChimiRunnerOptions, benchmark_repeats)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->benchmark_repeats) == 4, "layout: sizeof(((ChimiRunnerOptions *)0)->benchmark_repeats)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->benchmark_repeats) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->benchmark_repeats)");
+_Static_assert(offsetof(ChimiRunnerOptions, first_argument) == 60, "layout: offsetof(ChimiRunnerOptions, first_argument)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->first_argument) == 4, "layout: sizeof(((ChimiRunnerOptions *)0)->first_argument)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->first_argument) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->first_argument)");
+_Static_assert(offsetof(ChimiRunnerOptions, carriers_given) == 64, "layout: offsetof(ChimiRunnerOptions, carriers_given)");
+_Static_assert(sizeof(((ChimiRunnerOptions *)0)->carriers_given) == 1, "layout: sizeof(((ChimiRunnerOptions *)0)->carriers_given)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->carriers_given) == 3, "layout: CHIMI_LAYOUT_CLASS(((ChimiRunnerOptions *)0)->carriers_given)");
+_Static_assert(CARRIERS_MAX == 256, "layout: CARRIERS_MAX");
 _Static_assert(CHIMI_SCHEDULER_TRACE_TASK == 1, "layout: CHIMI_SCHEDULER_TRACE_TASK");
 _Static_assert(CHIMI_SCHEDULER_TRACE_CHANNEL == 2, "layout: CHIMI_SCHEDULER_TRACE_CHANNEL");
 _Static_assert(CHIMI_SCHEDULER_TRACE_PROCESS == 3, "layout: CHIMI_SCHEDULER_TRACE_PROCESS");
@@ -2828,10 +2873,6 @@ static void guard_host_stack(void) {
                                                          : bottom + STACK_HEADROOM_BYTES;
 }
 
-/* The most carriers `--carriers` accepts: each has a wake pipe, so this
-   bounds the descriptors they take. */
-enum { CARRIERS_MAX = 256 };
-
 /* The carrier count when `--carriers` is not given: one per core this
    process may run on, at most CARRIERS_MAX. One when the program needs no
    scheduler, under the virtual clock (time moves only when every carrier is
@@ -2881,7 +2922,8 @@ extern size_t chimi_timestamp_text_v1(int64_t nanoseconds, char *out);
 extern bool chimi_timestamp_parse_v1(const char *text, size_t length, int64_t *nanoseconds);
 /* Writes `nanoseconds` as `2026-11-10T09:30:00.25Z`. */
 static void timestamp_text(int64_t nanoseconds, char *out) { chimi_timestamp_text_v1(nanoseconds, out); }
-/* Parses an RFC 3339 date-time into Unix nanoseconds (timestamp.rs `parse`). */
+/* Parses an RFC 3339 date-time into Unix nanoseconds (timestamp.rs `parse`).
+   For the runtime fuzz harness (tests/fuzz/runtime-fuzz.c), which includes this file. */
 static bool parse_timestamp(const char *text, int64_t *out) {
   return chimi_timestamp_parse_v1(text, strlen(text), out);
 }
@@ -3646,35 +3688,11 @@ static bool program_exit(const ChimiControl *control, int *status) {
   return true;
 }
 
-/* `--signal=TERM@2s`: a signal the virtual clock delivers at that instant.
-   The time is an integer with a unit of ns, us, ms, s, m, or h. INT and TERM
-   stop the program; HUP, USR1 and USR2 are std/signal's, latched for its
-   waiters, and may be given more than once. */
-static bool parse_injected_signal(const char *text, int32_t *signal_number, int64_t *at) {
-  const char *rest;
-  if (strncmp(text, "INT@", 4) == 0) { *signal_number = SIGINT; rest = text + 4; }
-  else if (strncmp(text, "TERM@", 5) == 0) { *signal_number = SIGTERM; rest = text + 5; }
-  else if (strncmp(text, "HUP@", 4) == 0) { *signal_number = SIGHUP; rest = text + 4; }
-  else if (strncmp(text, "USR1@", 5) == 0) { *signal_number = SIGUSR1; rest = text + 5; }
-  else if (strncmp(text, "USR2@", 5) == 0) { *signal_number = SIGUSR2; rest = text + 5; }
-  else return false;
-  if (*rest < '0' || *rest > '9') return false;
-  errno = 0;
-  char *unit = NULL;
-  unsigned long long amount = strtoull(rest, &unit, 10);
-  if (errno == ERANGE) return false;
-  static const struct { const char *name; uint64_t nanoseconds; } units[] = {
-    {"ns", 1}, {"us", 1000}, {"ms", 1000000}, {"s", 1000000000},
-    {"m", UINT64_C(60000000000)}, {"h", UINT64_C(3600000000000)},
-  };
-  for (size_t index = 0; index < sizeof(units) / sizeof(*units); ++index) {
-    if (strcmp(unit, units[index].name) != 0) continue;
-    if (amount > (uint64_t)INT64_MAX / units[index].nanoseconds) return false;
-    *at = (int64_t)(amount * units[index].nanoseconds);
-    return true;
-  }
-  return false;
-}
+/* Reads the runner's arguments, and refuses report paths that clash; 0 to
+   run, else the exit status (startup.rs). */
+int32_t chimi_runtime_parse_runner_v1(ChimiRuntime *runtime, int32_t argc, const char **argv, bool simulation,
+                                      ChimiRunnerOptions *options);
+int32_t chimi_runtime_check_report_paths_v1(const ChimiRuntime *runtime, const ChimiRunnerOptions *options);
 
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
@@ -3797,193 +3815,30 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     .next_span = 2,
     .carriers = 1,
   };
-  uint32_t benchmark_repeats = 0;
-  int64_t test_index = -1;
-  bool clock_start_given = false;
-  bool carriers_given = false;
-  const char *telemetry_path = NULL;
-  const char *outcome_path = NULL;
-  const char *memory_report_path = NULL;
-  const char *profile_path = NULL;
-  const char *log_path = NULL;
-  const char *metrics_path = NULL;
+  ChimiRunnerOptions options = {.test_index = -1};
   decode_constants();
   if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();
-  int32_t index = 1;
-  if (index < argc && strcmp(argv[index], "--chimi-runner") == 0) {
-    ++index;
-    bool found_boundary = false;
-    for (; index < argc; ++index) {
-      if (strcmp(argv[index], "--") == 0) {
-        found_boundary = true;
-        ++index;
-        break;
-      }
-    if (strcmp(argv[index], "--trace=full") == 0) { runtime.full_trace = true; runtime.silent = false; }
-    else if (strcmp(argv[index], "--trace=boundaries") == 0) { runtime.full_trace = false; runtime.silent = false; }
-    else if (strcmp(argv[index], "--trace=off") == 0) { runtime.full_trace = false; runtime.silent = true; }
-    else if (strncmp(argv[index], "--telemetry-file=", 17) == 0) telemetry_path = argv[index] + 17;
-    else if (strncmp(argv[index], "--outcome-file=", 15) == 0) outcome_path = argv[index] + 15;
-    else if (strncmp(argv[index], "--memory-report-file=", 21) == 0) memory_report_path = argv[index] + 21;
-    else if (strncmp(argv[index], "--profile-file=", 15) == 0) profile_path = argv[index] + 15;
-    else if (strncmp(argv[index], "--execution-id=", 15) == 0) runtime.execution_id = argv[index] + 15;
-    else if (strcmp(argv[index], "--cancel") == 0) runtime.cancel = 1;
-    else if (strncmp(argv[index], "--test=", 7) == 0) {
-      errno = 0;
-      char *end = NULL;
-      unsigned long value = strtoul(argv[index] + 7, &end, 10);
-      if (errno == ERANGE || end == argv[index] + 7 || *end != '\0' || value >= CHIMI_TEST_COUNT) {
-        fprintf(stderr, "--test requires a test index below %u\n", CHIMI_TEST_COUNT);
-        return 64;
-      }
-      test_index = (int64_t)value;
-    }
-    else if (strncmp(argv[index], "--signal=", 9) == 0) {
-      int32_t number = 0;
-      int64_t at = 0;
-      if (!parse_injected_signal(argv[index] + 9, &number, &at)) {
-        fputs("--signal requires INT, TERM, HUP, USR1 or USR2, @, and a time such as 2s or 150ms\n", stderr);
-        return 64;
-      }
-      if (number == SIGINT || number == SIGTERM) {
-        runtime.injected_signal = number;
-        runtime.injected_signal_at = at;
-      } else if (runtime.injected_user_signal_count == CHIMI_MAX_INJECTED_SIGNALS) {
-        fputs("--signal is given too many times; at most 64 HUP, USR1 and USR2 signals\n", stderr);
-        return 64;
-      } else {
-        uint32_t code = number == SIGHUP ? 1 : number == SIGUSR1 ? 2 : 3;
-        runtime.injected_user_signals[runtime.injected_user_signal_count++] =
-            (ChimiInjectedSignal){.code = code, .at = at};
-      }
-    }
-    else if (strncmp(argv[index], "--random-seed=", 14) == 0) {
-      errno = 0;
-      char *end = NULL;
-      unsigned long long value = strtoull(argv[index] + 14, &end, 10);
-      if (errno == ERANGE || end == argv[index] + 14 || *end != '\0' || argv[index][14] == '-') {
-        fputs("--random-seed requires an integer from 0 through 18446744073709551615\n", stderr);
-        return 64;
-      }
-      chimi_runtime_random_seed_v1((uint64_t)value);
-    }
-    else if (strncmp(argv[index], "--carriers=", 11) == 0) {
-      /* strtoul skips spaces and takes a sign, so the count must start with
-         a digit; one that overflows reads as ULONG_MAX, which the range
-         refuses. */
-      const char *count = argv[index] + 11;
-      char *end = NULL;
-      unsigned long value = *count >= '0' && *count <= '9' ? strtoul(count, &end, 10) : 0;
-      if (value == 0 || *end != '\0' || value > CARRIERS_MAX) {
-        fprintf(stderr, "--carriers requires an integer from 1 through %d\n", CARRIERS_MAX);
-        return 64;
-      }
-      runtime.carriers = (uint32_t)value;
-      carriers_given = true;
-    }
-    else if (strcmp(argv[index], "--clock=real") == 0) runtime.virtual_clock = false;
-    else if (strcmp(argv[index], "--clock=virtual") == 0) runtime.virtual_clock = true;
-    else if (strncmp(argv[index], "--clock-start=", 14) == 0) {
-      if (!parse_timestamp(argv[index] + 14, &runtime.clock_start)) {
-        fputs("--clock-start requires an RFC 3339 timestamp from 1678 through 2262, "
-              "such as 2026-11-10T09:30:00Z\n", stderr);
-        return 64;
-      }
-      clock_start_given = true;
-    }
-    else if (strncmp(argv[index], "--max-line-bytes=", 17) == 0) {
-      errno = 0;
-      char *end = NULL;
-      unsigned long value = strtoul(argv[index] + 17, &end, 10);
-      if (errno == ERANGE || end == argv[index] + 17 || *end != '\0' ||
-          value == 0 || value > UINT32_MAX) {
-        fputs("--max-line-bytes requires an integer from 1 through 4294967295\n", stderr);
-        return 64;
-      }
-      runtime.max_line_bytes = (uint32_t)value;
-    }
-    else if (strncmp(argv[index], "--log-level=", 12) == 0) {
-      const char *level = argv[index] + 12;
-      if (strcmp(level, "debug") == 0) runtime.log_level = 0;
-      else if (strcmp(level, "info") == 0) runtime.log_level = 1;
-      else if (strcmp(level, "warn") == 0) runtime.log_level = 2;
-      else if (strcmp(level, "error") == 0) runtime.log_level = 3;
-      else {
-        fputs("--log-level requires debug, info, warn or error\n", stderr);
-        return 64;
-      }
-    }
-    else if (strncmp(argv[index], "--log-file=", 11) == 0) log_path = argv[index] + 11;
-    else if (strncmp(argv[index], "--metrics-file=", 15) == 0) metrics_path = argv[index] + 15;
-    else if (strncmp(argv[index], "--benchmark-repeats=", 20) == 0)
-      benchmark_repeats = (uint32_t)strtoul(argv[index] + 20, NULL, 10);
-    else { fprintf(stderr, "unknown Chimi runtime argument: %s\n", argv[index]); return 64; }
-    }
-    if (!found_boundary) {
-      fputs("Chimi runner configuration must end with --\n", stderr);
-      return 64;
-    }
-    if ((runtime.injected_signal || runtime.injected_user_signal_count) && !runtime.virtual_clock) {
-      fputs("--signal requires --clock=virtual; under the real clock, send the signal\n", stderr);
-      return 64;
-    }
-    if (clock_start_given && !runtime.virtual_clock) {
-      fputs("--clock-start requires --clock=virtual; the real clock reads the host's wall time\n", stderr);
-      return 64;
-    }
-    if (runtime.carriers > 1 && runtime.virtual_clock) {
-      fputs("--carriers above 1 requires --clock=real; virtual time moves only when every carrier is idle\n",
-            stderr);
-      return 64;
-    }
 #ifdef CHIMI_CARRIER_SIMULATION
-    if (runtime.carriers > 1) {
-      fputs("--carriers above 1 is not available in the carrier simulation build\n", stderr);
-      return 64;
-    }
+  const bool simulation = true;
+#else
+  const bool simulation = false;
 #endif
-  }
-  if (!carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);
+  int32_t refused = chimi_runtime_parse_runner_v1(&runtime, argc, argv, simulation, &options);
+  if (refused) return refused;
+  const int32_t index = options.first_argument;
+  if (!options.carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);
   /* Before the program runs anything, so carriers 1 and up start zeroed. */
   carriers_create(runtime.carriers);
-  if (!runtime.silent && telemetry_path == NULL) {
-    fputs("boundary or full tracing requires --telemetry-file\n", stderr);
-    return 64;
-  }
-  if (telemetry_path && outcome_path && strcmp(telemetry_path, outcome_path) == 0) {
-    fputs("telemetry and runner outcome require distinct files\n", stderr);
-    return 64;
-  }
-  if ((memory_report_path && telemetry_path && strcmp(memory_report_path, telemetry_path) == 0) ||
-      (memory_report_path && outcome_path && strcmp(memory_report_path, outcome_path) == 0)) {
-    fputs("memory report, telemetry, and runner outcome require distinct files\n", stderr);
-    return 64;
-  }
-  if (profile_path && ((telemetry_path && strcmp(profile_path, telemetry_path) == 0) ||
-                       (outcome_path && strcmp(profile_path, outcome_path) == 0) ||
-                       (memory_report_path && strcmp(profile_path, memory_report_path) == 0))) {
-    fputs("profile, memory report, telemetry, and runner outcome require distinct files\n", stderr);
-    return 64;
-  }
-  if (log_path && ((telemetry_path && strcmp(log_path, telemetry_path) == 0) ||
-                   (outcome_path && strcmp(log_path, outcome_path) == 0) ||
-                   (memory_report_path && strcmp(log_path, memory_report_path) == 0) ||
-                   (profile_path && strcmp(log_path, profile_path) == 0))) {
-    fputs("the log file must be distinct from the runner's report files\n", stderr);
-    return 64;
-  }
-  if (metrics_path && ((telemetry_path && strcmp(metrics_path, telemetry_path) == 0) ||
-                       (outcome_path && strcmp(metrics_path, outcome_path) == 0) ||
-                       (memory_report_path && strcmp(metrics_path, memory_report_path) == 0) ||
-                       (profile_path && strcmp(metrics_path, profile_path) == 0) ||
-                       (log_path && strcmp(metrics_path, log_path) == 0))) {
-    fputs("the metrics file must be distinct from the runner's report files and the log file\n", stderr);
-    return 64;
-  }
-  if (profile_path && benchmark_repeats) {
-    fputs("--profile-file cannot be combined with --benchmark-repeats\n", stderr);
-    return 64;
-  }
+  refused = chimi_runtime_check_report_paths_v1(&runtime, &options);
+  if (refused) return refused;
+  const char *telemetry_path = options.telemetry_path;
+  const char *outcome_path = options.outcome_path;
+  const char *memory_report_path = options.memory_report_path;
+  const char *profile_path = options.profile_path;
+  const char *log_path = options.log_path;
+  const char *metrics_path = options.metrics_path;
+  const uint32_t benchmark_repeats = options.benchmark_repeats;
+  const int64_t test_index = options.test_index;
   if (profile_path) {
     profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
     if (!profile_rows) exhausted_memory();

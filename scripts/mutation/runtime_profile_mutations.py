@@ -32,7 +32,8 @@ MUTATIONS = [
  m("ties are written fewest evaluations first",
    [(".then(y.evaluations.cmp(&x.evaluations))", ".then(x.evaluations.cmp(&y.evaluations))")], REPORTS),
  m("a profile adds up benchmark repeats",
-   [("  if (profile_path && benchmark_repeats) {", "  if (false) {")]),
+   [("        if !profile.is_null() && options.benchmark_repeats != 0 {", "        if false {")],
+   file="../../runtime/chimi-runtime/src/startup.rs"),
  m("allocations are not counted",
    [("    ++row->allocations;\n", "")]),
 ]

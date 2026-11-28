@@ -35,3 +35,9 @@ KILLED       the provider installs no handlers [std_signal] (76s)
 KILLED       User1 and User2 swap codes [std_signal] (77s)
 KILLED       the runner closes another need name for signals [std_signal] (75s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [std_signal] (126s)
+KILLED       an injected HUP is dropped [std_signal] (121s)
+KILLED       injected signals run under the real clock [std_signal] (94s)
+# result: every mutant killed

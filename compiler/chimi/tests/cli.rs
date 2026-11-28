@@ -1683,6 +1683,98 @@ fn native_settle_runs_woken_work_before_time_moves() {
 // waits on. Rejects deadlock detection that is off (the run would hang or
 // report the real clock's generic deadlock) and a cause without the waiters.
 #[test]
+fn native_runner_settings_are_checked_before_the_program_runs() {
+    let scratch = scratch_directory("native-runner-settings");
+    let executable = build_native(&scratch, "runner-settings", "pub fn main() -> Int {\n  0\n}\n");
+    let path = |name: &str| scratch.join(name).display().to_string();
+    let run = |settings: &[String]| {
+        Command::new(&executable)
+            .arg("--chimi-runner")
+            .args(settings)
+            .output()
+            .expect("run the runner-settings program")
+    };
+    let owned = |settings: &[&str]| settings.iter().map(|setting| setting.to_string()).collect::<Vec<_>>();
+    let carriers = "--carriers requires an integer from 1 through 256";
+    let lines = "--max-line-bytes requires an integer from 1 through 4294967295";
+    let seed = "--random-seed requires an integer from 0 through 18446744073709551615";
+    let signal = "--signal requires INT, TERM, HUP, USR1 or USR2, @, and a time such as 2s or 150ms";
+    let mut too_many_signals = owned(&["--clock=virtual"]);
+    too_many_signals.extend((0..65).map(|_| "--signal=HUP@1s".to_string()));
+    too_many_signals.push("--".to_string());
+    let cases: Vec<(Vec<String>, &str)> = vec![
+        (owned(&["--trace=off"]), "Chimi runner configuration must end with --"),
+        (owned(&["--bogus", "--"]), "unknown Chimi runtime argument: --bogus"),
+        (owned(&["--test=0", "--"]), "--test requires a test index below 0"),
+        (owned(&["--carriers=0", "--"]), carriers),
+        (owned(&["--carriers=257", "--"]), carriers),
+        (owned(&["--carriers=+2", "--"]), carriers),
+        (owned(&["--carriers= 2", "--"]), carriers),
+        (owned(&["--carriers=2x", "--"]), carriers),
+        (owned(&["--max-line-bytes=0", "--"]), lines),
+        (owned(&["--max-line-bytes=4294967296", "--"]), lines),
+        (owned(&["--max-line-bytes=", "--"]), lines),
+        (owned(&["--random-seed=-1", "--"]), seed),
+        (owned(&["--random-seed=18446744073709551616", "--"]), seed),
+        (owned(&["--random-seed=7x", "--"]), seed),
+        (owned(&["--random-seed=", "--"]), seed),
+        (owned(&["--clock=virtual", "--signal=INT@", "--"]), signal),
+        (owned(&["--clock=virtual", "--signal=INT@5x", "--"]), signal),
+        (owned(&["--clock=virtual", "--signal=INT@9223372036854775808ns", "--"]), signal),
+        (owned(&["--clock=virtual", "--signal=INT@2562048h", "--"]), signal),
+        (owned(&["--clock=virtual", "--signal=QUIT@1s", "--"]), signal),
+        (too_many_signals, "--signal is given too many times; at most 64 HUP, USR1 and USR2 signals"),
+        (
+            owned(&["--signal=TERM@1s", "--"]),
+            "--signal requires --clock=virtual; under the real clock, send the signal",
+        ),
+        (
+            owned(&["--clock-start=2026-11-10T09:30:00Z", "--"]),
+            "--clock-start requires --clock=virtual; the real clock reads the host's wall time",
+        ),
+        (
+            owned(&["--clock=virtual", "--clock-start=yesterday", "--"]),
+            "--clock-start requires an RFC 3339 timestamp from 1678 through 2262, such as 2026-11-10T09:30:00Z",
+        ),
+        (
+            owned(&["--clock=virtual", "--carriers=2", "--"]),
+            "--carriers above 1 requires --clock=real; virtual time moves only when every carrier is idle",
+        ),
+        (owned(&["--log-level=loud", "--"]), "--log-level requires debug, info, warn or error"),
+        (owned(&["--trace=boundaries", "--"]), "boundary or full tracing requires --telemetry-file"),
+        (
+            vec![format!("--telemetry-file={}", path("same")), format!("--outcome-file={}", path("same")), "--".into()],
+            "telemetry and runner outcome require distinct files",
+        ),
+        (
+            vec![format!("--profile-file={}", path("profile")), "--benchmark-repeats=2".into(), "--".into()],
+            "--profile-file cannot be combined with --benchmark-repeats",
+        ),
+    ];
+    for (settings, refusal) in cases {
+        let output = run(&settings);
+        assert_eq!(output.status.code(), Some(64), "{settings:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), format!("{refusal}\n"), "{settings:?}");
+        assert!(output.stdout.is_empty(), "{settings:?}");
+    }
+    assert!(!scratch.join("same").exists());
+    // The largest seed and signal instants are accepted, and the benchmark
+    // repeat count is read without checks, so text reads as no repeats. (The
+    // carrier bounds are carriers.rs's, which knows the simulation build.)
+    for settings in [
+        owned(&["--random-seed=18446744073709551615", "--"]),
+        owned(&["--clock=virtual", "--signal=HUP@9223372036854775807ns", "--"]),
+        owned(&["--clock=virtual", "--signal=HUP@2562047h", "--"]),
+        owned(&["--max-line-bytes=4294967295", "--log-level=debug", "--"]),
+        owned(&["--benchmark-repeats=abc", "--"]),
+    ] {
+        let output = run(&settings);
+        assert_eq!(output.status.code(), Some(0), "{settings:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn native_virtual_deadlock_lists_every_waiter() {
     let scratch = scratch_directory("native-clock-virtual-deadlock-waiters");
     let executable = build_native(

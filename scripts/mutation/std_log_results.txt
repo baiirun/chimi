@@ -3,3 +3,9 @@ First run at 978fa38: 11 of 12 killed; "the interpreter's info level is debug"
 survived because no test set the level to info explicitly. The interpreter
 test now does, and the rerun at ebe83b7 killed it together with the two
 mutants added for the review fixes (log-file identity check, log-file stream).
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [std_log] (156s)
+KILLED       the native runner ignores --log-level [std_log] (58s)
+KILLED       the native log file may be the outcome file [std_log] (59s)
+# result: every mutant killed

@@ -14,3 +14,13 @@ KILLED       trailing text is accepted [carriers] (82s)
 KILLED       a leading sign or space is accepted [carriers] (76s)
 KILLED       a fiber that never ran keeps its old home [carriers -- a_stop_that_forces] (72s)
 # result: every mutant killed
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [carriers] (235s)
+KILLED       several carriers run under virtual time [carriers] (114s)
+KILLED       0 carriers is accepted [carriers] (106s)
+KILLED       the upper bound is off by one [carriers] (111s)
+KILLED       no upper bound [carriers] (105s)
+KILLED       trailing text is accepted [carriers] (97s)
+KILLED       a leading sign or space is accepted [carriers] (100s)
+# result: every mutant killed
