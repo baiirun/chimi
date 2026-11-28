@@ -21,6 +21,8 @@ mod decimal_abi;
 pub mod duration;
 mod duration_abi;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod constants;
+#[cfg(all(feature = "runtime-c", unix))]
 pub mod eval;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scheduler;

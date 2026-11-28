@@ -517,7 +517,9 @@ enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 /* External so the Rust task entry (intrinsics/task_entry.rs) can run the root in it. */
 #define main_heap chimi_runtime_main_heap
 RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
-static AllocationArea static_area = {.role = AREA_STATIC};
+/* External so the Rust constant decoder (constants.rs) can allocate there. */
+#define static_area chimi_runtime_static_area
+AllocationArea static_area = {.role = AREA_STATIC};
 /* Mark epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
    that a later pass reuses (parallel-scheduler.md, "Runtime state by owner");
@@ -3691,130 +3693,10 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
   return defect("unknown standard intrinsic", call_node);
 }
 
-/* Module constants, decoded from CHIMI_CONSTANT_VALUES before the entry runs. They are
-   allocated in the static area, so no collection frees them, and values are
-   immutable, so every task shares them. Decoding cannot fail and emits no events. */
-#define constant_values chimi_runtime_constant_values
-ChimiValue **constant_values;
-
-/* Binds each (requirement name, value id) pair to every requirement of that name, as a
-   provision does. */
-static void bind_constant_requirements(ChimiEnvironment *environment, const uint32_t *pairs,
-                                       int64_t count) {
-  for (int64_t i = 0; i < count; ++i)
-    chimi_runtime_bind_requirement_v1(environment, CHIMI_STRINGS[pairs[2 * i]], constant_values[pairs[2 * i + 1]]);
-}
-
-static ChimiValue *decode_constant(const ChimiConstantValue *raw) {
-  const uint32_t *ids = &CHIMI_IDS[raw->offset];
-  switch (raw->kind) {
-    case CHIMI_CONSTANT_VOID: return void_value();
-    case CHIMI_CONSTANT_INTEGER: return integer_value(raw->integer);
-    case CHIMI_CONSTANT_FLOAT: {
-      uint64_t bits = (uint64_t)raw->integer; double value; memcpy(&value, &bits, sizeof(value));
-      return float_value(value);
-    }
-    case CHIMI_CONSTANT_TEXT: return string_text(raw->a);
-    case CHIMI_CONSTANT_BYTES: return bytes_from_hex(CHIMI_STRINGS[raw->a], CHIMI_STRING_LENGTHS[raw->a]);
-    case CHIMI_CONSTANT_BOOLEAN: return boolean_value(raw->integer != 0);
-    case CHIMI_CONSTANT_JSON_NUMBER: return json_number_value(CHIMI_STRINGS[raw->a]);
-    case CHIMI_CONSTANT_LIST: {
-      ChimiValue **items = allocate(raw->length, sizeof(*items));
-      for (uint32_t i = 0; i < raw->length; ++i) items[i] = constant_values[ids[i]];
-      return list_from_values(items, raw->length);
-    }
-    case CHIMI_CONSTANT_DURATION: return duration_value(raw->integer);
-    case CHIMI_CONSTANT_DECIMAL: {
-      uint64_t high = ((uint64_t)raw->offset << 32) | raw->length;
-      return decimal_value((Decimal){high, (uint64_t)raw->integer, raw->a & 0xff, (raw->a & 0x100) != 0});
-    }
-    case CHIMI_CONSTANT_PROCESS_ADDRESS: return process_address_value(CHIMI_ADDRESS_NAMED, (uint64_t)raw->a + 1);
-    case CHIMI_CONSTANT_RANGE:
-      return range_value(constant_values[ids[0]]->as.integer, constant_values[ids[1]]->as.integer);
-    case CHIMI_CONSTANT_TUPLE: {
-      ChimiValue *value = new_value(VALUE_TUPLE);
-      value->as.record.length = raw->length;
-      value->as.record.fields = allocate(raw->length, sizeof(*value->as.record.fields));
-      allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-      for (uint32_t i = 0; i < raw->length; ++i)
-        value->as.record.fields[i] = (RuntimeField){NULL, constant_values[ids[i]]};
-      return value;
-    }
-    case CHIMI_CONSTANT_RECORD: {
-      ChimiValue *value = new_value(VALUE_RECORD);
-      value->as.record.length = raw->length;
-      value->as.record.fields = allocate(raw->length, sizeof(*value->as.record.fields));
-      allocation_kind(value->as.record.fields, ALLOCATION_FIELDS);
-      for (uint32_t i = 0; i < raw->length; ++i)
-        value->as.record.fields[i] = (RuntimeField){CHIMI_STRINGS[ids[2 * i]], constant_values[ids[2 * i + 1]]};
-      return value;
-    }
-    case CHIMI_CONSTANT_CONSTRUCTED: {
-      ChimiValue **fields = allocate(raw->length, sizeof(*fields));
-      for (uint32_t i = 0; i < raw->length; ++i) fields[i] = constant_values[ids[i]];
-      return construct_value(raw->a, fields)->value;
-    }
-    case CHIMI_CONSTANT_MAP: {
-      MapNode *map = NULL;
-      for (uint32_t i = 0; i < raw->length; ++i)
-        map = map_put_node(map, constant_values[ids[2 * i]], constant_values[ids[2 * i + 1]]);
-      return map_value(map);
-    }
-    case CHIMI_CONSTANT_SET: {
-      MapNode *set = NULL;
-      for (uint32_t i = 0; i < raw->length; ++i)
-        set = map_put_node(set, constant_values[ids[i]], void_value());
-      return set_value(set);
-    }
-    default: break;
-  }
-  ChimiCallable *callable = allocate(1, sizeof(*callable));
-  allocation_kind(callable, ALLOCATION_CALLABLE);
-  const ChimiSymbol *shape = &CHIMI_SYMBOLS[raw->a];
-  switch (raw->kind) {
-    case CHIMI_CONSTANT_DECLARED: {
-      const ChimiFunction *function = find_function(raw->a);
-      callable->kind = CALL_DECLARED; callable->symbol = raw->a; callable->body = function->body;
-      callable->parameters_offset = function->parameters_offset;
-      callable->parameters_length = function->parameters_length;
-      callable->local_count = function->local_count;
-      callable->environment = capture_requirements(new_environment(0)); callable->name = "function";
-      bind_constant_requirements(callable->environment, ids, raw->integer);
-      break;
-    }
-    case CHIMI_CONSTANT_INTRINSIC:
-      callable->kind = CALL_INTRINSIC; callable->intrinsic = shape->intrinsic;
-      callable->symbol = raw->a; callable->name = CHIMI_STRINGS[shape->name];
-      break;
-    case CHIMI_CONSTANT_CONSTRUCTOR:
-      callable->kind = CALL_CONSTRUCTOR; callable->symbol = raw->a; callable->name = CHIMI_STRINGS[shape->name];
-      break;
-    case CHIMI_CONSTANT_CLOSURE: {
-      const ChimiNode *node = &CHIMI_NODES[raw->a];
-      ChimiEnvironment *environment = new_environment(node->d);
-      allocation_kind(environment, ALLOCATION_ENVIRONMENT);
-      for (uint32_t i = 0; i < raw->length; ++i)
-        environment->locals[environment_slot(ids[2 * i])] = constant_values[ids[2 * i + 1]];
-      bind_constant_requirements(environment, &ids[2 * raw->length], raw->integer);
-      callable->kind = CALL_CLOSURE; callable->body = node->a;
-      callable->parameters_offset = node->offset; callable->parameters_length = node->length;
-      callable->environment = environment; callable->name = "closure";
-      break;
-    }
-    default: abort();
-  }
-  return callable_value(callable);
-}
-
-static void decode_constants(void) {
-  for (uint32_t index = 0; index < 3; ++index) (void)shared_value(index);
-  AllocationArea *previous = carrier->fiber.target;
-  carrier->fiber.target = &static_area;
-  constant_values = allocate(CHIMI_CONSTANT_VALUE_COUNT, sizeof(*constant_values));
-  for (uint32_t i = 0; i < CHIMI_CONSTANT_VALUE_COUNT; ++i)
-    constant_values[i] = decode_constant(&CHIMI_CONSTANT_VALUES[i]);
-  carrier->fiber.target = previous;
-}
+/* Module constants are decoded into the static area before the entry runs, by
+   Rust (chimi-runtime constants.rs), which also holds the decoded table. */
+void chimi_runtime_decode_constants_v1(void);
+static void decode_constants(void) { chimi_runtime_decode_constants_v1(); }
 
 static void print_outcome(FILE *output, const ChimiControl *control) {
   fputs("{\"schema\":\"chimi.runtime.v1\",", output);
