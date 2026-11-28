@@ -32,11 +32,11 @@ const SHARED: &[&str] = &[
     "chimi_runtime_carrier_count",
     "chimi_runtime_carrier_mode",
     "carrier_this_thread",
-    // Heaps and constants every fiber shares.
+    // Heaps and values every fiber shares (the decoded constants' table is
+    // Rust's, in chimi-runtime constants.rs).
     "chimi_runtime_main_heap",
-    "static_area",
+    "chimi_runtime_static_area",
     "chimi_runtime_shared_values",
-    "chimi_runtime_constant_values",
     // Whether this execution counted any native handle (an atomic flag, set
     // once and cleared before the next run); the counts and their lock live
     // in Rust (chimi-runtime handle_counts_abi.rs).
