@@ -63,9 +63,8 @@ MUTANTS = [
     # scripts/mutation/process_u5_mutations.py keeps "small messages cost their size".
     # compaction-into-current-area moved to scripts/mutation/list_vector_mutations.py
     # with the slice (CHI-305 step 5, phase 4).
-    ("task-result-consumes", "Task.result copies without consuming",
-     "  fragment_copy_into_current((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);",
-     "  fragment_adopt((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);", E2E),
+    # task-result-consumes went with task_reply to Rust: scripts/mutation/
+    # tasks_mutations.py "Task.result consumes the child's result".
     ("task-start-shares-captures", "a child runs on a copy of its captures",
      "      CapabilityTransfer transfer = {.child = request.task};\n      bool transferred = transfer_captured_value(&transfer, captures->roots[0], 0);",
      "      captures->roots[0] = arguments[0];\n      CapabilityTransfer transfer = {.child = request.task};\n      bool transferred = transfer_captured_value(&transfer, captures->roots[0], 0);", E2E),
@@ -89,7 +88,7 @@ MUTANTS = [
      "  uint64_t key = counted_handle_key(value);\n  if (key) counted_handle_drop(key);\n}",
      "  uint64_t key = counted_handle_key(value);\n  (void)key;\n}", RELEASE),
     ("no-task-context-hook", "an unrun child's captures are freed",
-     "    .release_task_context = release_task_context,\n", "", RELEASE),
+     "    .release_task_context = chimi_runtime_release_task_context_v1,\n", "", RELEASE),
     # The small-block cache is Rust since CHI-305 step 5 phase 1; its
     # zeroing is mutated in scripts/mutation/small_block_mutations.py.
 ]

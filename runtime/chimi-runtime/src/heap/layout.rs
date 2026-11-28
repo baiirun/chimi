@@ -529,6 +529,29 @@ pub struct ProcessSpecContext {
     pub handoff: bool,
 }
 
+/// Set in a child task's result word, a fragment pointer (fragments are at
+/// least 2-aligned), to tell it from the root's own `Control` pointer.
+pub const CHILD_RESULT_TAG: i64 = 1;
+
+/// `ChimiFiberResult` (chimi_fiber.h): how a fiber's entry ended, with its
+/// result word.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FiberResult {
+    pub state: u32,
+    pub value: i64,
+    pub defect_code: i64,
+}
+
+impl FiberResult {
+    pub const SUCCEEDED: u32 = 2;
+    pub const CANCELLED: u32 = 3;
+    pub const DEFECTED: u32 = 4;
+    /// A process entry's `value` when its body returned or failed.
+    pub const PROCESS_END_RETURNED: i64 = 0;
+    pub const PROCESS_END_FAILED: i64 = 1;
+}
+
 /// `ChimiCarriedCapability` (chimi_fiber.h): one Receiver or Completion a
 /// sent message holds, with the sender's token.
 #[repr(C)]
@@ -605,6 +628,7 @@ impl Scheduler {
     pub const SELECT_TASK: u32 = 3;
     pub const SELECT_TIMER: u32 = 4;
     pub const REQUEST_PROCESS_SELF: u32 = 13;
+    pub const REQUEST_PROCESS_ARGUMENT: u32 = 31;
     pub const REQUEST_PROCESS_SEND: u32 = 14;
     pub const REQUEST_PROCESS_RECEIVE: u32 = 15;
     pub const REQUEST_SUPERVISOR_START: u32 = 16;
@@ -1661,6 +1685,17 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerRequest" SchedulerRequest, "value", value)
     field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
     field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
+    constant("CHILD_RESULT_TAG" CHILD_RESULT_TAG)
+    size("ChimiFiberResult" FiberResult)
+    field("ChimiFiberResult" FiberResult, "state", state)
+    field("ChimiFiberResult" FiberResult, "value", value)
+    field("ChimiFiberResult" FiberResult, "defect_code", defect_code)
+    constant("CHIMI_FIBER_SUCCEEDED" FiberResult::SUCCEEDED)
+    constant("CHIMI_FIBER_CANCELLED" FiberResult::CANCELLED)
+    constant("CHIMI_FIBER_DEFECTED" FiberResult::DEFECTED)
+    constant("CHIMI_PROCESS_END_RETURNED" FiberResult::PROCESS_END_RETURNED)
+    constant("CHIMI_PROCESS_END_FAILED" FiberResult::PROCESS_END_FAILED)
+    constant("CHIMI_REQUEST_PROCESS_ARGUMENT" Scheduler::REQUEST_PROCESS_ARGUMENT)
     size("ChimiCarriedCapability" CarriedCapability)
     field("ChimiCarriedCapability" CarriedCapability, "channel", channel)
     field("ChimiCarriedCapability" CarriedCapability, "token", token)

@@ -39,6 +39,7 @@ pub mod scopes;
 pub mod signals;
 pub mod standard;
 #[cfg(all(feature = "runtime-c", unix))]
+pub mod task_entry;
 pub mod tasks;
 pub mod test_log;
 mod text;

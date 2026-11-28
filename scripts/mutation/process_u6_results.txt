@@ -1,0 +1,5 @@
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario CB08 --through U6] (160s)
+KILLED       CB08: the first incarnation takes the spec's body instead of a copy [cargo run --quiet --bin chimi-process-lab -- --scenario CB08 --through U6] (56s)
+# result: every mutant killed

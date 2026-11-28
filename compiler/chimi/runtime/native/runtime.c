@@ -248,6 +248,10 @@ struct ChimiControl {
 /* The root task runs `entry` in the main heap. A child task gets its own heap and
    adopts `captures`, a fragment holding its callable value and the requirements it
    captured; the context is malloc'd and the child frees it. */
+/* Set in a child task's result word, a fragment pointer, to tell it from the
+   root's own ChimiControl pointer (intrinsics/task_entry.rs). */
+enum { CHILD_RESULT_TAG = 1 };
+
 struct ChimiTaskContext {
   ChimiRuntime *runtime;
   ChimiEnvironment *environment;
@@ -510,7 +514,9 @@ enum { REGION_FULL_MIN_GROWTH = 4 * 1024 };
 
 /* The main heap is owner 1; heap owners are unique across the process, and any
    carrier creates heaps, taking ids from one counter (heap/fragment.rs). */
-static RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
+/* External so the Rust task entry (intrinsics/task_entry.rs) can run the root in it. */
+#define main_heap chimi_runtime_main_heap
+RuntimeHeap main_heap = {.owner = 1, .base = {.role = AREA_BASE, .heap = &main_heap}};
 static AllocationArea static_area = {.role = AREA_STATIC};
 /* Mark epochs are unique across the process, not per carrier or per heap, so an
    allocation that moves between heaps or carriers can never carry a stale epoch
@@ -1592,6 +1598,23 @@ _Static_assert(offsetof(ChimiSchedulerRequest, entry) == 48, "layout: offsetof(C
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->entry) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->entry)");
 _Static_assert(offsetof(ChimiSchedulerRequest, context) == 56, "layout: offsetof(ChimiSchedulerRequest, context)");
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->context) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->context)");
+_Static_assert(CHILD_RESULT_TAG == 1, "layout: CHILD_RESULT_TAG");
+_Static_assert(sizeof(ChimiFiberResult) == 24, "layout: sizeof(ChimiFiberResult)");
+_Static_assert(offsetof(ChimiFiberResult, state) == 0, "layout: offsetof(ChimiFiberResult, state)");
+_Static_assert(sizeof(((ChimiFiberResult *)0)->state) == 4, "layout: sizeof(((ChimiFiberResult *)0)->state)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->state) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->state)");
+_Static_assert(offsetof(ChimiFiberResult, value) == 8, "layout: offsetof(ChimiFiberResult, value)");
+_Static_assert(sizeof(((ChimiFiberResult *)0)->value) == 8, "layout: sizeof(((ChimiFiberResult *)0)->value)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->value) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->value)");
+_Static_assert(offsetof(ChimiFiberResult, defect_code) == 16, "layout: offsetof(ChimiFiberResult, defect_code)");
+_Static_assert(sizeof(((ChimiFiberResult *)0)->defect_code) == 8, "layout: sizeof(((ChimiFiberResult *)0)->defect_code)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->defect_code) == 1, "layout: CHIMI_LAYOUT_CLASS(((ChimiFiberResult *)0)->defect_code)");
+_Static_assert(CHIMI_FIBER_SUCCEEDED == 2, "layout: CHIMI_FIBER_SUCCEEDED");
+_Static_assert(CHIMI_FIBER_CANCELLED == 3, "layout: CHIMI_FIBER_CANCELLED");
+_Static_assert(CHIMI_FIBER_DEFECTED == 4, "layout: CHIMI_FIBER_DEFECTED");
+_Static_assert(CHIMI_PROCESS_END_RETURNED == 0, "layout: CHIMI_PROCESS_END_RETURNED");
+_Static_assert(CHIMI_PROCESS_END_FAILED == 1, "layout: CHIMI_PROCESS_END_FAILED");
+_Static_assert(CHIMI_REQUEST_PROCESS_ARGUMENT == 31, "layout: CHIMI_REQUEST_PROCESS_ARGUMENT");
 _Static_assert(sizeof(ChimiCarriedCapability) == 24, "layout: sizeof(ChimiCarriedCapability)");
 _Static_assert(offsetof(ChimiCarriedCapability, channel) == 0, "layout: offsetof(ChimiCarriedCapability, channel)");
 _Static_assert(sizeof(((ChimiCarriedCapability *)0)->channel) == 8, "layout: sizeof(((ChimiCarriedCapability *)0)->channel)");
@@ -3475,130 +3498,19 @@ ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallabl
   return defect("unknown host function", call_node);
 }
 
-static ChimiFiberResult task_fiber_result(ChimiControl *control) {
-  if (control->kind == CONTROL_CANCEL)
-    return (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED};
-  if (control->kind == CONTROL_DEFECT)
-    return (ChimiFiberResult){
-      .state = CHIMI_FIBER_DEFECTED,
-      .defect_code = (int64_t)(intptr_t)control,
-    };
-  return (ChimiFiberResult){
-    .state = CHIMI_FIBER_SUCCEEDED,
-    .value = (int64_t)(intptr_t)control,
-  };
-}
-
-/* A child's result outlives its heap as a fragment. The scheduler keeps it with the
-   task record, and every Task.result copies it into the caller's heap. The scheduler
-   can also hand a child's defect code to the root, so a child's result word carries
-   CHILD_RESULT_TAG to tell it from the root's own ChimiControl pointer. */
-enum { CHILD_RESULT_TAG = 1 };
-static ChimiFiberResult child_task_result(ChimiControl *control) {
-  if (control->kind == CONTROL_CANCEL) return task_fiber_result(control);
-  void *roots[] = {control};
-  AllocationKind kinds[] = {ALLOCATION_CONTROL};
-  RuntimeFragment *result = NULL;
-  if (fragment_copy(roots, kinds, 1, &result) != HEAP_OK) {
-    roots[0] = control = defect(FOREIGN_POINTER_DEFECT, -1);
-    if (fragment_copy(roots, kinds, 1, &result) != HEAP_OK) abort();
-  }
-  if (control->kind == CONTROL_DEFECT)
-    return (ChimiFiberResult){
-      .state = CHIMI_FIBER_DEFECTED,
-      .defect_code = (int64_t)(intptr_t)result | CHILD_RESULT_TAG,
-    };
-  return (ChimiFiberResult){
-    .state = CHIMI_FIBER_SUCCEEDED,
-    .value = (int64_t)(intptr_t)result | CHILD_RESULT_TAG,
-  };
-}
-
-/* Aborts unless this thread entered its own carrier. With one carrier every
-   thread may use carrier 0; with several, a thread that never entered its
-   carrier would share carrier 0's scratch. `what` names the fiber started. */
-static void require_bound_carrier(const char *what) {
-  if (carrier_count > 1 && !(carrier->bound && pthread_equal(carrier->thread, pthread_self()))) {
-    fprintf(stderr, "Chimi runtime defect: %s started on a thread without its own carrier\n", what);
-    abort();
-  }
-}
-
-/* The fiber entry of a task Task.start made (chimi-runtime intrinsics/tasks.rs
-   passes it with the context it allocated). */
+/* Tasks' and incarnations' fiber entries, their result words and the
+   scheduler's release hooks are Rust (intrinsics/task_entry.rs). A child's
+   result word carries CHILD_RESULT_TAG (with ChimiTaskContext) to tell it
+   from the root's own ChimiControl pointer. */
 ChimiFiberResult chimi_runtime_task_entry_v1(void *raw_context);
-ChimiFiberResult chimi_runtime_task_entry_v1(void *raw_context) {
-  ChimiTaskContext *context = raw_context;
-  require_bound_carrier("a task");
-  carrier->fiber.target = NULL;
-  if (context->entry) {
-    carrier->fiber.heap = &main_heap;
-    return task_fiber_result(context->entry(context->runtime, context->environment, context->span));
-  }
-  ChimiRuntime *runtime = context->runtime;
-  uint64_t span = context->span;
-  RuntimeHeap *heap = heap_create();
-  carrier->fiber.heap = heap;
-  uint64_t parent = context->parent;
-  void *captures[FRAGMENT_ROOTS];
-  fragment_adopt(context->captures, captures);
-  free(context);
-  ChimiValue *callable = captures[0];
-  ChimiControl *control = invoke(runtime, callable->as.callable, NULL, 0, span, UINT32_MAX,
-                                 captures[1]);
-  /* Only the parent can read the result (a task handle is parent-local), so the
-     result's exclusive capabilities become the parent's before this task ends
-     and its cleanup would abort them. */
-  if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {
-    bool cancelled_meanwhile = false;
-    if (!chimi_runtime_transfer_to_child_v1(control->value, parent, &cancelled_meanwhile))
-      control = cancelled_meanwhile
-        ? cancelled()
-        : defect("Task could not hand an exclusive capability in its result to its parent", -1);
-  }
-  ChimiFiberResult result = child_task_result(control);
-  heap_destroy(heap);
-  carrier->fiber.heap = NULL;
-  return result;
-}
-
-/* The control a task's result word names: the root's own control, or a copy of a
-   child's result fragment in the current heap. */
-static ChimiControl *task_reply(int64_t raw) {
-  if (!(raw & CHILD_RESULT_TAG)) return (ChimiControl *)(intptr_t)raw;
-  void *roots[FRAGMENT_ROOTS];
-  fragment_copy_into_current((RuntimeFragment *)(intptr_t)(raw & ~(int64_t)CHILD_RESULT_TAG), roots);
-  return roots[0];
-}
-ChimiControl *chimi_runtime_task_reply_v1(int64_t raw) { return task_reply(raw); }
-
-/* The scheduler's release hooks. It calls them on the host stack with no task
-   running, so they free fragments without touching the fiber context. A task word is
-   a child's tagged result fragment or the root's own control, which lives in the
-   main heap and is not the scheduler's to free. */
-static void release_task_word(void *context, int64_t word) {
-  (void)context;
-  if (word & CHILD_RESULT_TAG)
-    fragment_free((RuntimeFragment *)(intptr_t)(word & ~(int64_t)CHILD_RESULT_TAG));
-}
-
-static void release_channel_word(void *context, int64_t word) {
-  (void)context;
-  fragment_free((RuntimeFragment *)(intptr_t)word);
-}
-
-static int64_t copy_channel_word(void *context, int64_t word) {
-  (void)context;
-  return (int64_t)(intptr_t)fragment_duplicate((RuntimeFragment *)(intptr_t)word);
-}
-
-/* A child the scheduler ends before its entry runs never adopts its captures. */
-static void release_task_context(void *context, void *raw) {
-  (void)context;
-  ChimiTaskContext *task = raw;
-  fragment_free(task->captures);
-  free(task);
-}
+ChimiFiberResult chimi_runtime_process_entry_v1(void *raw_context);
+ChimiControl *chimi_runtime_task_reply_v1(int64_t raw);
+void chimi_runtime_release_task_word_v1(void *context, int64_t word);
+void chimi_runtime_release_channel_word_v1(void *context, int64_t word);
+int64_t chimi_runtime_copy_channel_word_v1(void *context, int64_t word);
+void chimi_runtime_release_task_context_v1(void *context, void *raw);
+void chimi_runtime_release_spec_context_v1(void *context, void *raw);
+void chimi_runtime_release_message_v1(void *context, uint64_t message);
 
 /* `std/duration`'s intrinsics are Rust (intrinsics/durations.rs); the text form is
    chimi-runtime's duration.rs, which the debug renderer and messages here use too. */
@@ -3681,73 +3593,11 @@ static ChimiValue *process_address_value(uint32_t kind, uint64_t target) {
 
 #if CHIMI_PROCESS_KERNEL
 
-/* The entry of every incarnation (CHIMI_PROCESS_END_* for a body that ends). The name
-   is external so a built executable shows that it links the process kernel (MF06). */
+/* The entry of every incarnation; its body is Rust (intrinsics/task_entry.rs).
+   The name is external so a built executable shows that it links the process
+   kernel (MF06), and only this variant defines it. */
 ChimiFiberResult chimi_rt_process_entry(void *raw_context) {
-  ProcessSpecContext *context = raw_context;
-  require_bound_carrier("a process");
-  carrier->fiber.target = NULL;
-  ChimiRuntime *runtime = context->runtime;
-  RuntimeHeap *heap = heap_create();
-  carrier->fiber.heap = heap;
-  void *roots[FRAGMENT_ROOTS];
-  fragment_copy_into_current(context->body, roots);
-  ChimiValue *body = roots[0];
-  ChimiValue *arguments[] = {new_value(VALUE_PROCESS_INBOX), NULL};
-  uint32_t argument_count = 1;
-  ChimiControl *control = NULL;
-  if (context->handoff) {
-    /* The start argument travelled as a message: adopting it makes this heap
-       its owner, and the reply moved its capabilities to this incarnation. */
-    ChimiProcessRequest request = {.kind = CHIMI_REQUEST_PROCESS_ARGUMENT};
-    ChimiFiberCommand command = scheduler_request(&request);
-    if (command == CHIMI_FIBER_CANCEL) {
-      if (request.status == CHIMI_RESPONSE_OK) fragment_free((RuntimeFragment *)(uintptr_t)request.message);
-      control = cancelled();
-    } else if (request.status != CHIMI_RESPONSE_OK) {
-      control = defect("Supervisor.start_handoff: the incarnation has no start argument", UINT32_MAX);
-    } else {
-      void *argument_roots[FRAGMENT_ROOTS];
-      fragment_adopt((RuntimeFragment *)(uintptr_t)request.message, argument_roots);
-      arguments[argument_count++] = argument_roots[0];
-    }
-  }
-  uint64_t span = take_spans(runtime, 1);
-  bool traced = !runtime->silent && !control;
-  uint64_t incarnation = traced ? chimi_fiber_current_incarnation() : 0;
-  if (traced) emit_process_body(runtime, span, incarnation, NULL);
-  if (!control)
-    control = invoke(runtime, body->as.callable, arguments, argument_count, span, UINT32_MAX,
-                     new_environment(0));
-  if (traced) emit_process_body(runtime, span, incarnation, control);
-  ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = CHIMI_PROCESS_END_RETURNED};
-  switch (control->kind) {
-    case CONTROL_SUCCESS: break;
-    case CONTROL_FAILURE: result.value = CHIMI_PROCESS_END_FAILED; break;
-    case CONTROL_CANCEL: result = (ChimiFiberResult){.state = CHIMI_FIBER_CANCELLED}; break;
-    case CONTROL_DEFECT:
-    case CONTROL_BREAK:
-      chimi_fiber_report_defect(control->message);
-      result = (ChimiFiberResult){.state = CHIMI_FIBER_DEFECTED, .defect_code = 1};
-      break;
-  }
-  if (heap->peak_live_bytes > carrier->process_heap_peak_value_bytes)
-    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;
-  heap_destroy(heap);
-  carrier->fiber.heap = NULL;
-  return result;
-}
-
-static void release_spec_context_word(void *context, void *raw) {
-  (void)context;
-  ProcessSpecContext *spec = raw;
-  fragment_free(spec->body);
-  free(spec);
-}
-
-static void release_message_word(void *context, uint64_t message) {
-  (void)context;
-  fragment_free((RuntimeFragment *)(uintptr_t)message);
+  return chimi_runtime_process_entry_v1(raw_context);
 }
 
 /* The process kernel is Rust (chimi-runtime intrinsics/process_kernel.rs and
@@ -4494,13 +4344,13 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .process_defect_report = record_process_defect,
     .process_defect_context = runtime,
 #endif
-    .release_task_value = release_task_word,
-    .release_channel_value = release_channel_word,
-    .copy_channel_value = copy_channel_word,
-    .release_task_context = release_task_context,
+    .release_task_value = chimi_runtime_release_task_word_v1,
+    .release_channel_value = chimi_runtime_release_channel_word_v1,
+    .copy_channel_value = chimi_runtime_copy_channel_word_v1,
+    .release_task_context = chimi_runtime_release_task_context_v1,
 #if CHIMI_PROCESS_KERNEL
-    .release_message = release_message_word,
-    .release_spec_context = release_spec_context_word,
+    .release_message = chimi_runtime_release_message_v1,
+    .release_spec_context = chimi_runtime_release_spec_context_v1,
 #endif
     .signal = chimi_runtime_stop_signal_v1(),
     .signal_fd = chimi_runtime_signal_fd_v1(),
@@ -4529,18 +4379,18 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
   if (outcome.state == CHIMI_FIBER_SUCCEEDED || outcome.state == CHIMI_FIBER_DEFECTED) {
     int64_t word = outcome.state == CHIMI_FIBER_SUCCEEDED ? outcome.value : outcome.defect_code;
     if (word > 0 && (word & CHILD_RESULT_TAG)) {
-      ChimiControl *control = task_reply(word);
-      release_task_word(runtime, word);
+      ChimiControl *control = chimi_runtime_task_reply_v1(word);
+      chimi_runtime_release_task_word_v1(runtime, word);
       return control;
     }
   }
   if (outcome.state == CHIMI_FIBER_SUCCEEDED)
-    return task_reply(outcome.value);
+    return chimi_runtime_task_reply_v1(outcome.value);
   if (outcome.state == CHIMI_FIBER_CANCELLED) return cancelled();
   /* A positive code is a task's result word. A negative code is one the scheduler
      made, for example when nothing can run and the root is still parked. */
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code > 0)
-    return task_reply(outcome.defect_code);
+    return chimi_runtime_task_reply_v1(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
     return defect(with_process_defect(runtime, runtime->deadlock_waiters), -1);

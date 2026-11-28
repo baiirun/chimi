@@ -1,0 +1,5 @@
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario CB05 --through U8] (158s)
+KILLED       CB05: a task result points into the child's destroyed heap [cargo run --quiet --bin chimi-process-lab -- --scenario CB05 --through U8] (55s)
+# result: every mutant killed

@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 
 BACKSTOP = "native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader"
 BODY_SHOW = "a_process_body_is_listed_under_its_incarnation"
@@ -55,14 +56,14 @@ MUTATIONS = [
     ),
     dict(
         name="a process body writes no start span",
-        file=RUNTIME_C,
-        edits=[("  if (traced) emit_process_body(runtime, span, incarnation, NULL);\n", "")],
+        file=TASK_ENTRY,
+        edits=[("            chimi_trace_process_body_v1(runtime, span, incarnation, ptr::null());\n", "")],
         targets=["trace_show"], filter=BODY_SHOW,
     ),
     dict(
         name="a process body's span names no incarnation",
-        file=RUNTIME_C,
-        edits=[("traced ? chimi_fiber_current_incarnation() : 0", "0")],
+        file=TASK_ENTRY,
+        edits=[("if traced { chimi_fiber_current_incarnation() } else { 0 }", "0")],
         targets=["trace_show"], filter=BODY_SHOW,
     ),
     dict(

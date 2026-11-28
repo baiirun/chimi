@@ -20,6 +20,7 @@ R = "runtime/native/runtime.c"
 FRAGMENT = "../../runtime/chimi-runtime/src/heap/fragment.rs"
 TEST_LOG = "../../runtime/chimi-runtime/src/intrinsics/test_log.rs"
 TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 
 
 def m(name, edits, file=R):
@@ -62,8 +63,8 @@ MUTATIONS = [
         "static void carrier_thread_enter(size_t index) {\n  carrier_bind(carrier_at(index));",
         "static void carrier_thread_enter(size_t index) {\n  (void)index;")]),
     m("a task on an unbound thread runs", [(
-        "  if (carrier_count > 1 && !(carrier->bound && pthread_equal(carrier->thread, pthread_self()))) {",
-        "  if (false) {")]),
+        "    if !bound {",
+        "    if false {")], file=TASK_ENTRY),
     m("carriers_create leaves the count at one", [(
         "  for (size_t index = 0; index + 1 < count; ++index) carrier_others[index].fiber.heap = &main_heap;\n"
         "  carrier_count = count;",

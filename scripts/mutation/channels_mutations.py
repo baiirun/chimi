@@ -27,11 +27,11 @@ MUTATIONS = [
         "return failure(standard_value(StandardConstructor::CHANNEL_ABORTED, &[]));",
     )]),
     mutant("Task.result does not wait", CHANNELS, [(
-        "                    Scheduler::RESPONSE_PENDING => continue,\n                    Scheduler::RESPONSE_SUCCEEDED => return chimi_runtime_task_reply_v1",
-        "                    Scheduler::RESPONSE_PENDING => return defect(c\"pending\", node),\n                    Scheduler::RESPONSE_SUCCEEDED => return chimi_runtime_task_reply_v1",
+        "                    Scheduler::RESPONSE_PENDING => continue,\n                    Scheduler::RESPONSE_SUCCEEDED => return task_entry::task_reply",
+        "                    Scheduler::RESPONSE_PENDING => return defect(c\"pending\", node),\n                    Scheduler::RESPONSE_SUCCEEDED => return task_entry::task_reply",
     )]),
     mutant("a defected task's result is a request failure", CHANNELS, [(
-        "                    Scheduler::RESPONSE_DEFECTED if request.value > 0 => return chimi_runtime_task_reply_v1(request.value),\n",
+        "                    Scheduler::RESPONSE_DEFECTED if request.value > 0 => return task_entry::task_reply(request.value),\n",
         "",
     )], targets=("testing", "cli", "task_release", "resources")),
     mutant("a channel's completion and receiver swap", CHANNELS, [(

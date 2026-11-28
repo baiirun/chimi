@@ -34,3 +34,8 @@ SURVIVED     M7 forced body waiting on home re-arms its deadline [carrier_stress
 #   pending end changes timing, not the outcome, in these programs.
 # - C2 (process entry skips the bound-carrier check): equivalent while every
 #   carrier thread binds; C1 shows the binding is tested.
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (160s)
+KILLED       C2 process entry skips the bound-carrier check [runtime_state -- the_runtime_state_holds_across_carrier_threads] (56s)
+# result: every mutant killed

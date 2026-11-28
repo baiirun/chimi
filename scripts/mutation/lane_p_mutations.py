@@ -14,6 +14,7 @@ CHANNELS = "../../runtime/chimi-fiber/src/channel.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 CAPABILITIES = "../../runtime/chimi-runtime/src/intrinsics/capabilities.rs"
 LAB_BIN = "src/bin/process_lab.rs"
 
@@ -83,9 +84,9 @@ MUTATIONS = [
     # CHI-185: the Task.result route
     dict(
         name="a child's result keeps its capabilities",
-        file=RUNTIME_C,
-        edits=[("  if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {\n",
-                "  if (false) {\n")],
+        file=TASK_ENTRY,
+        edits=[("        if (kind == ControlKind::SUCCESS || kind == ControlKind::FAILURE) && !(*control).value.is_null() {\n",
+                "        if false {\n")],
         targets=["cli"], filter=HAND_BACK,
     ),
     dict(
@@ -119,9 +120,9 @@ MUTATIONS = [
     ),
     dict(
         name="a body's defect is remembered only while tracing",
-        file=RUNTIME_C,
-        edits=[("      chimi_fiber_report_defect(control->message);\n",
-                "      if (!runtime->silent) chimi_fiber_report_defect(control->message);\n")],
+        file=TASK_ENTRY,
+        edits=[("                chimi_fiber_report_defect((*control).message);\n",
+                "                if !(*runtime).silent { chimi_fiber_report_defect((*control).message); }\n")],
         command=["cargo", "run", "--quiet", "--bin", "chimi-process-lab", "--",
                  "--scenario", "OB08"],
         expect=["OB08"],

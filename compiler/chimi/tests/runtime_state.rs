@@ -33,7 +33,7 @@ const SHARED: &[&str] = &[
     "chimi_runtime_carrier_mode",
     "carrier_this_thread",
     // Heaps and constants every fiber shares.
-    "main_heap",
+    "chimi_runtime_main_heap",
     "static_area",
     "chimi_runtime_shared_values",
     "chimi_runtime_constant_values",
@@ -122,7 +122,7 @@ fn runtime_globals_are_the_carrier_or_listed_shared_state() {
     for process_kernel in [false, true] {
         let symbols = writable_symbols(process_kernel);
         // An nm format this test cannot read would otherwise pass vacuously.
-        for expected in ["carrier_first", "main_heap"] {
+        for expected in ["carrier_first", "chimi_runtime_main_heap"] {
             assert!(
                 symbols.iter().any(|symbol| symbol.trim_start_matches('_') == expected),
                 "{expected} missing from {symbols:?}"

@@ -19,6 +19,7 @@ for an end the scheduler has decided, which reports no defect.
 CRATE = "compiler/chimi"
 
 R = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 
@@ -29,8 +30,8 @@ def m(name, file, edits):
 
 
 MUTATIONS = [
-    m("a defected body reports nothing", R, [(
-        "      chimi_fiber_report_defect(control->message);\n", "")]),
+    m("a defected body reports nothing", TASK_ENTRY, [(
+        "                chimi_fiber_report_defect((*control).message);\n", "")]),
     m("the report ignores the body's message", R, [(
         "strdup(termination->stack_overflow ? \"Process stack overflow\" : termination->message);",
         "strdup(termination->stack_overflow ? \"Process stack overflow\" : \"defect\");")]),

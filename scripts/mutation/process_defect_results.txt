@@ -9,3 +9,8 @@ KILLED       the scheduler drops a reported message [cli -- native_process_stack
 KILLED       an incarnation does not keep its message [cli -- native_process_stack_depth_and_named_defects] (52s)
 KILLED       the termination record carries no message [cli -- native_process_stack_depth_and_named_defects] (53s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cli -- native_process_stack_depth_and_named_defects] (163s)
+KILLED       a defected body reports nothing [cli -- native_process_stack_depth_and_named_defects] (58s)
+# result: every mutant killed

@@ -294,6 +294,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       the sends, and the counted Task and capability values
       (`intrinsics/capabilities.rs`); the C task entry calls the Rust
       transfer.
+      Seventh PR: the task and incarnation fiber entries, result words
+      and the scheduler's release hooks (`intrinsics/task_entry.rs`).
+      `chimi_rt_process_entry` stays a one-line C wrapper, because only
+      the kernel variant may define that marker name (MF06).
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

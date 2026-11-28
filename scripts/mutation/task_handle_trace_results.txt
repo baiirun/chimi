@@ -15,3 +15,9 @@ KILLED       a resumed fiber is told no incarnation [trace_show -- a_process_bod
 KILLED       trace show leaves the process name off a body [trace_show -- a_process_body_is_listed_under_its_incarnation] (68s)
 KILLED       the OTLP export drops the incarnation attribute [trace_export -- a_process_body_is_a_span_tagged_with_its_incarnation] (18s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [trace_show -- a_process_body_is_listed_under_its_incarnation] (160s)
+KILLED       a process body writes no start span [trace_show -- a_process_body_is_listed_under_its_incarnation] (58s)
+KILLED       a process body's span names no incarnation [trace_show -- a_process_body_is_listed_under_its_incarnation] (58s)
+# result: every mutant killed

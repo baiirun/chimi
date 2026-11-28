@@ -18,6 +18,7 @@ use core::ffi::{CStr, c_void};
 use core::ptr;
 
 use super::capabilities;
+use super::task_entry;
 use super::message::Message;
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
@@ -29,11 +30,6 @@ use crate::heap::layout::{
 };
 use crate::heap::values::{allocate_kind, integer_value, new_value};
 use crate::scheduler;
-
-unsafe extern "C" {
-    /// The control a task's result word names.
-    fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
-}
 
 /// # Safety
 /// Runs on a fiber that may allocate.
@@ -201,9 +197,9 @@ pub unsafe fn channel_operation(intrinsic: u32, arguments: &[*mut Value], call_n
                 }
                 match request.status {
                     Scheduler::RESPONSE_PENDING => continue,
-                    Scheduler::RESPONSE_SUCCEEDED => return chimi_runtime_task_reply_v1(request.value),
+                    Scheduler::RESPONSE_SUCCEEDED => return task_entry::task_reply(request.value),
                     Scheduler::RESPONSE_CANCELLED => return cancelled(),
-                    Scheduler::RESPONSE_DEFECTED if request.value > 0 => return chimi_runtime_task_reply_v1(request.value),
+                    Scheduler::RESPONSE_DEFECTED if request.value > 0 => return task_entry::task_reply(request.value),
                     Scheduler::RESPONSE_STACK_OVERFLOW => return defect(c"Task stack overflow", node),
                     _ => return defect(c"Task.result scheduler request failed", node),
                 }
