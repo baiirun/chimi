@@ -14,6 +14,7 @@ CRATE = "compiler/chimi"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 TIMERS = "../../runtime/chimi-fiber/src/scheduler/clock.rs"
 RUNTIME = "runtime/native/runtime.c"
+REPORTS = "../../runtime/chimi-runtime/src/scheduler_reports.rs"
 CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 TYPING = "src/typing.rs"
 
@@ -52,9 +53,9 @@ MUTATIONS = [
     native("virtual deadlock detection off", SCHEDULER, [(
         "        match self.clock.mode() {",
         "        match ClockMode::Real {")]),
-    native("deadlock waiters dropped from the root's cause", RUNTIME, [(
-        "  runtime->deadlock_waiters = message;",
-        "  free(message);")]),
+    native("deadlock waiters dropped from the root's cause", REPORTS, [(
+        "        (*context.cast::<Runtime>()).deadlock_waiters = text.into_c();",
+        "        drop(text);")]),
     # Root closure.
     language("root closure ignores the fixed need name", TYPING, [(
         '            Some(StandardSymbol::Type(StandardType::Clock)) => need.lexical_name == "clock",',

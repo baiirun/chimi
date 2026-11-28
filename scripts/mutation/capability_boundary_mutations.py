@@ -16,6 +16,7 @@ TYPING = "src/typing.rs"
 CHANNELS = "../../runtime/chimi-fiber/src/channel.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+REPORTS = "../../runtime/chimi-runtime/src/scheduler_reports.rs"
 
 RECEIVED = "a_received_value_has_the_capability_class_of_its_payload"
 BACKSTOP = "native_backstop_"
@@ -55,7 +56,7 @@ MUTATIONS = [
     dict(
         name="a capability violation is not reported to the host",
         file=RUNTIME_C,
-        edits=[("    .capability_violation_report = record_capability_violation,\n",
+        edits=[("    .capability_violation_report = chimi_runtime_record_capability_violation_v1,\n",
                 "    .capability_violation_report = NULL,\n")],
         targets=["cli"], filter=BACKSTOP,
     ),
@@ -74,21 +75,20 @@ MUTATIONS = [
     ),
     dict(
         name="the report names task 0 instead of saying the owner ended",
-        file=RUNTIME_C,
-        edits=[("  if (violation->owner == 0)\n", "  if (false)\n")],
+        file=REPORTS,
+        edits=[("        if violation.owner == 0 {\n            text.push(b\"the task it was handed to has ended\");", "        if false {\n            text.push(b\"the task it was handed to has ended\");")],
         targets=["cli"], filter=BACKSTOP,
     ),
     dict(
         name="a stale copy at its owner names the owner as another task",
-        file=RUNTIME_C,
-        edits=[("  else if (violation->owner == violation->task)\n", "  else if (false)\n")],
+        file=REPORTS,
+        edits=[("        } else if violation.owner == violation.task {\n", "        } else if false {\n")],
         targets=["cli"], filter=BACKSTOP,
     ),
     dict(
         name="a failed transfer is reported as a use",
-        file=RUNTIME_C,
-        edits=[("  bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||\n",
-                "  bool transfer = false && violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||\n")],
+        file=REPORTS,
+        edits=[("    let transfer = matches!(\n", "    let transfer = false && matches!(\n")],
         targets=["cli"], filter=BACKSTOP,
     ),
 ]

@@ -1,0 +1,15 @@
+# 2026-11-28 scheduler report messages to Rust (CHI-305 phase 8, tenth PR)
+# First run, before the two-waiter deadlock test existed:
+BASELINE ok  [cli channel_variants] (202s)
+KILLED       a deadlocked receive is named a send [cli channel_variants] (126s)
+KILLED       the latest process defect loses its incarnation [cli channel_variants] (100s)
+KILLED       a root keeps no process defect [cli channel_variants] (98s)
+KILLED       a task violation names the reader as the owner [cli channel_variants] (97s)
+KILLED       a task violation is always a wait [cli channel_variants] (98s)
+# Rerun after adding native_virtual_deadlock_lists_every_waiter (the separator mutant
+# survived the first run), and of two mutants whose first build failed on a full disk:
+BASELINE ok  [cli channel_variants] (209s)
+KILLED       a deadlock lists its waiters without separators [cli channel_variants] (101s)
+KILLED       sending a receiver through its own channel is worded as a release [cli channel_variants] (64s)
+KILLED       a violation note is kept for the wrong task [cli channel_variants] (64s)
+# result: every mutant killed

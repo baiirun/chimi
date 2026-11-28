@@ -318,7 +318,7 @@ struct ChimiRuntime {
   uint64_t process_defect_count;
   /* The defect message of each task the scheduler defected for a channel
      capability violation, from its report. */
-  struct CapabilityViolationNote *capability_violations;
+  void *capability_violations; /* scheduler_reports.rs owns the notes */
   /* Set by --cancel, or asynchronously by a stop signal in a program
      without the scheduler. */
   volatile sig_atomic_t cancel;
@@ -1638,6 +1638,64 @@ _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->entry) == 8, "layout: sizeof
 _Static_assert(offsetof(ChimiSchedulerRequest, context) == 56, "layout: offsetof(ChimiSchedulerRequest, context)");
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->context) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->context)");
 _Static_assert(CHILD_RESULT_TAG == 1, "layout: CHILD_RESULT_TAG");
+_Static_assert(sizeof(ChimiDeadlockWaiter) == 16, "layout: sizeof(ChimiDeadlockWaiter)");
+_Static_assert(offsetof(ChimiDeadlockWaiter, task) == 0, "layout: offsetof(ChimiDeadlockWaiter, task)");
+_Static_assert(sizeof(((ChimiDeadlockWaiter *)0)->task) == 8, "layout: sizeof(((ChimiDeadlockWaiter *)0)->task)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiDeadlockWaiter *)0)->task) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiDeadlockWaiter *)0)->task)");
+_Static_assert(offsetof(ChimiDeadlockWaiter, request_kind) == 8, "layout: offsetof(ChimiDeadlockWaiter, request_kind)");
+_Static_assert(sizeof(((ChimiDeadlockWaiter *)0)->request_kind) == 4, "layout: sizeof(((ChimiDeadlockWaiter *)0)->request_kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiDeadlockWaiter *)0)->request_kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiDeadlockWaiter *)0)->request_kind)");
+_Static_assert(sizeof(ChimiCapabilityViolation) == 48, "layout: sizeof(ChimiCapabilityViolation)");
+_Static_assert(offsetof(ChimiCapabilityViolation, task) == 0, "layout: offsetof(ChimiCapabilityViolation, task)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->task) == 8, "layout: sizeof(((ChimiCapabilityViolation *)0)->task)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->task) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->task)");
+_Static_assert(offsetof(ChimiCapabilityViolation, channel) == 8, "layout: offsetof(ChimiCapabilityViolation, channel)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->channel) == 8, "layout: sizeof(((ChimiCapabilityViolation *)0)->channel)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->channel) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->channel)");
+_Static_assert(offsetof(ChimiCapabilityViolation, owner) == 16, "layout: offsetof(ChimiCapabilityViolation, owner)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->owner) == 8, "layout: sizeof(((ChimiCapabilityViolation *)0)->owner)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->owner) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->owner)");
+_Static_assert(offsetof(ChimiCapabilityViolation, destination) == 24, "layout: offsetof(ChimiCapabilityViolation, destination)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->destination) == 8, "layout: sizeof(((ChimiCapabilityViolation *)0)->destination)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->destination) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->destination)");
+_Static_assert(offsetof(ChimiCapabilityViolation, request_kind) == 32, "layout: offsetof(ChimiCapabilityViolation, request_kind)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->request_kind) == 4, "layout: sizeof(((ChimiCapabilityViolation *)0)->request_kind)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->request_kind) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->request_kind)");
+_Static_assert(offsetof(ChimiCapabilityViolation, capability) == 36, "layout: offsetof(ChimiCapabilityViolation, capability)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->capability) == 4, "layout: sizeof(((ChimiCapabilityViolation *)0)->capability)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->capability) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->capability)");
+_Static_assert(offsetof(ChimiCapabilityViolation, reason) == 40, "layout: offsetof(ChimiCapabilityViolation, reason)");
+_Static_assert(sizeof(((ChimiCapabilityViolation *)0)->reason) == 4, "layout: sizeof(((ChimiCapabilityViolation *)0)->reason)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->reason) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCapabilityViolation *)0)->reason)");
+_Static_assert(sizeof(ChimiProcessTermination) == 40, "layout: sizeof(ChimiProcessTermination)");
+_Static_assert(offsetof(ChimiProcessTermination, membership) == 0, "layout: offsetof(ChimiProcessTermination, membership)");
+_Static_assert(sizeof(((ChimiProcessTermination *)0)->membership) == 8, "layout: sizeof(((ChimiProcessTermination *)0)->membership)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->membership) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->membership)");
+_Static_assert(offsetof(ChimiProcessTermination, incarnation) == 8, "layout: offsetof(ChimiProcessTermination, incarnation)");
+_Static_assert(sizeof(((ChimiProcessTermination *)0)->incarnation) == 8, "layout: sizeof(((ChimiProcessTermination *)0)->incarnation)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->incarnation) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->incarnation)");
+_Static_assert(offsetof(ChimiProcessTermination, cause) == 16, "layout: offsetof(ChimiProcessTermination, cause)");
+_Static_assert(sizeof(((ChimiProcessTermination *)0)->cause) == 8, "layout: sizeof(((ChimiProcessTermination *)0)->cause)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->cause) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->cause)");
+_Static_assert(offsetof(ChimiProcessTermination, stack_overflow) == 24, "layout: offsetof(ChimiProcessTermination, stack_overflow)");
+_Static_assert(sizeof(((ChimiProcessTermination *)0)->stack_overflow) == 4, "layout: sizeof(((ChimiProcessTermination *)0)->stack_overflow)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->stack_overflow) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiProcessTermination *)0)->stack_overflow)");
+_Static_assert(offsetof(ChimiProcessTermination, message) == 32, "layout: offsetof(ChimiProcessTermination, message)");
+_Static_assert(sizeof(((ChimiProcessTermination *)0)->message) == 8, "layout: sizeof(((ChimiProcessTermination *)0)->message)");
+_Static_assert(CHIMI_REQUEST_CHANNEL_RELEASE == 24, "layout: CHIMI_REQUEST_CHANNEL_RELEASE");
+_Static_assert(CHIMI_VIOLATION_WRONG_OWNER == 1, "layout: CHIMI_VIOLATION_WRONG_OWNER");
+_Static_assert(CHIMI_VIOLATION_OVERLAPPING_OPERATION == 2, "layout: CHIMI_VIOLATION_OVERLAPPING_OPERATION");
+_Static_assert(CHIMI_VIOLATION_PENDING_OPERATION == 3, "layout: CHIMI_VIOLATION_PENDING_OPERATION");
+_Static_assert(CHIMI_VIOLATION_UNKNOWN_CHANNEL == 4, "layout: CHIMI_VIOLATION_UNKNOWN_CHANNEL");
+_Static_assert(CHIMI_VIOLATION_CHANNEL_STILL_LIVE == 5, "layout: CHIMI_VIOLATION_CHANNEL_STILL_LIVE");
+_Static_assert(CHIMI_VIOLATION_IN_FLIGHT == 6, "layout: CHIMI_VIOLATION_IN_FLIGHT");
+_Static_assert(CHIMI_VIOLATION_PUBLISHED_CAPABILITY == 7, "layout: CHIMI_VIOLATION_PUBLISHED_CAPABILITY");
+_Static_assert(CHIMI_VIOLATION_WRONG_KIND == 8, "layout: CHIMI_VIOLATION_WRONG_KIND");
+_Static_assert(CHIMI_VIOLATION_OWN_RECEIVER == 9, "layout: CHIMI_VIOLATION_OWN_RECEIVER");
+_Static_assert(CHIMI_VIOLATION_UNKNOWN_TASK == 10, "layout: CHIMI_VIOLATION_UNKNOWN_TASK");
+_Static_assert(CHIMI_CAPABILITY_RECEIVER == 1, "layout: CHIMI_CAPABILITY_RECEIVER");
+_Static_assert(CHIMI_CAPABILITY_COMPLETION == 2, "layout: CHIMI_CAPABILITY_COMPLETION");
+_Static_assert(CHIMI_CAPABILITY_TASK == 3, "layout: CHIMI_CAPABILITY_TASK");
 _Static_assert(sizeof(ChimiFiberResult) == 24, "layout: sizeof(ChimiFiberResult)");
 _Static_assert(offsetof(ChimiFiberResult, state) == 0, "layout: offsetof(ChimiFiberResult, state)");
 _Static_assert(sizeof(((ChimiFiberResult *)0)->state) == 4, "layout: sizeof(((ChimiFiberResult *)0)->state)");
@@ -3642,238 +3700,13 @@ static bool write_memory_report(const char *path, const ChimiRuntime *runtime) {
   return close_output(output);
 }
 
-/* The operation a parked task waits on, by its scheduler request kind. */
-static const char *waited_operation(uint32_t request_kind) {
-  switch (request_kind) {
-    case CHIMI_REQUEST_TASK_RESULT: return "Task.result";
-    case CHIMI_REQUEST_TASK_ANY: return "Task.all, Task.results or Task.race";
-    case CHIMI_REQUEST_TASK_DRAIN: return "draining a Task combinator's children";
-    case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
-    case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
-    case CHIMI_REQUEST_SELECT: return "Wait.first";
-    case CHIMI_REQUEST_SIGNAL_WAIT: return "Signal.next";
-    default: return "a scheduler request";
-  }
-}
-
-/* A task the scheduler defected for a channel capability violation and the defect
-   message that names the capability, the task, and the capability's owner. */
-typedef struct CapabilityViolationNote {
-  uint64_t task;
-  char *message;
-  struct CapabilityViolationNote *next;
-} CapabilityViolationNote;
-
-static const char *capability_name(uint32_t capability) {
-  switch (capability) {
-    case CHIMI_CAPABILITY_RECEIVER: return "Receiver";
-    case CHIMI_CAPABILITY_COMPLETION: return "Completion";
-    default: return "capability";
-  }
-}
-
-/* The surface operation behind a channel request kind. */
-static const char *channel_operation(uint32_t request_kind) {
-  switch (request_kind) {
-    case CHIMI_REQUEST_CHANNEL_SEND: return "Channel.send";
-    case CHIMI_REQUEST_CHANNEL_RECEIVE: return "Channel.receive";
-    case CHIMI_REQUEST_CHANNEL_CLOSE: return "Channel.close";
-    case CHIMI_REQUEST_CHANNEL_ABORT: return "aborting the channel";
-    case CHIMI_REQUEST_CHANNEL_RELEASE: return "releasing the channel";
-    case CHIMI_REQUEST_CHANNEL_ADD_RECEIVER: return "Channel.add_receiver";
-    case CHIMI_REQUEST_CHANNEL_SUBSCRIBE: return "subscribe";
-    case CHIMI_REQUEST_PROCESS_SEND: return "Process.send";
-    case CHIMI_REQUEST_SUPERVISOR_START_PROCESS: return "Supervisor.start_handoff";
-    default: return "a channel request";
-  }
-}
-
-/* Keeps `text` as the defect message of `task`, which the scheduler is ending. */
-static void add_violation_note(ChimiRuntime *runtime, uint64_t task, const char *text) {
-  CapabilityViolationNote *note = malloc(sizeof(*note));
-  char *message = strdup(text);
-  if (!note || !message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
-  *note = (CapabilityViolationNote){.task = task, .message = message, .next = runtime->capability_violations};
-  runtime->capability_violations = note;
-}
-
-/* The message of a task using a Task handle it does not own, or one naming no
-   task. The handle travelled where the checker does not follow it, for
-   example inside a closure held by an interface value (CHI-311, CHI-316). */
-static void task_violation_text(const ChimiCapabilityViolation *violation, char *text, size_t size) {
-  char action[96];
-  switch (violation->request_kind) {
-    case CHIMI_REQUEST_TASK_RESULT:
-      snprintf(action, sizeof(action), "read the result of task %" PRIu64, violation->destination);
-      break;
-    case CHIMI_REQUEST_TASK_CANCEL:
-      snprintf(action, sizeof(action), "cancel task %" PRIu64, violation->destination);
-      break;
-    default:
-      snprintf(action, sizeof(action), "wait for task %" PRIu64, violation->destination);
-      break;
-  }
-  char holder[64];
-  if (violation->reason == CHIMI_VIOLATION_UNKNOWN_TASK)
-    snprintf(holder, sizeof(holder), "there is no such task");
-  else if (violation->owner == 0)
-    snprintf(holder, sizeof(holder), "no task owns it");
-  else
-    snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
-  snprintf(text, size, "task capability violation: task %" PRIu64 " cannot %s: %s",
-           violation->task, action, holder);
-}
-
-/* Records the defect message of a channel or task capability violation
-   (task-and-channel-capabilities.md, "Checked at run time"). The exclusive-move
-   rule does not follow a capability across function boundaries, so this is the
-   check that turns two owners of one Receiver or Completion into a defect. */
-static void record_capability_violation(void *context, const ChimiCapabilityViolation *violation) {
-  ChimiRuntime *runtime = context;
-  char text[320];
-  if (violation->capability == CHIMI_CAPABILITY_TASK) {
-    task_violation_text(violation, text, sizeof(text));
-    add_violation_note(runtime, violation->task, text);
-    return;
-  }
-  char holder[96];
-  if (violation->owner == 0)
-    snprintf(holder, sizeof(holder), "the task it was handed to has ended");
-  /* The task owns the capability, so the copy it used failed the token check:
-     another copy has replaced it. The owner may already have closed or aborted
-     the current copy, so the message names ownership, not a live copy. */
-  else if (violation->owner == violation->task)
-    snprintf(holder, sizeof(holder), "this copy is stale; task %" PRIu64
-             " owns the capability", violation->task);
-  else
-    snprintf(holder, sizeof(holder), "task %" PRIu64 " owns it", violation->owner);
-  bool transfer = violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER ||
-                  violation->request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION;
-  switch (violation->reason) {
-    case CHIMI_VIOLATION_WRONG_OWNER:
-      if (transfer)
-        snprintf(text, sizeof(text),
-                 "channel capability violation: task %" PRIu64 " cannot hand the %s of channel %"
-                 PRIu64 " to task %" PRIu64 ": %s", violation->task,
-                 capability_name(violation->capability), violation->channel,
-                 violation->destination, holder);
-      else
-        snprintf(text, sizeof(text),
-                 "channel capability violation: task %" PRIu64 " cannot use the %s of channel %"
-                 PRIu64 " in %s: %s", violation->task, capability_name(violation->capability),
-                 violation->channel, channel_operation(violation->request_kind), holder);
-      break;
-    case CHIMI_VIOLATION_IN_FLIGHT:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " cannot %s the %s of channel %" PRIu64
-               "%s%s: this copy is stale; the capability was sent in a message no task has "
-               "received yet", violation->task, transfer ? "hand" : "use",
-               capability_name(violation->capability), violation->channel,
-               transfer ? "" : " in ", transfer ? "" : channel_operation(violation->request_kind));
-      break;
-    case CHIMI_VIOLATION_OVERLAPPING_OPERATION:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64
-               " started a channel operation while its previous one was still pending",
-               violation->task);
-      break;
-    case CHIMI_VIOLATION_PENDING_OPERATION:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " cannot hand a channel capability to task %"
-               PRIu64 " while an operation on it is pending", violation->task, violation->destination);
-      break;
-    case CHIMI_VIOLATION_UNKNOWN_CHANNEL:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " used channel %" PRIu64
-               " after it was released", violation->task, violation->channel);
-      break;
-    case CHIMI_VIOLATION_PUBLISHED_CAPABILITY:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " cannot publish a value holding a "
-               "Receiver or Completion on channel %" PRIu64 ", because every subscriber gets a copy",
-               violation->task, violation->channel);
-      break;
-    case CHIMI_VIOLATION_OWN_RECEIVER:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " cannot send the Receiver of channel %"
-               PRIu64 " through that same channel, because nobody could ever receive the message",
-               violation->task, violation->channel);
-      break;
-    case CHIMI_VIOLATION_WRONG_KIND:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " cannot use channel %" PRIu64
-               " in %s: that operation does not apply to this kind of channel",
-               violation->task, violation->channel, channel_operation(violation->request_kind));
-      break;
-    default:
-      snprintf(text, sizeof(text),
-               "channel capability violation: task %" PRIu64 " released channel %" PRIu64
-               " while a task still holds it", violation->task, violation->channel);
-      break;
-  }
-  add_violation_note(runtime, violation->task, text);
-}
-
-/* The capability-violation message of the task the scheduler defected, if any. */
-static const char *capability_violation_of(ChimiRuntime *runtime, uint64_t task) {
-  for (CapabilityViolationNote *note = runtime->capability_violations; note; note = note->next)
-    if (note->task == task) return note->message;
-  return NULL;
-}
-
-/* Builds the root's virtual-time deadlock defect: each parked task and the
-   operation it waits on (time-and-outcomes.md, "Virtual time"). */
-static void record_deadlock(void *context, const ChimiDeadlockWaiter *waiters, size_t count) {
-  ChimiRuntime *runtime = context;
-  static const char prefix[] =
-    "virtual-time deadlock: every task is parked and no timer is pending:";
-  size_t capacity = sizeof(prefix) + count * 64;
-  char *message = malloc(capacity);
-  if (!message) { fputs("Chimi runtime allocation failed\n", stderr); runtime_exit(70); }
-  size_t length = (size_t)snprintf(message, capacity, "%s", prefix);
-  for (size_t index = 0; index < count; ++index)
-    length += (size_t)snprintf(message + length, capacity - length, "%s task %" PRIu64 " waits on %s",
-                               index == 0 ? "" : ";", waiters[index].task,
-                               waited_operation(waiters[index].request_kind));
-  runtime->deadlock_waiters = message;
-}
-
-#if CHIMI_PROCESS_KERNEL
-/* Keeps the latest defected incarnation and its message: the one its body
-   reported as it ended, or a stack overflow the scheduler saw. */
-static void record_process_defect(void *context, const ChimiProcessTermination *termination) {
-  ChimiRuntime *runtime = context;
-  char *message = NULL;
-  if (termination->stack_overflow || termination->message) {
-    message = strdup(termination->stack_overflow ? "Process stack overflow" : termination->message);
-    if (!message) exhausted_memory();
-  }
-  free(runtime->last_defect_message);
-  runtime->last_defect_message = message;
-  runtime->last_defect_incarnation = termination->incarnation;
-  runtime->last_defect_membership = termination->membership;
-  ++runtime->process_defect_count;
-}
-#endif
-
-/* `message`, followed by the latest process defect when one happened: a root that
-   cannot finish is often waiting on a process that defected, and with tracing off
-   nothing else says so. The result belongs to the defect it is passed to. */
-static const char *with_process_defect(ChimiRuntime *runtime, const char *message) {
-  if (!runtime->process_defect_count) return message;
-  const char *defect = runtime->last_defect_message ? runtime->last_defect_message : "defect";
-  char count[64] = "";
-  if (runtime->process_defect_count > 1)
-    snprintf(count, sizeof(count), " (the last of %" PRIu64 " process defects)",
-             runtime->process_defect_count);
-  size_t capacity = strlen(message) + strlen(defect) + 160;
-  char *combined = malloc(capacity);
-  if (!combined) exhausted_memory();
-  snprintf(combined, capacity, "%s; process incarnation %" PRIu64 " of membership %" PRIu64
-           " defected%s: %s", message, runtime->last_defect_incarnation,
-           runtime->last_defect_membership, count, defect);
-  return combined;
-}
+/* The scheduler's capability-violation, deadlock and process-defect reports
+   and the defect messages they leave, in scheduler_reports.rs. */
+void chimi_runtime_record_capability_violation_v1(void *context, const ChimiCapabilityViolation *violation);
+const char *chimi_runtime_capability_violation_of_v1(const ChimiRuntime *runtime, uint64_t task);
+void chimi_runtime_record_deadlock_v1(void *context, const ChimiDeadlockWaiter *waiters, size_t count);
+void chimi_runtime_record_process_defect_v1(void *context, const ChimiProcessTermination *termination);
+const char *chimi_runtime_with_process_defect_v1(const ChimiRuntime *runtime, const char *message);
 
 /* The signal handlers and std/signal are Rust (intrinsics/signals.rs). */
 extern bool chimi_runtime_install_stop_signals_v1(ChimiRuntime *runtime);
@@ -3962,12 +3795,12 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .trace_sink = chimi_trace_scheduler_event_v1,
     .trace_context = runtime,
     .release_context = runtime,
-    .deadlock_report = record_deadlock,
+    .deadlock_report = chimi_runtime_record_deadlock_v1,
     .deadlock_context = runtime,
-    .capability_violation_report = record_capability_violation,
+    .capability_violation_report = chimi_runtime_record_capability_violation_v1,
     .capability_violation_context = runtime,
 #if CHIMI_PROCESS_KERNEL
-    .process_defect_report = record_process_defect,
+    .process_defect_report = chimi_runtime_record_process_defect_v1,
     .process_defect_context = runtime,
 #endif
     .release_task_value = chimi_runtime_release_task_word_v1,
@@ -4019,9 +3852,9 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     return chimi_runtime_task_reply_v1(outcome.defect_code);
   if (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code == CHIMI_SCHEDULER_DEFECT_DEADLOCK &&
       runtime->deadlock_waiters)
-    return defect(with_process_defect(runtime, runtime->deadlock_waiters), -1);
+    return defect(chimi_runtime_with_process_defect_v1(runtime, runtime->deadlock_waiters), -1);
   const char *violation = outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0
-    ? capability_violation_of(runtime, outcome.origin) : NULL;
+    ? chimi_runtime_capability_violation_of_v1(runtime, outcome.origin) : NULL;
   if (violation) return defect(violation, -1);
   /* A root supervisor escalated: the scheduler ends every root task with this code,
      parked or runnable, and the program ends with the escalation's defect. */
@@ -4034,7 +3867,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
      deadlock as before, leaving the suspended tasks to process exit. */
   if (outcome.state == CHIMI_FIBER_PARKED ||
       (outcome.state == CHIMI_FIBER_DEFECTED && outcome.defect_code < 0))
-    return defect(with_process_defect(runtime,
+    return defect(chimi_runtime_with_process_defect_v1(runtime,
                                       "Task scheduler defected: the root task could not finish, "
                                       "because every task is parked (deadlock) or the scheduler failed"),
                   -1);

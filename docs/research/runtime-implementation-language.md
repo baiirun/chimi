@@ -304,9 +304,13 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       static area before the entry runs; runtime.c keeps the static area
       itself and the shared Void, False and True.
       Ninth PR: the outcome record and its JSON value writer
-      (`outcome.rs`) and the operation profile (`reports.rs`). The memory
-      report, capability violations and deadlock records follow, then
-      startup and argument parsing.
+      (`outcome.rs`) and the operation profile (`reports.rs`).
+      Tenth PR: the messages the scheduler's reports leave for the root
+      (`scheduler_reports.rs`): capability violations, the virtual-time
+      deadlock and the latest process defect. The scheduler calls the
+      Rust exports directly; runtime.c only reads the messages when the
+      root ends. The memory report follows, then startup and argument
+      parsing.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

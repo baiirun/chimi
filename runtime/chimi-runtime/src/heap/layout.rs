@@ -590,6 +590,56 @@ impl FiberResult {
     pub const PROCESS_END_FAILED: i64 = 1;
 }
 
+/// `ChimiDeadlockWaiter` (chimi_fiber.h): a task parked in a detected
+/// deadlock and the request kind it waits on.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DeadlockWaiter {
+    pub task: u64,
+    pub request_kind: u32,
+}
+
+/// `ChimiCapabilityViolation` (chimi_fiber.h): a task's use of a channel or
+/// task capability the scheduler refused.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapabilityViolation {
+    pub task: u64,
+    pub channel: u64,
+    pub owner: u64,
+    pub destination: u64,
+    pub request_kind: u32,
+    pub capability: u32,
+    pub reason: u32,
+}
+
+impl CapabilityViolation {
+    pub const WRONG_OWNER: u32 = 1;
+    pub const OVERLAPPING_OPERATION: u32 = 2;
+    pub const PENDING_OPERATION: u32 = 3;
+    pub const UNKNOWN_CHANNEL: u32 = 4;
+    pub const CHANNEL_STILL_LIVE: u32 = 5;
+    pub const IN_FLIGHT: u32 = 6;
+    pub const PUBLISHED_CAPABILITY: u32 = 7;
+    pub const WRONG_KIND: u32 = 8;
+    pub const OWN_RECEIVER: u32 = 9;
+    pub const UNKNOWN_TASK: u32 = 10;
+    pub const RECEIVER: u32 = 1;
+    pub const COMPLETION: u32 = 2;
+    pub const TASK: u32 = 3;
+}
+
+/// `ChimiProcessTermination` (chimi_fiber.h): how one incarnation ended.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessTermination {
+    pub membership: u64,
+    pub incarnation: u64,
+    pub cause: u64,
+    pub stack_overflow: u32,
+    pub message: *const c_char,
+}
+
 /// `ChimiCarriedCapability` (chimi_fiber.h): one Receiver or Completion a
 /// sent message holds, with the sender's token.
 #[repr(C)]
@@ -636,6 +686,7 @@ impl Scheduler {
     pub const REQUEST_CHANNEL_ABORT: u32 = 8;
     pub const REQUEST_CHANNEL_TRANSFER_RECEIVER: u32 = 9;
     pub const REQUEST_CHANNEL_TRANSFER_COMPLETION: u32 = 10;
+    pub const REQUEST_CHANNEL_RELEASE: u32 = 24;
     pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
     pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
     pub const REQUEST_IO_WAIT: u32 = 48;
@@ -1751,6 +1802,37 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerRequest" SchedulerRequest, "entry", entry)
     field("ChimiSchedulerRequest" SchedulerRequest, "context", context)
     constant("CHILD_RESULT_TAG" CHILD_RESULT_TAG)
+    size("ChimiDeadlockWaiter" DeadlockWaiter)
+    field("ChimiDeadlockWaiter" DeadlockWaiter, "task", task)
+    field("ChimiDeadlockWaiter" DeadlockWaiter, "request_kind", request_kind)
+    size("ChimiCapabilityViolation" CapabilityViolation)
+    field("ChimiCapabilityViolation" CapabilityViolation, "task", task)
+    field("ChimiCapabilityViolation" CapabilityViolation, "channel", channel)
+    field("ChimiCapabilityViolation" CapabilityViolation, "owner", owner)
+    field("ChimiCapabilityViolation" CapabilityViolation, "destination", destination)
+    field("ChimiCapabilityViolation" CapabilityViolation, "request_kind", request_kind)
+    field("ChimiCapabilityViolation" CapabilityViolation, "capability", capability)
+    field("ChimiCapabilityViolation" CapabilityViolation, "reason", reason)
+    size("ChimiProcessTermination" ProcessTermination)
+    field("ChimiProcessTermination" ProcessTermination, "membership", membership)
+    field("ChimiProcessTermination" ProcessTermination, "incarnation", incarnation)
+    field("ChimiProcessTermination" ProcessTermination, "cause", cause)
+    field("ChimiProcessTermination" ProcessTermination, "stack_overflow", stack_overflow)
+    field("ChimiProcessTermination" ProcessTermination, "message", message)
+    constant("CHIMI_REQUEST_CHANNEL_RELEASE" Scheduler::REQUEST_CHANNEL_RELEASE)
+    constant("CHIMI_VIOLATION_WRONG_OWNER" CapabilityViolation::WRONG_OWNER)
+    constant("CHIMI_VIOLATION_OVERLAPPING_OPERATION" CapabilityViolation::OVERLAPPING_OPERATION)
+    constant("CHIMI_VIOLATION_PENDING_OPERATION" CapabilityViolation::PENDING_OPERATION)
+    constant("CHIMI_VIOLATION_UNKNOWN_CHANNEL" CapabilityViolation::UNKNOWN_CHANNEL)
+    constant("CHIMI_VIOLATION_CHANNEL_STILL_LIVE" CapabilityViolation::CHANNEL_STILL_LIVE)
+    constant("CHIMI_VIOLATION_IN_FLIGHT" CapabilityViolation::IN_FLIGHT)
+    constant("CHIMI_VIOLATION_PUBLISHED_CAPABILITY" CapabilityViolation::PUBLISHED_CAPABILITY)
+    constant("CHIMI_VIOLATION_WRONG_KIND" CapabilityViolation::WRONG_KIND)
+    constant("CHIMI_VIOLATION_OWN_RECEIVER" CapabilityViolation::OWN_RECEIVER)
+    constant("CHIMI_VIOLATION_UNKNOWN_TASK" CapabilityViolation::UNKNOWN_TASK)
+    constant("CHIMI_CAPABILITY_RECEIVER" CapabilityViolation::RECEIVER)
+    constant("CHIMI_CAPABILITY_COMPLETION" CapabilityViolation::COMPLETION)
+    constant("CHIMI_CAPABILITY_TASK" CapabilityViolation::TASK)
     size("ChimiFiberResult" FiberResult)
     field("ChimiFiberResult" FiberResult, "state", state)
     field("ChimiFiberResult" FiberResult, "value", value)

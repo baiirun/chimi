@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+REPORTS = "../../runtime/chimi-runtime/src/scheduler_reports.rs"
 TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 
 BACKSTOP = "native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader"
@@ -49,9 +50,9 @@ MUTATIONS = [
     ),
     dict(
         name="the runtime words a task violation like a channel one",
-        file=RUNTIME_C,
-        edits=[("  if (violation->capability == CHIMI_CAPABILITY_TASK) {\n    task_violation_text",
-                "  if (false) {\n    task_violation_text")],
+        file=REPORTS,
+        edits=[("        let text = if violation.capability == CapabilityViolation::TASK {",
+                "        let text = if false {")],
         targets=["cli"], filter=BACKSTOP,
     ),
     dict(
