@@ -6,6 +6,7 @@ Run: scripts/mutation/mutate.py scripts/mutation/metrics_read_mutations.py
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
 INTERPRETER = "src/execution/host_operations.rs"
 STD = "std/metrics.chimi"
 
@@ -15,20 +16,20 @@ def mutant(name, file, edits):
 
 
 MUTATIONS = [
-    mutant("a native read does not turn recording on", RUNTIME, [(
-        "  atomic_store_explicit(&metrics_reading, true, memory_order_release);\n",
+    mutant("a native read does not turn recording on", HOST, [(
+        "            READING.store(true, Ordering::Release);\n",
         "",
     )]),
-    mutant("native recording ignores the read flag", RUNTIME, [(
-        "  return runtime->metrics_file != NULL || atomic_load_explicit(&metrics_reading, memory_order_acquire);",
-        "  return runtime->metrics_file != NULL;",
+    mutant("native recording ignores the read flag", HOST, [(
+        "    !unsafe { (*runtime).metrics_file }.is_null() || READING.load(Ordering::Acquire)",
+        "    !unsafe { (*runtime).metrics_file }.is_null()",
     )]),
-    mutant("a native read is stamped with the run's start", RUNTIME, [(
-        "  if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;",
-        "  ended = runtime->start_unix_ns;",
+    mutant("a native read is stamped with the run's start", HOST, [(
+        "    let ended = unsafe { (*runtime).start_unix_ns.checked_add(chimi_fiber_now()) }.unwrap_or(i64::MAX);",
+        "    let ended = unsafe { (*runtime).start_unix_ns };",
     )]),
     mutant("a native read's start is not the run's", RUNTIME, [(
-        "  metrics_started_unix_ns = runtime.start_unix_ns;\n",
+        "  chimi_runtime_metrics_started_v1(runtime.start_unix_ns);\n",
         "",
     )]),
     mutant("an interpreter read does not turn recording on", INTERPRETER, [(

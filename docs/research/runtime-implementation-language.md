@@ -276,6 +276,9 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       A direct line is one `writev(2)` of the text and its newline instead of
       a stdio write and flush. runtime.c keeps the exit drain's `atexit`
       registration and points the log stream at `--log-file`.
+      Second PR: std/metrics' host core (`intrinsics/metrics_host.rs`): the
+      aggregate behind a `PthreadLocked`, the reading flag and the start
+      time; runtime.c notes the start and writes the document at exit.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

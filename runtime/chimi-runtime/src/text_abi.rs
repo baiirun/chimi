@@ -43,7 +43,8 @@ pub(crate) fn owned_text(text: String) -> ChimiOwnedText {
 
 /// # Safety
 ///
-/// `owned` must come from `chimi_metrics_document_v1` and not have been
+/// `owned` must come from `chimi_metrics_document_v1` or
+/// `chimi_runtime_metrics_document_v1` and not have been
 /// released already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn chimi_text_release_v1(owned: ChimiOwnedText) {

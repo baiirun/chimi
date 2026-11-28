@@ -24,6 +24,7 @@ pub mod durations;
 pub mod host;
 pub mod json;
 pub(crate) mod message;
+pub mod metrics_host;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod process_kernel;
 mod process_starts;

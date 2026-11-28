@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (the process kernel, signals, the metrics host, the other host
+//! (the process kernel, signals, the other host
 //! functions, and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
@@ -23,6 +23,7 @@ use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
 use super::json::json_operation;
+use super::metrics_host::metrics_operation;
 use super::processes::process_data_operation;
 use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
@@ -164,6 +165,9 @@ pub unsafe fn invoke_native(
             }
             Intrinsic::LOG_HOST_MINIMUM_LEVEL | Intrinsic::LOG_HOST_WRITE => {
                 log_operation(runtime, intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::METRICS_HOST_ENABLED..=Intrinsic::METRICS_HOST_DOCUMENT => {
+                metrics_operation(runtime, intrinsic, arguments(values, count), call_node)
             }
             Intrinsic::DURATION_NANOSECONDS..=Intrinsic::DURATION_PARSE => {
                 duration_operation(intrinsic, arguments(values, count), call_node)

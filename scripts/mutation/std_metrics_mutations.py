@@ -11,6 +11,7 @@ S = "std/metrics.chimi"
 H = "src/execution/host_operations.rs"
 E = "src/execution.rs"
 C = "runtime/native/runtime.c"
+HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
 
 
 def mutant(name, file, edits, filter="", targets=("std_metrics",)):
@@ -86,9 +87,9 @@ MUTATIONS = [
         "  qsort(order, metric_series_count, sizeof(*order), metric_series_order);",
         "",
     )]),
-    mutant("the native runtime records without the lock", C, [(
-        "  pthread_mutex_lock(&metrics_lock);\n  metrics_record(kind, name, name_length, value, labels, labels_length);\n  pthread_mutex_unlock(&metrics_lock);",
-        "  metrics_record(kind, name, name_length, value, labels, labels_length);",
+    mutant("the native runtime records without the lock", HOST, [(
+        "    AGGREGATE.with(|aggregate| aggregate.record(kind, name, value, labels));",
+        "    unsafe { (*(&raw const AGGREGATE).cast::<Aggregate>().cast_mut()).record(kind, name, value, labels) };",
     )], targets=("std_metrics", "runtime_state")),
     mutant("the native metrics file may be the log file under another spelling", C, [(
         "    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))",

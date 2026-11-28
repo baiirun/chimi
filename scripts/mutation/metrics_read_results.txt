@@ -1,12 +1,11 @@
-# mutation run at 227a0d76aa0d59bf00f654879b55a4f66ccff4a1
-# metrics_read_mutations.py: 8 mutants against compiler/chimi
-BASELINE ok  [std_metrics] (92s)
-KILLED       a native read does not turn recording on [std_metrics] (53s)
-KILLED       native recording ignores the read flag [std_metrics] (50s)
-KILLED       a native read is stamped with the run's start [std_metrics] (48s)
-KILLED       a native read's start is not the run's [std_metrics] (48s)
-KILLED       an interpreter read does not turn recording on [std_metrics] (68s)
-KILLED       the interpreter's recording ignores the read flag [std_metrics] (30s)
-KILLED       the provider decides once, when main starts [std_metrics] (58s)
-KILLED       the provider always records [std_metrics] (52s)
+# mutation run at ba8f3209 (std/metrics host moved to Rust)
+BASELINE ok  [std_metrics] (151s)
+KILLED       a native read does not turn recording on [std_metrics] (59s)
+KILLED       native recording ignores the read flag [std_metrics] (59s)
+KILLED       a native read is stamped with the run's start [std_metrics] (57s)
+KILLED       a native read's start is not the run's [std_metrics] (59s)
+KILLED       an interpreter read does not turn recording on [std_metrics] (69s)
+KILLED       the interpreter's recording ignores the read flag [std_metrics] (37s)
+KILLED       the provider decides once, when main starts [std_metrics] (54s)
+KILLED       the provider always records [std_metrics] (54s)
 # result: every mutant killed

@@ -1,22 +1,24 @@
-# mutation run at 2642710f1ce8d602c96143d58e5a931d012ddf8e
-# console_output_mutations.py: 10 mutants against compiler/chimi
-BASELINE ok  [console_output] (158s)
-BASELINE ok  [runtime_state] (11s)
-KILLED       every stream writes directly, blocking the scheduler [console_output] (118s)
-KILLED       a write after poll takes the whole queue, not PIPE_BUF [console_output] (112s)
-KILLED       a writer returns once its line is queued [console_output] (116s)
+# mutation runs at 0b3ad92e..cac02974 (PR 283: console output moved to Rust,
+# intrinsics/console_io.rs)
+# console_output_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [console_output] (146s)
+KILLED       every stream writes directly, blocking the scheduler [console_output] (114s)
+KILLED       a write after poll takes the whole queue, not PIPE_BUF [console_output] (114s)
+KILLED       a writer returns once its line is queued [console_output] (115s)
 KILLED       a writer does not wait for its line [console_output] (115s)
-KILLED       a written count does not advance the queue [console_output] (269s)
-KILLED       the end of the program drops lines still queued [console_output] (54s)
+KILLED       a written count does not advance the queue [console_output] (251s)
+KILLED       the end of the program drops lines still queued [console_output] (56s)
 TIMEOUT      a writer waits for readable instead of writable [console_output] (649s)
-SURVIVED     standard error keeps its own queue when it names standard output's file [console_output] (60s)
-SURVIVED     a failure also fails lines already written [console_output] (57s)
-KILLED       the streams are not listed as shared runtime state [runtime_state] (57s)
-# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+SURVIVED     standard error keeps its own queue when it names standard output's file [console_output] (55s)
+SURVIVED     a failure also fails lines already written [console_output] (54s)
+TIMEOUT      a direct line loses its newline [console_output] (651s)
+KILLED       a failed direct write reports success [console_output] (55s)
+KILLED       a stop signal does not end a write a full pipe holds [console_output] (111s)
 #
-# 8 of 10 killed (the readable-interest mutant hangs the flood test, which the
-# runner reports as TIMEOUT: a kill). The same two survive as before the move
-# to Rust, for the reasons recorded in the earlier run:
+# 10 of 12 killed (a TIMEOUT is a kill: the mutant hangs a test that waits
+# for a line). "a failed direct write reports success" survived the first
+# run and is killed by a_direct_write_to_a_closed_stdout_fails, rerun alone.
+# The same two survive as before the move to Rust:
 # - "standard error keeps its own queue when it names standard output's file"
 #   needs the long stdout line parked mid-line and the stderr writer woken
 #   first; no test can order reactor wakes.

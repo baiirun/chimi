@@ -54,6 +54,11 @@ pub struct Aggregate {
 }
 
 impl Aggregate {
+    /// An empty aggregate, for a `static`.
+    pub const fn new() -> Self {
+        Self { metrics: BTreeMap::new(), dropped_label_sets: 0, dropped_kind_conflicts: 0 }
+    }
+
     /// Adds one measurement of `kind` to the series `name` and `labels` name.
     /// A recorded series is found without allocating.
     pub fn record(&mut self, kind: i64, name: &str, value: f64, labels: &str) {
