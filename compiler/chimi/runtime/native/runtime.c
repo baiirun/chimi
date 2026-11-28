@@ -1768,6 +1768,7 @@ _Static_assert(CHIMI_REQUEST_CHANNEL_ABORT == 8, "layout: CHIMI_REQUEST_CHANNEL_
 _Static_assert(CHIMI_REQUEST_CHANNEL_ADD_RECEIVER == 36, "layout: CHIMI_REQUEST_CHANNEL_ADD_RECEIVER");
 _Static_assert(CHIMI_REQUEST_CHANNEL_BROADCAST == 37, "layout: CHIMI_REQUEST_CHANNEL_BROADCAST");
 _Static_assert(CHIMI_REQUEST_IO_WAIT == 48, "layout: CHIMI_REQUEST_IO_WAIT");
+_Static_assert(CHIMI_REQUEST_SIGNAL_WAIT == 45, "layout: CHIMI_REQUEST_SIGNAL_WAIT");
 _Static_assert(CHIMI_IO_WRITABLE == 2, "layout: CHIMI_IO_WRITABLE");
 _Static_assert(CHIMI_IO_READABLE == 1, "layout: CHIMI_IO_READABLE");
 _Static_assert(CHIMI_REQUEST_CHANNEL_WATCH == 38, "layout: CHIMI_REQUEST_CHANNEL_WATCH");
@@ -2102,6 +2103,8 @@ _Static_assert(CHIMI_INTRINSIC_FS_HOST_RENAME == 205, "layout: CHIMI_INTRINSIC_F
 _Static_assert(CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY == 206, "layout: CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY");
 _Static_assert(CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY == 207, "layout: CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY");
 _Static_assert(CHIMI_INTRINSIC_FS_TEST_ROOT == 208, "layout: CHIMI_INTRINSIC_FS_TEST_ROOT");
+_Static_assert(CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL == 209, "layout: CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL");
+_Static_assert(CHIMI_INTRINSIC_SIGNAL_HOST_WAIT == 210, "layout: CHIMI_INTRINSIC_SIGNAL_HOST_WAIT");
 _Static_assert(CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL == 211, "layout: CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL");
 _Static_assert(CHIMI_INTRINSIC_LOG_HOST_WRITE == 212, "layout: CHIMI_INTRINSIC_LOG_HOST_WRITE");
 _Static_assert(CHIMI_INTRINSIC_METRICS_HOST_ENABLED == 213, "layout: CHIMI_INTRINSIC_METRICS_HOST_ENABLED");
@@ -4292,17 +4295,12 @@ extern ChimiControl *chimi_intrinsic_scalar_v1(uint32_t intrinsic, ChimiValue **
 extern ChimiControl *chimi_intrinsic_host_v1(ChimiRuntime *runtime, bool cancel, uint32_t intrinsic,
                                              ChimiValue **arguments, uint32_t argument_count, uint32_t call_node);
 
-static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
-                                             uint32_t argument_count, uint32_t call_node);
-
 /* The intrinsics runtime.c still serves; the evaluator calls the Rust families
    directly (chimi-runtime intrinsics/dispatch.rs). */
 static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiValue **arguments, uint32_t argument_count,
                                       uint64_t span, uint32_t call_node,
                                       ChimiEnvironment *environment) {
-  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
-    return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   return defect("unknown standard intrinsic", call_node);
@@ -4866,15 +4864,12 @@ static const char *with_process_defect(ChimiRuntime *runtime, const char *messag
   return combined;
 }
 
-/* SIGINT and SIGTERM (G22). The first one cancels main. In a program on the
-   scheduler, the scheduler delivers it at its next step: main's children are
-   cancelled and every root supervisor it started stops, each member draining
-   within its shutdown_within. A program without the scheduler sets `cancel`,
-   which its host operations poll; blocking reads return EINTR to see it. A
-   second signal ends the program at once. */
-static volatile int32_t received_signal = 0;
-static int signal_pipe[2] = {-1, -1};
-static ChimiRuntime *signal_runtime = NULL;
+/* The signal handlers and std/signal are Rust (intrinsics/signals.rs). */
+extern bool chimi_runtime_install_stop_signals_v1(ChimiRuntime *runtime);
+extern int32_t *chimi_runtime_stop_signal_v1(void);
+extern int chimi_runtime_signal_fd_v1(void);
+extern uint32_t *chimi_runtime_user_signals_v1(void);
+extern _Noreturn void chimi_runtime_end_by_signal_v1(int number);
 
 /* A `std/cli.Exit` that `main` returned or failed with (CHI-252), applied
    after every release, the drain and the outcome record: `Code(n)` exits n,
@@ -4905,153 +4900,6 @@ static bool program_exit(const ChimiControl *control, int *status) {
   *status = written ? (help ? 0 : 2) : 74;
   return true;
 }
-
-static void end_by_signal(int number) {
-  /* Dying by the signal tells a parent (a shell, systemd, Kubernetes) that the
-     program stopped because it was asked to. As process 1 in a container a
-     default-action signal is ignored, so fall back to the shell's status. */
-  signal(number, SIG_DFL);
-  /* Inside the handler the signal is blocked; unblock it so it lands now. */
-  sigset_t unblock;
-  sigemptyset(&unblock);
-  sigaddset(&unblock, number);
-  sigprocmask(SIG_UNBLOCK, &unblock, NULL);
-  raise(number);
-  _exit(128 + number);
-}
-
-static void on_stop_signal(int number) {
-  if (received_signal != 0) end_by_signal(number);
-  received_signal = number;
-  int saved = errno;
-  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
-  errno = saved;
-  if (signal_runtime) signal_runtime->cancel = 1;
-}
-
-/* A descriptor above standard input, non-blocking and closed on exec. */
-static bool prepare_signal_descriptor(int *descriptor) {
-  if (*descriptor <= STDERR_FILENO) {
-    int moved = fcntl(*descriptor, F_DUPFD, STDERR_FILENO + 1);
-    if (moved < 0) return false;
-    close(*descriptor);
-    *descriptor = moved;
-  }
-  return fcntl(*descriptor, F_SETFL, O_NONBLOCK) == 0 && fcntl(*descriptor, F_SETFD, FD_CLOEXEC) == 0;
-}
-
-static void install_stop_signals(ChimiRuntime *runtime) {
-  bool scheduled = CHIMI_REQUIRES_SCHEDULER != 0;
-  if (scheduled) {
-    if (pipe(signal_pipe) != 0 || !prepare_signal_descriptor(&signal_pipe[0]) ||
-        !prepare_signal_descriptor(&signal_pipe[1])) {
-      fputs("Chimi runtime could not create its signal pipe\n", stderr);
-      runtime_exit(70);
-    }
-  } else {
-    signal_runtime = runtime;
-  }
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = on_stop_signal;
-  sigemptyset(&action.sa_mask);
-  sigaddset(&action.sa_mask, SIGINT);
-  sigaddset(&action.sa_mask, SIGTERM);
-  /* The scheduler sees a signal between steps, so interrupted reads restart;
-     without it, a read returns EINTR so the host operation sees `cancel`. */
-  action.sa_flags = scheduled ? SA_RESTART : 0;
-  sigaction(SIGINT, &action, NULL);
-  sigaction(SIGTERM, &action, NULL);
-}
-
-/* std/signal (CHI-249): SIGHUP, SIGUSR1 and SIGUSR2 as events a task waits
-   for. Their handler never stops the program: it sets bit `code - 1` of
-   `user_signals` and wakes the scheduler through the stop signals' pipe; the
-   scheduler latches the bits and hands each to one CHIMI_REQUEST_SIGNAL_WAIT.
-   The handlers are installed when the program's `signals` provider is built,
-   before main's body, and never removed, so a program that does not need
-   `signals` keeps the default actions (SIGHUP ends it). */
-static volatile uint32_t user_signals = 0;
-static const int user_signal_numbers[] = {SIGHUP, SIGUSR1, SIGUSR2};
-
-static void on_user_signal(int number) {
-  for (uint32_t code = 1; code <= 3; ++code)
-    if (user_signal_numbers[code - 1] == number) __atomic_fetch_or(&user_signals, 1u << (code - 1), __ATOMIC_SEQ_CST);
-  int saved = errno;
-  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
-  errno = saved;
-}
-
-/* Once per process, from whichever carrier first asks: a second caller
-   returns only after the handlers are in place. */
-static pthread_once_t user_signals_installed = PTHREAD_ONCE_INIT;
-static void install_user_signals_once(void) {
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = on_user_signal;
-  sigemptyset(&action.sa_mask);
-  for (size_t index = 0; index < 3; ++index) sigaddset(&action.sa_mask, user_signal_numbers[index]);
-  action.sa_flags = SA_RESTART;
-  for (size_t index = 0; index < 3; ++index) sigaction(user_signal_numbers[index], &action, NULL);
-}
-static void install_user_signals(void) { pthread_once(&user_signals_installed, install_user_signals_once); }
-
-/* host_install() and host_wait(codes). The wait passes the distinct codes in
-   their listed order and returns the one the scheduler hands it. Programs
-   that reach either always run on the scheduler. */
-static ChimiControl *invoke_signal_operation(uint32_t intrinsic, ChimiValue **arguments,
-                                             uint32_t argument_count, uint32_t call_node) {
-  if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL) {
-    if (argument_count != 0) return intrinsic_shape_defect(call_node);
-    install_user_signals();
-    return success(void_value());
-  }
-  if (argument_count != 1 || arguments[0]->kind != VALUE_LIST || !CHIMI_REQUIRES_SCHEDULER)
-    return intrinsic_shape_defect(call_node);
-  uint64_t packed = 0;
-  uint32_t count = 0;
-  for (uint32_t index = 0; index < list_length(arguments[0]); ++index) {
-    ChimiValue *code = list_get(arguments[0], index);
-    if (code->kind != VALUE_INTEGER || code->as.integer < 1 || code->as.integer > 3)
-      return intrinsic_shape_defect(call_node);
-    bool seen = false;
-    for (uint32_t earlier = 0; earlier < count; ++earlier)
-      seen = seen || ((packed >> (8 * earlier)) & 0xff) == (uint64_t)code->as.integer;
-    if (!seen) packed |= (uint64_t)code->as.integer << (8 * count++);
-  }
-  if (count == 0) return defect("Signal.next needs at least one signal to wait for", call_node);
-  for (;;) {
-    ChimiSchedulerRequest request = {.kind = CHIMI_REQUEST_SIGNAL_WAIT, .value = (int64_t)packed};
-    if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return cancelled();
-    if (request.status == CHIMI_RESPONSE_OK) return success(integer_value(request.value));
-    if (request.status != CHIMI_RESPONSE_PENDING) return intrinsic_shape_defect(call_node);
-  }
-}
-
-/* Child processes for binding packages (std/exec, CHI-250). SIGCHLD's
-   handler only writes to the stop signals' pipe, which wakes an idle
-   scheduler; CHIMI_REQUEST_CHILD_WAIT then checks every waiting child with
-   waitid(WNOWAIT), so the binding reaps the child itself. Installed once, by
-   the first chimi_binding_prepare_children, before the first spawn: an
-   inherited SIG_IGN would make the kernel reap children on its own. */
-static void on_child_signal(int number) {
-  (void)number;
-  int saved = errno;
-  if (signal_pipe[1] >= 0) (void)!write(signal_pipe[1], "", 1);
-  errno = saved;
-}
-
-/* Once per process, as install_user_signals. */
-static pthread_once_t child_signal_installed = PTHREAD_ONCE_INIT;
-static void prepare_children_once(void) {
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = on_child_signal;
-  sigemptyset(&action.sa_mask);
-  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-  sigaction(SIGCHLD, &action, NULL);
-}
-void chimi_binding_prepare_children(void) { pthread_once(&child_signal_installed, prepare_children_once); }
 
 static int binding_wait_pid(ChimiBindingCall *call, uint32_t handle, int pid);
 
@@ -5160,11 +5008,11 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
     .release_message = release_message_word,
     .release_spec_context = release_spec_context_word,
 #endif
-    .signal = &received_signal,
-    .signal_fd = signal_pipe[0],
+    .signal = chimi_runtime_stop_signal_v1(),
+    .signal_fd = chimi_runtime_signal_fd_v1(),
     .injected_signal = runtime->injected_signal,
     .injected_signal_at = runtime->injected_signal_at,
-    .user_signals = &user_signals,
+    .user_signals = chimi_runtime_user_signals_v1(),
     .injected_user_signals = runtime->injected_user_signals,
     .injected_user_signal_count = runtime->injected_user_signal_count,
     .carriers = runtime->carriers,
@@ -5227,7 +5075,7 @@ static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn en
 
 int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* A fatal runtime error exits from wherever it is; queued console lines still
-     go out. A second stop signal (end_by_signal) skips this and drops them. */
+     go out. A second stop signal (chimi_runtime_end_by_signal_v1) skips this and drops them. */
   carrier_bind(&carrier_first);
   atexit(chimi_runtime_console_drain_v1);
   struct timespec identity_time;
@@ -5563,7 +5411,10 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fprintf(stderr, "%" PRIu64 "\n", elapsed / benchmark_repeats);
     return write_failed ? 74 : 0;
   }
-  install_stop_signals(&runtime);
+  if (!chimi_runtime_install_stop_signals_v1(&runtime)) {
+    fputs("Chimi runtime could not create its signal pipe\n", stderr);
+    runtime_exit(70);
+  }
   runtime.start_unix_ns = start_unix_nanos(&runtime);
   chimi_runtime_metrics_started_v1(runtime.start_unix_ns);
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
@@ -5598,12 +5449,14 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     case CONTROL_SUCCESS: return 0;
     case CONTROL_FAILURE: return 1;
     case CONTROL_DEFECT: return 70;
-    case CONTROL_CANCEL:
+    case CONTROL_CANCEL: {
       /* A signal ended the program: an injected one reports the shell's
          status, a real one is re-raised. */
-      if (received_signal != 0 && runtime.injected_signal) return 128 + received_signal;
-      if (received_signal != 0) end_by_signal(received_signal);
+      int32_t received = *chimi_runtime_stop_signal_v1();
+      if (received != 0 && runtime.injected_signal) return 128 + received;
+      if (received != 0) chimi_runtime_end_by_signal_v1(received);
       return 130;
+    }
   }
   return 70;
 }

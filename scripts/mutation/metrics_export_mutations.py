@@ -21,8 +21,8 @@ MUTATIONS = [
         "    let ended = unsafe { (*runtime).start_unix_ns };",
     )]),
     mutant("the start is taken when tracing only", RUNTIME, [(
-        "  install_stop_signals(&runtime);\n  runtime.start_unix_ns = start_unix_nanos(&runtime);",
-        "  install_stop_signals(&runtime);\n  if (!runtime.silent) runtime.start_unix_ns = start_unix_nanos(&runtime);",
+        "  }\n  runtime.start_unix_ns = start_unix_nanos(&runtime);",
+        "  }\n  if (!runtime.silent) runtime.start_unix_ns = start_unix_nanos(&runtime);",
     )]),
     mutant("a count is not monotonic", EXPORT, [(
         ",\\\"aggregationTemporality\\\":{CUMULATIVE},\\\"isMonotonic\\\":true\"",

@@ -15,3 +15,30 @@ KILLED       a real signal exits instead of re-raising [signals -- sigterm_lets_
 KILLED       a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (69s)
 KILLED       a blocking read restarts after a signal [signals -- sigint_cancels_a_program_without_the_scheduler_while_it_reads_input] (69s)
 # result: every mutant killed
+
+# Rerun after the signal handlers moved to Rust (CHI-305 phase 8, fourth PR).
+# The exit and handler mutants now edit runtime.c's exit path and
+# intrinsics/signals.rs. Five mutants of chimi-fiber's process.rs and signal.rs
+# were already stale at the base and are not part of this change.
+KILLED       shutdown interrupts a sleeping handler [cargo run --quiet --bin chimi-process-lab -- --scenario RR05] (51s)
+STALE        shutdown cancels a running body: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler/process.rs
+STALE        a body that never ran is left to run: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler/process.rs
+STALE        a body that never ran drops the messages it accepted: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler/process.rs
+KILLED       a self-stop is not interrupted [cargo run --quiet --bin chimi-process-lab -- --scenario SD08] (50s)
+KILLED       a self-stop made during the drain waits for the deadline [cargo test --quiet -p chimi-fiber --lib -- a_stop_of_its_own_root_made_during_the_drain_is_answered_with_cancellation] (6s)
+KILLED       a draining body's receive is not woken [cargo run --quiet --bin chimi-process-lab -- --scenario SD13] (51s)
+KILLED-BUILD stop unroutes every member first [cargo run --quiet --bin chimi-process-lab -- --scenario SD06] (31s)
+KILLED       a drain silences timeout scopes [cargo run --quiet --bin chimi-process-lab -- --scenario SD12] (52s)
+STALE        a signal does not cancel the root: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler/signal.rs
+KILLED       a signal timer outlives the root [cargo run --quiet --bin chimi-process-lab -- --scenario SG03] (54s)
+STALE        an idle service reports a deadlock: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler/signal.rs
+KILLED       an injected signal exits 130 [cargo run --quiet --bin chimi-process-lab -- --scenario SG01] (54s)
+KILLED       a real signal exits instead of re-raising [signals -- sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm] (48s)
+SURVIVED     a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (115s)
+KILLED       a blocking read restarts after a signal [signals -- sigint_cancels_a_program_without_the_scheduler_while_it_reads_input] (116s)
+KILLED       a stop signal without the scheduler does not cancel [signals -- sigint_cancels_a_program_without_the_scheduler_while_it_reads_input] (115s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# "a second signal waits for the drain" survived: the test's 60 s finish limit let
+# the drained run pass. The test now requires the end within 30 s; rerun:
+KILLED       a second signal waits for the drain [signals -- a_second_signal_ends_the_program_at_once] (125s)
+# result: every mutant killed

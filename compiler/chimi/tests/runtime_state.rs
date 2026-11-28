@@ -47,13 +47,6 @@ const SHARED: &[&str] = &[
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
     "chimi_runtime_profile_rows",
-    // Signals: the handlers' fields, and the installers' once flags.
-    "received_signal",
-    "signal_pipe",
-    "signal_runtime",
-    "user_signals",
-    "user_signals_installed",
-    "child_signal_installed",
     // Set by the first fatal exit, so only one thread runs exit.
     "runtime_exiting",
     // The thread-local carrier's offset from the thread pointer, the same

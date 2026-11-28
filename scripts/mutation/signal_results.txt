@@ -14,3 +14,24 @@ Second run (the two new tests and the timeout, at b22fde6): all killed.
 "a latched signal wakes nobody" kills by hanging the tests (TIMEOUT).
 
 Final list: 16 mutants, all killed (one by timeout).
+
+# Rerun after the signal handlers moved to Rust (CHI-305 phase 8, fourth PR).
+# The handler and empty-wait mutants now edit intrinsics/signals.rs.
+# "an ending waiter is never withdrawn" was already stale at the base.
+KILLED       a taken signal stays pending [std_signal] (77s)
+KILLED       the last listed pending signal wins [std_signal] (77s)
+TIMEOUT      the newest waiter is woken first [std_signal] (675s)
+KILLED       a new wait takes a bit reserved for a woken waiter [std_signal] (79s)
+TIMEOUT      a latched signal wakes nobody [std_signal] (677s)
+STALE        an ending waiter is never withdrawn: edit text occurs 0 times in ../../runtime/chimi-fiber/src/scheduler.rs
+KILLED       a waiter does not keep a real-clock program waiting [std_signal] (82s)
+KILLED       injections after main still fire [std_signal] (81s)
+KILLED       an empty wait parks [cargo test --quiet -p chimi-fiber --lib -- a_wait_lists_codes] (5s)
+KILLED       the handler ignores SIGHUP [std_signal] (93s)
+KILLED       an injected HUP is dropped [std_signal] (122s)
+KILLED       an empty wait is not a defect [std_signal] (91s)
+KILLED       injected signals run under the real clock [std_signal] (94s)
+KILLED       the provider installs no handlers [std_signal] (76s)
+KILLED       User1 and User2 swap codes [std_signal] (77s)
+KILLED       the runner closes another need name for signals [std_signal] (75s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)

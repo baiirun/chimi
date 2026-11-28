@@ -197,9 +197,12 @@ fn a_second_signal_ends_the_program_at_once() {
     let executable = build_native(&scratch, "service", &service(60_000, 60));
     let mut running = Running::start(&executable);
     assert_eq!(running.next_line(), "ready");
+    let signalled = Instant::now();
     running.signal(SIGTERM);
     running.signal(SIGINT);
     let (rest, status) = running.finish();
+    // Waiting for the drain would take the job's whole minute.
+    assert!(signalled.elapsed() < Duration::from_secs(30), "the second signal waited for the drain");
     assert!(rest.is_empty(), "no job finished: {rest:?}");
     assert!(
         matches!(status.signal(), Some(SIGTERM | SIGINT)),

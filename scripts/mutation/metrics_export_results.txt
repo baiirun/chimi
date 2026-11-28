@@ -9,3 +9,14 @@ KILLED       dropped measurements go unreported [std_metrics] (29s)
 KILLED       an untimed document exports [std_metrics] (29s)
 KILLED       a time before 1970 is called missing [std_metrics] (29s)
 # result: every mutant killed
+
+# Rerun after the signal handlers moved to Rust (CHI-305 phase 8, fourth PR):
+KILLED       the document's end ignores the run's time [std_metrics] (62s)
+KILLED       the start is taken when tracing only [std_metrics] (63s)
+KILLED       a count is not monotonic [std_metrics] (66s)
+KILLED       label sets become separate metrics [std_metrics] (31s)
+KILLED       data points end at the start [std_metrics] (33s)
+KILLED       dropped measurements go unreported [std_metrics] (31s)
+KILLED       an untimed document exports [std_metrics] (31s)
+KILLED       a time before 1970 is called missing [std_metrics] (31s)
+# result: every mutant killed

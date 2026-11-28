@@ -284,6 +284,9 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       `intrinsics/random_host.rs`); every host callable now dispatches in
       Rust. A large all-zero buffer must be a static of its own, or it
       lands in initialized data and the program file grows by its size.
+      Fourth PR: the signal handlers, their wake pipe and std/signal's host
+      core (`intrinsics/signals.rs`); each handler is async-signal-safe
+      (atomics, `errno`, `write(2)` only).
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target
