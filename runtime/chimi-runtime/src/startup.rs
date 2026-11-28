@@ -1,17 +1,26 @@
-//! The runner's arguments (CHI-305 step 5, phase 8): `--chimi-runner`, the
-//! settings up to `--`, and the checks between them. runtime.c's
-//! `chimi_rt_main` calls these before it builds the carriers and opens the
-//! report files. Numbers are read with libc's `strtoull`, as runtime.c read
+//! How a run starts and ends (CHI-305 step 5, phase 8): the runner's
+//! arguments (`--chimi-runner`, the settings up to `--`, and the checks
+//! between them), opening the report files the run writes as it goes, and
+//! the exit status. runtime.c's `chimi_rt_main` calls these around the
+//! program's entry. Numbers are read with libc's `strtoull`, as runtime.c read
 //! them with `strtoul` and `strtoull`, so every accepted spelling is the same
 //! on the 64-bit targets Chimi builds for, where the two agree.
 
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::{CStr, c_char, c_void};
 
-use crate::heap::layout::{CARRIERS_MAX, InjectedSignal, MAX_INJECTED_SIGNALS, Runtime, RunnerOptions};
+use crate::heap::layout::{
+    CARRIERS_MAX, Constructor, Control, ControlKind, InjectedSignal, MAX_INJECTED_SIGNALS, Runtime, RunnerOptions,
+    ValueKind,
+};
+use crate::intrinsics::console_io::chimi_runtime_console_set_v1;
+use crate::intrinsics::signals::{chimi_runtime_end_by_signal_v1, chimi_runtime_stop_signal_v1};
+use crate::intrinsics::standard::{string, symbol};
+use crate::reports::{open_report, report_open_failure};
 use crate::telemetry::unsigned_spelling;
 
 unsafe extern "C" {
+    static CHIMI_CONSTRUCTORS: [Constructor; 0];
     static CHIMI_TEST_COUNT: u32;
     fn chimi_runtime_random_seed_v1(seed: u64);
     fn chimi_timestamp_parse_v1(text: *const u8, length: usize, nanoseconds: *mut i64) -> bool;
@@ -337,5 +346,232 @@ pub unsafe extern "C" fn chimi_runtime_check_report_paths_v1(runtime: *const Run
             return refuse(&[b"--profile-file cannot be combined with --benchmark-repeats"]);
         }
         0
+    }
+}
+
+/// The exit status of a run that could not open a report file (EX_IOERR).
+const IO_ERROR: i32 = 74;
+
+/// Whether `left` and `right` are one file, unless it is a character device
+/// such as /dev/null, which every report may share.
+fn one_file(left: &libc::stat, right: &libc::stat) -> bool {
+    left.st_dev == right.st_dev && left.st_ino == right.st_ino && (left.st_mode & libc::S_IFMT) != libc::S_IFCHR
+}
+
+/// The status of an open stream's file.
+///
+/// # Safety
+/// `stream` is an open `FILE *`.
+unsafe fn stream_status(stream: *mut c_void) -> Option<libc::stat> {
+    // SAFETY: the caller's contract; `stat` is plain data.
+    unsafe {
+        let mut status: libc::stat = core::mem::zeroed();
+        (libc::fstat(libc::fileno(stream.cast()), &mut status) == 0).then_some(status)
+    }
+}
+
+/// The status of the file at `path`.
+///
+/// # Safety
+/// `path` is a C string.
+unsafe fn path_status(path: *const c_char) -> Option<libc::stat> {
+    // SAFETY: the caller's contract; `stat` is plain data.
+    unsafe {
+        let mut status: libc::stat = core::mem::zeroed();
+        (libc::stat(path, &mut status) == 0).then_some(status)
+    }
+}
+
+/// Closes each open stream among `streams`, after a later report failed to
+/// open.
+///
+/// # Safety
+/// Each stream is null or an open `FILE *`.
+unsafe fn close_all(streams: &[*mut c_void]) {
+    for &stream in streams {
+        if !stream.is_null() {
+            // SAFETY: the caller's contract.
+            unsafe { libc::fclose(stream.cast()) };
+        }
+    }
+}
+
+/// Opens the report files the run writes as it goes into `runtime`: the
+/// telemetry (which `/dev/null` may be, shared), the runner outcome, the log
+/// (appended to, since a log outlives one run, and given the log stream) and
+/// the metrics. The same file under two spellings is refused, by comparing
+/// the opened files; the memory report and profile are opened only at exit,
+/// so the metrics file is compared with their paths. Returns 0, the usage
+/// status after a clash, or the I/O status after a failed open, with the
+/// reason on stderr.
+///
+/// # Safety
+/// `runtime` and `options` are live; no fiber runs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_open_reports_v1(runtime: *mut Runtime, options: *const RunnerOptions) -> i32 {
+    // SAFETY: the caller's contract; every path is null or a C string.
+    unsafe {
+        let options = &*options;
+        if !options.telemetry_path.is_null() {
+            let path = options.telemetry_path;
+            let mode = if CStr::from_ptr(path).to_bytes() == b"/dev/null" { c"w" } else { c"wx" };
+            (*runtime).telemetry = open_report(path, mode).cast();
+            if (*runtime).telemetry.is_null() {
+                report_open_failure(b"telemetry", path);
+                return IO_ERROR;
+            }
+        }
+        if !options.outcome_path.is_null() {
+            (*runtime).outcome = open_report(options.outcome_path, c"wx").cast();
+            if (*runtime).outcome.is_null() {
+                report_open_failure(b"outcome", options.outcome_path);
+                close_all(&[(*runtime).telemetry]);
+                return IO_ERROR;
+            }
+        }
+        if !options.log_path.is_null() {
+            (*runtime).log_file = open_report(options.log_path, c"a").cast();
+            if (*runtime).log_file.is_null() {
+                report_open_failure(b"log", options.log_path);
+                close_all(&[(*runtime).telemetry, (*runtime).outcome]);
+                return IO_ERROR;
+            }
+            for report in [(*runtime).telemetry, (*runtime).outcome] {
+                if report.is_null() {
+                    continue;
+                }
+                if let (Some(log), Some(other)) = (stream_status((*runtime).log_file), stream_status(report))
+                    && one_file(&log, &other)
+                {
+                    return refuse(&[b"the log file must be distinct from the runner's report files"]);
+                }
+            }
+            chimi_runtime_console_set_v1(2, libc::fileno((*runtime).log_file.cast()), false);
+        }
+        if !options.metrics_path.is_null() {
+            let clash = b"the metrics file must be distinct from the runner's report files and the log file";
+            // Compared before opening, since opening empties the file.
+            if let Some(metrics) = path_status(options.metrics_path)
+                && (metrics.st_mode & libc::S_IFMT) != libc::S_IFCHR
+            {
+                for opened in [(*runtime).telemetry, (*runtime).outcome, (*runtime).log_file] {
+                    if !opened.is_null()
+                        && let Some(other) = stream_status(opened)
+                        && metrics.st_dev == other.st_dev
+                        && metrics.st_ino == other.st_ino
+                    {
+                        return refuse(&[clash]);
+                    }
+                }
+            }
+            (*runtime).metrics_file = open_report(options.metrics_path, c"w").cast();
+            if (*runtime).metrics_file.is_null() {
+                report_open_failure(b"metrics", options.metrics_path);
+                close_all(&[(*runtime).telemetry, (*runtime).outcome, (*runtime).log_file]);
+                return IO_ERROR;
+            }
+            for later in [options.memory_report_path, options.profile_path] {
+                if !later.is_null()
+                    && let Some(other) = path_status(later)
+                    && let Some(opened) = stream_status((*runtime).metrics_file)
+                    && one_file(&opened, &other)
+                {
+                    return refuse(&[clash]);
+                }
+            }
+        }
+        0
+    }
+}
+
+/// The exit status of a run that ended with `control`. A program-exit value
+/// (std/cli's `Exit`, CHI-252) sets it: `Code(n)` exits with n, a defect (70)
+/// outside 0 to 255; `Help(text)` writes the text to `stdout` and exits 0;
+/// `Usage(_, message)` writes the message to `stderr` and exits 2; either
+/// exits 74 when the write fails. Otherwise a
+/// success exits 0, a failure 1, a defect 70, and a cancellation by a stop
+/// signal re-raises that signal, or reports the shell's status for an
+/// injected one; any other cancellation exits 130.
+///
+/// # Safety
+/// `control` is the run's live result; `stdout` and `stderr` are the C
+/// streams.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_exit_status_v1(
+    control: *const Control,
+    injected_signal: i32,
+    stdout: *mut libc::FILE,
+    stderr: *mut libc::FILE,
+) -> i32 {
+    // SAFETY: the caller's contract; a program-exit constructor's last field
+    // is an Int (Code) or a Text (Help, Usage).
+    unsafe {
+        let control = &*control;
+        if let Some(status) = program_exit(control, stdout, stderr) {
+            return status;
+        }
+        match control.kind {
+            ControlKind::SUCCESS => 0,
+            ControlKind::FAILURE => 1,
+            ControlKind::DEFECT => 70,
+            ControlKind::CANCEL => {
+                let received = core::ptr::read_volatile(chimi_runtime_stop_signal_v1());
+                if received != 0 && injected_signal != 0 {
+                    return 128 + received;
+                }
+                if received != 0 {
+                    chimi_runtime_end_by_signal_v1(received);
+                }
+                130
+            }
+            _ => 70,
+        }
+    }
+}
+
+/// The status a program-exit value sets, or `None` for any other result.
+///
+/// # Safety
+/// As [`chimi_runtime_exit_status_v1`].
+unsafe fn program_exit(control: &Control, stdout: *mut libc::FILE, stderr: *mut libc::FILE) -> Option<i32> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if control.kind != ControlKind::SUCCESS && control.kind != ControlKind::FAILURE {
+            return None;
+        }
+        let value = control.value;
+        if value.is_null() || (*value).kind != ValueKind::CONSTRUCTED {
+            return None;
+        }
+        let constructed = &(*value).payload.constructed;
+        let shape =
+            &*(&raw const CHIMI_CONSTRUCTORS).cast::<Constructor>().add(symbol(constructed.constructor).constructor as usize);
+        if shape.program_exit == 0 {
+            return None;
+        }
+        let field = &*(*constructed.fields.add(constructed.length as usize - 1)).value;
+        let variant = CStr::from_ptr(string(shape.variant_name)).to_bytes();
+        if variant == b"Code" {
+            let code = field.payload.integer;
+            if !(0..=255).contains(&code) {
+                let mut digits = [0; 20];
+                let spelled = unsigned_spelling(code.unsigned_abs(), &mut digits);
+                let sign: &[u8] = if code < 0 { b"-" } else { b"" };
+                let mut line = Vec::new();
+                for part in [&b"Chimi runtime: Exit.Code("[..], sign, spelled, b") is outside 0 to 255\n"] {
+                    line.extend_from_slice(part);
+                }
+                libc::fwrite(line.as_ptr().cast(), 1, line.len(), stderr);
+                return Some(70);
+            }
+            return Some(code as i32);
+        }
+        let help = variant == b"Help";
+        let stream = if help { stdout } else { stderr };
+        let text = &field.payload.text;
+        let written = libc::fwrite(text.bytes.cast(), 1, text.length, stream) == text.length
+            && libc::fputc(i32::from(b'\n'), stream) != libc::EOF
+            && libc::fflush(stream) == 0;
+        Some(if !written { 74 } else if help { 0 } else { 2 })
     }
 }

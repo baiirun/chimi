@@ -9,3 +9,9 @@ BASELINE ok  [std_log] (156s)
 KILLED       the native runner ignores --log-level [std_log] (58s)
 KILLED       the native log file may be the outcome file [std_log] (59s)
 # result: every mutant killed
+
+# 2026-11-28 report files and exit status to Rust (CHI-305 phase 8, thirteenth PR): retargeted mutants
+BASELINE ok  [std_log] (176s)
+KILLED       the native log file is truncated [std_log] (61s)
+KILLED       a respelled report path is accepted as the log file [std_log] (63s)
+# result: every mutant killed

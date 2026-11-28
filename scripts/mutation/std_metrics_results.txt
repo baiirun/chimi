@@ -14,3 +14,9 @@ SURVIVED     the native metrics file may be the profile file [std_metrics] (60s)
 # refused with the same message and status, by the check after the metrics file
 # is opened, which compares the profile's path (now existing) with it by
 # device and inode. The spelling check only refuses it earlier.
+
+# 2026-11-28 report files and exit status to Rust (CHI-305 phase 8, thirteenth PR): retargeted mutants
+BASELINE ok  [std_metrics] (172s)
+KILLED       the native metrics file may be the log file under another spelling [std_metrics] (61s)
+KILLED       the native metrics file may be the memory report under another spelling [std_metrics] (62s)
+# result: every mutant killed

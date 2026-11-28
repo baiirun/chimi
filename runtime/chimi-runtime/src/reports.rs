@@ -25,7 +25,7 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// `path` and `mode` are C strings.
-unsafe fn open_report(path: *const c_char, mode: &CStr) -> *mut libc::FILE {
+pub(crate) unsafe fn open_report(path: *const c_char, mode: &CStr) -> *mut libc::FILE {
     // SAFETY: the caller's contract.
     unsafe {
         let output = libc::fopen(path, mode.as_ptr());
@@ -55,7 +55,7 @@ fn errno() -> *mut i32 {
 ///
 /// # Safety
 /// `output` is an open stream.
-unsafe fn close_output(output: *mut libc::FILE) -> bool {
+pub(crate) unsafe fn close_output(output: *mut libc::FILE) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
         let failed = libc::fflush(output) != 0;
@@ -68,7 +68,7 @@ unsafe fn close_output(output: *mut libc::FILE) -> bool {
 ///
 /// # Safety
 /// `path` is a C string.
-unsafe fn report_open_failure(what: &[u8], path: *const c_char) {
+pub(crate) unsafe fn report_open_failure(what: &[u8], path: *const c_char) {
     // SAFETY: the caller's contract; strerror returns a C string.
     unsafe {
         let reason = CStr::from_ptr(libc::strerror(*errno())).to_bytes();

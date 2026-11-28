@@ -92,9 +92,9 @@ MUTATIONS = [
         "    AGGREGATE.with(|aggregate| aggregate.record(kind, name, value, labels));",
         "    unsafe { (*(&raw const AGGREGATE).cast::<Aggregate>().cast_mut()).record(kind, name, value, labels) };",
     )], targets=("std_metrics", "runtime_state")),
-    mutant("the native metrics file may be the log file under another spelling", C, [(
-        "    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))",
-        "    if (false)",
+    mutant("the native metrics file may be the log file under another spelling", STARTUP, [(
+        "            if let Some(metrics) = path_status(options.metrics_path)\n",
+        "            if let Some(metrics) = None::<libc::stat>\n",
     )]),
     mutant("the native metrics file may be the profile file", STARTUP, [(
         "if [telemetry, outcome, memory, profile, log].into_iter().any(|other| same(metrics, other)) {",
@@ -108,8 +108,8 @@ MUTATIONS = [
         "                *sum = if total.is_finite() { total } else { f64::MAX.copysign(total) };",
         "                *sum = if total.is_finite() { total } else { 0.0 };",
     )]),
-    mutant("the native metrics file may be the memory report under another spelling", C, [(
-        "      if (later[file] && stat(later[file], &open_status) == 0 &&",
-        "      if (false && later[file] && stat(later[file], &open_status) == 0 &&",
+    mutant("the native metrics file may be the memory report under another spelling", STARTUP, [(
+        "                if !later.is_null()\n                    && let Some(other) = path_status(later)\n",
+        "                if false\n                    && let Some(other) = path_status(later)\n",
     )]),
 ]

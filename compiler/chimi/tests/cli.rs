@@ -1767,6 +1767,9 @@ fn native_runner_settings_are_checked_before_the_program_runs() {
         owned(&["--clock=virtual", "--signal=HUP@2562047h", "--"]),
         owned(&["--max-line-bytes=4294967295", "--log-level=debug", "--"]),
         owned(&["--benchmark-repeats=abc", "--"]),
+        // A character device is shared, under any spelling.
+        owned(&["--telemetry-file=/dev/null", "--log-file=/dev/./null", "--"]),
+        owned(&["--log-file=/dev/null", "--metrics-file=/dev/./null", "--"]),
     ] {
         let output = run(&settings);
         assert_eq!(output.status.code(), Some(0), "{settings:?}: {}", String::from_utf8_lossy(&output.stderr));

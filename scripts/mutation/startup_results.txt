@@ -11,3 +11,9 @@ KILLED       the signal bound ignores the unit [cli -- native_runner_settings_ar
 KILLED       a 65th user signal is taken [cli -- native_runner_settings_are_checked_before_the_program_runs] (72s)
 KILLED       telemetry and outcome may be one file [cli -- native_runner_settings_are_checked_before_the_program_runs] (89s)
 # result: every mutant killed
+
+# 2026-11-28 thirteenth PR: shared character devices
+BASELINE ok  [cli -- native_runner_settings_are_checked_before_the_program_runs] (170s)
+KILLED       a character device is one file with itself [cli -- native_runner_settings_are_checked_before_the_program_runs] (60s)
+KILLED       a character device metrics file clashes with the log [cli -- native_runner_settings_are_checked_before_the_program_runs] (62s)
+# result: every mutant killed

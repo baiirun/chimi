@@ -316,8 +316,11 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       carrier-thread stress fixture, which also calls the Rust peak fold.
       Twelfth PR: the runner's settings (`startup.rs`): `--chimi-runner`,
       each setting up to `--`, and the checks that refuse clashing report
-      paths. runtime.c keeps the carrier count, opening the report files,
-      finding the entry and the exit status, which follow.
+      paths. runtime.c keeps the carrier count, finding the entry and
+      the run, which follow.
+      Thirteenth PR: opening the report files the run writes as it goes,
+      with their same-file checks, and the exit status, std/cli's `Exit`
+      included (`startup.rs`).
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

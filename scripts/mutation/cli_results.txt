@@ -34,3 +34,12 @@ KILLED       a cluster value h asks for help [std_modules -- standard_tests_pass
 KILLED       version after an error is a usage error [std_modules -- standard_tests_pass_on_both_backends] (52s)
 KILLED       help after -- is shown [std_modules -- standard_tests_pass_on_both_backends] (52s)
 # result: every mutant killed
+
+# 2026-11-28 report files and exit status to Rust (CHI-305 phase 8, thirteenth PR): retargeted mutants
+BASELINE ok  [std_cli] (133s)
+KILLED       native Help goes to standard error [std_cli] (98s)
+KILLED       native Usage exits 1 [std_cli] (93s)
+KILLED       native codes wrap [std_cli] (123s)
+KILLED       native Exit is ignored on failure [std_cli] (92s)
+KILLED       native Exit is ignored [std_cli] (96s)
+# result: every mutant killed
