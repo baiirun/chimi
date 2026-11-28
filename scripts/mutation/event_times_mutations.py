@@ -9,6 +9,7 @@ CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
 EXECUTION = "src/execution.rs"
+RUN = "../../runtime/chimi-runtime/src/run.rs"
 CLOCK = "../../runtime/chimi-fiber/src/scheduler/clock.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 
@@ -34,13 +35,13 @@ MUTATIONS = [
         "started ? INT64_C(0) : chimi_fiber_now());",
         "INT64_C(0));",
     )]),
-    mutant("the start ignores --clock-start", RUNTIME, [(
-        "  if (runtime->virtual_clock) return runtime->clock_start;",
-        "  if (runtime->virtual_clock) return 0;",
+    mutant("the start ignores --clock-start", RUN, [(
+        "        return unsafe { (*runtime).clock_start };",
+        "        return 0;",
     )]),
-    mutant("the real start is the origin", RUNTIME, [(
-        "  clock_gettime(CLOCK_REALTIME, &host);\n  return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;\n}\n\n/* The telemetry events are Rust",
-        "  (void)host;\n  return 0;\n}\n\n/* The telemetry events are Rust",
+    mutant("the real start is the origin", RUN, [(
+        "    clock_nanos(libc::CLOCK_REALTIME)\n",
+        "    0\n",
     )]),
     mutant("the interpreter writes no time", EXECUTION, [(
         "            output.push_str(\"\\\"time_ns\\\":0\");",

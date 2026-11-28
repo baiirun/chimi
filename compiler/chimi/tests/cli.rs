@@ -1555,6 +1555,75 @@ fn native_the_entry_is_main_and_refuses_arguments_it_cannot_take() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// `--benchmark-repeats` (run.rs): each repeat runs the entry afresh, with its
+// sequence numbers and spans started over, writes no outcome record, and the
+// run prints the mean nanoseconds of one repeat on stderr. The metrics
+// aggregate every repeat, so their start is the first repeat's.
+#[test]
+fn native_benchmark_repeats_run_the_entry_afresh_each_time() {
+    let scratch = scratch_directory("native-benchmark-repeats");
+    let executable = build_native(
+        &scratch,
+        "repeats",
+        "fn twice(x: Int) -> Int {\n  x * 2\n}\npub fn main() -> Int {\n  twice(1) + twice(2)\n}\n",
+    );
+    let telemetry = scratch.join("telemetry.jsonl");
+    let outcome = scratch.join("outcome.jsonl");
+    let metrics = scratch.join("metrics.json");
+    let run = Command::new(&executable)
+        .arg("--chimi-runner")
+        .arg("--benchmark-repeats=3")
+        .arg("--trace=full")
+        .arg(format!("--telemetry-file={}", telemetry.display()))
+        .arg(format!("--outcome-file={}", outcome.display()))
+        .arg(format!("--metrics-file={}", metrics.display()))
+        .arg("--")
+        .output()
+        .expect("run the repeats program");
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    let mean = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert!(
+        mean.ends_with('\n') && mean.len() > 1 && mean.trim_end().bytes().all(|byte| byte.is_ascii_digit()),
+        "{mean:?}"
+    );
+    assert!(run.stdout.is_empty());
+    assert_eq!(std::fs::read_to_string(&outcome).unwrap(), "");
+    let telemetry = std::fs::read_to_string(&telemetry).unwrap();
+    let field = |line: &str, name: &str| {
+        let start = line.find(&format!("\"{name}\":")).unwrap_or_else(|| panic!("{name} in {line}")) + name.len() + 3;
+        line[start..].split([',', '}']).next().unwrap().to_owned()
+    };
+    let mut repeats: Vec<Vec<(String, String, String)>> = Vec::new();
+    for line in telemetry.lines() {
+        let event = field(line, "event");
+        if event == "\"computation_started\"" {
+            repeats.push(Vec::new());
+        }
+        repeats.last_mut().expect("a repeat starts with its computation").push((
+            event,
+            field(line, "sequence"),
+            field(line, "span_id"),
+        ));
+    }
+    assert_eq!(repeats.len(), 3, "{telemetry}");
+    assert!(repeats[0].len() > 4, "{telemetry}");
+    for repeat in &repeats {
+        assert_eq!(repeat.last().unwrap().0, "\"computation_completed\"", "{telemetry}");
+    }
+    assert_eq!(repeats[1], repeats[0]);
+    assert_eq!(repeats[2], repeats[0]);
+    let first_start = field(telemetry.lines().next().unwrap(), "start_unix_ns");
+    let metrics = std::fs::read_to_string(&metrics).unwrap();
+    assert_eq!(field(&metrics, "start_unix_ns"), first_start, "{metrics}");
+    // A report that cannot be written fails the benchmark too.
+    let failed = Command::new(&executable)
+        .args(["--chimi-runner", "--benchmark-repeats=2", "--metrics-file=/dev/full", "--"])
+        .output()
+        .expect("run the repeats program into a full device");
+    assert_eq!(failed.status.code(), Some(74), "{}", String::from_utf8_lossy(&failed.stderr));
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // ----- Clock.sleep and the virtual clock (ts-6ccbc9 decision 6) ----------
 
 const CLOCK_IMPORTS: &str = concat!(

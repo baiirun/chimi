@@ -9,6 +9,11 @@
    usage: metrics-stress     prints "ok" */
 #include "runtime.c"
 
+/* The metrics document Rust builds, and its release (text_abi.rs). */
+typedef struct { const char *bytes; size_t length; void *owned; } ChimiOwnedText;
+void chimi_text_release_v1(ChimiOwnedText owned);
+ChimiOwnedText chimi_runtime_metrics_document_v1(const ChimiRuntime *runtime, int64_t start_unix_ns);
+
 const char *CHIMI_COMPUTATION = "heap-test";
 const uint32_t CHIMI_REQUIRES_SCHEDULER = 0;
 const char *CHIMI_STRINGS[] = {""};

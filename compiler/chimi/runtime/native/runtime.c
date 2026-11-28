@@ -302,7 +302,7 @@ struct ChimiRuntime {
   /* `--clock-start`: the virtual source's Timestamp at Instant zero, in Unix ns. */
   int64_t clock_start;
   /* The Unix time at the execution clock's origin, set as the computation
-     starts (start_unix_nanos). */
+     starts (run.rs). */
   int64_t start_unix_ns;
   /* The parked tasks of a virtual-time deadlock, from the scheduler's report. */
   char *deadlock_waiters;
@@ -2824,9 +2824,7 @@ static void *reallocate_bytes(void *value, size_t old_bytes, size_t new_bytes) {
 /* The value cells are Rust (chimi-runtime heap/values.rs). */
 ChimiValue *chimi_value_new_v1(ValueKind kind);
 ChimiControl *chimi_control_new_v1(ControlKind kind, ChimiValue *value, const char *message, int64_t node);
-ChimiValue **chimi_value_slots_new_v1(uint32_t count);
 ChimiValue **chimi_value_slots_clone_v1(ChimiValue *const *source, uint32_t count);
-ChimiEnvironment *chimi_environment_new_v1(uint32_t local_count);
 ChimiEnvironment *chimi_environment_clone_v1(const ChimiEnvironment *source, bool locals, bool requirements);
 ChimiValue *chimi_value_integer_v1(ValueKind kind, int64_t raw);
 ChimiValue *chimi_value_float_v1(double raw);
@@ -2921,7 +2919,6 @@ static void enter_carrier_thread(void *context, uint32_t index) {
   carrier_thread_enter(index);
 }
 
-static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, NULL, -1); }
 
 /* Timestamps (time-and-outcomes.md, "Timestamp"): signed nanoseconds since
    1970-01-01T00:00:00Z ignoring leap seconds, written in RFC 3339 UTC by the
@@ -2939,16 +2936,11 @@ static bool parse_timestamp(const char *text, int64_t *out) {
   return chimi_timestamp_parse_v1(text, strlen(text), out);
 }
 
-static ChimiValue **new_value_slots(uint32_t count) { return chimi_value_slots_new_v1(count); }
 static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
   return chimi_value_slots_clone_v1(source, count);
 }
-static ChimiEnvironment *new_environment(uint32_t local_count) { return chimi_environment_new_v1(local_count); }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   return chimi_environment_clone_v1(source, true, true);
-}
-static uint32_t environment_slot(uint32_t symbol) {
-  return CHIMI_SYMBOLS[symbol].environment_slot;
 }
 
 /* The list vector's builders are Rust (chimi-runtime heap/list.rs); the reads
@@ -3129,15 +3121,6 @@ static const char *process_name_label(uint64_t name) {
 
 
 
-/* The Unix time at the execution clock's origin: `--clock-start` under the
-   virtual clock, and under the real clock the host's wall time when the
-   computation starts, just before the scheduler takes its origin. */
-static int64_t start_unix_nanos(const ChimiRuntime *runtime) {
-  if (runtime->virtual_clock) return runtime->clock_start;
-  struct timespec host;
-  clock_gettime(CLOCK_REALTIME, &host);
-  return (int64_t)host.tv_sec * INT64_C(1000000000) + host.tv_nsec;
-}
 
 /* The telemetry events are Rust (chimi-runtime telemetry.rs), written under
    its own lock, which is taken after the kernel's. */
@@ -3276,12 +3259,6 @@ uint32_t chimi_runtime_scheduler_request_v1(void *request) {
   return scheduler_request(request);
 }
 
-static ChimiValue *application_arguments(int32_t count, const char **argv) {
-  ChimiValue **items = new_value_slots((uint32_t)count);
-  for (int32_t argument = 0; argument < count; ++argument) items[argument] = text_value(argv[argument]);
-  return list_from_values(items, (uint32_t)count);
-}
-
 /* Whether a direct integer root must run node by node: full tracing and profiling
    both observe every node. */
 int32_t chimi_rt_full_trace(const ChimiRuntime *runtime) { return runtime->full_trace || profile_rows; }
@@ -3410,34 +3387,12 @@ extern void chimi_runtime_random_seed_v1(uint64_t seed);
 extern void chimi_runtime_console_drain_v1(void);
 extern void chimi_runtime_console_set_v1(size_t index, int fd, bool direct);
 
-/* std/metrics' host core lives in Rust (chimi-runtime intrinsics/metrics_host.rs),
-   with the aggregate and its lock; runtime.c notes when the aggregate began
-   and writes the document to --metrics-file at exit. */
-/* A text Rust built, which C copies and then hands back (text_abi.rs). */
-typedef struct { const char *bytes; size_t length; void *owned; } ChimiOwnedText;
-void chimi_text_release_v1(ChimiOwnedText owned);
-extern void chimi_runtime_metrics_started_v1(int64_t start_unix_ns);
-extern ChimiOwnedText chimi_runtime_metrics_document_v1(const ChimiRuntime *runtime, int64_t start_unix_ns);
-
-static bool close_output(FILE *output);
-
-/* Writes the metrics document, whose counts began at `started`, at exit;
-   true when the write failed. */
-static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *output) {
-  if (!output) return false;
-  ChimiOwnedText document = chimi_runtime_metrics_document_v1(runtime, started);
-  fwrite(document.bytes, 1, document.length, output);
-  chimi_text_release_v1(document);
-  return close_output(output);
-}
-
 /* C bindings (G20). A binding function (chimi_binding.h) sees a call, never
    the runtime: values cross as ChimiBindingValue, which is ChimiValue, and its
    one result as ChimiBindingResult, which is ChimiControl. Rust serves the
    whole API: calls, handles, waits and cancellation checks
    (intrinsics/binding_calls.rs) and values (intrinsics/binding_values.rs). */
 extern void chimi_runtime_native_handle_unreferenced_v1(uint64_t key);
-extern void chimi_runtime_release_binding_handles_v1(void);
 
 /* The calls the evaluator hands back to C: the process kernel's intrinsics. */
 ChimiControl *chimi_runtime_invoke_native_v1(ChimiRuntime *runtime, ChimiCallable *callable,
@@ -3623,22 +3578,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
 void chimi_runtime_decode_constants_v1(void);
 static void decode_constants(void) { chimi_runtime_decode_constants_v1(); }
 
-/* The outcome record and its value's JSON form, in outcome.rs. */
-void chimi_runtime_print_outcome_v1(FILE *output, const ChimiControl *control);
-
-static bool close_output(FILE *output) {
-  if (output == NULL) return false;
-  bool failed = fflush(output) != 0;
-  if (fclose(output) != 0) failed = true;
-  return failed;
-}
-
-/* Writes the operation profile to `path`, in reports.rs; whether that failed. */
-bool chimi_runtime_write_profile_v1(const char *path);
-
-/* Writes the memory report to `path`, in reports.rs; whether that failed. */
-bool chimi_runtime_write_memory_report_v1(const char *path, const ChimiRuntime *runtime, bool process_kernel);
-
 /* The scheduler's capability-violation, deadlock and process-defect reports,
    in scheduler_reports.rs. */
 void chimi_runtime_record_capability_violation_v1(void *context, const ChimiCapabilityViolation *violation);
@@ -3652,9 +3591,6 @@ extern int chimi_runtime_signal_fd_v1(void);
 extern uint32_t *chimi_runtime_user_signals_v1(void);
 extern _Noreturn void chimi_runtime_end_by_signal_v1(int number);
 
-/* The exit status of a run that ended with `control`, a program-exit value's
-   or its outcome's; a stop signal is re-raised (startup.rs). */
-int32_t chimi_runtime_exit_status_v1(const ChimiControl *control, int32_t injected_signal, FILE *out, FILE *err);
 /* Opens the telemetry, outcome, log and metrics files; 0, or the exit status
    after a refusal (startup.rs). */
 int32_t chimi_runtime_open_reports_v1(ChimiRuntime *runtime, const ChimiRunnerOptions *options);
@@ -3673,6 +3609,15 @@ ChimiControl *chimi_runtime_run_root_v1(ChimiRuntime *runtime, const ChimiSchedu
    `entry`; 0, or the exit status (startup.rs). */
 int32_t chimi_runtime_program_entry_v1(ChimiRuntime *runtime, ChimiNodeFn entry, const ChimiRunnerOptions *options,
                                        int32_t argc, const ChimiFunction **function);
+
+/* Runs the program from its entry function and gives the exit status: the
+   benchmark repeats or the one run, its reports and its outcome (run.rs).
+   `execute` runs the entry once. */
+int32_t chimi_runtime_run_program_v1(ChimiRuntime *runtime, ChimiNodeFn entry, const ChimiFunction *function,
+                                     const ChimiRunnerOptions *options, int32_t argc, const char **argv,
+                                     bool process_kernel,
+                                     ChimiControl *(*execute)(ChimiRuntime *, ChimiNodeFn, ChimiEnvironment *),
+                                     FILE *out, FILE *err);
 
 static ChimiControl *execute_program_entry(ChimiRuntime *runtime, ChimiNodeFn entry,
                                            ChimiEnvironment *environment) {
@@ -3754,16 +3699,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
 #endif
   int32_t refused = chimi_runtime_parse_runner_v1(&runtime, argc, argv, simulation, &options);
   if (refused) return refused;
-  const int32_t index = options.first_argument;
   if (!options.carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);
   /* Before the program runs anything, so carriers 1 and up start zeroed. */
   carriers_create(runtime.carriers);
   refused = chimi_runtime_check_report_paths_v1(&runtime, &options);
   if (refused) return refused;
-  const char *memory_report_path = options.memory_report_path;
-  const char *profile_path = options.profile_path;
-  const uint32_t benchmark_repeats = options.benchmark_repeats;
-  if (profile_path) {
+  if (options.profile_path) {
     profile_rows = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*profile_rows));
     if (!profile_rows) exhausted_memory();
   }
@@ -3772,79 +3713,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   const ChimiFunction *entry_function = NULL;
   refused = chimi_runtime_program_entry_v1(&runtime, entry, &options, argc, &entry_function);
   if (refused) return refused;
-  const uint32_t entry_node = entry_function->body;
-  entry = CHIMI_NODE_FUNCTIONS[entry_node];
-  if (benchmark_repeats > 0) {
-    struct timespec started, finished;
-    clock_gettime(CLOCK_MONOTONIC, &started);
-    /* The metrics aggregate every repeat, so they start with the first. */
-    int64_t metrics_started = 0;
-    for (uint32_t repeat = 0; repeat < benchmark_repeats; ++repeat) {
-      runtime.next_sequence = 0;
-      runtime.next_span = 2;
-      for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
-        carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
-      runtime.start_unix_ns = start_unix_nanos(&runtime);
-      if (repeat == 0) chimi_runtime_metrics_started_v1(metrics_started = runtime.start_unix_ns);
-      if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-      ChimiEnvironment *environment = new_environment(entry_function->local_count);
-      if (entry_function->parameters_length == 1) {
-        ChimiValue *arguments = application_arguments(argc - index, argv + index);
-        environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
-      }
-      ChimiControl *control = runtime.cancel
-        ? cancelled()
-        : execute_program_entry(&runtime, entry, environment);
-      chimi_runtime_console_drain_v1();
-      chimi_runtime_release_binding_handles_v1();
-      if (control == NULL) return 70;
-      if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
-    }
-    bool write_failed = chimi_runtime_write_memory_report_v1(memory_report_path, &runtime, CHIMI_PROCESS_KERNEL);
-    write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
-    write_failed = write_metrics(&runtime, metrics_started, runtime.metrics_file) || write_failed;
-    runtime.metrics_file = NULL;
-    write_failed = close_output(runtime.telemetry) || write_failed;
-    runtime.telemetry = NULL;
-    write_failed = close_output(runtime.outcome) || write_failed;
-    runtime.outcome = NULL;
-    clock_gettime(CLOCK_MONOTONIC, &finished);
-    int64_t elapsed = (int64_t)(finished.tv_sec - started.tv_sec) * INT64_C(1000000000)
-                    + (int64_t)finished.tv_nsec - (int64_t)started.tv_nsec;
-    fprintf(stderr, "%" PRIu64 "\n", elapsed / benchmark_repeats);
-    return write_failed ? 74 : 0;
-  }
-  if (!chimi_runtime_install_stop_signals_v1(&runtime)) {
+  entry = CHIMI_NODE_FUNCTIONS[entry_function->body];
+  /* Under --benchmark-repeats the run installs no stop signals. */
+  if (options.benchmark_repeats == 0 && !chimi_runtime_install_stop_signals_v1(&runtime)) {
     fputs("Chimi runtime could not create its signal pipe\n", stderr);
     runtime_exit(70);
   }
-  runtime.start_unix_ns = start_unix_nanos(&runtime);
-  chimi_runtime_metrics_started_v1(runtime.start_unix_ns);
-  if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
-  ChimiEnvironment *environment = new_environment(entry_function->local_count);
-  if (entry_function->parameters_length == 1) {
-    ChimiValue *arguments = application_arguments(argc - index, argv + index);
-    environment->locals[environment_slot(CHIMI_IDS[entry_function->parameters_offset])] = arguments;
-  }
-  ChimiControl *control = runtime.cancel
-    ? cancelled()
-    : execute_program_entry(&runtime, entry, environment);
-  /* Lines whose writers were cancelled while they waited (CHI-266). */
-  chimi_runtime_console_drain_v1();
-  chimi_runtime_release_binding_handles_v1();
-  /* A log line already went out whole; a failed close loses nothing the
-     program could act on. */
-  if (runtime.log_file) {
-    chimi_runtime_console_set_v1(2, -1, false);
-    fclose(runtime.log_file);
-  }
-  if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
-  if (runtime.outcome) chimi_runtime_print_outcome_v1(runtime.outcome, control);
-  bool write_failed = chimi_runtime_write_memory_report_v1(memory_report_path, &runtime, CHIMI_PROCESS_KERNEL);
-  write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
-  write_failed = write_metrics(&runtime, runtime.start_unix_ns, runtime.metrics_file) || write_failed;
-  write_failed = close_output(runtime.telemetry) || write_failed;
-  write_failed = close_output(runtime.outcome) || write_failed;
-  if (write_failed) return 74;
-  return chimi_runtime_exit_status_v1(control, runtime.injected_signal, stdout, stderr);
+  return chimi_runtime_run_program_v1(&runtime, entry, entry_function, &options, argc, argv, CHIMI_PROCESS_KERNEL,
+                                      execute_program_entry, stdout, stderr);
 }

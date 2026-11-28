@@ -7,8 +7,8 @@ Run: scripts/mutation/mutate.py scripts/mutation/metrics_export_mutations.py
 CRATE = "compiler/chimi"
 
 EXPORT = "src/metrics_export.rs"
-RUNTIME = "runtime/native/runtime.c"
 HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
+RUN = "../../runtime/chimi-runtime/src/run.rs"
 
 
 def mutant(name, file, edits, filter=""):
@@ -20,9 +20,9 @@ MUTATIONS = [
         "    let ended = unsafe { (*runtime).start_unix_ns.checked_add(chimi_fiber_now()) }.unwrap_or(i64::MAX);",
         "    let ended = unsafe { (*runtime).start_unix_ns };",
     )]),
-    mutant("the start is taken when tracing only", RUNTIME, [(
-        "  }\n  runtime.start_unix_ns = start_unix_nanos(&runtime);",
-        "  }\n  if (!runtime.silent) runtime.start_unix_ns = start_unix_nanos(&runtime);",
+    mutant("the start is taken when tracing only", RUN, [(
+        "        (*runtime).start_unix_ns = start_unix_nanos(runtime);\n        chimi_runtime_metrics_started_v1",
+        "        if !(*runtime).silent {\n            (*runtime).start_unix_ns = start_unix_nanos(runtime);\n        }\n        chimi_runtime_metrics_started_v1",
     )]),
     mutant("a count is not monotonic", EXPORT, [(
         ",\\\"aggregationTemporality\\\":{CUMULATIVE},\\\"isMonotonic\\\":true\"",

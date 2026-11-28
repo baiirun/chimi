@@ -5,8 +5,8 @@ Run: scripts/mutation/mutate.py scripts/mutation/metrics_read_mutations.py
 
 CRATE = "compiler/chimi"
 
-RUNTIME = "runtime/native/runtime.c"
 HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
+RUN = "../../runtime/chimi-runtime/src/run.rs"
 INTERPRETER = "src/execution/host_operations.rs"
 STD = "std/metrics.chimi"
 
@@ -28,8 +28,8 @@ MUTATIONS = [
         "    let ended = unsafe { (*runtime).start_unix_ns.checked_add(chimi_fiber_now()) }.unwrap_or(i64::MAX);",
         "    let ended = unsafe { (*runtime).start_unix_ns };",
     )]),
-    mutant("a native read's start is not the run's", RUNTIME, [(
-        "  chimi_runtime_metrics_started_v1(runtime.start_unix_ns);\n",
+    mutant("a native read's start is not the run's", RUN, [(
+        "        chimi_runtime_metrics_started_v1((*runtime).start_unix_ns);\n",
         "",
     )]),
     mutant("an interpreter read does not turn recording on", INTERPRETER, [(
