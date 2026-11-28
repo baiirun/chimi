@@ -26,3 +26,8 @@ EXIT 0
 BASELINE ok  [cli -- native_a_receiver_] (56s)
 KILLED       a sent message carries no capabilities [cli -- native_a_receiver_] (58s)
 # result: every mutant killed
+
+# 2026-11-28 capability transfer to Rust (CHI-305 phase 8, sixth PR): retargeted mutants
+BASELINE ok  [cli -- native_a_receiver_] (173s)
+KILLED       the message's copies keep the sender's token [cli -- native_a_receiver_] (61s)
+# result: every mutant killed

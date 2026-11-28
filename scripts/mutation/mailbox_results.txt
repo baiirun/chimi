@@ -13,3 +13,9 @@ KILLED       native: the address renders as direct [testing -- mailbox] (47s)
 KILLED       native: a mailbox renders as a script [testing -- mailbox] (47s)
 KILLED       interpreter: Test.mailbox names the wrong requirement [testing -- mailbox] (50s)
 # result: every mutant killed
+
+# 2026-11-28 capability transfer to Rust (CHI-305 phase 8, sixth PR): retargeted mutants
+BASELINE ok  [testing -- mailbox] (169s)
+KILLED       native: a receiver is let through [testing -- mailbox] (59s)
+KILLED       native: the capability check sees nothing [testing -- mailbox] (59s)
+# result: every mutant killed

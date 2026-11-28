@@ -10,3 +10,8 @@ SURVIVED     a combinator child's overflow is a request failure [task_combinator
 KILLED       a removed child's position is not moved [task_combinators] (60s)
 # result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
 # Survivor "a combinator child's overflow is a request failure": a child's stack overflow, like a defect, unwinds the waiting parent's containment, so the combinator sees the overflow reply only while a process that is stopping absorbs it (absorbs_child_defect), and that incarnation ends with a defect either way. The C had the same branch untested.
+
+# 2026-11-28 capability transfer to Rust (CHI-305 phase 8, sixth PR): retargeted mutants
+BASELINE ok  [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (164s)
+KILLED       a child's exclusive captures are not transferred [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (58s)
+# result: every mutant killed

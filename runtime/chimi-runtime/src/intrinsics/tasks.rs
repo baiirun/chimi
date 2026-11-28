@@ -10,6 +10,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use super::capabilities::{self, chimi_runtime_transfer_to_child_v1};
 use super::causes::{cause_with_sibling, control_cause, control_with_cause, with_stored_cause};
 use super::standard::{defect, shape_defect, standard_value, success};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
@@ -27,12 +28,6 @@ unsafe extern "C" {
     /// The fiber entry of a started task: adopts the context's captures in a
     /// new heap, calls the callable and frees the context.
     fn chimi_runtime_task_entry_v1(context: *mut c_void) -> FiberResult;
-    /// A Task handle value, counted as a live reference.
-    fn chimi_runtime_task_value_v1(raw: u64) -> *mut Value;
-    /// Gives `child` the exclusive capabilities under `root`; false, with
-    /// `cancelled` set when this task was cancelled meanwhile, when one
-    /// cannot move.
-    fn chimi_runtime_transfer_to_child_v1(root: *mut Value, child: u64, cancelled: *mut bool) -> bool;
     /// The control a task's result word names.
     fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
     /// Prints "Chimi runtime exhausted memory" and exits 70.
@@ -45,7 +40,7 @@ unsafe extern "C" {
 /// Runs on a fiber that may allocate; `raw` names a task.
 pub(crate) unsafe fn task_value(raw: u64) -> *mut Value {
     // SAFETY: the caller's contract.
-    unsafe { chimi_runtime_task_value_v1(raw) }
+    unsafe { capabilities::task_value(raw) }
 }
 
 /// `ChimiFiberResult` (chimi_fiber.h), only so the entry's type is right.
@@ -136,7 +131,7 @@ pub(crate) unsafe fn start(call: TaskCall, callable: *mut Value) -> *mut Control
             }
             return defect(c"Task.start could not transfer an exclusive capture", node);
         }
-        success(chimi_runtime_task_value_v1(request.task))
+        success(task_value(request.task))
     }
 }
 

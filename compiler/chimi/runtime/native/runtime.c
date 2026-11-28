@@ -976,10 +976,9 @@ static void allocation_kind(void *value, AllocationKind kind) {
    reference to its channel or task, and each live native handle value as one
    reference to its handle, in whichever heap or fragment it is allocated, so a
    copy in transit (a message, a task's captures or result) counts while the
-   scheduler holds it. channel_capability_value, task_value and
-   native_handle_value create these values, the fragment copy is the only thing
-   that copies them, and the allocator's release the only thing that frees them; those
-   keep the counts (counted_handle_retain, counted_handle_drop).
+   scheduler holds it. Rust makes these values (intrinsics/capabilities.rs and
+   binding_calls.rs), the fragment copy is the only thing that copies them, and
+   the allocator's release the only thing that frees them; those keep the counts (counted_handle_retain, counted_handle_drop).
 
    Channel and task keys are counted by the scheduler (chimi_fiber_handle_retain
    in chimi_fiber.h): the channel id, or the task id with CHIMI_TASK_HANDLE_KEY
@@ -1593,6 +1592,16 @@ _Static_assert(offsetof(ChimiSchedulerRequest, entry) == 48, "layout: offsetof(C
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->entry) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->entry)");
 _Static_assert(offsetof(ChimiSchedulerRequest, context) == 56, "layout: offsetof(ChimiSchedulerRequest, context)");
 _Static_assert(sizeof(((ChimiSchedulerRequest *)0)->context) == 8, "layout: sizeof(((ChimiSchedulerRequest *)0)->context)");
+_Static_assert(sizeof(ChimiCarriedCapability) == 24, "layout: sizeof(ChimiCarriedCapability)");
+_Static_assert(offsetof(ChimiCarriedCapability, channel) == 0, "layout: offsetof(ChimiCarriedCapability, channel)");
+_Static_assert(sizeof(((ChimiCarriedCapability *)0)->channel) == 8, "layout: sizeof(((ChimiCarriedCapability *)0)->channel)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->channel) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->channel)");
+_Static_assert(offsetof(ChimiCarriedCapability, token) == 8, "layout: offsetof(ChimiCarriedCapability, token)");
+_Static_assert(sizeof(((ChimiCarriedCapability *)0)->token) == 8, "layout: sizeof(((ChimiCarriedCapability *)0)->token)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->token) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->token)");
+_Static_assert(offsetof(ChimiCarriedCapability, capability) == 16, "layout: offsetof(ChimiCarriedCapability, capability)");
+_Static_assert(sizeof(((ChimiCarriedCapability *)0)->capability) == 4, "layout: sizeof(((ChimiCarriedCapability *)0)->capability)");
+_Static_assert(CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->capability) == 2, "layout: CHIMI_LAYOUT_CLASS(((ChimiCarriedCapability *)0)->capability)");
 _Static_assert(sizeof(ChimiMessageCapabilities) == 16, "layout: sizeof(ChimiMessageCapabilities)");
 _Static_assert(offsetof(ChimiMessageCapabilities, items) == 0, "layout: offsetof(ChimiMessageCapabilities, items)");
 _Static_assert(sizeof(((ChimiMessageCapabilities *)0)->items) == 8, "layout: sizeof(((ChimiMessageCapabilities *)0)->items)");
@@ -1775,6 +1784,8 @@ _Static_assert(CHIMI_REQUEST_CHANNEL_SEND == 5, "layout: CHIMI_REQUEST_CHANNEL_S
 _Static_assert(CHIMI_REQUEST_CHANNEL_RECEIVE == 6, "layout: CHIMI_REQUEST_CHANNEL_RECEIVE");
 _Static_assert(CHIMI_REQUEST_CHANNEL_CLOSE == 7, "layout: CHIMI_REQUEST_CHANNEL_CLOSE");
 _Static_assert(CHIMI_REQUEST_CHANNEL_ABORT == 8, "layout: CHIMI_REQUEST_CHANNEL_ABORT");
+_Static_assert(CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER == 9, "layout: CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER");
+_Static_assert(CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION == 10, "layout: CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION");
 _Static_assert(CHIMI_REQUEST_CHANNEL_ADD_RECEIVER == 36, "layout: CHIMI_REQUEST_CHANNEL_ADD_RECEIVER");
 _Static_assert(CHIMI_REQUEST_CHANNEL_BROADCAST == 37, "layout: CHIMI_REQUEST_CHANNEL_BROADCAST");
 _Static_assert(CHIMI_REQUEST_IO_WAIT == 48, "layout: CHIMI_REQUEST_IO_WAIT");
@@ -3079,19 +3090,6 @@ static ChimiValue *callable_value(ChimiCallable *raw) { return chimi_value_point
 static ChimiValue *map_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_MAP, raw); }
 static ChimiValue *set_value(MapNode *raw) { return chimi_value_pointer_v1(VALUE_SET, raw); }
 static ChimiValue *json_number_value(const char *raw) { return chimi_value_json_number_v1(raw); }
-static ChimiValue *task_value(uint64_t raw) {
-  ChimiValue *v = new_value(VALUE_TASK);
-  v->as.task = raw;
-  counted_handle_retain(raw | CHIMI_TASK_HANDLE_KEY);
-  return v;
-}
-static ChimiValue *channel_capability_value(ValueKind kind, uint64_t channel,
-                                            uint64_t owner, uint64_t token) {
-  ChimiValue *value = new_value(kind);
-  value->as.capability = (RuntimeCapability){channel, owner, token};
-  counted_handle_retain(channel);
-  return value;
-}
 
 
 /* Parks the running fiber with `request`. The fiber may resume on another
@@ -3117,153 +3115,15 @@ static ChimiFiberCommand scheduler_request(void *request) {
   return command;
 }
 
+/* Gives `child` the exclusive capabilities under `root`; false (with
+   `*cancelled` when this task was cancelled meanwhile) when one cannot move
+   (chimi-runtime intrinsics/capabilities.rs). */
+bool chimi_runtime_transfer_to_child_v1(ChimiValue *root, uint64_t child, bool *cancelled);
+
 /* scheduler_request for the Rust intrinsics (chimi-runtime scheduler.rs). */
 uint32_t chimi_runtime_scheduler_request_v1(void *request);
 uint32_t chimi_runtime_scheduler_request_v1(void *request) {
   return scheduler_request(request);
-}
-
-/* Capability transfer for Task.start and the sends: the walk over the value graph
-   is Rust (chimi-runtime heap/transfer.rs) and calls back here for each Receiver,
-   Completion and managed handle it meets. For a transfer, `child` takes each
-   Receiver and Completion; when collecting for a send, each capability found is
-   recorded with the sender's token, and its copy in the message takes the
-   in-flight token (ChimiCarriedCapability). */
-typedef struct {
-  uint64_t child;
-  bool cancelled;
-  bool collect;
-  ChimiCarriedCapability *carried;
-  size_t carried_count;
-  size_t carried_capacity;
-  /* Managed process and supervisor handles met while collecting. Each has one
-     owner, so a value a broadcast or watch would copy must not hold one. */
-  size_t managed_count;
-} CapabilityTransfer;
-
-bool chimi_transfer_captures_v1(CapabilityTransfer *transfer, ChimiValue *root, uint64_t *probes);
-bool chimi_runtime_transfer_capability_v1(CapabilityTransfer *transfer, ChimiValue *value);
-
-static void collect_carried_capability(CapabilityTransfer *transfer, ChimiValue *value,
-                                       uint32_t capability) {
-  if (transfer->carried_count == transfer->carried_capacity) {
-    size_t capacity = transfer->carried_capacity ? transfer->carried_capacity * 2 : 8;
-    ChimiCarriedCapability *carried = realloc(transfer->carried, capacity * sizeof(*carried));
-    if (!carried) exhausted_memory();
-    transfer->carried = carried;
-    transfer->carried_capacity = capacity;
-  }
-  transfer->carried[transfer->carried_count++] = (ChimiCarriedCapability){
-    .channel = value->as.capability.channel,
-    .token = value->as.capability.token,
-    .capability = capability,
-  };
-  ++value->as.capability.token;
-}
-
-static bool transfer_captured_capability(CapabilityTransfer *transfer, ChimiValue *value,
-                                         uint32_t request_kind) {
-  if (transfer->collect) {
-    collect_carried_capability(transfer, value,
-                               request_kind == CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER
-                                 ? CHIMI_CAPABILITY_RECEIVER : CHIMI_CAPABILITY_COMPLETION);
-    return true;
-  }
-  ChimiSchedulerRequest request = {
-    .kind = request_kind,
-    .task = transfer->child,
-    .channel = value->as.capability.channel,
-    .owner = value->as.capability.owner,
-    .token = value->as.capability.token,
-  };
-  ChimiFiberCommand command = scheduler_request(&request);
-  if (command == CHIMI_FIBER_CANCEL) {
-    transfer->cancelled = true;
-    return false;
-  }
-  if (request.status != CHIMI_RESPONSE_OK) return false;
-  value->as.capability.owner = request.owner;
-  value->as.capability.token = request.token;
-  return true;
-}
-
-/* The defect for publishing a managed handle where every subscriber would get a copy:
-   a handle has one owner, so two copies would both look valid. */
-#define MANAGED_COPY_DEFECT(function)                                                    \
-  "channel capability violation: " function " cannot hold a managed process or "         \
-  "supervisor handle, because every subscriber gets a copy"
-
-/* Called by the walk for each capability value it meets. False when a transfer
-   request fails, or when the parent is cancelled meanwhile (`cancelled` is then
-   set); the walk then stops. */
-bool chimi_runtime_transfer_capability_v1(CapabilityTransfer *transfer, ChimiValue *value) {
-  switch (value->kind) {
-    case VALUE_CHANNEL_RECEIVER:
-      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);
-    case VALUE_CHANNEL_COMPLETION:
-      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_COMPLETION);
-    case VALUE_MANAGED_PROCESS:
-    case VALUE_MANAGED_SUPERVISOR:
-      if (transfer->collect) ++transfer->managed_count;
-      return true;
-    default: return false;
-  }
-}
-
-/* Transfers every capability reachable from `root`. False when a transfer request
-   fails, or when the parent is cancelled meanwhile (`cancelled` is then set). The
-   walk's probes count on the carrier it ends on, since a transfer request can move
-   the task to another carrier. */
-static bool transfer_captures(CapabilityTransfer *transfer, ChimiValue *root) {
-  uint64_t probes = 0;
-  bool transferred = chimi_transfer_captures_v1(transfer, root, &probes);
-  carrier->capture_transfer_probes += probes;
-  return transferred;
-}
-
-/* For the Rust channel intrinsics (chimi-runtime intrinsics/channels.rs): a
-   Receiver, Completion or Sender value, which counts as a live reference to
-   its channel; the Receivers and Completions a message carries, collected as
-   for a send (free the list), with the number of managed handles met; and
-   the control a task's result word names. */
-ChimiValue *chimi_runtime_capability_value_v1(uint32_t kind, uint64_t channel, uint64_t owner, uint64_t token);
-ChimiCarriedCapability *chimi_runtime_carried_capabilities_v1(ChimiValue *root, size_t *count, size_t *managed);
-ChimiControl *chimi_runtime_task_reply_v1(int64_t raw);
-ChimiValue *chimi_runtime_capability_value_v1(uint32_t kind, uint64_t channel, uint64_t owner, uint64_t token) {
-  return channel_capability_value((ValueKind)kind, channel, owner, token);
-}
-ChimiCarriedCapability *chimi_runtime_carried_capabilities_v1(ChimiValue *root, size_t *count, size_t *managed) {
-  CapabilityTransfer carried = {.collect = true};
-  transfer_captures(&carried, root);
-  *count = carried.carried_count;
-  *managed = carried.managed_count;
-  return carried.carried;
-}
-
-/* For Task.start in Rust (intrinsics/tasks.rs): a Task handle value, counted
-   as a live reference; and the transfer of the exclusive capabilities under
-   `root` to the child `child`, false (with `*cancelled` when this task was
-   cancelled meanwhile) when one cannot move. */
-ChimiValue *chimi_runtime_task_value_v1(uint64_t raw);
-bool chimi_runtime_transfer_to_child_v1(ChimiValue *root, uint64_t child, bool *cancelled);
-ChimiValue *chimi_runtime_task_value_v1(uint64_t raw) { return task_value(raw); }
-bool chimi_runtime_transfer_to_child_v1(ChimiValue *root, uint64_t child, bool *cancelled) {
-  CapabilityTransfer transfer = {.child = child};
-  bool transferred = transfer_captures(&transfer, root);
-  *cancelled = transfer.cancelled;
-  return transferred;
-}
-
-/* Whether `root` reaches a Receiver or Completion: a std/test Mailbox refuses a
-   message with one (intrinsics/test_log.rs), since only a process receive makes
-   the capability transfer it needs. Collecting marks the copies' tokens in flight,
-   so `root` must be a detached copy the caller frees. */
-bool chimi_runtime_carries_capability_v1(ChimiValue *root) {
-  CapabilityTransfer carried = {.collect = true};
-  transfer_captures(&carried, root);
-  size_t carried_count = carried.carried_count;
-  free(carried.carried);
-  return carried_count != 0;
 }
 
 static ChimiValue *application_arguments(int32_t count, const char **argv) {
@@ -3690,9 +3550,9 @@ ChimiFiberResult chimi_runtime_task_entry_v1(void *raw_context) {
      result's exclusive capabilities become the parent's before this task ends
      and its cleanup would abort them. */
   if ((control->kind == CONTROL_SUCCESS || control->kind == CONTROL_FAILURE) && control->value) {
-    CapabilityTransfer transfer = {.child = parent};
-    if (!transfer_captures(&transfer, control->value))
-      control = transfer.cancelled
+    bool cancelled_meanwhile = false;
+    if (!chimi_runtime_transfer_to_child_v1(control->value, parent, &cancelled_meanwhile))
+      control = cancelled_meanwhile
         ? cancelled()
         : defect("Task could not hand an exclusive capability in its result to its parent", -1);
   }

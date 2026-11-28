@@ -16,3 +16,8 @@ KILLED       a watch publishes a managed handle [channel_variants -- managed] (5
 KILLED       an ordinary channel refuses a managed handle too [channel_variants -- managed] (58s)
 KILLED       a watch starts with a managed handle [channel_variants -- managed] (59s)
 # result: every mutant killed
+
+# 2026-11-28 capability transfer to Rust (CHI-305 phase 8, sixth PR): retargeted mutants
+BASELINE ok  [channel_variants -- managed] (169s)
+KILLED       managed handles are not counted [channel_variants -- managed] (60s)
+# result: every mutant killed

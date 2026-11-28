@@ -43,3 +43,10 @@ KILLED       native capture transfer gives up after a fixed number of parts [cli
 KILLED       native capture transfer counts no probes [cli -- native_capture_transfer_work_is_linear] (54s)
 KILLED       native capture transfer leaves a captured Receiver with the parent [cli -- native_] (68s)
 # result: every mutant killed
+
+# 2026-11-28 capability transfer to Rust (CHI-305 phase 8, sixth PR): retargeted mutants
+BASELINE ok  [cli -- native_capture_transfer_work_is_linear] (176s)
+BASELINE ok  [cli -- native_] (25s)
+KILLED       native capture transfer counts no probes [cli -- native_capture_transfer_work_is_linear] (62s)
+KILLED       native capture transfer leaves a captured Receiver with the parent [cli -- native_] (84s)
+# result: every mutant killed

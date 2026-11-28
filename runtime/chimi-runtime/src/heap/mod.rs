@@ -36,8 +36,6 @@ pub mod small_blocks;
 mod small_blocks_abi;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod transfer;
-#[cfg(all(feature = "runtime-c", unix))]
-mod transfer_abi;
 pub mod verify;
 mod verify_abi;
 #[cfg(all(feature = "runtime-c", unix))]

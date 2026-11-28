@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
 
+use super::capabilities;
 use super::message::Message;
 use super::standard::{defect, defect_with, failure, shape_defect, standard_value, success, void_value};
 use crate::heap::allocator::current_carrier;
@@ -21,12 +22,6 @@ use crate::heap::layout::{
 use crate::heap::list;
 use crate::heap::values::{allocate_kind, new_value};
 use crate::pthread_locked::PthreadLocked;
-
-unsafe extern "C" {
-    /// Whether `root` reaches a Receiver or Completion (`runtime.c`, which
-    /// keeps the capability transfer state until the scheduler requests move).
-    fn chimi_runtime_carries_capability_v1(root: *mut Value) -> bool;
-}
 
 /// One Recorder, Script or Mailbox: the kind of the value that names it, the
 /// fragments it holds, how many a Script has handed out, and a Mailbox's
@@ -284,7 +279,7 @@ pub unsafe fn send_to_test_mailbox(address: *const Value, message: *mut Value, c
         if status != HeapStatus::OK {
             return defect_with(foreign_message(b"Process.send", b"message", b"sender"), node);
         }
-        if chimi_runtime_carries_capability_v1((*copy).roots[0].cast()) {
+        if capabilities::carries_capability((*copy).roots[0].cast()) {
             fragment::free(here, copy);
             return defect(c"Process.send: a test mailbox cannot hold a message with a Receiver or Completion", node);
         }

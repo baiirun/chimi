@@ -290,6 +290,10 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       Fifth PR: the C binding call path (`intrinsics/binding_calls.rs`):
       calls, the handle lock, holding and running on handles, waits and
       closes, under the exact `chimi_binding.h` names.
+      Sixth PR: capability transfer for Task.start, a task's result and
+      the sends, and the counted Task and capability values
+      (`intrinsics/capabilities.rs`); the C task entry calls the Rust
+      transfer.
    Soundness in Rust: collection runs only at pass boundaries and scope
    ends, with explicit roots, so values carry a pass lifetime that a
    collection ends, allocation goes through a context that owns the target

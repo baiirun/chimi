@@ -16,6 +16,7 @@ RUNTIME = "runtime/native/runtime.c"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
+CAPABILITIES = "../../runtime/chimi-runtime/src/intrinsics/capabilities.rs"
 
 
 def lib(name, file, edits):
@@ -149,14 +150,14 @@ MUTATIONS = [
         "        let Some((part, pointer)) = pending.0.pop() else { break };\n"
         "        if visited.count > 4096 { transferred = false; break; }",
     )], "native_tasks_capture_render_encode_and_send"),
-    native("native capture transfer counts no probes", [(
-        "  carrier->capture_transfer_probes += probes;",
-        "  (void)probes;",
-    )], "native_capture_transfer_work_is_linear"),
-    native("native capture transfer leaves a captured Receiver with the parent", [(
-        "      return transfer_captured_capability(transfer, value, CHIMI_REQUEST_CHANNEL_TRANSFER_RECEIVER);",
-        "      return true;",
-    )], "native_"),
+    dict(name="native capture transfer counts no probes", file=CAPABILITIES, edits=[(
+        "(*carrier).capture_transfer_probes = (*carrier).capture_transfer_probes.wrapping_add(probes);",
+        "let _ = (carrier, probes);",
+    )], targets=["cli"], filter="native_capture_transfer_work_is_linear"),
+    dict(name="native capture transfer leaves a captured Receiver with the parent", file=CAPABILITIES, edits=[(
+        "            ValueKind::CHANNEL_RECEIVER => transfer.captured(value, Scheduler::REQUEST_CHANNEL_TRANSFER_RECEIVER),",
+        "            ValueKind::CHANNEL_RECEIVER => true,",
+    )], targets=["cli"], filter="native_"),
     dict(
         name="interpreter copies records, tuples, and constructed values on reference",
         file=EXECUTION,
