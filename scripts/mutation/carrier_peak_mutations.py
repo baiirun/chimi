@@ -6,14 +6,6 @@ Results: scripts/mutation/carrier_peak_results.txt.
 
 CRATE = "compiler/chimi"
 
-C = "runtime/native/runtime.c"
-
-
-def m(name, old, new):
-    return dict(name=name, file=C, edits=[(old, new)], targets=["runtime_state"],
-                filter="across_carrier_threads")
-
-
 ALLOCATOR = "../../runtime/chimi-runtime/src/heap/allocator.rs"
 
 
@@ -22,8 +14,16 @@ def rust(name, old, new):
                 filter="across_carrier_threads")
 
 
-# The folds moved to the Rust allocator in CHI-305 step 5 phase 1; the
-# report's merge of the process peaks stays in runtime.c.
+REPORTS = "../../runtime/chimi-runtime/src/reports.rs"
+
+
+def report(name, old, new):
+    return dict(name=name, file=REPORTS, edits=[(old, new)], targets=["runtime_state"],
+                filter="across_carrier_threads")
+
+
+# The folds moved to the Rust allocator in CHI-305 step 5 phase 1, and the
+# report's merge of the process peaks to reports.rs in phase 8.
 MUTATIONS = [
     rust("a fall is never folded",
          "        (*here).heap_totals.footprint_bytes = (*here).heap_totals.footprint_bytes.wrapping_sub(bytes as i64);\n        fold_footprint(here, mode);",
@@ -31,9 +31,9 @@ MUTATIONS = [
     rust("a fragment fall is never folded",
          "        fold_fragment_footprint(here, mode());\n",
          ""),
-    m("the report keeps the largest carrier peak",
-      "  if (carrier_count == 1) return;\n  int64_t peak = atomic_load_explicit",
-      "  if (carrier_count >= 1) return;\n  int64_t peak = atomic_load_explicit"),
+    report("the report keeps the largest carrier peak",
+           "    if let Some((folded, folded_fragments)) = folded_peaks() {",
+           "    if let Some((folded, folded_fragments)) = None::<(i64, i64)> {"),
     rust("a fold never raises the peak",
          "    raise(peak, process.fetch_add(change, Relaxed) + change);",
          "    let _ = (peak, process.fetch_add(change, Relaxed));"),
@@ -43,9 +43,9 @@ MUTATIONS = [
     rust("a fold forgets what it folded",
          "    *folded = now;\n",
          ""),
-    m("the report ignores the footprint at exit",
-      "  totals->peak_footprint_bytes = peak > totals->footprint_bytes ? peak : totals->footprint_bytes;",
-      "  totals->peak_footprint_bytes = peak;"),
+    report("the report ignores the footprint at exit",
+           "        *peak = folded.max(footprint);",
+           "        *peak = folded;"),
     rust("a new young chunk never folds",
          "        fold_footprint(here, mode());\n    }\n}",
          "    }\n}"),

@@ -5178,7 +5178,9 @@ fn native_concurrency_pipeline_runs_in_flat_memory() {
     };
     let small = measure(50);
     let large = measure(5_000);
-    // Nothing a pass allocates outlives the program's loops.
+    // Startup allocates outside every pass, and nothing a pass allocates
+    // outlives the program's loops.
+    assert!(json_u64_field(&small, "unscoped_allocated_bytes") > 0, "{small}");
     assert_eq!(
         json_u64_field(&large, "unscoped_allocated_bytes"),
         json_u64_field(&small, "unscoped_allocated_bytes"),

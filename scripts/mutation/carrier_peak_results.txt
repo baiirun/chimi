@@ -19,3 +19,10 @@ KILLED       a new young chunk never folds [runtime_state -- across_carrier_thre
 #   one carrier's unfolded change, which is inside the tolerance; it only
 #   matters for the "never below the footprint at exit" promise, which needs
 #   the footprint at exit to be within the slack of the peak.
+
+# 2026-11-28 memory report to Rust (CHI-305 phase 8, eleventh PR): retargeted mutants
+BASELINE ok  [runtime_state -- across_carrier_threads] (184s)
+KILLED       the report keeps the largest carrier peak [runtime_state -- across_carrier_threads] (66s)
+SURVIVED     the report ignores the footprint at exit [runtime_state -- across_carrier_threads] (67s)
+# result: FAILED, as before the move: "the report ignores the footprint at exit" is the
+# survivor explained above (inside the fold tolerance).
