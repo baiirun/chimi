@@ -2713,7 +2713,6 @@ ChimiValue **chimi_value_slots_new_v1(uint32_t count);
 ChimiValue **chimi_value_slots_clone_v1(ChimiValue *const *source, uint32_t count);
 ChimiEnvironment *chimi_environment_new_v1(uint32_t local_count);
 ChimiEnvironment *chimi_environment_clone_v1(const ChimiEnvironment *source, bool locals, bool requirements);
-ChimiEnvironment *chimi_environment_capture_requirements_v1(const ChimiEnvironment *source);
 ChimiValue *chimi_value_integer_v1(ValueKind kind, int64_t raw);
 ChimiValue *chimi_value_float_v1(double raw);
 ChimiValue *chimi_value_range_v1(int64_t start, int64_t end);
@@ -2835,9 +2834,6 @@ static ChimiValue **clone_value_slots(ChimiValue **source, uint32_t count) {
 static ChimiEnvironment *new_environment(uint32_t local_count) { return chimi_environment_new_v1(local_count); }
 static ChimiEnvironment *clone_environment(const ChimiEnvironment *source) {
   return chimi_environment_clone_v1(source, true, true);
-}
-static ChimiEnvironment *capture_requirements(const ChimiEnvironment *source) {
-  return chimi_environment_capture_requirements_v1(source);
 }
 static uint32_t environment_slot(uint32_t symbol) {
   return CHIMI_SYMBOLS[symbol].environment_slot;
@@ -3208,7 +3204,6 @@ ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t no
 int32_t chimi_value_compare_v1(const ChimiValue *left, const ChimiValue *right);
 int32_t chimi_json_number_compare_v1(const char *left, const char *right);
 char *chimi_json_number_canonical_text_v1(const char *text, size_t *length);
-MapNode *chimi_map_put_v1(MapNode *node, ChimiValue *key, ChimiValue *value);
 MapNode *chimi_map_remove_v1(MapNode *node, const ChimiValue *key);
 ChimiValue *chimi_map_get_v1(const MapNode *node, const ChimiValue *key);
 int64_t chimi_map_size_v1(const MapNode *node);
@@ -3221,9 +3216,6 @@ static int chimi_value_compare(const ChimiValue *left, const ChimiValue *right) 
 /* The order of two JSON numbers by the exact decimal they denote. */
 static int json_number_compare(const char *left, const char *right) {
   return chimi_json_number_compare_v1(left, right);
-}
-static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) {
-  return chimi_map_put_v1(node, key, value);
 }
 /* `node` without `key`; `node` itself when it has no such key. */
 static MapNode *map_remove_node(MapNode *node, const ChimiValue *key) { return chimi_map_remove_v1(node, key); }
@@ -3443,23 +3435,6 @@ _Noreturn void chimi_runtime_json_tape_defect_v1(void) {
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
 #define COUNT_OF(table) (sizeof (table) / sizeof (table)[0])
-
-/* std/bytes. A `Bytes` shares Text's representation (`as.text`) with its own kind,
-   so the collector, heap copies, and transfers treat its buffer like a Text's. */
-static ChimiValue *bytes_from(const char *raw, size_t length) {
-  ChimiValue *value = text_from_bytes(raw, length);
-  value->kind = VALUE_BYTES;
-  return value;
-}
-/* The bytes a constant's hex text spells, two lowercase digits per byte. */
-static unsigned hex_value(char digit) { return digit <= '9' ? (unsigned)(digit - '0') : (unsigned)(digit - 'a' + 10); }
-static ChimiValue *bytes_from_hex(const char *hex, size_t length) {
-  char *raw = allocate(length / 2 + 1, 1);
-  for (size_t i = 0; i < length / 2; ++i) raw[i] = (char)(hex_value(hex[2 * i]) << 4 | hex_value(hex[2 * i + 1]));
-  raw[length / 2] = '\0';
-  ChimiValue *value = new_value(VALUE_BYTES); value->as.text.bytes = raw; value->as.text.length = length / 2;
-  return value;
-}
 
 /* std/test. */
 static ChimiValue *debug_render(const ChimiValue *value, bool indented);
