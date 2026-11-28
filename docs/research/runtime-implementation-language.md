@@ -168,7 +168,8 @@ Each step is one or more PRs. The size and speed gates hold for every step.
       (`intrinsics/core.rs`), which call `crate::text` and
       `crate::graphemes` directly instead of through C. Sixth PR: the
       debug renderer behind `Debug.render`, assertion messages and causes
-      (`intrinsics/debug.rs`); runtime.c's `debug_render` forwards to it.
+      (`intrinsics/debug.rs`); since phase 8's ninth PR nothing in runtime.c
+      calls it.
       Seventh PR: std/test's assertions (`intrinsics/assertions.rs`).
       Eighth PR: std/test's recorders, scripts and test mailboxes, with
       `Process.send` to a test address (`intrinsics/test_log.rs`); their

@@ -9,13 +9,8 @@ use core::ffi::c_void;
 
 use super::assertions::assertion_operation;
 use super::bytes::bytes_operation;
-use super::causes::{
-    cause_derived, cause_has_detail, cause_text, cause_with_sibling, control_cause,
-    control_with_cause, matched_cause_value, with_stored_cause,
-};
 use super::collections::{Call, map_operation, set_operation};
 use super::core::core_operation;
-use super::debug::render;
 use super::decimals::decimal_operation;
 use super::durations::duration_operation;
 use super::host::host_operation;
@@ -150,16 +145,6 @@ pub unsafe extern "C" fn chimi_intrinsic_core_v1(
     unsafe { core_operation(intrinsic, arguments(values, count), call_node) }
 }
 
-/// [`render`]: `value` in the debug format, as a Text.
-///
-/// # Safety
-/// As for `render`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_debug_render_v1(value: *const Value, indented: bool) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { render(value, indented) }
-}
-
 /// [`assertion_operation`].
 ///
 /// # Safety
@@ -198,91 +183,6 @@ pub unsafe extern "C" fn chimi_intrinsic_test_log_v1(
 pub unsafe extern "C" fn chimi_runtime_test_log_release_v1(log: *const Value) -> u32 {
     // SAFETY: the caller's contract.
     unsafe { release(log) }
-}
-
-/// [`control_cause`].
-///
-/// # Safety
-/// As for `control_cause`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_control_cause_v1(control: *const Control) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { control_cause(control) }
-}
-
-/// [`control_with_cause`].
-///
-/// # Safety
-/// As for `control_with_cause`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_control_with_cause_v1(control: *const Control, cause: *mut Value) -> *mut Control {
-    // SAFETY: the caller's contract.
-    unsafe { control_with_cause(control, cause) }
-}
-
-/// [`cause_with_sibling`].
-///
-/// # Safety
-/// As for `cause_with_sibling`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_cause_with_sibling_v1(cause: *const Value, sibling: *const Value) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { cause_with_sibling(cause, sibling) }
-}
-
-/// [`cause_derived`].
-///
-/// # Safety
-/// As for `cause_derived`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_cause_derived_v1(
-    matched: *mut Value,
-    keep: bool,
-    error: *mut Value,
-    node: i64,
-) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { cause_derived(matched, keep, error, node) }
-}
-
-/// [`with_stored_cause`].
-///
-/// # Safety
-/// As for `with_stored_cause`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_with_stored_cause_v1(value: *const Value, cause: *mut Value) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { with_stored_cause(value, cause) }
-}
-
-/// [`matched_cause_value`].
-///
-/// # Safety
-/// As for `matched_cause_value`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_matched_cause_value_v1(subject: *const Control) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { matched_cause_value(subject) }
-}
-
-/// [`cause_text`].
-///
-/// # Safety
-/// As for `cause_text`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_cause_text_v1(cause: *const Value) -> *mut Value {
-    // SAFETY: the caller's contract.
-    unsafe { cause_text(cause) }
-}
-
-/// [`cause_has_detail`].
-///
-/// # Safety
-/// As for `cause_has_detail`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_runtime_cause_has_detail_v1(cause: *const Value) -> bool {
-    // SAFETY: the caller's contract.
-    unsafe { cause_has_detail(cause) }
 }
 
 /// [`host_operation`]; `cancel` is the running task's cancellation flag.

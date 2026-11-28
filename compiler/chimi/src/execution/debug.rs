@@ -1,6 +1,6 @@
 //! The debug format of `std/debug` (G10) on the reference interpreter.
 //!
-//! The native runtime implements the same format in `debug_render` (runtime.c); the
+//! The native runtime implements the same format in its `intrinsics/debug.rs`; the
 //! language tests run one program on both backends to keep them identical. The format
 //! renders each value like the declaration or literal that describes it, never shows a
 //! function's captures or a capability's contents, and gives equal values equal text.

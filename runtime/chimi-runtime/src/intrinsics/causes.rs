@@ -58,8 +58,8 @@ const SUPPRESSED_LIMIT: u32 = 16;
 const LINK_LIMIT: i64 = 64;
 /// A suppressed cause's reason: a sibling's failure (`Task.all` and friends).
 const REASON_SIBLING: i64 = 1;
-/// As `runtime.c` writes it in a cancellation's outcome record.
-const CANCELLATION_REASON: &CStr = c"requested before the next semantic operation";
+/// A cancellation's reason, in its outcome record and its cause alike.
+pub(crate) const CANCELLATION_REASON: &CStr = c"requested before the next semantic operation";
 
 /// The name of the hidden field after a stored Err's own fields that holds
 /// its cause, recognised by its address. Equality, order, rendering and

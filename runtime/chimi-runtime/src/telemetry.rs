@@ -36,20 +36,20 @@ fn locked(body: impl FnOnce()) {
 }
 
 /// Bytes to a C stream.
-struct Out(*mut libc::FILE);
+pub(crate) struct Out(pub(crate) *mut libc::FILE);
 
 impl Out {
-    fn bytes(&self, bytes: &[u8]) {
-        // SAFETY: the stream is the runtime's open telemetry file.
+    pub(crate) fn bytes(&self, bytes: &[u8]) {
+        // SAFETY: the stream is an open report file the runtime writes.
         unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), self.0) };
     }
 
-    fn unsigned(&self, value: u64) {
+    pub(crate) fn unsigned(&self, value: u64) {
         let mut digits = [0; 20];
         self.bytes(unsigned_spelling(value, &mut digits));
     }
 
-    fn signed(&self, value: i64) {
+    pub(crate) fn signed(&self, value: i64) {
         if value < 0 {
             self.bytes(b"-");
         }
@@ -57,7 +57,7 @@ impl Out {
     }
 
     /// `bytes` as a JSON string, escaping as `runtime.c`'s `json_bytes` did.
-    fn json(&self, bytes: &[u8]) {
+    pub(crate) fn json(&self, bytes: &[u8]) {
         self.bytes(b"\"");
         let mut start = 0;
         for (index, &byte) in bytes.iter().enumerate() {
@@ -87,7 +87,7 @@ impl Out {
     ///
     /// # Safety
     /// `text` is a C string.
-    unsafe fn json_c(&self, text: *const c_char) {
+    pub(crate) unsafe fn json_c(&self, text: *const c_char) {
         // SAFETY: the caller's contract.
         self.json(unsafe { CStr::from_ptr(text) }.to_bytes());
     }

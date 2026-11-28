@@ -3015,26 +3015,7 @@ static const char *process_name_label(uint64_t name) {
   return CHIMI_STRINGS[CHIMI_SYMBOLS[name - 1].name];
 }
 
-static void json_bytes(FILE *output, const char *value, size_t length) {
-  fputc('"', output);
-  const unsigned char *end = (const unsigned char *)value + length;
-  for (const unsigned char *cursor = (const unsigned char *)value; cursor < end; ++cursor) {
-    switch (*cursor) {
-      case '"': fputs("\\\"", output); break;
-      case '\\': fputs("\\\\", output); break;
-      case '\n': fputs("\\n", output); break;
-      case '\r': fputs("\\r", output); break;
-      case '\t': fputs("\\t", output); break;
-      default:
-        if (*cursor < 0x20) fprintf(output, "\\u%04x", *cursor); else fputc(*cursor, output);
-    }
-  }
-  fputc('"', output);
-}
-static void json_string(FILE *output, const char *value) { json_bytes(output, value, strlen(value)); }
 
-static void json_value(FILE *output, const ChimiValue *value);
-static void float_text(double value, char *output);
 
 /* The Unix time at the execution clock's origin: `--clock-start` under the
    virtual clock, and under the real clock the host's wall time when the
@@ -3105,7 +3086,6 @@ static ChimiValue *shared_value(uint32_t index) {
 static ChimiValue *void_value(void) { return shared_value(0); }
 /* `bytes` may be NULL when `length` is 0. */
 static ChimiValue *text_from_bytes(const char *bytes, size_t length) { return chimi_value_text_v1(bytes, length); }
-static char hex_digit(unsigned value) { return "0123456789abcdef"[value & 0xf]; }
 /* Text from a C string, which cannot hold U+0000: a path, a message, a number. */
 static ChimiValue *text_value(const char *raw) { return text_from_bytes(raw, strlen(raw)); }
 /* A Text literal or constant from the string table, which may hold U+0000. */
@@ -3235,170 +3215,6 @@ static MapEntries map_entries(const MapNode *root) {
   return entries;
 }
 
-/* Writing an outcome value as JSON. The writer keeps its own stack of steps, so a
-   value of any nesting depth costs heap, not C stack; a step pushed last runs first. */
-typedef enum {
-  JSON_STEP_VALUE, JSON_STEP_TEXT, JSON_STEP_NAME, JSON_STEP_KEY, JSON_STEP_FREE
-} JsonStepKind;
-typedef struct { JsonStepKind kind; const void *pointer; } JsonStep;
-typedef struct { JsonStep *items; size_t length; size_t capacity; } JsonSteps;
-
-static void json_step(JsonSteps *steps, JsonStepKind kind, const void *pointer) {
-  if (steps->length == steps->capacity) {
-    size_t capacity = steps->capacity ? steps->capacity * 2 : 64;
-    JsonStep *items = realloc(steps->items, capacity * sizeof(*items));
-    if (!items) exhausted_memory();
-    steps->items = items;
-    steps->capacity = capacity;
-  }
-  steps->items[steps->length++] = (JsonStep){kind, pointer};
-}
-
-/* `"name":value` pairs, comma-separated, then `close`. */
-static void json_push_fields(JsonSteps *steps, const RuntimeField *fields, uint32_t length,
-                             bool named, const char *close) {
-  json_step(steps, JSON_STEP_TEXT, close);
-  for (uint32_t index = length; index-- > 0;) {
-    json_step(steps, JSON_STEP_VALUE, fields[index].value);
-    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);
-    if (index) json_step(steps, JSON_STEP_TEXT, ",");
-  }
-}
-
-/* A map value in an outcome record, as the interpreter writes it: a Text-keyed or
-   empty map is an object of its entries in key order, and any other map is
-   `{"map":[[key,value],...]}` in key order, so each key is written once. */
-static void json_push_map(FILE *output, JsonSteps *steps, const MapNode *map) {
-  MapEntries entries = map_entries(map);
-  bool text_keyed = !entries.length || entries.nodes[0]->key->kind == VALUE_TEXT;
-  fputs(text_keyed ? "{" : "{\"map\":[", output);
-  json_step(steps, JSON_STEP_FREE, entries.nodes);
-  json_step(steps, JSON_STEP_TEXT, text_keyed ? "}" : "]}");
-  for (size_t index = entries.length; index-- > 0;) {
-    if (text_keyed) {
-      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
-      json_step(steps, JSON_STEP_KEY, entries.nodes[index]);
-      if (index) json_step(steps, JSON_STEP_TEXT, ",");
-    } else {
-      json_step(steps, JSON_STEP_TEXT, "]");
-      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);
-      json_step(steps, JSON_STEP_TEXT, ",");
-      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->key);
-      json_step(steps, JSON_STEP_TEXT, index ? ",[" : "[");
-    }
-  }
-}
-
-static void json_value(FILE *output, const ChimiValue *root) {
-  JsonSteps steps = {0};
-  json_step(&steps, JSON_STEP_VALUE, root);
-  while (steps.length) {
-    JsonStep step = steps.items[--steps.length];
-    switch (step.kind) {
-      case JSON_STEP_TEXT: fputs(step.pointer, output); continue;
-      case JSON_STEP_NAME: json_string(output, step.pointer); fputc(':', output); continue;
-      /* A Text key's member name and `:`; json_push_map queues no other key. */
-      case JSON_STEP_KEY: {
-        const MapNode *entry = step.pointer;
-        json_bytes(output, entry->key->as.text.bytes, entry->key->as.text.length); fputc(':', output);
-        continue;
-      }
-      case JSON_STEP_FREE: free((void *)step.pointer); continue;
-      case JSON_STEP_VALUE: break;
-    }
-    const ChimiValue *value = step.pointer;
-    switch (value->kind) {
-      case VALUE_VOID: fputs("{\"type\":\"Void\"}", output); break;
-      case VALUE_INTEGER: fprintf(output, "%" PRId64, value->as.integer); break;
-      case VALUE_FLOAT: { char text[40]; float_text(value->as.floating, text); fputs(text, output); break; }
-      case VALUE_TEXT: json_bytes(output, value->as.text.bytes, value->as.text.length); break;
-      case VALUE_BOOLEAN: fputs(value->as.boolean ? "true" : "false", output); break;
-      case VALUE_LIST:
-        fputc('[', output);
-        json_step(&steps, JSON_STEP_TEXT, "]");
-        for (uint32_t index = list_length(value); index-- > 0;) {
-          json_step(&steps, JSON_STEP_VALUE, list_get(value, index));
-          if (index) json_step(&steps, JSON_STEP_TEXT, ",");
-        }
-        break;
-      case VALUE_RECORD:
-        fputc('{', output);
-        json_push_fields(&steps, value->as.record.fields, value->as.record.length, true, "}");
-        break;
-      case VALUE_DURATION: fprintf(output, "{\"duration\":%" PRId64 "}", value->as.integer); break;
-      case VALUE_INSTANT: fprintf(output, "{\"instant\":%" PRId64 "}", value->as.integer); break;
-      case VALUE_TIMESTAMP: fprintf(output, "{\"timestamp\":%" PRId64 "}", value->as.integer); break;
-      case VALUE_DECIMAL: {
-        char text[DECIMAL_TEXT_BYTES]; decimal_normalized_text(decimal_of(value), text);
-        fputs("{\"decimal\":", output); json_string(output, text); fputc(0x7d, output); break;
-      }
-      case VALUE_RANGE:
-        fprintf(output, "{\"range\":{\"start\":%" PRId64 ",\"end\":%" PRId64 "}}",
-                value->as.range.start, value->as.range.end); break;
-      case VALUE_TUPLE:
-        fputs("{\"tuple\":[", output);
-        json_push_fields(&steps, value->as.record.fields, value->as.record.length, false, "]}");
-        break;
-      case VALUE_CONSTRUCTED:
-        fputs("{\"type\":", output); json_string(output, value->as.constructed.type_name);
-        if (value->as.constructed.variant_name) {
-          fputs(",\"variant\":", output); json_string(output, value->as.constructed.variant_name);
-        }
-        fputs(",\"fields\":{", output);
-        json_push_fields(&steps, value->as.constructed.fields, value->as.constructed.length, true, "}}");
-        break;
-      case VALUE_CALLABLE:
-        fputs("{\"callable\":", output); json_string(output, value->as.callable->name);
-        fputc('}', output); break;
-      case VALUE_MAP: json_push_map(output, &steps, value->as.map); break;
-      /* A set is a list of its items in ascending order, as the interpreter writes it. */
-      case VALUE_SET: {
-        MapEntries entries = map_entries(value->as.map);
-        fputc('[', output);
-        json_step(&steps, JSON_STEP_FREE, entries.nodes);
-        json_step(&steps, JSON_STEP_TEXT, "]");
-        for (size_t index = entries.length; index-- > 0;) {
-          json_step(&steps, JSON_STEP_VALUE, entries.nodes[index]->key);
-          if (index) json_step(&steps, JSON_STEP_TEXT, ",");
-        }
-        break;
-      }
-      case VALUE_JSON_NUMBER: json_string(output, value->as.json_number); break;
-      /* Lowercase hex, two digits per byte, as the interpreter writes it. */
-      case VALUE_BYTES:
-        fputs("{\"bytes\":\"", output);
-        for (size_t i = 0; i < value->as.text.length; ++i) {
-          unsigned char byte = (unsigned char)value->as.text.bytes[i];
-          fputc(hex_digit(byte >> 4), output); fputc(hex_digit(byte), output);
-        }
-        fputs("\"}", output); break;
-      case VALUE_TASK: fprintf(output, "{\"task\":%" PRIu64 "}", value->as.task); break;
-      case VALUE_CHANNEL_SENDER:
-      case VALUE_CHANNEL_RECEIVER:
-      case VALUE_CHANNEL_COMPLETION:
-        fprintf(output, "{\"channel\":%" PRIu64 "}", value->as.capability.channel); break;
-      /* Opaque, as in the interpreter's public form: only what the value is. */
-      case VALUE_PROCESS_ADDRESS: fputs("{\"type\":\"Address\",\"fields\":{}}", output); break;
-      case VALUE_PROCESS_INBOX: fputs("{\"type\":\"Inbox\",\"fields\":{}}", output); break;
-      case VALUE_SUPERVISOR_RUNNING: fputs("{\"type\":\"Running\",\"fields\":{}}", output); break;
-      case VALUE_MANAGED_PROCESS: fputs("{\"type\":\"ManagedProcess\",\"fields\":{}}", output); break;
-      case VALUE_MANAGED_SUPERVISOR:
-        fputs("{\"type\":\"ManagedSupervisor\",\"fields\":{}}", output); break;
-      case VALUE_PROCESS_MONITOR: fputs("{\"type\":\"Monitor\",\"fields\":{}}", output); break;
-      case VALUE_TEST_RECORDER: fputs("{\"type\":\"Recorder\",\"fields\":{}}", output); break;
-      case VALUE_TEST_SCRIPT: fputs("{\"type\":\"Script\",\"fields\":{}}", output); break;
-      case VALUE_TEST_MAILBOX: fputs("{\"type\":\"Mailbox\",\"fields\":{}}", output); break;
-      case VALUE_CAUSE: fputs("{\"type\":\"Cause\",\"fields\":{}}", output); break;
-      case VALUE_NATIVE_HANDLE:
-        fputs("{\"type\":", output);
-        json_string(output, value->as.handle.name);
-        fputs(",\"fields\":{}}", output);
-        break;
-    }
-  }
-  free(steps.items);
-}
-
 /* The declaration-order ordinal of the constructor named by `symbol`, for
    structural order in heap/compare.rs. */
 uint32_t chimi_runtime_constructor_ordinal_v1(uint32_t symbol) {
@@ -3451,7 +3267,6 @@ static ChimiValue *bytes_from(const char *raw, size_t length) {
 }
 
 /* std/test. */
-static ChimiValue *debug_render(const ChimiValue *value, bool indented);
 
 /* Test.assert_equal, assert_not_equal, assert and fail, in intrinsics/assertions.rs. */
 ChimiControl *chimi_intrinsic_assertion_v1(uint32_t intrinsic, ChimiValue **arguments, uint32_t argument_count,
@@ -3473,9 +3288,8 @@ static const char *const FOREIGN_POINTER_DEFECT =
 
 /* Stream.process_utf8_lines and the `random` provider are Rust (chimi-runtime
    intrinsics/input.rs and intrinsics/random_host.rs). runtime.c gives the
-   --random-seed seed and names a read stream in the outcome report. */
+   --random-seed seed. */
 extern void chimi_runtime_random_seed_v1(uint64_t seed);
-extern bool chimi_runtime_random_read_v1(void);
 
 /* Console output (CHI-266) lives in Rust (chimi-runtime intrinsics/console_io.rs):
    write_line, write_error and std/log write through it, and it keeps the
@@ -3552,14 +3366,6 @@ static void duration_text(int64_t duration, char *text) { chimi_duration_text_v1
 
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
-/* The debug format of `std/debug` (G10), in intrinsics/debug.rs. It MUST
-   match the interpreter's renderer in execution/debug.rs byte for byte; the
-   language tests compare both. */
-ChimiValue *chimi_runtime_debug_render_v1(const ChimiValue *value, bool indented);
-static ChimiValue *debug_render(const ChimiValue *value, bool indented) {
-  return chimi_runtime_debug_render_v1(value, indented);
-}
-static void debug_text(TextBuffer *buffer, const char *value) { buffer_bytes(buffer, value, strlen(value)); }
 /* process_name_label, for the renderer's `<address name>`. */
 const char *chimi_runtime_process_name_label_v1(uint64_t name);
 const char *chimi_runtime_process_name_label_v1(uint64_t name) { return process_name_label(name); }
@@ -3567,23 +3373,6 @@ const char *chimi_runtime_process_name_label_v1(uint64_t name) { return process_
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node) {
   return defect("verified standard function has invalid runtime arguments", call_node);
 }
-
-/* Failure causes (time-and-outcomes.md, "Failure context") are built and read in
-   intrinsics/causes.rs; the interpreter's execution/causes.rs is the reference.
-   A live outcome holds its cause in `ChimiControl.cause`; NULL means the fresh
-   cause of the outcome itself, built only when read. */
-ChimiValue *chimi_runtime_control_cause_v1(const ChimiControl *control);
-ChimiControl *chimi_runtime_control_with_cause_v1(const ChimiControl *control, ChimiValue *cause);
-ChimiValue *chimi_runtime_cause_with_sibling_v1(const ChimiValue *cause, const ChimiValue *sibling);
-ChimiValue *chimi_runtime_cause_derived_v1(ChimiValue *matched, bool keep, ChimiValue *error, int64_t node);
-ChimiValue *chimi_runtime_with_stored_cause_v1(const ChimiValue *value, ChimiValue *cause);
-ChimiValue *chimi_runtime_matched_cause_value_v1(const ChimiControl *subject);
-ChimiValue *chimi_runtime_cause_text_v1(const ChimiValue *cause);
-bool chimi_runtime_cause_has_detail_v1(const ChimiValue *cause);
-
-/* A cancellation's reason in an outcome record; a cancellation's cause
-   (intrinsics/causes.rs) carries the same text. */
-static const char CANCELLATION_REASON[] = "requested before the next semantic operation";
 
 /* The source location of node `node`, for a rendered cause (intrinsics/causes.rs). */
 const char *chimi_runtime_node_location_v1(int64_t node);
@@ -3724,41 +3513,8 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
 void chimi_runtime_decode_constants_v1(void);
 static void decode_constants(void) { chimi_runtime_decode_constants_v1(); }
 
-static void print_outcome(FILE *output, const ChimiControl *control) {
-  fputs("{\"schema\":\"chimi.runtime.v1\",", output);
-  switch (control->kind) {
-    case CONTROL_SUCCESS:
-      fputs("\"outcome\":\"success\",\"value\":", output); json_value(output, control->value); break;
-    case CONTROL_FAILURE:
-      fputs("\"outcome\":\"expected_failure\",\"error\":", output); json_value(output, control->value);
-      /* A test build also writes the debug rendering `chimi test` reports. */
-      if (CHIMI_TEST_COUNT > 0) {
-        ChimiValue *rendered = debug_render(control->value, true);
-        fputs(",\"rendering\":", output);
-        json_string(output, rendered->as.text.bytes);
-      }
-      break;
-    case CONTROL_DEFECT:
-      fputs("\"outcome\":\"defect\",\"message\":", output); json_string(output, control->message);
-      if (control->node < 0) fputs(",\"core_node_id\":null,\"origin_id\":null", output);
-      else fprintf(output, ",\"core_node_id\":%" PRId64 ",\"origin_id\":%u",
-                   control->node, CHIMI_NODES[control->node].origin);
-      break;
-    case CONTROL_CANCEL:
-      fputs("\"outcome\":\"cancellation\",\"reason\":", output); json_string(output, CANCELLATION_REASON);
-      break;
-    case CONTROL_BREAK: break;
-  }
-  /* `chimi test` names the seed in the report of a failing test that drew one. */
-  if (chimi_runtime_random_read_v1()) fputs(",\"random_read\":true", output);
-  ChimiValue *cause = control->kind == CONTROL_SUCCESS ? NULL : chimi_runtime_control_cause_v1(control);
-  if (cause && chimi_runtime_cause_has_detail_v1(cause)) {
-    fputs(",\"cause\":", output);
-    ChimiValue *text = chimi_runtime_cause_text_v1(cause);
-    json_bytes(output, text->as.text.bytes, text->as.text.length);
-  }
-  fputs("}\n", output);
-}
+/* The outcome record and its value's JSON form, in outcome.rs. */
+void chimi_runtime_print_outcome_v1(FILE *output, const ChimiControl *control);
 
 /* A report file the runtime writes, closed in every child process it starts
    (std/exec), so a child cannot hold it open or write into it. */
@@ -3780,46 +3536,8 @@ static bool close_output(FILE *output) {
   return failed;
 }
 
-static int compare_profile_rows(const void *left, const void *right) {
-  uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
-  const ProfileRow *x = &profile_rows[a], *y = &profile_rows[b];
-  if (x->allocated_bytes != y->allocated_bytes) return x->allocated_bytes > y->allocated_bytes ? -1 : 1;
-  if (x->evaluations != y->evaluations) return x->evaluations > y->evaluations ? -1 : 1;
-  return a < b ? -1 : a > b;
-}
-
-/* One JSON object: every evaluated node, most allocated bytes first, then most
-   evaluations, then node id, so the same program always writes the same profile. */
-static bool write_profile(const char *path) {
-  if (!path) return false;
-  FILE *output = open_report(path, "wx");
-  if (!output) {
-    fprintf(stderr, "cannot open profile file %s: %s\n", path, strerror(errno));
-    return true;
-  }
-  uint32_t *order = calloc(CHIMI_NODE_COUNT ? CHIMI_NODE_COUNT : 1, sizeof(*order));
-  if (!order) exhausted_memory();
-  uint32_t count = 0;
-  for (uint32_t node = 0; node < CHIMI_NODE_COUNT; ++node)
-    if (profile_rows[node].evaluations) order[count++] = node;
-  qsort(order, count, sizeof(*order), compare_profile_rows);
-  fputs("{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":[", output);
-  for (uint32_t index = 0; index < count; ++index) {
-    uint32_t node = order[index];
-    const ProfileRow *row = &profile_rows[node];
-    const ChimiOrigin *origin = &CHIMI_ORIGINS[CHIMI_NODES[node].origin];
-    fprintf(output,
-            "%s{\"core_node_id\":%u,\"origin_id\":%u,\"file_id\":%u,\"source_start\":%u,"
-            "\"source_end\":%u,\"operation\":",
-            index ? "," : "", node, CHIMI_NODES[node].origin, origin->file_id, origin->start, origin->end);
-    json_string(output, row->operation);
-    fprintf(output, ",\"evaluations\":%" PRIu64 ",\"allocations\":%" PRIu64
-            ",\"allocated_bytes\":%" PRIu64 "}", row->evaluations, row->allocations, row->allocated_bytes);
-  }
-  fputs("]}\n", output);
-  free(order);
-  return close_output(output);
-}
+/* Writes the operation profile to `path`, in reports.rs; whether that failed. */
+bool chimi_runtime_write_profile_v1(const char *path);
 
 /* With several carrier threads, replaces the summed totals' peaks (each one
    carrier's) with the process-wide peaks heap/allocator.rs folds, raised to the
@@ -4650,7 +4368,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
     }
     bool write_failed = write_memory_report(memory_report_path, &runtime);
-    write_failed = write_profile(profile_path) || write_failed;
+    write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
     write_failed = write_metrics(&runtime, metrics_started, runtime.metrics_file) || write_failed;
     runtime.metrics_file = NULL;
     write_failed = close_output(runtime.telemetry) || write_failed;
@@ -4688,9 +4406,9 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     fclose(runtime.log_file);
   }
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
-  if (runtime.outcome) print_outcome(runtime.outcome, control);
+  if (runtime.outcome) chimi_runtime_print_outcome_v1(runtime.outcome, control);
   bool write_failed = write_memory_report(memory_report_path, &runtime);
-  write_failed = write_profile(profile_path) || write_failed;
+  write_failed = chimi_runtime_write_profile_v1(profile_path) || write_failed;
   write_failed = write_metrics(&runtime, runtime.start_unix_ns, runtime.metrics_file) || write_failed;
   write_failed = close_output(runtime.telemetry) || write_failed;
   write_failed = close_output(runtime.outcome) || write_failed;

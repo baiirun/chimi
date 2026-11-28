@@ -13,6 +13,7 @@ CRATE = "compiler/chimi"
 EXECUTION = "src/execution.rs"
 TEARDOWN = "src/execution/teardown.rs"
 RUNTIME = "runtime/native/runtime.c"
+OUTCOME = "../../runtime/chimi-runtime/src/outcome.rs"
 JSON_INTRINSICS = "../../runtime/chimi-runtime/src/intrinsics/json.rs"
 DEBUG_RENDER = "../../runtime/chimi-runtime/src/intrinsics/debug.rs"
 TRANSFER = "../../runtime/chimi-runtime/src/heap/transfer.rs"
@@ -94,10 +95,10 @@ MUTATIONS = [
         "        steps.push(JsonStep::Value(&field.value));\n        steps.push(JsonStep::Name(&field.name));",
         "        steps.push(JsonStep::Name(&field.name));\n        steps.push(JsonStep::Value(&field.value));",
     )]),
-    language("native outcome writer writes a field's value before its name", [(
-        "    json_step(steps, JSON_STEP_VALUE, fields[index].value);\n    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);",
-        "    if (named) json_step(steps, JSON_STEP_NAME, fields[index].name);\n    json_step(steps, JSON_STEP_VALUE, fields[index].value);",
-    )], "deeply_nested"),
+    dict(name="native outcome writer writes a field's value before its name", file=OUTCOME, edits=[(
+        "            self.push(Step::Value(field.value));\n            if named {\n                self.push(Step::Name(field.name));\n            }",
+        "            if named {\n                self.push(Step::Name(field.name));\n            }\n            self.push(Step::Value(field.value));",
+    )], targets=["language"], filter="deeply_nested"),
     debug_language("native debug renderer queues list parts first to last", [(
         "for index in (0..length).rev() {\n                            self.part(index, false, None, list::get(value, index));",
         "for index in 0..length {\n                            self.part(index, false, None, list::get(value, index));",
@@ -122,10 +123,10 @@ MUTATIONS = [
         "                    renderer.text(b\": \");\n"
         "                }",
     )], "debug_render_nests_through_map_keys"),
-    language("native outcome writer does not quote a non-Text key", [(
-        "        json_string(output, key->name); fputc(':', output);",
-        "        fputs(key->name, output); fputc(':', output);",
-    )], "debug_render_nests_through_map_keys"),
+    dict(name="native outcome writer does not quote a Text key", file=OUTCOME, edits=[(
+        "                    out.json(text_bytes(&*key));",
+        "                    out.bytes(text_bytes(&*key));",
+    )], targets=["language"], filter="map_outcomes_render_their_entries_on_both_backends"),
     json_language('native Json.encode queues Array elements first to last', [('for index in (0..(*items).payload.list.length).rev() {',
         'for index in 0..(*items).payload.list.length {')], 'json_encode_writes_a_deeply_nested_value'),
     json_language("native Json.encode writes an Object entry's value before its key", [('steps.push(Step::Value((*node).value));\n                    steps.push(Step::Key(node));',

@@ -1,0 +1,18 @@
+# mutation run at ba4b330f; survivors rerun at e21ffb9d after tests and targets were fixed
+# outcome_mutations.py: 12 mutants against compiler/chimi
+BASELINE ok  [language cli] (249s)
+BASELINE ok  [testing] (10s)
+BASELINE ok  [std_modules] (10s)
+KILLED       a list writes its items in reverse [language cli] (97s)
+KILLED       a record drops its field names [language cli] (130s)
+KILLED       a map of other keys is written as an object [language cli] (118s)
+KILLED       a constructed value drops its variant [language cli] (97s)
+KILLED       a decimal keeps its trailing zeros [language cli] (125s, rerun at e21ffb9d after the Set and Decimal outcome test)
+KILLED       bytes swap their hex digits [language cli] (126s)
+KILLED       a set writes no separators [language cli] (126s, rerun at e21ffb9d after the Set and Decimal outcome test)
+KILLED       a failure in a test build has no rendering [testing] (69s, rerun at e21ffb9d against the testing target)
+KILLED       a defect names no origin [language cli] (124s)
+KILLED       an outcome drops its cause [std_modules] (72s, rerun at e21ffb9d against the std_modules target)
+KILLED       the profile keeps nodes never evaluated [cli -- native_profile_leaves_out_nodes_that_never_ran] (checked by hand at e21ffb9d plus the new test: the run crashes on the unrun row)
+KILLED       the profile counts no allocations [language cli] (102s)
+# result: every mutant killed

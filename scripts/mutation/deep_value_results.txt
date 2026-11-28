@@ -50,3 +50,7 @@ BASELINE ok  [cli -- native_] (25s)
 KILLED       native capture transfer counts no probes [cli -- native_capture_transfer_work_is_linear] (62s)
 KILLED       native capture transfer leaves a captured Receiver with the parent [cli -- native_] (84s)
 # result: every mutant killed
+
+# rerun at e21ffb9d after the outcome record and profile moved to Rust (CHI-305 phase 8, ninth PR)
+KILLED       native outcome writer writes a field's value before its name [language -- deeply_nested] (68s)
+KILLED       native outcome writer does not quote a Text key [language -- map_outcomes_render_their_entries_on_both_backends] (64s)

@@ -9,6 +9,7 @@ Each mutant must turn the named language test red.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+OUTCOME = "../../runtime/chimi-runtime/src/outcome.rs"
 EXECUTION = "src/execution.rs"
 SHAPES = "map_outcomes_render_their_entries_on_both_backends"
 
@@ -18,19 +19,19 @@ def language(name, file, edits, filter=SHAPES):
 
 
 MUTATIONS = [
-    language("native writes an empty map as pairs", RUNTIME, [(
-        "bool text_keyed = !entries.length || entries.nodes[0]->key->kind == VALUE_TEXT;",
-        "bool text_keyed = entries.length && entries.nodes[0]->key->kind == VALUE_TEXT;")]),
-    language("native drops the comma between pairs", RUNTIME, [(
-        'json_step(steps, JSON_STEP_TEXT, index ? ",[" : "[");',
-        'json_step(steps, JSON_STEP_TEXT, "[");')]),
-    language("native writes a pair value before its key", RUNTIME, [(
-        "      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);\n"
-        "      json_step(steps, JSON_STEP_TEXT, \",\");\n"
-        "      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->key);\n",
-        "      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->key);\n"
-        "      json_step(steps, JSON_STEP_TEXT, \",\");\n"
-        "      json_step(steps, JSON_STEP_VALUE, entries.nodes[index]->value);\n")]),
+    language("native writes an empty map as pairs", OUTCOME, [(
+        "entries.first().is_none_or(|node| (*(**node).key).kind == ValueKind::TEXT)",
+        "entries.first().is_some_and(|node| (*(**node).key).kind == ValueKind::TEXT)")]),
+    language("native drops the comma between pairs", OUTCOME, [(
+        'self.push(Step::Text(if index > 0 { b",[" } else { b"[" }));',
+        'self.push(Step::Text(b"["));')]),
+    language("native writes a pair value before its key", OUTCOME, [(
+        "                    self.push(Step::Value((*node).value));\n"
+        "                    self.push(Step::Text(b\",\"));\n"
+        "                    self.push(Step::Value((*node).key));\n",
+        "                    self.push(Step::Value((*node).key));\n"
+        "                    self.push(Step::Text(b\",\"));\n"
+        "                    self.push(Step::Value((*node).value));\n")]),
     language("interpreter writes pairs in reverse key order", EXECUTION, [(
         "                for (index, (key, value)) in entries.iter().enumerate().rev() {",
         "                for (index, (key, value)) in entries.iter().rev().enumerate().rev() {")]),

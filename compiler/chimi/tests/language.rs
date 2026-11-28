@@ -9823,6 +9823,23 @@ fn decimal_and_set_constants_decode_alike_on_both_backends() {
     assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"(-1.5, Set { 1, 2, 3 }, True)\"");
 }
 
+// The outcome record writes a Set as its items in ascending order and a
+// Decimal without its trailing zeros, alike on both backends.
+#[test]
+fn outcome_records_write_sets_and_normalized_decimals() {
+    let source = concat!(
+        "import std/set as Set\n",
+        "import std/set.{Set}\n",
+        "import std/decimal as Decimal\n",
+        "import std/decimal.{Decimal}\n",
+        "pub fn main() -> (Decimal, Set<Int>) {\n",
+        "  (Decimal.of(150, 2), Set.from([3, 1, 2]))\n",
+        "}\n"
+    );
+    let outcome = run_both("outcome-set-decimal", source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":{\"tuple\":[{\"decimal\":\"1.5\"},[1,2,3]]}");
+}
+
 // A Set renders as `Set {...}` in key order, and a Decimal drops its trailing
 // zeros so equal values render alike, on both backends.
 #[test]
