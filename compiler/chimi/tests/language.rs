@@ -9785,6 +9785,24 @@ fn duration_constructors_accept_their_boundary_counts() {
     );
 }
 
+// Module constants are decoded at startup by the native runtime: a negative
+// Decimal keeps its sign and a Set stays a Set, as in the interpreter.
+#[test]
+fn decimal_and_set_constants_decode_alike_on_both_backends() {
+    let source = concat!(
+        "import std/set as Set\n",
+        "import std/decimal as Decimal\n",
+        "import std/debug as Debug\n",
+        "const price = Decimal.of(-150, 2)\n",
+        "const tags = Set.from([3, 1, 2])\n",
+        "pub fn main() -> Text {\n",
+        "  Debug.render((price, tags, Set.contains(tags, 2)))\n",
+        "}\n"
+    );
+    let outcome = run_both("decimal-set-constants", source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"(-1.5, Set { 1, 2, 3 }, True)\"");
+}
+
 // A Set renders as `Set {...}` in key order, and a Decimal drops its trailing
 // zeros so equal values render alike, on both backends.
 #[test]
@@ -10598,6 +10616,17 @@ const PROCESS_PRELUDE: &str = concat!(
     "enum Message {\n  Ping\n}\n",
     "fn body(inbox: Inbox<Message>) -> Void {\n  Void\n}\n",
 );
+
+// A constant naming a process name decodes to that name's address on both
+// backends.
+#[test]
+fn a_named_address_constant_decodes_to_its_name() {
+    let source = format!(
+        "{PROCESS_PRELUDE}import std/debug as Debug\nprocess name counter: Message\nprocess name other: Message\nconst alias = counter\npub fn main() -> Text {{\n  Debug.render(alias)\n}}\n"
+    );
+    let outcome = run_both("named-address-constant", &source);
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":\"<address main.counter>\"");
+}
 
 fn process_program(declarations: &str) -> String {
     format!("{PROCESS_PRELUDE}{declarations}pub fn main() -> Int {{\n  0\n}}\n")

@@ -11,7 +11,8 @@ use crate::eval::{callable_value, construct_value, find_function, slot, string_b
 use crate::heap::allocator::{allocate, current_carrier};
 use crate::heap::fragment::set_kind;
 use crate::heap::layout::{
-    AllocationArea, AllocationKind, CallableKind, Decimal, Environment, Field, MapNode, Node, Trace, Value, ValueKind,
+    AllocationArea, AllocationKind, CallableKind, ConstantKind, ConstantValue, Decimal, Environment, Field, MapNode, Node,
+    Trace, Value, ValueKind,
 };
 use crate::heap::list;
 use crate::heap::map;
@@ -20,44 +21,6 @@ use crate::heap::values::{
     new_environment, new_value, pointer_value, range_value,
 };
 use crate::intrinsics::standard::{string, symbol, void_value};
-
-/// `ChimiConstantValue` (runtime.h): one constant's encoding; `kind` says
-/// what the other fields hold.
-#[repr(C)]
-pub struct ConstantValue {
-    pub kind: u32,
-    pub a: u32,
-    pub offset: u32,
-    pub length: u32,
-    pub integer: i64,
-}
-
-/// The `CHIMI_CONSTANT_*` kinds (runtime.h).
-pub struct ConstantKind;
-
-impl ConstantKind {
-    pub const VOID: u32 = 0;
-    pub const INTEGER: u32 = 1;
-    pub const FLOAT: u32 = 2;
-    pub const TEXT: u32 = 3;
-    pub const BOOLEAN: u32 = 4;
-    pub const LIST: u32 = 5;
-    pub const RECORD: u32 = 6;
-    pub const CONSTRUCTED: u32 = 7;
-    pub const MAP: u32 = 8;
-    pub const JSON_NUMBER: u32 = 9;
-    pub const DECLARED: u32 = 10;
-    pub const INTRINSIC: u32 = 11;
-    pub const CONSTRUCTOR: u32 = 12;
-    pub const CLOSURE: u32 = 13;
-    pub const TUPLE: u32 = 14;
-    pub const RANGE: u32 = 15;
-    pub const DURATION: u32 = 16;
-    pub const PROCESS_ADDRESS: u32 = 17;
-    pub const DECIMAL: u32 = 18;
-    pub const SET: u32 = 19;
-    pub const BYTES: u32 = 20;
-}
 
 /// The decoded module constants, by value id; the evaluator reads them.
 #[unsafe(no_mangle)]
@@ -227,7 +190,6 @@ unsafe fn decode(constants: *mut *mut Value, raw: &ConstantValue) -> *mut Value 
             _ => {}
         }
         let callable = allocate_kind::<crate::heap::layout::Callable>(1, AllocationKind::CALLABLE);
-        let shape = symbol(raw.a);
         match raw.kind {
             ConstantKind::DECLARED => {
                 let function = find_function(raw.a);
@@ -242,6 +204,7 @@ unsafe fn decode(constants: *mut *mut Value, raw: &ConstantValue) -> *mut Value 
                 bind_requirements(constants, (*callable).environment, ids, raw.integer);
             }
             ConstantKind::INTRINSIC => {
+                let shape = symbol(raw.a);
                 (*callable).kind = CallableKind::INTRINSIC;
                 (*callable).intrinsic = shape.intrinsic;
                 (*callable).symbol = raw.a;
@@ -250,7 +213,7 @@ unsafe fn decode(constants: *mut *mut Value, raw: &ConstantValue) -> *mut Value 
             ConstantKind::CONSTRUCTOR => {
                 (*callable).kind = CallableKind::CONSTRUCTOR;
                 (*callable).symbol = raw.a;
-                (*callable).name = string(shape.name);
+                (*callable).name = string(symbol(raw.a).name);
             }
             ConstantKind::CLOSURE => {
                 let node = &*(&raw const CHIMI_NODES).cast::<Node>().add(raw.a as usize);
