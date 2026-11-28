@@ -19,6 +19,7 @@ R = "runtime/native/runtime.c"
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
 CONSOLE_IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
 INPUT = "../../runtime/chimi-runtime/src/intrinsics/input.rs"
+CALLS = "../../runtime/chimi-runtime/src/intrinsics/binding_calls.rs"
 
 
 def m(name, edits, file=R):
@@ -28,8 +29,8 @@ def m(name, edits, file=R):
 
 MUTATIONS = [
     m("a binding call holds none of its handles", [(
-        "      held[index] = arguments[index]->kind == VALUE_NATIVE_HANDLE &&\n",
-        "      held[index] = false && arguments[index]->kind == VALUE_NATIVE_HANDLE &&\n")]),
+        "                *(*call).held.add(index as usize) = (*value).kind == ValueKind::NATIVE_HANDLE\n",
+        "                *(*call).held.add(index as usize) = false && (*value).kind == ValueKind::NATIVE_HANDLE\n")], file=CALLS),
     m("a close ignores the holders", [(
         "        if live.users > 0 {\n            if let Some(entry)",
         "        if false {\n            if let Some(entry)")], file=HANDLES),
@@ -40,11 +41,13 @@ MUTATIONS = [
     # `type` set beside `closing`). The close bumps the generation, so every
     # lookup already misses the slot, and the last holder still releases once.
     m("handle lookups take no lock", [(
-        "  pthread_mutex_lock(&binding_handle_lock);\n  void *state = chimi_handles_state_v1(value->as.handle.slot, value->as.handle.generation, type);\n  pthread_mutex_unlock(&binding_handle_lock);",
-        "  void *state = chimi_handles_state_v1(value->as.handle.slot, value->as.handle.generation, type);")]),
+        "    lock();\n    // SAFETY: the lock is held; `value` is a live handle.\n    let state = unsafe { chimi_handles_state_v1(",
+        "    // SAFETY: the lock is held; `value` is a live handle.\n    let state = unsafe { chimi_handles_state_v1("), (
+        "kind.cast()) };\n    unlock();\n    state",
+        "kind.cast()) };\n    state")], file=CALLS),
     m("making a handle takes no lock", [(
-        "  pthread_mutex_lock(&binding_handle_lock);\n  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);\n  pthread_mutex_unlock(&binding_handle_lock);",
-        "  bool opened = chimi_handles_open_v1(type, state, &slot, &generation);")]),
+        "    lock();\n    // SAFETY: the lock is held; the outputs are writable.\n    let opened = unsafe { chimi_handles_open_v1(kind.cast(), state, &mut slot, &mut generation) };\n    unlock();",
+        "    // SAFETY: the lock is held; the outputs are writable.\n    let opened = unsafe { chimi_handles_open_v1(kind.cast(), state, &mut slot, &mut generation) };")], file=CALLS),
     m("standard input has no lock", [(
         "        if !(*input).lock.is_null() && libc::pthread_mutex_lock((*input).lock) != 0 {",
         "        if false && libc::pthread_mutex_lock((*input).lock) != 0 {"), (

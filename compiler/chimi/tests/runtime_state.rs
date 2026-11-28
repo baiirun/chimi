@@ -41,9 +41,6 @@ const SHARED: &[&str] = &[
     // once and cleared before the next run); the counts and their lock live
     // in Rust (chimi-runtime handle_counts_abi.rs).
     "chimi_runtime_handles_counted",
-    // Tables whose ids travel inside values, each behind its lock.
-    "binding_handle_lock",
-    "binding_handle_free",
     // The operation profile's rows, allocated once at startup and counted
     // with atomic adds.
     "chimi_runtime_profile_rows",

@@ -8,3 +8,7 @@ KILLED       a retain does not tell the freers to look [task_release] (56s)
 KILLED       a native handle no value names stays open [net std_exec] (66s)
 KILLED       a new execution keeps the last one's native handle counts [runtime_state -- the_handle_table_counts_across_threads] (57s)
 # result: every mutant killed
+
+# Rerun after the binding call path moved to Rust (CHI-305 phase 8, fifth PR):
+KILLED       a native handle no value names stays open [net std_exec] (59s)
+# result: every mutant killed

@@ -6,6 +6,7 @@
 
 mod abi;
 pub mod assertions;
+pub mod binding_calls;
 pub mod binding_values;
 pub mod bytes;
 pub mod causes;

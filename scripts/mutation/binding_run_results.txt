@@ -15,3 +15,17 @@ KILLED       a request keeps the call's handles [bindings -- a_forced_body_parke
 KILLED       a request does not take the call's handles back [bindings] (70s)
 # result: every mutant killed
 # (a TIMEOUT counts as caught)
+
+# Rerun after the binding call path moved to Rust (CHI-305 phase 8, fifth PR),
+# every mutant retargeted to intrinsics/binding_calls.rs:
+KILLED       two calls run on one handle at once [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+KILLED       a call that stops running wakes no waiter [runtime_state -- the_runtime_state_holds_across_carrier_threads] (118s)
+KILLED       a call that starts running wakes the waiters instead [runtime_state -- the_runtime_state_holds_across_carrier_threads] (118s)
+KILLED       a descriptor wait keeps its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (117s)
+KILLED       a descriptor wait does not take its handles back [runtime_state -- the_runtime_state_holds_across_carrier_threads] (59s)
+TIMEOUT      a child wait keeps its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (356s)
+KILLED       a child wait does not take its handles back [runtime_state -- the_runtime_state_holds_across_carrier_threads] (60s)
+KILLED       a call never runs on its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (57s)
+KILLED       a request keeps the call's handles [bindings -- a_forced_body_parked_in_a_binding_call_leaves_its_handle_to_other_calls] (117s)
+KILLED       a request does not take the call's handles back [bindings] (60s)
+# result: every mutant killed

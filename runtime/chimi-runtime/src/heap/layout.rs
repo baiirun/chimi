@@ -294,6 +294,20 @@ impl Trace {
     pub const ADDRESS_DIRECT: u32 = 2;
 }
 
+/// `ChimiBindingType` (chimi_binding.h): a handle's kind.
+#[repr(C)]
+pub struct BindingType {
+    pub name: *const c_char,
+    pub release: Option<unsafe extern "C" fn(state: *mut c_void)>,
+}
+
+/// `ChimiBinding` (runtime.h): a C binding function the program reaches.
+#[repr(C)]
+pub struct Binding {
+    pub name: *const c_char,
+    pub function: Option<unsafe extern "C" fn(call: *mut BindingCall) -> *mut Control>,
+}
+
 /// `struct ChimiBindingCall`: one call of a C binding function. A binding
 /// sees it only through the `chimi_binding_*` functions.
 #[repr(C)]
@@ -562,6 +576,8 @@ impl Scheduler {
     pub const REQUEST_SCOPE_ENTER: u32 = 25;
     pub const REQUEST_SCOPE_EXIT: u32 = 26;
     pub const REQUEST_SCOPE_CHECK: u32 = 27;
+    pub const REQUEST_IO_WITHDRAW: u32 = 44;
+    pub const REQUEST_CHILD_WAIT: u32 = 47;
     pub const REQUEST_RESOURCE_ENTER: u32 = 33;
     pub const REQUEST_RESOURCE_RELEASE: u32 = 34;
     pub const REQUEST_RESOURCE_EXIT: u32 = 35;
@@ -697,6 +713,7 @@ impl Intrinsic {
     pub const RANGE_END: u32 = 38;
     pub const RANGE_LENGTH: u32 = 39;
     pub const RANGE_CONTAINS: u32 = 40;
+    pub const BINDING_CALL: u32 = 191;
     pub const PATH_FROM: u32 = 192;
     pub const PATH_TO_TEXT: u32 = 193;
     pub const MAP_EMPTY: u32 = 3;
@@ -1339,6 +1356,11 @@ impl<T> Classified for *mut T {
     const CLASS: Class = Class::Compound;
 }
 
+/// A nullable function pointer, as C's.
+impl<T> Classified for Option<T> {
+    const CLASS: Class = Class::Compound;
+}
+
 impl<T, const N: usize> Classified for [T; N] {
     const CLASS: Class = Class::Compound;
 }
@@ -1574,6 +1596,12 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_CLOCK_TRACE_SELECT_COMMITTED" Trace::CLOCK_SELECT_COMMITTED)
     constant("CHIMI_ADDRESS_NAMED" Trace::ADDRESS_NAMED)
     constant("CHIMI_ADDRESS_DIRECT" Trace::ADDRESS_DIRECT)
+    size("ChimiBindingType" BindingType)
+    field("ChimiBindingType" BindingType, "name", name)
+    field("ChimiBindingType" BindingType, "release", release)
+    size("ChimiBinding" Binding)
+    field("ChimiBinding" Binding, "name", name)
+    field("ChimiBinding" Binding, "function", function)
     size("ChimiBindingCall" BindingCall)
     field("ChimiBindingCall" BindingCall, "runtime", runtime)
     field("ChimiBindingCall" BindingCall, "arguments", arguments)
@@ -1740,6 +1768,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_SCOPE_ENTER" Scheduler::REQUEST_SCOPE_ENTER)
     constant("CHIMI_REQUEST_SCOPE_EXIT" Scheduler::REQUEST_SCOPE_EXIT)
     constant("CHIMI_REQUEST_SCOPE_CHECK" Scheduler::REQUEST_SCOPE_CHECK)
+    constant("CHIMI_REQUEST_IO_WITHDRAW" Scheduler::REQUEST_IO_WITHDRAW)
+    constant("CHIMI_REQUEST_CHILD_WAIT" Scheduler::REQUEST_CHILD_WAIT)
     constant("CHIMI_REQUEST_RESOURCE_ENTER" Scheduler::REQUEST_RESOURCE_ENTER)
     constant("CHIMI_REQUEST_RESOURCE_RELEASE" Scheduler::REQUEST_RESOURCE_RELEASE)
     constant("CHIMI_REQUEST_RESOURCE_EXIT" Scheduler::REQUEST_RESOURCE_EXIT)
@@ -2019,6 +2049,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_RANGE_END" Intrinsic::RANGE_END)
     constant("CHIMI_INTRINSIC_RANGE_LENGTH" Intrinsic::RANGE_LENGTH)
     constant("CHIMI_INTRINSIC_RANGE_CONTAINS" Intrinsic::RANGE_CONTAINS)
+    constant("CHIMI_INTRINSIC_BINDING_CALL" Intrinsic::BINDING_CALL)
     constant("CHIMI_INTRINSIC_PATH_FROM" Intrinsic::PATH_FROM)
     constant("CHIMI_INTRINSIC_PATH_TO_TEXT" Intrinsic::PATH_TO_TEXT)
     constant("CHIMI_INTRINSIC_ENV_HOST_VARIABLES" Intrinsic::ENV_HOST_VARIABLES)

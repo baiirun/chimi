@@ -20,3 +20,11 @@ KILLED       a console line is written without the lock [runtime_state -- the_ru
 BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (154s)
 KILLED       standard input has no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (56s)
 # result: every mutant killed
+
+# Rerun after the binding call path moved to Rust (CHI-305 phase 8, fifth PR),
+# the three handle-lock mutants retargeted; Rust's Serialized table aborts on
+# the overlap, so "handle lookups take no lock" is now killed:
+KILLED       a binding call holds none of its handles [runtime_state -- the_runtime_state_holds_across_carrier_threads] (59s)
+KILLED       handle lookups take no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (57s)
+KILLED       making a handle takes no lock [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+# result: every mutant killed

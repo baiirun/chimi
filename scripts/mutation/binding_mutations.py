@@ -25,6 +25,7 @@ EXEC = "src/execution.rs"
 OPS = "src/operations.rs"
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
 VALUES = "../../runtime/chimi-runtime/src/intrinsics/binding_values.rs"
+CALLS = "../../runtime/chimi-runtime/src/intrinsics/binding_calls.rs"
 
 
 def mutant(name, file, edits, targets=("bindings",), filter=""):
@@ -80,21 +81,21 @@ MUTATIONS = [
         "    unsafe { if value.is_null() { invalid_value(call) } else { success(value) } }",
         "    unsafe { success(value) }",
     )]),
-    mutant("a wait never parks", C, [(
-        "      if (request.status != CHIMI_RESPONSE_PENDING) return CHIMI_BINDING_READY;\n    }\n  }\n  struct pollfd poll_fd = {",
-        "      return CHIMI_BINDING_READY;\n    }\n  }\n  struct pollfd poll_fd = {",
+    mutant("a wait never parks", CALLS, [(
+        "                if wait.status != Scheduler::RESPONSE_PENDING {\n                    return READY;",
+        "                if true {\n                    return READY;",
     )]),
-    mutant("a wait ignores a close while parked", C, [(
-        "         its descriptor number may already belong to a new resource. */\n      if (binding_wait_handle_closed(call, handle)) return CHIMI_BINDING_WAIT_CLOSED;",
-        "         its descriptor number may already belong to a new resource. */",
+    mutant("a wait ignores a close while parked", CALLS, [(
+        "                // resource.\n                if wait_handle_closed(call, handle) {",
+        "                // resource.\n                if false {",
     )]),
-    mutant("a cancelled wait reports ready", C, [(
-        "      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_WAIT_CANCELLED;",
-        "      if (scheduler_request(&request) == CHIMI_FIBER_CANCEL) return CHIMI_BINDING_READY;",
+    mutant("a cancelled wait reports ready", CALLS, [(
+        "                if scheduler::request(&mut wait) {\n                    return WAIT_CANCELLED;",
+        "                if scheduler::request(&mut wait) {\n                    return READY;",
     )]),
-    mutant("dispatch calls the first binding", C, [(
-        "  ChimiControl *control = (ChimiControl *)CHIMI_BINDINGS[binding].function(&call);",
-        "  ChimiControl *control = (ChimiControl *)CHIMI_BINDINGS[0].function(&call);",
+    mutant("dispatch calls the first binding", CALLS, [(
+        ".cast::<Binding>().add(binding as usize);",
+        ".cast::<Binding>();",
     )]),
     mutant("a symbol's binding index is off by one", DATA, [(
         "                .and_then(|binding| bindings.iter().position(|reached| *reached == binding))\n                .map_or(u32::MAX, |index| index as u32),",
