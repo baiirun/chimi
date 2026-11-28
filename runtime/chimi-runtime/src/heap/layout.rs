@@ -533,6 +533,44 @@ pub struct ProcessSpecContext {
 /// least 2-aligned), to tell it from the root's own `Control` pointer.
 pub const CHILD_RESULT_TAG: i64 = 1;
 
+/// `ChimiConstantValue` (runtime.h): one constant's encoding; `kind` says
+/// what the other fields hold.
+#[repr(C)]
+pub struct ConstantValue {
+    pub kind: u32,
+    pub a: u32,
+    pub offset: u32,
+    pub length: u32,
+    pub integer: i64,
+}
+
+/// The `CHIMI_CONSTANT_*` kinds (runtime.h).
+pub struct ConstantKind;
+
+impl ConstantKind {
+    pub const VOID: u32 = 0;
+    pub const INTEGER: u32 = 1;
+    pub const FLOAT: u32 = 2;
+    pub const TEXT: u32 = 3;
+    pub const BOOLEAN: u32 = 4;
+    pub const LIST: u32 = 5;
+    pub const RECORD: u32 = 6;
+    pub const CONSTRUCTED: u32 = 7;
+    pub const MAP: u32 = 8;
+    pub const JSON_NUMBER: u32 = 9;
+    pub const DECLARED: u32 = 10;
+    pub const INTRINSIC: u32 = 11;
+    pub const CONSTRUCTOR: u32 = 12;
+    pub const CLOSURE: u32 = 13;
+    pub const TUPLE: u32 = 14;
+    pub const RANGE: u32 = 15;
+    pub const DURATION: u32 = 16;
+    pub const PROCESS_ADDRESS: u32 = 17;
+    pub const DECIMAL: u32 = 18;
+    pub const SET: u32 = 19;
+    pub const BYTES: u32 = 20;
+}
+
 /// `ChimiFiberResult` (chimi_fiber.h): how a fiber's entry ended, with its
 /// result word.
 #[repr(C)]
@@ -1557,6 +1595,33 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiOrigin" Origin, "start", start)
     field("ChimiOrigin" Origin, "end", end)
     field("ChimiOrigin" Origin, "location", location)
+    size("ChimiConstantValue" ConstantValue)
+    field("ChimiConstantValue" ConstantValue, "kind", kind)
+    field("ChimiConstantValue" ConstantValue, "a", a)
+    field("ChimiConstantValue" ConstantValue, "offset", offset)
+    field("ChimiConstantValue" ConstantValue, "length", length)
+    field("ChimiConstantValue" ConstantValue, "integer", integer)
+    constant("CHIMI_CONSTANT_VOID" ConstantKind::VOID)
+    constant("CHIMI_CONSTANT_INTEGER" ConstantKind::INTEGER)
+    constant("CHIMI_CONSTANT_FLOAT" ConstantKind::FLOAT)
+    constant("CHIMI_CONSTANT_TEXT" ConstantKind::TEXT)
+    constant("CHIMI_CONSTANT_BOOLEAN" ConstantKind::BOOLEAN)
+    constant("CHIMI_CONSTANT_LIST" ConstantKind::LIST)
+    constant("CHIMI_CONSTANT_RECORD" ConstantKind::RECORD)
+    constant("CHIMI_CONSTANT_CONSTRUCTED" ConstantKind::CONSTRUCTED)
+    constant("CHIMI_CONSTANT_MAP" ConstantKind::MAP)
+    constant("CHIMI_CONSTANT_JSON_NUMBER" ConstantKind::JSON_NUMBER)
+    constant("CHIMI_CONSTANT_DECLARED" ConstantKind::DECLARED)
+    constant("CHIMI_CONSTANT_INTRINSIC" ConstantKind::INTRINSIC)
+    constant("CHIMI_CONSTANT_CONSTRUCTOR" ConstantKind::CONSTRUCTOR)
+    constant("CHIMI_CONSTANT_CLOSURE" ConstantKind::CLOSURE)
+    constant("CHIMI_CONSTANT_TUPLE" ConstantKind::TUPLE)
+    constant("CHIMI_CONSTANT_RANGE" ConstantKind::RANGE)
+    constant("CHIMI_CONSTANT_DURATION" ConstantKind::DURATION)
+    constant("CHIMI_CONSTANT_PROCESS_ADDRESS" ConstantKind::PROCESS_ADDRESS)
+    constant("CHIMI_CONSTANT_DECIMAL" ConstantKind::DECIMAL)
+    constant("CHIMI_CONSTANT_SET" ConstantKind::SET)
+    constant("CHIMI_CONSTANT_BYTES" ConstantKind::BYTES)
     size("ChimiNode" Node)
     field("ChimiNode" Node, "origin", origin)
     field("ChimiNode" Node, "a", a)

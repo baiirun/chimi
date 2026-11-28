@@ -64,6 +64,7 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef struct {\n  uint32_t kind;\n  uint32_t name;\n  uint32_t function;", "} ChimiSymbol;"),
     ("typedef struct {\n  uint32_t type_name;\n  uint32_t variant_name;", "} ChimiConstructor;"),
     ("typedef struct {\n  uint32_t file_id;", "} ChimiOrigin;"),
+    ("enum {\n  CHIMI_CONSTANT_VOID,", "} ChimiConstantValue;"),
     ("typedef struct {\n  uint32_t origin;\n  uint32_t a;", "} ChimiNode;"),
     ("typedef struct {\n  uint32_t symbol;\n  uint32_t body;", "} ChimiFunction;"),
     ("typedef struct {\n  uint32_t name;\n  uint32_t node;", "} ChimiNamedNode;"),

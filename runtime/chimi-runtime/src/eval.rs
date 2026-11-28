@@ -58,8 +58,6 @@ unsafe extern "C" {
     static CHIMI_SYMBOL_COUNT: u32;
     static CHIMI_CLOCK_REQUIREMENT_SLOT: u32;
     static CHIMI_CONSTRUCTORS: [Constructor; 0];
-    /// The module constants, decoded before the entry runs.
-    static chimi_runtime_constant_values: AtomicPtr<*mut Value>;
     /// The scheduler's scope queries; `runtime.c` defines weak stand-ins
     /// returning 0 for a program linked without the scheduler.
     fn chimi_fiber_scope_cancel_pending() -> u32;
@@ -106,7 +104,7 @@ unsafe fn entry<T>(table: *const [T; 0], index: u32) -> &'static T {
 /// # Safety
 /// `symbol_index` is a symbol of the program.
 #[inline(always)]
-unsafe fn slot(symbol_index: u32) -> usize {
+pub(crate) unsafe fn slot(symbol_index: u32) -> usize {
     // SAFETY: the caller's contract.
     unsafe { symbol(symbol_index).environment_slot as usize }
 }
@@ -115,7 +113,7 @@ unsafe fn slot(symbol_index: u32) -> usize {
 ///
 /// # Safety
 /// `id` is a string id of the program.
-unsafe fn string_bytes(id: u32) -> &'static [u8] {
+pub(crate) unsafe fn string_bytes(id: u32) -> &'static [u8] {
     // SAFETY: the caller's contract; the length table matches the strings.
     unsafe {
         let length = *(&raw const CHIMI_STRING_LENGTHS).cast::<u32>().add(id as usize);
@@ -388,7 +386,7 @@ unsafe fn constant(_: Eval, id: u32) -> *mut Control {
 ///
 /// # Safety
 /// Runs on a fiber that may allocate; `id` is a string id.
-unsafe fn string_text(id: u32) -> *mut Value {
+pub(crate) unsafe fn string_text(id: u32) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe {
         let bytes = string_bytes(id);
@@ -428,7 +426,7 @@ unsafe fn new_callable(kind: CallableKind, symbol_index: u32, name: *const c_cha
 
 /// # Safety
 /// Runs on a fiber that may allocate; `callable` is live.
-unsafe fn callable_value(callable: *mut Callable) -> *mut Value {
+pub(crate) unsafe fn callable_value(callable: *mut Callable) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe { pointer_value(ValueKind::CALLABLE, callable.cast::<c_void>()) }
 }
@@ -456,7 +454,7 @@ unsafe fn reference(eval: Eval, id: u32) -> *mut Control {
                 success(callable_value(callable))
             }
             Core::SYMBOL_CONSTANT => {
-                let constants = chimi_runtime_constant_values.load(Relaxed);
+                let constants = crate::constants::chimi_runtime_constant_values.load(Relaxed);
                 success(*constants.add(shape.constant as usize))
             }
             Core::SYMBOL_REQUIREMENT => {

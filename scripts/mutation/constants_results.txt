@@ -1,0 +1,21 @@
+# mutation run at ea8a101c, rerun at ad6c9368 for five mutants after tests were added
+# constants_mutations.py: 9 mutants against compiler/chimi
+BASELINE ok  [language cli] (244s)
+KILLED       a record constant loses its field names [language cli] (104s)
+KILLED       a decimal constant loses its sign [language cli] (149s, rerun at ad6c9368 after the decimal and set test)
+KILLED       a bytes constant swaps each byte's digits [language cli] (121s)
+SURVIVED     a constant function binds no requirements [language cli] (132s, equivalent: see below)
+SURVIVED     a constant closure binds no requirements [language cli] (131s, equivalent: see below)
+KILLED       a set constant is a map [language cli] (129s, rerun at ad6c9368 after the decimal and set test)
+KILLED       a float constant reads its bits as an integer [language cli] (123s)
+KILLED       a named address constant names the next process [language cli] (128s, rerun at ad6c9368 after the address test)
+KILLED       a list constant drops its last item [language cli] (118s)
+# result: seven killed; two survive as equivalent
+#
+# Why the two requirement mutants are equivalent: typing lets `using` bind
+# providers only into a function value, and lowering (executable.rs,
+# `provision`) always wraps that value in a closure that provides them again
+# at each call. A call gives the callee its caller's providers ahead of the
+# ones it captured, so the providers a constant function captured are always
+# shadowed and no program can observe them. Decoding still binds them, as the
+# interpreter's constant does, so the two value models stay the same.
