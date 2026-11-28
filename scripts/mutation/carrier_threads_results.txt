@@ -33,3 +33,8 @@ KILLED       the test logs have no lock [runtime_state -- the_runtime_state_hold
 BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
 KILLED       profile counts are plain adds [runtime_state -- the_runtime_state_holds_across_carrier_threads] (54s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [runtime_state -- the_runtime_state_holds_across_carrier_threads] (158s)
+KILLED       a task on an unbound thread runs [runtime_state -- the_runtime_state_holds_across_carrier_threads] (58s)
+# result: every mutant killed

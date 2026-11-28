@@ -4,3 +4,10 @@
 BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (53s)
 KILLED       MB01: a name id is the bare symbol index [cargo run --quiet --bin chimi-process-lab -- --scenario MB01 --through U5] (52s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cli -- native_process_stack_depth_and_named_defects] (162s)
+KILLED       a body's defect message is dropped [cli -- native_process_stack_depth_and_named_defects] (57s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario MB06 --through U5] (159s)
+KILLED       MB06: discarded messages are never freed [cargo run --quiet --bin chimi-process-lab -- --scenario MB06 --through U5] (54s)
+# result: every mutant killed

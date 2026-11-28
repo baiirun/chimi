@@ -15,3 +15,8 @@ KILLED       a removed child's position is not moved [task_combinators] (60s)
 BASELINE ok  [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (164s)
 KILLED       a child's exclusive captures are not transferred [cli -- native_source_transfers_an_exclusive_receiver_to_a_child] (58s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cli -- native_task] (165s)
+KILLED       Task.result consumes the child's result [cli -- native_task] (49s)
+# result: every mutant killed

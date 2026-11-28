@@ -10,6 +10,7 @@ CRATE = "compiler/chimi"
 S = "../../runtime/chimi-fiber/src/scheduler.rs"
 P = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 C = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 T = ["carrier_stress"]
 
 MUTATIONS = [
@@ -57,8 +58,9 @@ MUTATIONS = [
         "  carrier_bind(carrier_at(index));\n  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();",
         "  (void)index;\n  if (!CHIMI_REQUIRES_SCHEDULER) guard_host_stack();",
     )]),
-    dict(name="C2 process entry skips the bound-carrier check", file=C, targets=T, edits=[(
-        "  require_bound_carrier(\"a process\");\n",
+    dict(name="C2 process entry skips the bound-carrier check", file=TASK_ENTRY, targets=["runtime_state"],
+         filter="the_runtime_state_holds_across_carrier_threads", edits=[(
+        "    require_bound_carrier(UNBOUND_PROCESS);\n",
         "",
     )]),
     dict(name="F1 a zero deadline rewrites a woken body's answered request", file=P, targets=T, edits=[(

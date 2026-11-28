@@ -31,3 +31,10 @@ KILLED       a sent message carries no capabilities [cli -- native_a_receiver_] 
 BASELINE ok  [cli -- native_a_receiver_] (173s)
 KILLED       the message's copies keep the sender's token [cli -- native_a_receiver_] (61s)
 # result: every mutant killed
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [cli -- native_a_receiver_] (160s)
+BASELINE ok  [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (1s)
+KILLED       a child's result keeps its capabilities [cli -- native_a_receiver_] (56s)
+KILLED       a body's defect is remembered only while tracing [cargo run --quiet --bin chimi-process-lab -- --scenario OB08] (56s)
+# result: every mutant killed

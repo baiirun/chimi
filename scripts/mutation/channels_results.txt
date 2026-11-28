@@ -15,3 +15,11 @@ SURVIVED     a defected task's result is a request failure [testing cli task_rel
 KILLED       a negative channel capacity is accepted [language channel_variants wait] (62s)
 # result: 7 of 8 killed
 # Survivor "a defected task's result is a request failure": the scheduler answers Task.result with a defect only while the parent's process is stopping (absorbs_child_defect), and that incarnation ends with a defect either way; the C had the same branch untested.
+
+# 2026-11-28 task and process entries to Rust (CHI-305 phase 8, seventh PR): retargeted mutants
+BASELINE ok  [language channel_variants wait] (201s)
+BASELINE ok  [testing cli task_release resources] (57s)
+KILLED       Task.result does not wait [language channel_variants wait] (60s)
+SURVIVED     a defected task's result is a request failure [testing cli task_release resources] (106s)
+# result: FAILED (see SURVIVED/NO-TESTS/STALE/BASELINE)
+# Survivor "a defected task's result is a request failure": unchanged, see the note above.

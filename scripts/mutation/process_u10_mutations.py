@@ -18,6 +18,7 @@ limit of 400 µs, so a loaded machine cannot hide it.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 ABI = "../../runtime/chimi-fiber/src/scheduler/process_abi.rs"
 PERFORMANCE = "src/process_lab/performance.rs"
@@ -55,10 +56,10 @@ MUTATIONS = [
             "        if members >= supervision.policy.capacity.get() as usize {",
             "        if members > supervision.policy.capacity.get() as usize {")]),
     # MF02: an incarnation's heap must be destroyed when it ends.
-    lab("an ended incarnation keeps its heap", RUNTIME, "MF02",
+    lab("an ended incarnation keeps its heap", TASK_ENTRY, "MF02",
         ["heap_chunks_live differs"], [(
-            "    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;\n  heap_destroy(heap);\n",
-            "    carrier->process_heap_peak_value_bytes = heap->peak_live_bytes;\n")]),
+            "        fragment::heap_destroy(carrier, heap);\n",
+            "")]),
     # MF03: removal must release the membership record, the capacity slot,
     # and the report must carry the kernel's own count.
     lab("removal keeps the membership record", KERNEL, "MF03",

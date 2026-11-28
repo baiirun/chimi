@@ -4,8 +4,7 @@
 //!
 //! A started task runs in its own heap, so it gets a copy of what it
 //! captured: a two-root fragment of the callable and the caller's
-//! requirements. `runtime.c` keeps the fiber entry that adopts it, the Task
-//! handle values (it keeps the handle counts) and the capability transfer.
+//! requirements, which the fiber entry (`task_entry.rs`) adopts.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -13,6 +12,7 @@ use core::ptr;
 use super::capabilities::{self, chimi_runtime_transfer_to_child_v1};
 use super::causes::{cause_with_sibling, control_cause, control_with_cause, with_stored_cause};
 use super::standard::{defect, shape_defect, standard_value, success};
+use super::task_entry::{chimi_runtime_task_entry_v1, task_reply};
 use crate::eval::{FOREIGN_POINTER_DEFECT, cancelled};
 use crate::heap::allocator::current_carrier;
 use crate::heap::fragment;
@@ -25,11 +25,6 @@ use crate::heap::values::{capture_requirements, new_value_slots};
 use crate::scheduler::{self, cancel_is_terminal};
 
 unsafe extern "C" {
-    /// The fiber entry of a started task: adopts the context's captures in a
-    /// new heap, calls the callable and frees the context.
-    fn chimi_runtime_task_entry_v1(context: *mut c_void) -> FiberResult;
-    /// The control a task's result word names.
-    fn chimi_runtime_task_reply_v1(raw: i64) -> *mut Control;
     /// Prints "Chimi runtime exhausted memory" and exits 70.
     fn chimi_runtime_exhausted_memory() -> !;
 }
@@ -41,14 +36,6 @@ unsafe extern "C" {
 pub(crate) unsafe fn task_value(raw: u64) -> *mut Value {
     // SAFETY: the caller's contract.
     unsafe { capabilities::task_value(raw) }
-}
-
-/// `ChimiFiberResult` (chimi_fiber.h), only so the entry's type is right.
-#[repr(C)]
-struct FiberResult {
-    state: u32,
-    value: i64,
-    defect_code: i64,
 }
 
 /// The call a task operation belongs to.
@@ -241,10 +228,10 @@ unsafe fn next(children: &mut Children, drain: bool, node: i64) -> Next {
             *children.waiting.add(found) = *children.waiting.add(last);
             *children.positions.add(found) = *children.positions.add(last);
             return match request.status {
-                Scheduler::RESPONSE_SUCCEEDED => Next::Outcome(chimi_runtime_task_reply_v1(request.value), position),
+                Scheduler::RESPONSE_SUCCEEDED => Next::Outcome(task_reply(request.value), position),
                 Scheduler::RESPONSE_CANCELLED => Next::Cancelled,
                 Scheduler::RESPONSE_DEFECTED if request.value > 0 => {
-                    Next::Outcome(chimi_runtime_task_reply_v1(request.value), position)
+                    Next::Outcome(task_reply(request.value), position)
                 }
                 Scheduler::RESPONSE_DEFECTED => {
                     Next::Interrupted(defect(c"Task combinator child defected", node))

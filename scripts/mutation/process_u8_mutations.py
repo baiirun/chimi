@@ -13,6 +13,7 @@ Every mutant runs one scenario through the lab binary with `--through U8`.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
@@ -63,10 +64,10 @@ MUTATIONS = [
     # Structured child tasks.
     lab("a defected body's children outlive it into the replacement", SCHEDULER, "RA07",
         [TRANSCRIPT, EXITED], CHILDREN_LEFT_RUNNING),
-    lab("a task result points into the child's destroyed heap", RUNTIME, "CB05",
+    lab("a task result points into the child's destroyed heap", TASK_ENTRY, "CB05",
         [OUTCOME, EXITED], [(
-            "  ChimiFiberResult result = child_task_result(control);",
-            "  ChimiFiberResult result = {.state = CHIMI_FIBER_SUCCEEDED, .value = (int64_t)(intptr_t)control};")]),
+            "        let result = child_task_result(control);",
+            "        let result = FiberResult { state: FiberResult::SUCCEEDED, value: control as i64, defect_code: 0 };")]),
     # Cancellation interrupts every park.
     lab("Clock.sleep ignores cancellation", CLOCKS, "RR05",
         [TRANSCRIPT], [(

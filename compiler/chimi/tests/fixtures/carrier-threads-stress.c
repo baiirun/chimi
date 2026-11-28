@@ -779,10 +779,19 @@ static void *start_a_task_unbound(void *unused) {
   return NULL;
 }
 
+/* The Rust body of every incarnation's entry (intrinsics/task_entry.rs),
+   which is in the runtime archive even where the kernel's C wrapper is not. */
+ChimiFiberResult chimi_runtime_process_entry_v1(void *raw_context);
+
+static void *start_a_process_unbound(void *unused) {
+  (void)unused;
+  (void)chimi_runtime_process_entry_v1(NULL);
+  return NULL;
+}
+
 /* With several carriers, a thread that never entered its own carrier aliases
-   carrier 0; starting a task there aborts before touching it. Process bodies
-   make the same check (require_bound_carrier), but their entry is built only
-   into the process kernel, which this fixture does not link. */
+   carrier 0; starting a task or a process body there aborts before touching
+   it (require_bound_carrier). */
 static void a_fiber_on_an_unbound_thread_aborts(void *(*start)(void *), const char *what) {
   fflush(NULL);
   pid_t child = fork();
@@ -814,6 +823,7 @@ int main(void) {
   a_peak_counts_the_whole_process();
   a_peak_counts_unflushed_young_bytes_and_lone_falls();
   a_fiber_on_an_unbound_thread_aborts(start_a_task_unbound, "task");
+  a_fiber_on_an_unbound_thread_aborts(start_a_process_unbound, "process body");
 
   runtime.telemetry = tmpfile();
   CHECK(runtime.telemetry, "tmpfile");

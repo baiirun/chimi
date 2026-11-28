@@ -15,6 +15,7 @@ same scenarios in the default suite.
 CRATE = "compiler/chimi"
 
 RUNTIME = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 PROCESSES = "../../runtime/chimi-runtime/src/intrinsics/processes.rs"
 FIXTURE = "src/process_lab/fixture.rs"
 KERNEL = "../../runtime/chimi-fiber/src/scheduler/process.rs"
@@ -135,10 +136,10 @@ MUTATIONS = [
             "                if i64::from(members) > capacity {",
             "                if i64::from(members) > capacity + 1 {")]),
     # Each incarnation runs on its own copy of the body and its providers.
-    lab("the first incarnation takes the spec's body instead of a copy", RUNTIME, "CB08",
+    lab("the first incarnation takes the spec's body instead of a copy", TASK_ENTRY, "CB08",
         [OUTCOME, EXITED], [(
-            "  fragment_copy_into_current(context->body, roots);",
-            "  fragment_adopt(context->body, roots);")]),
+            "        fragment::copy_into_current(current_carrier(), (*context).body, roots.as_mut_ptr());",
+            "        fragment::adopt(current_carrier(), (*context).body, roots.as_mut_ptr());")]),
     # Virtual time and determinism.
     lab("the runner ignores --clock=virtual", RUNTIME, "OB06",
         ["exceeded the 60 s run limit"], [(CLOCK_MODE, ".clock_mode = CHIMI_SCHEDULER_CLOCK_REAL,")]),

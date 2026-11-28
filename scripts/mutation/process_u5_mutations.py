@@ -20,6 +20,7 @@ EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 TELEMETRY = "../../runtime/chimi-runtime/src/telemetry.rs"
 
 RUNTIME = "runtime/native/runtime.c"
+TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 NATIVE = "src/backend/native.rs"
 TYPING = "src/typing.rs"
 # The fragment copy and adoption are Rust since CHI-305 step 5 phase 3.
@@ -79,10 +80,10 @@ MUTATIONS = [
             "failure(standard_value(StandardConstructor::PROCESS_SEND_FULL, &[message]))",
             "failure(standard_value(StandardConstructor::PROCESS_SEND_UNAVAILABLE, &[message]))")]),
     # Messages the scheduler discards unread come back through release_message.
-    lab("discarded messages are never freed", RUNTIME, "MB06",
+    lab("discarded messages are never freed", TASK_ENTRY, "MB06",
         ["fragments_live is not 0"], [(
-            "  (void)context;\n  fragment_free((RuntimeFragment *)(uintptr_t)message);",
-            "  (void)context;\n  (void)message;")]),
+            "    unsafe { fragment::free(current_carrier(), message as usize as *mut RuntimeFragment) };\n",
+            "    let _ = message;\n")]),
     # Fiber stacks and named process defects.
     cli("scheduler fibers keep a 64 KiB stack", RUNTIME, STACK_TEST, [(
         "#define CHIMI_FIBER_STACK_BYTES (1024u * 1024u)",
@@ -93,8 +94,8 @@ MUTATIONS = [
     cli("the scheduler does not flag an overflowed body", KERNEL, STACK_TEST, [(
         "        let stack_overflow = matches!(outcome, TaskOutcome::StackOverflow { .. });",
         "        let stack_overflow = false;")]),
-    cli("a body's defect message is dropped", RUNTIME, STACK_TEST, [(
-        "      chimi_fiber_report_defect(control->message);\n", "")]),
+    cli("a body's defect message is dropped", TASK_ENTRY, STACK_TEST, [(
+        "                chimi_fiber_report_defect((*control).message);\n", "")]),
     # CB07: a foreign pointer defects in the sender and never reaches a mailbox.
     lab("a send skips the foreign-pointer check", PROCESS_KERNEL, "CB07",
         ["did not defect"], [(
