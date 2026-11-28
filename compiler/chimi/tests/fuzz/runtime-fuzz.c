@@ -501,6 +501,16 @@ static void fuzz_timestamp(const uint8_t *data, size_t size, FuzzOutput *out) {
    a label set from two bytes, and a finite value from eight (a count's made
    whole and non-negative, as std/metrics checks). Both aggregates record them
    all, and their documents must be the same. */
+/* The aggregate's own C view (chimi-runtime metrics_abi.rs); the runtime's
+   aggregate is behind intrinsics/metrics_host.rs. */
+typedef struct ChimiMetrics ChimiMetrics;
+extern ChimiMetrics *chimi_metrics_new_v1(void);
+extern void chimi_metrics_record_v1(ChimiMetrics *aggregate, int64_t kind, const char *name, size_t name_length,
+                                    double value, const char *labels, size_t labels_length);
+extern ChimiOwnedText chimi_metrics_document_v1(const ChimiMetrics *aggregate, int64_t start_unix_ns,
+                                                int64_t time_unix_ns);
+extern void chimi_metrics_free_v1(ChimiMetrics *aggregate);
+
 static void fuzz_metrics(const uint8_t *data, size_t size, FuzzOutput *out) {
   static const char *const names[] = {"\"requests\"", "\"latency\"", "\"queue\"", "\"a\\\"b\""};
   ChimiMetrics *aggregate = chimi_metrics_new_v1();

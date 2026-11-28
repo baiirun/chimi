@@ -8,6 +8,7 @@ CRATE = "compiler/chimi"
 
 EXPORT = "src/metrics_export.rs"
 RUNTIME = "runtime/native/runtime.c"
+HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
 
 
 def mutant(name, file, edits, filter=""):
@@ -15,9 +16,9 @@ def mutant(name, file, edits, filter=""):
 
 
 MUTATIONS = [
-    mutant("the document's end ignores the run's time", RUNTIME, [(
-        "  if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;",
-        "  ended = runtime->start_unix_ns;",
+    mutant("the document's end ignores the run's time", HOST, [(
+        "    let ended = unsafe { (*runtime).start_unix_ns.checked_add(chimi_fiber_now()) }.unwrap_or(i64::MAX);",
+        "    let ended = unsafe { (*runtime).start_unix_ns };",
     )]),
     mutant("the start is taken when tracing only", RUNTIME, [(
         "  install_stop_signals(&runtime);\n  runtime.start_unix_ns = start_unix_nanos(&runtime);",

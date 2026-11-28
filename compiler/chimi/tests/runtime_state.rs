@@ -74,12 +74,6 @@ const SHARED: &[&str] = &[
     "chimi_runtime_process_peak_footprint_bytes",
     "chimi_runtime_process_fragment_footprint_bytes",
     "chimi_runtime_process_peak_fragment_footprint_bytes",
-    "metrics_lock",
-    "metrics_aggregate",
-    // Atomic: set once by the first Metrics.runner_document.
-    "metrics_reading",
-    // Set before main starts; read under metrics_lock.
-    "metrics_started_unix_ns",
 ];
 
 fn writable_symbols(process_kernel: bool) -> BTreeSet<String> {

@@ -2098,6 +2098,9 @@ _Static_assert(CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY == 207, "layout: CHIM
 _Static_assert(CHIMI_INTRINSIC_FS_TEST_ROOT == 208, "layout: CHIMI_INTRINSIC_FS_TEST_ROOT");
 _Static_assert(CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL == 211, "layout: CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL");
 _Static_assert(CHIMI_INTRINSIC_LOG_HOST_WRITE == 212, "layout: CHIMI_INTRINSIC_LOG_HOST_WRITE");
+_Static_assert(CHIMI_INTRINSIC_METRICS_HOST_ENABLED == 213, "layout: CHIMI_INTRINSIC_METRICS_HOST_ENABLED");
+_Static_assert(CHIMI_INTRINSIC_METRICS_HOST_RECORD == 214, "layout: CHIMI_INTRINSIC_METRICS_HOST_RECORD");
+_Static_assert(CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT == 215, "layout: CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT");
 _Static_assert(CHIMI_ADDRESS_TEST == 3, "layout: CHIMI_ADDRESS_TEST");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
@@ -3907,107 +3910,25 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   return defect("unknown host function", call_node);
 }
 
-/* std/metrics' host core: one aggregate per name and label set, written as
-   one JSON document to the --metrics-file file when the program ends. It is
-   chimi_runtime::metrics, which the interpreter keeps its measurements in
-   too, so both backends write the same document. Every carrier records into
-   the one aggregate under metrics_lock. */
-typedef struct ChimiMetrics ChimiMetrics;
-extern ChimiMetrics *chimi_metrics_new_v1(void);
-extern void chimi_metrics_record_v1(ChimiMetrics *aggregate, int64_t kind, const char *name, size_t name_length,
-                                    double value, const char *labels, size_t labels_length);
+/* std/metrics' host core lives in Rust (chimi-runtime intrinsics/metrics_host.rs),
+   with the aggregate and its lock; runtime.c notes when the aggregate began
+   and writes the document to --metrics-file at exit. */
 /* A text Rust built, which C copies and then hands back (text_abi.rs). */
 typedef struct { const char *bytes; size_t length; void *owned; } ChimiOwnedText;
 void chimi_text_release_v1(ChimiOwnedText owned);
-extern ChimiOwnedText chimi_metrics_document_v1(const ChimiMetrics *aggregate, int64_t start_unix_ns,
-                                                int64_t time_unix_ns);
-extern void chimi_metrics_free_v1(ChimiMetrics *aggregate);
-
-static pthread_mutex_t metrics_lock = PTHREAD_MUTEX_INITIALIZER;
-/* Set by the first Metrics.runner_document: from then on the provider
-   records without --metrics-file. */
-static atomic_bool metrics_reading;
-/* When the aggregate began: the run's start, or the first repeat's. */
-static int64_t metrics_started_unix_ns;
-/* Made by the first measurement or document; guarded by metrics_lock. */
-static ChimiMetrics *metrics_aggregate;
-
-static ChimiMetrics *metrics_held(void) {
-  if (!metrics_aggregate) metrics_aggregate = chimi_metrics_new_v1();
-  return metrics_aggregate;
-}
-
-/* Adds one measurement from any carrier. */
-static void metrics_add(int64_t kind, const char *name, size_t name_length, double value, const char *labels,
-                        size_t labels_length) {
-  pthread_mutex_lock(&metrics_lock);
-  chimi_metrics_record_v1(metrics_held(), kind, name, name_length, value, labels, labels_length);
-  pthread_mutex_unlock(&metrics_lock);
-}
+extern void chimi_runtime_metrics_started_v1(int64_t start_unix_ns);
+extern ChimiOwnedText chimi_runtime_metrics_document_v1(const ChimiRuntime *runtime, int64_t start_unix_ns);
 
 static bool close_output(FILE *output);
 
-/* Whether the provider records: with --metrics-file, or once the program
-   has read the aggregate. */
-static bool metrics_recording(const ChimiRuntime *runtime) {
-  return runtime->metrics_file != NULL || atomic_load_explicit(&metrics_reading, memory_order_acquire);
-}
-
-/* Writes the metrics document, whose counts began at `started`, to `output`
-   as it stands now. */
-static void write_metrics_document(const ChimiRuntime *runtime, int64_t started, FILE *output) {
-  /* At exit, `main` has ended and the clock is where its last fiber left it;
-     mid-run, it is the reading fiber's time. */
-  int64_t ended;
-  if (__builtin_add_overflow(runtime->start_unix_ns, chimi_fiber_now(), &ended)) ended = INT64_MAX;
-  pthread_mutex_lock(&metrics_lock);
-  ChimiOwnedText document = chimi_metrics_document_v1(metrics_held(), started, ended);
-  pthread_mutex_unlock(&metrics_lock);
-  fwrite(document.bytes, 1, document.length, output);
-  chimi_text_release_v1(document);
-}
-
-/* Writes the metrics document at exit; true when the write failed. */
+/* Writes the metrics document, whose counts began at `started`, at exit;
+   true when the write failed. */
 static bool write_metrics(const ChimiRuntime *runtime, int64_t started, FILE *output) {
   if (!output) return false;
-  write_metrics_document(runtime, started, output);
+  ChimiOwnedText document = chimi_runtime_metrics_document_v1(runtime, started);
+  fwrite(document.bytes, 1, document.length, output);
+  chimi_text_release_v1(document);
   return close_output(output);
-}
-
-/* Metrics.runner_document: the aggregate so far, and recording from now on. */
-static ChimiValue *metrics_document_now(const ChimiRuntime *runtime) {
-  atomic_store_explicit(&metrics_reading, true, memory_order_release);
-  char *bytes = NULL;
-  size_t length = 0;
-  FILE *output = open_memstream(&bytes, &length);
-  if (!output) exhausted_memory();
-  write_metrics_document(runtime, metrics_started_unix_ns, output);
-  if (fclose(output) != 0) exhausted_memory();
-  ChimiValue *document = text_from_bytes(bytes, length);
-  free(bytes);
-  return document;
-}
-
-static ChimiControl *invoke_metrics_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                              ChimiValue **arguments, uint32_t argument_count,
-                                              uint32_t call_node) {
-  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED) {
-    if (argument_count != 0) return intrinsic_shape_defect(call_node);
-    return success(boolean_value(metrics_recording(runtime)));
-  }
-  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT) {
-    if (argument_count != 0) return intrinsic_shape_defect(call_node);
-    if (runtime->cancel) return cancelled();
-    return success(metrics_document_now(runtime));
-  }
-  if (argument_count != 4 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
-      arguments[2]->kind != VALUE_FLOAT || arguments[3]->kind != VALUE_TEXT)
-    return intrinsic_shape_defect(call_node);
-  if (runtime->cancel) return cancelled();
-  if (metrics_recording(runtime))
-    metrics_add(arguments[0]->as.integer, arguments[1]->as.text.bytes, arguments[1]->as.text.length,
-                arguments[2]->as.floating, arguments[3]->as.text.bytes, arguments[3]->as.text.length);
-  return runtime->cancel ? cancelled() : success(void_value());
 }
 
 /* C bindings (G20). A binding function (chimi_binding.h) sees a call, never
@@ -4749,9 +4670,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiEnvironment *environment) {
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD ||
-      intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
-    return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic >= CHIMI_INTRINSIC_PROCESS_SPEC && intrinsic <= CHIMI_INTRINSIC_SUPERVISOR_WAIT)
     return invoke_process(runtime, intrinsic, arguments, argument_count, span, call_node, environment);
   return defect("unknown standard intrinsic", call_node);
@@ -5984,7 +5902,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       for (size_t carrier_index = 0; carrier_index < carrier_count; ++carrier_index)
         carrier_at(carrier_index)->next_span = carrier_at(carrier_index)->end_span = 0;
       runtime.start_unix_ns = start_unix_nanos(&runtime);
-      if (repeat == 0) metrics_started_unix_ns = metrics_started = runtime.start_unix_ns;
+      if (repeat == 0) chimi_runtime_metrics_started_v1(metrics_started = runtime.start_unix_ns);
       if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
       ChimiEnvironment *environment = new_environment(entry_function->local_count);
       if (entry_function->parameters_length == 1) {
@@ -6015,7 +5933,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   }
   install_stop_signals(&runtime);
   runtime.start_unix_ns = start_unix_nanos(&runtime);
-  metrics_started_unix_ns = runtime.start_unix_ns;
+  chimi_runtime_metrics_started_v1(runtime.start_unix_ns);
   if (!runtime.silent) emit_event(&runtime, "computation_started", entry_node, 1, -1, "computation", NULL);
   ChimiEnvironment *environment = new_environment(entry_function->local_count);
   if (entry_function->parameters_length == 1) {
