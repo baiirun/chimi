@@ -2,7 +2,7 @@
 //! operation profile (`--profile-file`).
 
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::{CStr, c_char, c_void};
 
 use crate::heap::allocator::profile_rows;
 use crate::heap::layout::{Node, Origin};
@@ -75,6 +75,21 @@ unsafe fn report_open_failure(what: &[u8], path: *const c_char) {
     }
 }
 
+/// A profile row's sort key.
+struct Ranked {
+    allocated_bytes: u64,
+    evaluations: u64,
+    node: u32,
+}
+
+/// Most allocated bytes first, then most evaluations, then node id.
+unsafe extern "C" fn compare_ranked(left: *const c_void, right: *const c_void) -> i32 {
+    // SAFETY: qsort passes two elements of the `Ranked` array.
+    let (x, y) = unsafe { (&*left.cast::<Ranked>(), &*right.cast::<Ranked>()) };
+    let order = y.allocated_bytes.cmp(&x.allocated_bytes).then(y.evaluations.cmp(&x.evaluations)).then(x.node.cmp(&y.node));
+    order as i32
+}
+
 /// Writes the profile to `path`, a new file: one JSON object with every
 /// evaluated node, most allocated bytes first, then most evaluations, then
 /// node id, so the same program always writes the same profile. Returns
@@ -96,18 +111,20 @@ pub unsafe extern "C" fn chimi_runtime_write_profile_v1(path: *const c_char) -> 
         }
         let rows = profile_rows();
         let count = CHIMI_NODE_COUNT as usize;
-        let mut order: Vec<u32> = Vec::new();
+        let mut order: Vec<Ranked> = Vec::new();
         if order.try_reserve_exact(count).is_err() {
             chimi_runtime_exhausted_memory();
         }
-        order.extend((0..CHIMI_NODE_COUNT).filter(|&node| (*rows.add(node as usize)).evaluations != 0));
-        order.sort_unstable_by(|&a, &b| {
-            let (x, y) = (&*rows.add(a as usize), &*rows.add(b as usize));
-            y.allocated_bytes.cmp(&x.allocated_bytes).then(y.evaluations.cmp(&x.evaluations)).then(a.cmp(&b))
-        });
+        order.extend((0..CHIMI_NODE_COUNT).filter(|&node| (*rows.add(node as usize)).evaluations != 0).map(|node| {
+            let row = &*rows.add(node as usize);
+            Ranked { allocated_bytes: row.allocated_bytes, evaluations: row.evaluations, node }
+        }));
+        // libc's qsort rather than slice sorting, whose generic code would
+        // add about 13 KB to every program; the order is total, so both agree.
+        libc::qsort(order.as_mut_ptr().cast(), order.len(), size_of::<Ranked>(), Some(compare_ranked));
         let out = Out(output);
         out.bytes(b"{\"schema\":\"chimi.runtime-profile.v1\",\"operations\":[");
-        for (index, &node) in order.iter().enumerate() {
+        for (index, &Ranked { node, .. }) in order.iter().enumerate() {
             let row = &*rows.add(node as usize);
             let shape = &*(&raw const CHIMI_NODES).cast::<Node>().add(node as usize);
             let origin = &*(&raw const CHIMI_ORIGINS).cast::<Origin>().add(shape.origin as usize);

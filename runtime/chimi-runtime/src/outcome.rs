@@ -170,7 +170,7 @@ unsafe fn json_value(out: &Out, root: *const Value) {
                     let magnitude = (u128::from(raw.high) << 64) | u128::from(raw.low);
                     let Some(decimal) = Decimal::new(raw.negative, magnitude, raw.scale) else { libc::abort() };
                     out.bytes(b"{\"decimal\":");
-                    out.json(decimal.normalized_text().as_bytes());
+                    out.json(decimal.normalized().text().as_bytes());
                     out.bytes(b"}");
                 }
                 ValueKind::RANGE => {

@@ -32,7 +32,7 @@ MUTATIONS = [
            "                    if !constructed.variant_name.is_null() {",
            "                    if false {"),
     mutant("a decimal keeps its trailing zeros", OUTCOME,
-           "                    out.json(decimal.normalized_text().as_bytes());",
+           "                    out.json(decimal.normalized().text().as_bytes());",
            "                    out.json(decimal.text().as_bytes());"),
     mutant("bytes swap their hex digits", OUTCOME,
            "out.bytes(&[HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0xf)]]);",
