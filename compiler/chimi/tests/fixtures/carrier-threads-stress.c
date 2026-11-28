@@ -296,11 +296,13 @@ static void input_round(void) {
 }
 
 static FILE *console_file;
+extern int chimi_runtime_console_write_line_v1(const ChimiRuntime *runtime, size_t index, const char *text,
+                                               size_t length);
 
 static void console_round(size_t index, uint32_t round) {
   char text[160];
   int length = snprintf(text, sizeof(text), "console-%zu-%04u-%0120d", index, round, 0);
-  CHECK(console_write_line(&runtime, &console_streams[1], text, (size_t)length) == 0, "console write failed");
+  CHECK(chimi_runtime_console_write_line_v1(&runtime, 1, text, (size_t)length) == 0, "console write failed");
 }
 
 static int64_t first_field(const ChimiControl *control) {
@@ -826,8 +828,7 @@ int main(void) {
   close(input[0]);
   console_file = tmpfile();
   CHECK(console_file, "tmpfile");
-  console_streams[1].mode = CONSOLE_DIRECT;
-  console_streams[1].file = console_file;
+  chimi_runtime_console_set_v1(1, fileno(console_file), true);
   HeapTotals before = heap_totals_sum();
 
   pthread_t threads[THREADS];

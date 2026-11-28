@@ -551,6 +551,9 @@ impl Scheduler {
     pub const REQUEST_CHANNEL_ABORT: u32 = 8;
     pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
     pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
+    pub const REQUEST_IO_WAIT: u32 = 48;
+    /// CHIMI_REQUEST_IO_WAIT's writable interest, in `token`.
+    pub const IO_WRITABLE: u64 = 2;
     pub const REQUEST_CHANNEL_WATCH: u32 = 38;
     pub const REQUEST_CHANNEL_SUBSCRIBE: u32 = 39;
     pub const REQUEST_SCOPE_ENTER: u32 = 25;
@@ -869,6 +872,8 @@ impl Intrinsic {
     pub const FS_HOST_IS_DIRECTORY: u32 = 206;
     pub const FS_HOST_TEMPORARY_DIRECTORY: u32 = 207;
     pub const FS_TEST_ROOT: u32 = 208;
+    pub const LOG_HOST_MINIMUM_LEVEL: u32 = 211;
+    pub const LOG_HOST_WRITE: u32 = 212;
 }
 
 /// The address kind, beside `CHIMI_ADDRESS_NAMED` and `CHIMI_ADDRESS_DIRECT`
@@ -881,6 +886,7 @@ pub struct StandardConstructor;
 
 impl StandardConstructor {
     pub const OPTION_SOME: u32 = 6;
+    pub const CONSOLE_WRITE_FAILED: u32 = 0;
     pub const OPTION_NONE: u32 = 7;
     pub const DOWN_RETURNED: u32 = 44;
     pub const TIMEOUT_TIMED_OUT: u32 = 43;
@@ -1705,6 +1711,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_CHANNEL_ABORT" Scheduler::REQUEST_CHANNEL_ABORT)
     constant("CHIMI_REQUEST_CHANNEL_ADD_RECEIVER" Scheduler::REQUEST_CHANNEL_ADD_RECEIVER)
     constant("CHIMI_REQUEST_CHANNEL_BROADCAST" Scheduler::REQUEST_CHANNEL_BROADCAST)
+    constant("CHIMI_REQUEST_IO_WAIT" Scheduler::REQUEST_IO_WAIT)
+    constant("CHIMI_IO_WRITABLE" Scheduler::IO_WRITABLE)
     constant("CHIMI_REQUEST_CHANNEL_WATCH" Scheduler::REQUEST_CHANNEL_WATCH)
     constant("CHIMI_REQUEST_CHANNEL_SUBSCRIBE" Scheduler::REQUEST_CHANNEL_SUBSCRIBE)
     constant("CHIMI_RESPONSE_SUCCEEDED" Scheduler::RESPONSE_SUCCEEDED)
@@ -1797,6 +1805,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_SET_SIZE" Intrinsic::SET_SIZE)
     constant("CHIMI_INTRINSIC_SET_REDUCE_ITEMS" Intrinsic::SET_REDUCE_ITEMS)
     constant("CHIMI_CONSTRUCTOR_OPTION_SOME" StandardConstructor::OPTION_SOME)
+    constant("CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED" StandardConstructor::CONSOLE_WRITE_FAILED)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED" StandardConstructor::CHANNEL_SEND_CLOSED)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED" StandardConstructor::CHANNEL_SEND_ABORTED)
     constant("CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED" StandardConstructor::CHANNEL_RECEIVED)
@@ -2007,6 +2016,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY" Intrinsic::FS_HOST_IS_DIRECTORY)
     constant("CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY" Intrinsic::FS_HOST_TEMPORARY_DIRECTORY)
     constant("CHIMI_INTRINSIC_FS_TEST_ROOT" Intrinsic::FS_TEST_ROOT)
+    constant("CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL" Intrinsic::LOG_HOST_MINIMUM_LEVEL)
+    constant("CHIMI_INTRINSIC_LOG_HOST_WRITE" Intrinsic::LOG_HOST_WRITE)
     constant("CHIMI_ADDRESS_TEST" ADDRESS_TEST)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY" StandardConstructor::DURATION_PARSE_EMPTY)
     constant("CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID" StandardConstructor::DURATION_PARSE_INVALID)

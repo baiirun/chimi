@@ -98,7 +98,7 @@ pub(super) fn cache_enabled() -> bool {
     unsafe { chimi_runtime_small_block_cache }
 }
 
-fn carrier_count() -> usize {
+pub(crate) fn carrier_count() -> usize {
     // SAFETY: a global of runtime.c.
     unsafe { chimi_runtime_carrier_count.load(Relaxed) }
 }

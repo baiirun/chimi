@@ -17,6 +17,7 @@ R = "runtime/native/runtime.c"
 
 
 HANDLES = "../../runtime/chimi-runtime/src/handles.rs"
+CONSOLE_IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
 
 
 def m(name, edits, file=R):
@@ -49,6 +50,6 @@ MUTATIONS = [
         "static void input_unlock(ByteInput *input) {\n  if (input->lock) pthread_mutex_unlock(input->lock);\n}",
         "static void input_unlock(ByteInput *input) {\n  (void)input;\n}")]),
     m("a console line is written without the lock", [(
-        "  console_enter();\n  int outcome = console_write_line_locked(runtime, stream, text, length);\n  console_leave();",
-        "  int outcome = console_write_line_locked(runtime, stream, text, length);")]),
+        "    enter();\n    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };\n    leave();",
+        "    // SAFETY: the caller's contract.\n    let outcome = unsafe { write_line_locked(runtime, index, text) };")], file=CONSOLE_IO),
 ]

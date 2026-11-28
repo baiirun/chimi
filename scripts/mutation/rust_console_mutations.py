@@ -33,4 +33,10 @@ MUTATIONS = [
            "        if false {")]),
     unit("an ended line is kept",
          [("        self.lines.retain(|line| line.id != id);", "")]),
+    unit("the log line drops its milliseconds",
+         [("    let millis = millis.clamp(0, 999);", "    let millis = millis.clamp(0, 0);")]),
+    unit("the log level names shift by one",
+         [("    line.extend_from_slice(LEVELS[level.clamp(0, 3) as usize]);", "    line.extend_from_slice(LEVELS[(level + 1).clamp(0, 3) as usize]);")]),
+    unit("a log line may outgrow its reservation",
+         [("const FIXED_LOG_BYTES: usize = 96;", "const FIXED_LOG_BYTES: usize = 40;")]),
 ]

@@ -10,6 +10,7 @@ S = "std/log.chimi"
 H = "src/execution/host_operations.rs"
 E = "src/execution.rs"
 C = "runtime/native/runtime.c"
+IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
 
 
 def mutant(name, file, edits, filter="", targets=("std_log",)):
@@ -18,8 +19,8 @@ def mutant(name, file, edits, filter="", targets=("std_log",)):
 
 MUTATIONS = [
     mutant("warn builds an info entry", S, [(
-        "  log.write(Entry(Level.Warn, message, fields))",
-        "  log.write(Entry(Level.Info, message, fields))",
+        "    level: Level.Warn, message: message, fields: fields",
+        "    level: Level.Info, message: message, fields: fields",
     )]),
     mutant("fields come back reversed", S, [(
         "  List.map(entry.fields, fn(field) { (field.key, field.value) })",
@@ -61,16 +62,16 @@ MUTATIONS = [
         "                   (outcome_path && strcmp(log_path, outcome_path) == 0) ||",
         "                   false ||",
     )]),
-    mutant("the native runner writes log lines to stdout", C, [(
-        "    written = console_write_line(runtime, &console_streams[1], line, length);",
-        "    written = console_write_line(runtime, &console_streams[0], line, length);",
+    mutant("the native runner writes log lines to stdout", IO, [(
+        "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",
+        "        let index = if (*runtime).log_file.is_null() { 0 } else { LOG_STREAM };",
     )]),
     mutant("a respelled report path is accepted as the log file", C, [(
         "          log_status.st_ino == report_status.st_ino && !S_ISCHR(log_status.st_mode)) {",
         "          log_status.st_ino == report_status.st_ino && false) {",
     )]),
-    mutant("the log file goes to stderr", C, [(
-        "  ConsoleStream *stream = &console_streams[runtime->log_file ? 2 : 1];",
-        "  ConsoleStream *stream = &console_streams[1];",
+    mutant("the log file goes to stderr", IO, [(
+        "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",
+        "        let index = 1;",
     )]),
 ]

@@ -40,23 +40,3 @@ pub unsafe extern "C" fn chimi_timestamp_parse_v1(text: *const u8, length: usize
     unsafe { nanoseconds.write(parsed) };
     true
 }
-
-/// Writes `2026-11-10T09:30:00`, the UTC date and time of day of `seconds`
-/// since the epoch, as a NUL-terminated string and returns its length.
-///
-/// # Safety
-///
-/// `out` must point to `timestamp::TEXT_BYTES + 1` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn chimi_timestamp_date_time_v1(seconds: i64, out: *mut u8) -> usize {
-    let (date, of_day) = timestamp::civil_seconds(seconds);
-    let mut text = timestamp::TimestampText::new();
-    timestamp::push_date_time(&mut text, date, of_day);
-    let bytes = text.as_bytes();
-    // SAFETY: the caller guarantees room for TEXT_BYTES bytes and a NUL.
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
-        out.add(bytes.len()).write(0);
-    }
-    bytes.len()
-}

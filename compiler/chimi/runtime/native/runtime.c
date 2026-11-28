@@ -704,7 +704,8 @@ typedef struct {
      carrier 0. */
   pthread_t thread;
   bool bound;
-  /* This carrier's thread holds console_lock. A Carrier field rather than a
+  /* This carrier's thread holds the console lock (chimi-runtime
+     intrinsics/console_io.rs). A Carrier field rather than a
      thread-local of its own: a writer parks between leaving and entering the
      lock, and may resume on another thread (`carrier` is read afresh). */
   bool console_lock_held;
@@ -1766,6 +1767,8 @@ _Static_assert(CHIMI_REQUEST_CHANNEL_CLOSE == 7, "layout: CHIMI_REQUEST_CHANNEL_
 _Static_assert(CHIMI_REQUEST_CHANNEL_ABORT == 8, "layout: CHIMI_REQUEST_CHANNEL_ABORT");
 _Static_assert(CHIMI_REQUEST_CHANNEL_ADD_RECEIVER == 36, "layout: CHIMI_REQUEST_CHANNEL_ADD_RECEIVER");
 _Static_assert(CHIMI_REQUEST_CHANNEL_BROADCAST == 37, "layout: CHIMI_REQUEST_CHANNEL_BROADCAST");
+_Static_assert(CHIMI_REQUEST_IO_WAIT == 48, "layout: CHIMI_REQUEST_IO_WAIT");
+_Static_assert(CHIMI_IO_WRITABLE == 2, "layout: CHIMI_IO_WRITABLE");
 _Static_assert(CHIMI_REQUEST_CHANNEL_WATCH == 38, "layout: CHIMI_REQUEST_CHANNEL_WATCH");
 _Static_assert(CHIMI_REQUEST_CHANNEL_SUBSCRIBE == 39, "layout: CHIMI_REQUEST_CHANNEL_SUBSCRIBE");
 _Static_assert(CHIMI_RESPONSE_SUCCEEDED == 3, "layout: CHIMI_RESPONSE_SUCCEEDED");
@@ -1882,6 +1885,7 @@ _Static_assert(CHIMI_INTRINSIC_SET_REMOVE == 139, "layout: CHIMI_INTRINSIC_SET_R
 _Static_assert(CHIMI_INTRINSIC_SET_SIZE == 140, "layout: CHIMI_INTRINSIC_SET_SIZE");
 _Static_assert(CHIMI_INTRINSIC_SET_REDUCE_ITEMS == 141, "layout: CHIMI_INTRINSIC_SET_REDUCE_ITEMS");
 _Static_assert(CHIMI_CONSTRUCTOR_OPTION_SOME == 6, "layout: CHIMI_CONSTRUCTOR_OPTION_SOME");
+_Static_assert(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED == 0, "layout: CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED == 17, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_CLOSED");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED == 18, "layout: CHIMI_CONSTRUCTOR_CHANNEL_SEND_ABORTED");
 _Static_assert(CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED == 19, "layout: CHIMI_CONSTRUCTOR_CHANNEL_RECEIVED");
@@ -2092,6 +2096,8 @@ _Static_assert(CHIMI_INTRINSIC_FS_HOST_RENAME == 205, "layout: CHIMI_INTRINSIC_F
 _Static_assert(CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY == 206, "layout: CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY");
 _Static_assert(CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY == 207, "layout: CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY");
 _Static_assert(CHIMI_INTRINSIC_FS_TEST_ROOT == 208, "layout: CHIMI_INTRINSIC_FS_TEST_ROOT");
+_Static_assert(CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL == 211, "layout: CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL");
+_Static_assert(CHIMI_INTRINSIC_LOG_HOST_WRITE == 212, "layout: CHIMI_INTRINSIC_LOG_HOST_WRITE");
 _Static_assert(CHIMI_ADDRESS_TEST == 3, "layout: CHIMI_ADDRESS_TEST");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY == 33, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_EMPTY");
 _Static_assert(CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID == 34, "layout: CHIMI_CONSTRUCTOR_DURATION_PARSE_INVALID");
@@ -2718,7 +2724,6 @@ static ChimiControl *cancelled(void) { return new_control(CONTROL_CANCEL, NULL, 
 #define CHIMI_TIMESTAMP_TEXT 33
 extern size_t chimi_timestamp_text_v1(int64_t nanoseconds, char *out);
 extern bool chimi_timestamp_parse_v1(const char *text, size_t length, int64_t *nanoseconds);
-extern size_t chimi_timestamp_date_time_v1(int64_t seconds, char *out);
 /* Writes `nanoseconds` as `2026-11-10T09:30:00.25Z`. */
 static void timestamp_text(int64_t nanoseconds, char *out) { chimi_timestamp_text_v1(nanoseconds, out); }
 /* Parses an RFC 3339 date-time into Unix nanoseconds (timestamp.rs `parse`). */
@@ -3882,233 +3887,12 @@ static uint64_t random_next(void) {
   return result;
 }
 
-/* Console output (CHI-266). Under the scheduler a line written to a pipe, a
-   terminal or a socket never stops the other tasks: the writer waits for the
-   descriptor through CHIMI_REQUEST_IO_WAIT, as a read of "-" does. The
-   descriptor stays blocking, because its open file description is shared with
-   the parent shell and other processes; after poll reports it writable, one
-   write(2) of at most PIPE_BUF bytes does not block on a pipe or a socket. A
-   terminal may still hold such a write briefly.
-
-   Lines from different tasks never interleave: each line goes whole onto its
-   stream's queue before its writer waits (standard error shares standard
-   output's queue when both name the same open file), and whichever writer the reactor
-   wakes writes the front of the queue, its own bytes or an earlier line's.
-   A writer returns once the queue has passed the end of its line. A line once
-   queued is written whole, even when its writer is cancelled while it waits:
-   later writers or the end of the program write it. A body ending under a
-   terminal cancel queues its line and returns without waiting. A failed write
-   drops the queue and fails every line not yet fully written.
-
-   A socket is written with send(MSG_DONTWAIT), which never blocks and leaves
-   the shared descriptor alone. The queue holds at most CONSOLE_QUEUE_LIMIT
-   bytes: a writer waits before it queues a line that would pass the limit, so
-   writers cancelled while they wait (a write_line under Task.timeout against
-   a stalled reader) cannot grow it without bound. A line longer than the limit
-   is queued when the queue is empty.
-
-   A regular file, a program without the scheduler, and a program under the
-   virtual clock write directly, as before: a regular file is always writable,
-   without the scheduler there is no other task to keep running, and under the
-   virtual clock the order tasks run in must not depend on how fast the reader
-   drains the pipe. */
-/* The queues and the lines their writers wait on live in the Rust runtime
-   (runtime/chimi-runtime/src/console.rs), by index: 0 standard output, 1
-   standard error, 2 the log file. Every call is made holding console_lock.
-   A line's record outlives a fiber that overflows its stack while it waits,
-   since the queue owns it rather than the writer's stack. */
-extern bool chimi_console_push_v1(size_t queue, const void *bytes, size_t length);
-extern size_t chimi_console_queued_v1(size_t queue);
-extern const unsigned char *chimi_console_front_v1(size_t queue);
-extern void chimi_console_advance_v1(size_t queue, size_t count);
-extern void chimi_console_fail_v1(size_t queue, int error);
-extern int64_t chimi_console_begin_line_v1(size_t queue);
-extern int chimi_console_line_state_v1(size_t queue, int64_t line);
-extern void chimi_console_end_line_v1(size_t queue, int64_t line);
-
-typedef enum { CONSOLE_UNKNOWN, CONSOLE_DIRECT, CONSOLE_QUEUED } ConsoleMode;
-
-typedef struct {
-  int fd;
-  const char *name;
-  ConsoleMode mode;
-  bool socket;
-  FILE *file;
-  /* Its own queue, or standard output's when both descriptors name the same
-     open file (`2>&1`, one terminal), so their lines never interleave. */
-  size_t queue;
-} ConsoleStream;
-
-enum { CONSOLE_STREAM_COUNT = 3 };
-/* Standard output, standard error, and std/log's --log-file (fd -1 when
-   there is none), which is written like the other two so a slow reader never
-   blocks a carrier and its lines never tear or interleave. */
-static ConsoleStream console_streams[CONSOLE_STREAM_COUNT] = {
-  {.fd = STDOUT_FILENO, .name = "stdout"},
-  {.fd = STDERR_FILENO, .name = "stderr"},
-  {.fd = -1, .name = "log"},
-};
-/* Guards both streams and queues, since a task on any carrier writes lines.
-   A writer holds it except while it parks. console_drain_all runs at exit,
-   which may start inside a writer that holds it (exhausted_memory), so the
-   holder is noted per carrier (Carrier.console_lock_held). */
-static pthread_mutex_t console_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* With one carrier there is no other writer, so a line takes no lock: the
-   lock measured about 25 ns a line on a program that only prints.
-   carrier_count changes only before carrier threads start. */
-static void console_enter(void) {
-  if (carrier_count == 1) return;
-  pthread_mutex_lock(&console_lock);
-  carrier->console_lock_held = true;
-}
-static void console_leave(void) {
-  if (carrier_count == 1) return;
-  carrier->console_lock_held = false;
-  pthread_mutex_unlock(&console_lock);
-}
-
-enum { CONSOLE_QUEUE_LIMIT = 1 << 20 };
-
-static ConsoleMode console_mode(const ChimiRuntime *runtime, ConsoleStream *stream) {
-  if (stream->mode != CONSOLE_UNKNOWN) return stream->mode;
-  size_t index = (size_t)(stream - console_streams);
-  if (!stream->file) stream->file = stream->fd == STDOUT_FILENO ? stdout : stderr;
-  stream->queue = index;
-  struct stat status;
-  bool known = fstat(stream->fd, &status) == 0;
-  stream->socket = known && S_ISSOCK(status.st_mode);
-  stream->mode = CHIMI_REQUIRES_SCHEDULER && !runtime->virtual_clock && known && !S_ISREG(status.st_mode)
-    ? CONSOLE_QUEUED : CONSOLE_DIRECT;
-  /* A stream naming the same open file as an earlier one shares its queue. */
-  for (size_t earlier = 0; stream->mode == CONSOLE_QUEUED && earlier < index; ++earlier) {
-    ConsoleStream *other_stream = &console_streams[earlier];
-    struct stat other;
-    if (other_stream->fd >= 0 && console_mode(runtime, other_stream) == CONSOLE_QUEUED &&
-        fstat(other_stream->fd, &other) == 0 && other.st_dev == status.st_dev &&
-        other.st_ino == status.st_ino) {
-      stream->queue = other_stream->queue;
-      break;
-    }
-  }
-  return stream->mode;
-}
-
-static void console_enqueue(size_t queue, const void *bytes, size_t length) {
-  if (!chimi_console_push_v1(queue, bytes, length)) exhausted_memory();
-}
-
-/* One write(2) from the front of the queue, at most `limit` bytes. False with
-   errno set when it failed; an interruption or a descriptor a parent left
-   non-blocking reports nothing written and true. */
-static bool console_write_front(const ConsoleStream *stream, size_t limit) {
-  size_t length = chimi_console_queued_v1(stream->queue);
-  if (length > limit) length = limit;
-  const unsigned char *front = chimi_console_front_v1(stream->queue);
-  ssize_t count = stream->socket
-    ? send(stream->fd, front, length, MSG_DONTWAIT)
-    : write(stream->fd, front, length);
-  if (count < 0) return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
-  chimi_console_advance_v1(stream->queue, (size_t)count);
-  return true;
-}
-
-/* Writes the whole queue, blocking this thread. Only the end of the program
-   uses it, when no task is left to keep running. */
-static void console_drain_blocking(const ConsoleStream *stream) {
-  while (chimi_console_queued_v1(stream->queue)) {
-    struct pollfd poll_fd = {.fd = stream->fd, .events = POLLOUT};
-    if (poll(&poll_fd, 1, -1) < 0 && errno != EINTR) {
-      chimi_console_fail_v1(stream->queue, errno);
-      return;
-    }
-    if (!console_write_front(stream, SIZE_MAX)) {
-      chimi_console_fail_v1(stream->queue, errno);
-      return;
-    }
-  }
-}
-
-static void console_drain_all(void) {
-  bool entered = !carrier->console_lock_held;
-  if (entered) console_enter();
-  for (size_t index = 0; index < CONSOLE_STREAM_COUNT; ++index)
-    if (console_streams[index].mode == CONSOLE_QUEUED) console_drain_blocking(&console_streams[index]);
-  if (entered) console_leave();
-}
-
-/* Waits until `stream` is writable and writes the front of its queue.
-   CONSOLE_WAITED after a write or a wake that only means "ask again",
-   CONSOLE_CANCELLED when the writer was cancelled. When the reactor cannot
-   wait on the descriptor (it is closed, or poll failed) the write fails, as a
-   read of "-" does: writing anyway could block the scheduler thread. */
-enum { CONSOLE_WAITED, CONSOLE_CANCELLED };
-
-static int console_wait_and_write(const ConsoleStream *stream) {
-  ChimiSchedulerRequest request = {
-    .kind = CHIMI_REQUEST_IO_WAIT, .value = stream->fd, .token = CHIMI_IO_WRITABLE};
-  /* The caller holds console_lock, which is never held across a park. */
-  console_leave();
-  bool cancel = scheduler_request(&request) == CHIMI_FIBER_CANCEL;
-  console_enter();
-  if (cancel) return CONSOLE_CANCELLED;
-  if (request.status == CHIMI_RESPONSE_PENDING) return CONSOLE_WAITED;
-  if (request.status == CHIMI_RESPONSE_ERROR) {
-    chimi_console_fail_v1(stream->queue, fcntl(stream->fd, F_GETFD) < 0 ? EBADF : EIO);
-    return CONSOLE_WAITED;
-  }
-  /* Another writer may have emptied the queue while this one waited. */
-  if (chimi_console_queued_v1(stream->queue) && !console_write_front(stream, PIPE_BUF))
-    chimi_console_fail_v1(stream->queue, errno);
-  return CONSOLE_WAITED;
-}
-
-/* Writes `text` and a newline. 0 when written (or, for a body ending under a
-   terminal cancel, queued), -1 when cancelled, otherwise the errno of the
-   failed write. The caller holds console_lock. */
-static int console_write_line_locked(const ChimiRuntime *runtime, ConsoleStream *stream,
-                                     const char *text, size_t length) {
-  if (console_mode(runtime, stream) == CONSOLE_DIRECT) {
-    errno = 0;
-    /* The newline goes out even after a short write, so a later line never
-       joins a broken one. */
-    bool written = fwrite(text, 1, length, stream->file) == length;
-    written = fputc('\n', stream->file) != EOF && written;
-    written = fflush(stream->file) == 0 && written;
-    if (written) return 0;
-    int error = errno ? errno : EIO;
-    clearerr(stream->file);
-    return error;
-  }
-  size_t queue = stream->queue;
-  /* A body ending under a terminal cancel must not park (CHI-265), and must
-     not block the other tasks either: its line is queued for later writers or
-     the end of the program, past the limit if need be. */
-  bool terminal = chimi_fiber_cancel_is_terminal();
-  /* Nothing is queued yet, so a cancellation here loses nothing. */
-  size_t queued;
-  while (!terminal && (queued = chimi_console_queued_v1(queue)) &&
-         queued + length + 1 > CONSOLE_QUEUE_LIMIT)
-    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) return -1;
-  console_enqueue(queue, text, length);
-  console_enqueue(queue, "\n", 1);
-  if (terminal) return 0;
-  int64_t line = chimi_console_begin_line_v1(queue);
-  if (line < 0) exhausted_memory();
-  int outcome;
-  while ((outcome = chimi_console_line_state_v1(queue, line)) < 0)
-    if (console_wait_and_write(stream) == CONSOLE_CANCELLED) { outcome = -1; break; }
-  chimi_console_end_line_v1(queue, line);
-  return outcome;
-}
-
-static int console_write_line(const ChimiRuntime *runtime, ConsoleStream *stream,
-                              const char *text, size_t length) {
-  console_enter();
-  int outcome = console_write_line_locked(runtime, stream, text, length);
-  console_leave();
-  return outcome;
-}
+/* Console output (CHI-266) lives in Rust (chimi-runtime intrinsics/console_io.rs):
+   write_line, write_error and std/log write through it, and it keeps the
+   streams' queues. runtime.c points the log stream at --log-file and drains
+   the queues at exit. */
+extern void chimi_runtime_console_drain_v1(void);
+extern void chimi_runtime_console_set_v1(size_t index, int fd, bool direct);
 
 static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
                                  ChimiValue **arguments, uint32_t argument_count,
@@ -4120,62 +3904,7 @@ static ChimiControl *invoke_host(ChimiRuntime *runtime, HostFunction function,
   }
   if (function == HOST_PROCESS_UTF8_LINES)
     return process_utf8_lines(runtime, arguments, argument_count, span, call_node, environment);
-  if (argument_count != 1 || arguments[0]->kind != VALUE_TEXT)
-    return defect("verified host function has invalid runtime arguments", call_node);
-  if (runtime->cancel) return cancelled();
-  ConsoleStream *stream = &console_streams[function == HOST_WRITE_LINE ? 0 : 1];
-  int written = console_write_line(runtime, stream, arguments[0]->as.text.bytes, arguments[0]->as.text.length);
-  if (written < 0) return cancelled();
-  if (written > 0) {
-    ChimiValue *fields[] = {text_value(stream->name), text_value(strerror(written))};
-    return failure(standard_value(CHIMI_CONSTRUCTOR_CONSOLE_WRITE_FAILED, fields, 2));
-  }
-  return runtime->cancel ? cancelled() : success(void_value());
-}
-
-/* std/log's host core. host_write gets the message and fields already encoded
-   as JSON and writes one line, `{"time":..,"level":..,"message":..,"fields":..}`,
-   whole: to the --log-file file, or to standard error through the console
-   queue, so log lines and the program's own write_error lines never
-   interleave. A line that cannot be written is lost: logging never fails. */
-static ChimiControl *invoke_log_operation(ChimiRuntime *runtime, uint32_t intrinsic,
-                                          ChimiValue **arguments, uint32_t argument_count,
-                                          uint32_t call_node) {
-  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL) {
-    if (argument_count != 0) return intrinsic_shape_defect(call_node);
-    return success(integer_value(runtime->log_level));
-  }
-  if (argument_count != 3 || arguments[0]->kind != VALUE_INTEGER || arguments[1]->kind != VALUE_TEXT ||
-      arguments[2]->kind != VALUE_TEXT)
-    return intrinsic_shape_defect(call_node);
-  if (runtime->cancel) return cancelled();
-  static const char *const names[] = {"debug", "info", "warn", "error"};
-  int64_t level = arguments[0]->as.integer;
-  const char *name = names[level < 0 ? 0 : level > 3 ? 3 : level];
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t millis = (int64_t)now.tv_nsec / 1000000;
-  char time[CHIMI_TIMESTAMP_TEXT];
-  chimi_timestamp_date_time_v1((int64_t)now.tv_sec, time);
-  size_t message_length = arguments[1]->as.text.length, fields_length = arguments[2]->as.text.length;
-  size_t capacity = 128 + message_length + fields_length;
-  char *line = malloc(capacity);
-  if (!line) exhausted_memory();
-  int head = snprintf(line, capacity, "{\"time\":\"%s.%03" PRId64 "Z\",\"level\":\"%s\",\"message\":", time,
-                      millis, name);
-  size_t length = (size_t)head;
-  memcpy(line + length, arguments[1]->as.text.bytes, message_length);
-  length += message_length;
-  memcpy(line + length, ",\"fields\":", 10);
-  length += 10;
-  memcpy(line + length, arguments[2]->as.text.bytes, fields_length);
-  length += fields_length;
-  line[length++] = '}';
-  ConsoleStream *stream = &console_streams[runtime->log_file ? 2 : 1];
-  int written = console_write_line(runtime, stream, line, length);
-  free(line);
-  if (written < 0) return cancelled();
-  return runtime->cancel ? cancelled() : success(void_value());
+  return defect("unknown host function", call_node);
 }
 
 /* std/metrics' host core: one aggregate per name and label set, written as
@@ -5020,8 +4749,6 @@ static ChimiControl *invoke_intrinsic(ChimiRuntime *runtime, uint32_t intrinsic,
                                       ChimiEnvironment *environment) {
   if (intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL || intrinsic == CHIMI_INTRINSIC_SIGNAL_HOST_WAIT)
     return invoke_signal_operation(intrinsic, arguments, argument_count, call_node);
-  if (intrinsic == CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL || intrinsic == CHIMI_INTRINSIC_LOG_HOST_WRITE)
-    return invoke_log_operation(runtime, intrinsic, arguments, argument_count, call_node);
   if (intrinsic == CHIMI_INTRINSIC_METRICS_HOST_ENABLED || intrinsic == CHIMI_INTRINSIC_METRICS_HOST_RECORD ||
       intrinsic == CHIMI_INTRINSIC_METRICS_HOST_DOCUMENT)
     return invoke_metrics_operation(runtime, intrinsic, arguments, argument_count, call_node);
@@ -5951,7 +5678,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
   /* A fatal runtime error exits from wherever it is; queued console lines still
      go out. A second stop signal (end_by_signal) skips this and drops them. */
   carrier_bind(&carrier_first);
-  atexit(console_drain_all);
+  atexit(chimi_runtime_console_drain_v1);
   struct timespec identity_time;
   clock_gettime(CLOCK_REALTIME, &identity_time);
   char generated_execution_id[96];
@@ -6193,8 +5920,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
         fputs("the log file must be distinct from the runner's report files\n", stderr);
         return 64;
       }
-    console_streams[2].fd = fileno(runtime.log_file);
-    console_streams[2].file = runtime.log_file;
+    chimi_runtime_console_set_v1(2, fileno(runtime.log_file), false);
   }
   if (metrics_path) {
     /* Compared before opening, since opening empties the file: the same file
@@ -6268,7 +5994,7 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
       ChimiControl *control = runtime.cancel
         ? cancelled()
         : execute_program_entry(&runtime, entry, environment);
-      console_drain_all();
+      chimi_runtime_console_drain_v1();
       release_binding_handles();
       if (control == NULL) return 70;
       if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
@@ -6300,12 +6026,12 @@ int32_t chimi_rt_main(ChimiNodeFn entry, int32_t argc, const char **argv) {
     ? cancelled()
     : execute_program_entry(&runtime, entry, environment);
   /* Lines whose writers were cancelled while they waited (CHI-266). */
-  console_drain_all();
+  chimi_runtime_console_drain_v1();
   release_binding_handles();
   /* A log line already went out whole; a failed close loses nothing the
      program could act on. */
   if (runtime.log_file) {
-    console_streams[2].fd = -1;
+    chimi_runtime_console_set_v1(2, -1, false);
     fclose(runtime.log_file);
   }
   if (!runtime.silent) emit_event(&runtime, "computation_completed", entry_node, 1, -1, "computation", control);
