@@ -30,3 +30,30 @@ KILLED       the working directory buffer never grows [std_exec] (134s)
 # rerun at the same commit.
 # result: every mutant killed
 # Spawn::new's init order and the environ declaration changed after this run (verifier fixes); the std_exec tests pass on them.
+
+# Rerun after the SIGCHLD handler moved to Rust (CHI-305 phase 8, fourth PR):
+KILLED       a released child is not killed [std_exec] (126s)
+KILLED       a released child is not reaped [std_exec] (106s)
+KILLED       a second wait asks the kernel again [std_exec] (99s)
+KILLED       a signal death reads as an exit [std_exec] (98s)
+KILLED       a name is not looked up on PATH [std_exec] (98s)
+KILLED       a directory found on PATH counts as the program [std_exec] (98s)
+KILLED       a replaced environment keeps the parent's [std_exec] (98s)
+KILLED       the first value of a variable wins [std_exec] (97s)
+KILLED       the working directory is ignored [std_exec] (95s)
+KILLED       a bad directory is found only by the child [std_exec] (94s)
+KILLED       Stdio.Null is inherited [std_exec] (93s)
+KILLED       a relative program stays relative [std_exec] (95s)
+KILLED       a file the kernel cannot run is a permission [std_exec] (97s)
+KILLED       terminate sends SIGKILL [std_exec] (94s)
+KILLED       a cancelled wait is not cancelled [std_exec] (148s)
+KILLED       a child wait does not wait [std_exec] (159s)
+KILLED       the child's signal mask is inherited [std_exec] (96s)
+KILLED       Stdio.Null stdin is opened for writing [std_exec] (97s)
+KILLED       stdin is never connected [std_exec] (97s)
+KILLED       a second wait after a cancelled one asks the dead pid [std_exec] (146s)
+KILLED       no SIGCHLD handler [std_exec] (96s)
+KILLED       start does not release the child [std_exec] (119s)
+KILLED       stdout and stderr swap [std_exec] (93s)
+KILLED       the working directory buffer never grows [std_exec] (123s)
+# result: every mutant killed

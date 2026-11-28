@@ -552,6 +552,7 @@ impl Scheduler {
     pub const REQUEST_CHANNEL_ADD_RECEIVER: u32 = 36;
     pub const REQUEST_CHANNEL_BROADCAST: u32 = 37;
     pub const REQUEST_IO_WAIT: u32 = 48;
+    pub const REQUEST_SIGNAL_WAIT: u32 = 45;
     /// CHIMI_REQUEST_IO_WAIT's writable interest, in `token`.
     pub const IO_WRITABLE: u64 = 2;
     /// CHIMI_REQUEST_IO_WAIT's readable interest, in `token`.
@@ -874,6 +875,8 @@ impl Intrinsic {
     pub const FS_HOST_IS_DIRECTORY: u32 = 206;
     pub const FS_HOST_TEMPORARY_DIRECTORY: u32 = 207;
     pub const FS_TEST_ROOT: u32 = 208;
+    pub const SIGNAL_HOST_INSTALL: u32 = 209;
+    pub const SIGNAL_HOST_WAIT: u32 = 210;
     pub const LOG_HOST_MINIMUM_LEVEL: u32 = 211;
     pub const LOG_HOST_WRITE: u32 = 212;
     pub const METRICS_HOST_ENABLED: u32 = 213;
@@ -1722,6 +1725,7 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_REQUEST_CHANNEL_ADD_RECEIVER" Scheduler::REQUEST_CHANNEL_ADD_RECEIVER)
     constant("CHIMI_REQUEST_CHANNEL_BROADCAST" Scheduler::REQUEST_CHANNEL_BROADCAST)
     constant("CHIMI_REQUEST_IO_WAIT" Scheduler::REQUEST_IO_WAIT)
+    constant("CHIMI_REQUEST_SIGNAL_WAIT" Scheduler::REQUEST_SIGNAL_WAIT)
     constant("CHIMI_IO_WRITABLE" Scheduler::IO_WRITABLE)
     constant("CHIMI_IO_READABLE" Scheduler::IO_READABLE)
     constant("CHIMI_REQUEST_CHANNEL_WATCH" Scheduler::REQUEST_CHANNEL_WATCH)
@@ -2032,6 +2036,8 @@ pub const LAYOUT: &[Fact] = facts! {
     constant("CHIMI_INTRINSIC_FS_HOST_IS_DIRECTORY" Intrinsic::FS_HOST_IS_DIRECTORY)
     constant("CHIMI_INTRINSIC_FS_HOST_TEMPORARY_DIRECTORY" Intrinsic::FS_HOST_TEMPORARY_DIRECTORY)
     constant("CHIMI_INTRINSIC_FS_TEST_ROOT" Intrinsic::FS_TEST_ROOT)
+    constant("CHIMI_INTRINSIC_SIGNAL_HOST_INSTALL" Intrinsic::SIGNAL_HOST_INSTALL)
+    constant("CHIMI_INTRINSIC_SIGNAL_HOST_WAIT" Intrinsic::SIGNAL_HOST_WAIT)
     constant("CHIMI_INTRINSIC_LOG_HOST_MINIMUM_LEVEL" Intrinsic::LOG_HOST_MINIMUM_LEVEL)
     constant("CHIMI_INTRINSIC_LOG_HOST_WRITE" Intrinsic::LOG_HOST_WRITE)
     constant("CHIMI_INTRINSIC_METRICS_HOST_ENABLED" Intrinsic::METRICS_HOST_ENABLED)

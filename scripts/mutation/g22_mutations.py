@@ -11,6 +11,7 @@ PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
 PROCESS_ABI = "../../runtime/chimi-fiber/src/scheduler/process_abi.rs"
 SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 RUNTIME_C = "runtime/native/runtime.c"
+SIGNALS = "../../runtime/chimi-runtime/src/intrinsics/signals.rs"
 
 
 def lab(scenario):
@@ -82,15 +83,18 @@ MUTATIONS = [
                  "            && false\n")],
          **signals("an_idle_service_waits_for_a_signal_instead_of_reporting_a_deadlock")),
     dict(name="an injected signal exits 130", file=RUNTIME_C,
-         edits=[("return 128 + received_signal;", "return 130;")],
+         edits=[("return 128 + received;", "return 130;")],
          **lab("SG01")),
     dict(name="a real signal exits instead of re-raising", file=RUNTIME_C,
-         edits=[("      if (received_signal != 0) end_by_signal(received_signal);\n", "")],
+         edits=[("      if (received != 0) chimi_runtime_end_by_signal_v1(received);\n", "")],
          **signals("sigterm_lets_the_worker_drain_its_jobs_then_ends_the_program_by_sigterm")),
-    dict(name="a second signal waits for the drain", file=RUNTIME_C,
-         edits=[("  if (received_signal != 0) end_by_signal(number);\n", "")],
+    dict(name="a second signal waits for the drain", file=SIGNALS,
+         edits=[("        chimi_runtime_end_by_signal_v1(number);\n", "")],
          **signals("a_second_signal_ends_the_program_at_once")),
-    dict(name="a blocking read restarts after a signal", file=RUNTIME_C,
-         edits=[("  action.sa_flags = scheduled ? SA_RESTART : 0;", "  action.sa_flags = SA_RESTART;")],
+    dict(name="a blocking read restarts after a signal", file=SIGNALS,
+         edits=[("if scheduled { libc::SA_RESTART } else { 0 }", "libc::SA_RESTART")],
+         **signals("sigint_cancels_a_program_without_the_scheduler_while_it_reads_input")),
+    dict(name="a stop signal without the scheduler does not cancel", file=SIGNALS,
+         edits=[("        CANCEL_RUNTIME.store(runtime, Ordering::Relaxed);\n", "        let _ = runtime;\n")],
          **signals("sigint_cancels_a_program_without_the_scheduler_while_it_reads_input")),
 ]

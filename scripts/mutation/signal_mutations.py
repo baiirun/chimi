@@ -21,6 +21,7 @@ CARGO_TEST_ARGS = ["--release"]
 SIGNAL = "../../runtime/chimi-fiber/src/scheduler/signal.rs"
 SCHEDULER = "../../runtime/chimi-fiber/src/scheduler.rs"
 RUNTIME = "runtime/native/runtime.c"
+SIGNALS = "../../runtime/chimi-runtime/src/intrinsics/signals.rs"
 OPERATIONS = "src/operations.rs"
 MODULE = "std/signal.chimi"
 
@@ -63,14 +64,14 @@ MUTATIONS = [
     fiber("an empty wait parks", SIGNAL, [
         ("    if codes.is_empty() || rest.iter()", "    if rest.iter()")]),
     # The runner.
-    signals("the handler ignores SIGHUP", RUNTIME, [
-        ("static const int user_signal_numbers[] = {SIGHUP, SIGUSR1, SIGUSR2};",
-         "static const int user_signal_numbers[] = {SIGWINCH, SIGUSR1, SIGUSR2};")]),
+    signals("the handler ignores SIGHUP", SIGNALS, [
+        ("const USER_SIGNAL_NUMBERS: [c_int; 3] = [libc::SIGHUP, libc::SIGUSR1, libc::SIGUSR2];",
+         "const USER_SIGNAL_NUMBERS: [c_int; 3] = [libc::SIGWINCH, libc::SIGUSR1, libc::SIGUSR2];")]),
     signals("an injected HUP is dropped", RUNTIME, [
         ("        runtime.injected_user_signals[runtime.injected_user_signal_count++] =\n            (ChimiInjectedSignal){.code = code, .at = at};",
          "        (void)code;")]),
-    signals("an empty wait is not a defect", RUNTIME, [
-        ("  if (count == 0) return defect(\"Signal.next needs at least one signal to wait for\", call_node);\n", "")]),
+    signals("an empty wait is not a defect", SIGNALS, [
+        ("        if count == 0 {\n            return defect(", "        if false {\n            return defect(")]),
     signals("injected signals run under the real clock", RUNTIME, [
         ("if ((runtime.injected_signal || runtime.injected_user_signal_count) && !runtime.virtual_clock)",
          "if (runtime.injected_signal && !runtime.virtual_clock)")]),

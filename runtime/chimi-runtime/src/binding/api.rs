@@ -110,7 +110,6 @@ unsafe extern "C" {
     fn chimi_binding_cancelled(call: *mut ChimiBindingCall) -> *mut ChimiBindingResult;
     fn chimi_binding_wait(call: *mut ChimiBindingCall, handle: u32, fd: c_int, interest: c_int)
     -> c_int;
-    fn chimi_binding_prepare_children();
     fn chimi_binding_wait_child(call: *mut ChimiBindingCall, handle: u32, pid: c_int) -> c_int;
     fn chimi_binding_integer(call: *const ChimiBindingCall, index: u32, out: *mut i64) -> c_int;
     fn chimi_binding_make_integer(call: *mut ChimiBindingCall, value: i64) -> *mut ChimiBindingValue;
@@ -206,8 +205,7 @@ fn waited(answer: c_int) -> Waited {
 /// Installs the runtime's SIGCHLD handler, once; call it before starting a
 /// child, so the child's exit wakes the scheduler.
 pub fn prepare_children() {
-    // SAFETY: it takes no arguments and is idempotent.
-    unsafe { chimi_binding_prepare_children() }
+    crate::intrinsics::signals::chimi_binding_prepare_children();
 }
 
 /// A descriptor that belongs to no handle argument.

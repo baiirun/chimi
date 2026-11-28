@@ -1,6 +1,6 @@
 //! Which side serves a call to an intrinsic: the families that have moved
 //! to Rust are called here, straight from the evaluator, and the rest
-//! (the process kernel, signals and C bindings) go to `runtime.c`'s
+//! (the process kernel and C bindings) go to `runtime.c`'s
 //! `chimi_runtime_invoke_native_v1`.
 //!
 //! The ranges are the `CHIMI_INTRINSIC_*` order of runtime.h, which keeps
@@ -28,6 +28,7 @@ use super::processes::process_data_operation;
 use super::random_host::random_host;
 use super::scopes::{ScopeCall, capture_defect, cause_context, resource_scoped};
 use super::scalars::scalar_operation;
+use super::signals::signal_operation;
 use super::standard::defect;
 use super::tasks::{TaskCall, task_operation};
 use super::test_log::test_log_operation;
@@ -171,6 +172,9 @@ pub unsafe fn invoke_native(
             Intrinsic::ENV_HOST_VARIABLES..=Intrinsic::FS_TEST_ROOT => {
                 let cancel = ptr::read_volatile(&raw const (*runtime).cancel) != 0;
                 host_operation(runtime.cast::<c_void>(), cancel, intrinsic, arguments(values, count), call_node)
+            }
+            Intrinsic::SIGNAL_HOST_INSTALL | Intrinsic::SIGNAL_HOST_WAIT => {
+                signal_operation(intrinsic, arguments(values, count), call_node)
             }
             Intrinsic::LOG_HOST_MINIMUM_LEVEL | Intrinsic::LOG_HOST_WRITE => {
                 log_operation(runtime, intrinsic, arguments(values, count), call_node)

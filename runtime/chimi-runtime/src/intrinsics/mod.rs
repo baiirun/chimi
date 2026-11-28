@@ -34,6 +34,7 @@ pub mod random_host;
 pub mod scalars;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scopes;
+pub mod signals;
 pub mod standard;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod tasks;

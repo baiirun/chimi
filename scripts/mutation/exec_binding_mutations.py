@@ -21,6 +21,7 @@ CARGO_TEST_ARGS = ["--release"]
 
 EXEC = "../../runtime/chimi-runtime/src/binding/exec.rs"
 RUNTIME = "runtime/native/runtime.c"
+SIGNALS = "../../runtime/chimi-runtime/src/intrinsics/signals.rs"
 MODULE = "std/exec.chimi"
 
 
@@ -88,8 +89,8 @@ MUTATIONS = [
     exec_test('a second wait after a cancelled one asks the dead pid', EXEC, [
         ('        self.reaped.set(true);\n',
          '')]),
-    exec_test("no SIGCHLD handler", RUNTIME, [
-        ("  action.sa_handler = on_child_signal;\n  sigemptyset(&action.sa_mask);\n  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;\n  sigaction(SIGCHLD, &action, NULL);\n", "")]),
+    exec_test("no SIGCHLD handler", SIGNALS, [
+        ("    install(on_child_signal, &[libc::SIGCHLD], libc::SA_RESTART | libc::SA_NOCLDSTOP);\n", "")]),
     exec_test("start does not release the child", MODULE, [
         ("fn(child) { child.release() }", "fn(_child) { Void }")]),
     exec_test("stdout and stderr swap", MODULE, [
