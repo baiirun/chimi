@@ -3204,6 +3204,7 @@ ChimiControl *chimi_rt_direct_integer_success(ChimiRuntime *runtime, uint32_t no
 int32_t chimi_value_compare_v1(const ChimiValue *left, const ChimiValue *right);
 int32_t chimi_json_number_compare_v1(const char *left, const char *right);
 char *chimi_json_number_canonical_text_v1(const char *text, size_t *length);
+MapNode *chimi_map_put_v1(MapNode *node, ChimiValue *key, ChimiValue *value);
 MapNode *chimi_map_remove_v1(MapNode *node, const ChimiValue *key);
 ChimiValue *chimi_map_get_v1(const MapNode *node, const ChimiValue *key);
 int64_t chimi_map_size_v1(const MapNode *node);
@@ -3216,6 +3217,10 @@ static int chimi_value_compare(const ChimiValue *left, const ChimiValue *right) 
 /* The order of two JSON numbers by the exact decimal they denote. */
 static int json_number_compare(const char *left, const char *right) {
   return chimi_json_number_compare_v1(left, right);
+}
+/* For the map fixture (tests/fixtures/native-map-runtime.c), which includes this file. */
+static MapNode *map_put_node(MapNode *node, ChimiValue *key, ChimiValue *value) {
+  return chimi_map_put_v1(node, key, value);
 }
 /* `node` without `key`; `node` itself when it has no such key. */
 static MapNode *map_remove_node(MapNode *node, const ChimiValue *key) { return chimi_map_remove_v1(node, key); }
@@ -3435,6 +3440,15 @@ _Noreturn void chimi_runtime_json_tape_defect_v1(void) {
 static ChimiControl *intrinsic_shape_defect(uint32_t call_node);
 
 #define COUNT_OF(table) (sizeof (table) / sizeof (table)[0])
+
+/* std/bytes. A `Bytes` shares Text's representation (`as.text`) with its own kind,
+   so the collector, heap copies, and transfers treat its buffer like a Text's.
+   For the runtime fuzz harness (tests/fuzz/runtime-fuzz.c), which includes this file. */
+static ChimiValue *bytes_from(const char *raw, size_t length) {
+  ChimiValue *value = text_from_bytes(raw, length);
+  value->kind = VALUE_BYTES;
+  return value;
+}
 
 /* std/test. */
 static ChimiValue *debug_render(const ChimiValue *value, bool indented);
