@@ -10,6 +10,7 @@ S = "std/log.chimi"
 H = "src/execution/host_operations.rs"
 E = "src/execution.rs"
 C = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 IO = "../../runtime/chimi-runtime/src/intrinsics/console_io.rs"
 
 
@@ -50,17 +51,17 @@ MUTATIONS = [
         '            "info" => 1,',
         '            "info" => 0,',
     )]),
-    mutant("the native runner ignores --log-level", C, [(
-        '      if (strcmp(level, "debug") == 0) runtime.log_level = 0;',
-        '      if (strcmp(level, "debug") == 0) runtime.log_level = 1;',
+    mutant("the native runner ignores --log-level", STARTUP, [(
+        '                        b"debug" => 0,',
+        '                        b"debug" => 1,',
     )]),
     mutant("the native log file is truncated", C, [(
         '    runtime.log_file = open_report(log_path, "a");',
         '    runtime.log_file = open_report(log_path, "w");',
     )]),
-    mutant("the native log file may be the outcome file", C, [(
-        "                   (outcome_path && strcmp(log_path, outcome_path) == 0) ||",
-        "                   false ||",
+    mutant("the native log file may be the outcome file", STARTUP, [(
+        "if [telemetry, outcome, memory, profile].into_iter().any(|other| same(log, other)) {",
+        "if [telemetry, memory, profile].into_iter().any(|other| same(log, other)) {",
     )]),
     mutant("the native runner writes log lines to stdout", IO, [(
         "        let index = if (*runtime).log_file.is_null() { 1 } else { LOG_STREAM };",

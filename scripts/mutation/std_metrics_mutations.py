@@ -11,6 +11,7 @@ S = "std/metrics.chimi"
 H = "src/execution/host_operations.rs"
 E = "src/execution.rs"
 C = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 HOST = "../../runtime/chimi-runtime/src/intrinsics/metrics_host.rs"
 
 
@@ -95,9 +96,9 @@ MUTATIONS = [
         "    if (stat(metrics_path, &metrics_status) == 0 && !S_ISCHR(metrics_status.st_mode))",
         "    if (false)",
     )]),
-    mutant("the native metrics file may be the profile file", C, [(
-        "                       (profile_path && strcmp(metrics_path, profile_path) == 0) ||",
-        "",
+    mutant("the native metrics file may be the profile file", STARTUP, [(
+        "if [telemetry, outcome, memory, profile, log].into_iter().any(|other| same(metrics, other)) {",
+        "if [telemetry, outcome, memory, log].into_iter().any(|other| same(metrics, other)) {",
     )]),
     mutant("the native sum can become infinite", C, [(
         "      series->sum = isfinite(sum) ? sum : sum > 0 ? DBL_MAX : -DBL_MAX;",

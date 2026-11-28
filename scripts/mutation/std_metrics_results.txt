@@ -6,3 +6,11 @@ tests/runtime_state.rs) now records from four threads while the tables grow,
 and kills it. The three mutants added for the review fixes (sum saturation on
 both runtimes, the memory-report identity check) were killed at 1db4fcb, and
 the lock mutant at a79a3e3.
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [std_metrics] (156s)
+SURVIVED     the native metrics file may be the profile file [std_metrics] (60s)
+# Equivalent: the same spelling for the metrics file and the profile is still
+# refused with the same message and status, by the check after the metrics file
+# is opened, which compares the profile's path (now existing) with it by
+# device and inode. The spelling check only refuses it earlier.

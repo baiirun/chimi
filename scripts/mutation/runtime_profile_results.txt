@@ -19,3 +19,8 @@ KILLED       ties are written fewest evaluations first [cli -- native_profile_co
 # rerun at 014ee6e8 after the profile moved to qsort
 KILLED       rows are written lightest first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (62s)
 KILLED       ties are written fewest evaluations first [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (62s)
+
+# 2026-11-28 runner settings to Rust (CHI-305 phase 8, twelfth PR): retargeted mutants
+BASELINE ok  [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (154s)
+KILLED       a profile adds up benchmark repeats [cli -- native_profile_counts_evaluations_and_allocations_per_operation] (56s)
+# result: every mutant killed

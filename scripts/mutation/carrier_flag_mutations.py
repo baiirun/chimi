@@ -8,6 +8,7 @@ Each mutant runs tests/carriers.rs.
 CRATE = "compiler/chimi"
 
 C = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 
 
 def m(name, old, new):
@@ -27,24 +28,24 @@ MUTATIONS = [
     m("the carriers are never created",
       "  carriers_create(runtime.carriers);",
       ""),
-    m("several carriers run under virtual time",
-      "    if (runtime.carriers > 1 && runtime.virtual_clock) {",
-      "    if (runtime.carriers > 1 && runtime.virtual_clock && false) {"),
-    m("0 carriers is accepted",
-      "      if (value == 0 || *end != '\\0' || value > CARRIERS_MAX) {",
-      "      if (*end != '\\0' || value > CARRIERS_MAX) {"),
-    m("the upper bound is off by one",
-      "      if (value == 0 || *end != '\\0' || value > CARRIERS_MAX) {",
-      "      if (value == 0 || *end != '\\0' || value >= CARRIERS_MAX) {"),
-    m("no upper bound",
-      "      if (value == 0 || *end != '\\0' || value > CARRIERS_MAX) {",
-      "      if (value == 0 || *end != '\\0') {"),
-    m("trailing text is accepted",
-      "      if (value == 0 || *end != '\\0' || value > CARRIERS_MAX) {",
-      "      if (value == 0 || value > CARRIERS_MAX) {"),
-    m("a leading sign or space is accepted",
-      "*count >= '0' && *count <= '9' ? strtoul(count, &end, 10) : 0;",
-      "strtoul(count, &end, 10);"),
+    dict(m("several carriers run under virtual time",
+           "            if runtime.carriers > 1 && runtime.virtual_clock {",
+           "            if runtime.carriers > 1 && runtime.virtual_clock && false {"), file=STARTUP),
+    dict(m("0 carriers is accepted",
+           "if count == 0 || !rest.is_empty() || count > u64::from(CARRIERS_MAX) {",
+           "if !rest.is_empty() || count > u64::from(CARRIERS_MAX) {"), file=STARTUP),
+    dict(m("the upper bound is off by one",
+           "if count == 0 || !rest.is_empty() || count > u64::from(CARRIERS_MAX) {",
+           "if count == 0 || !rest.is_empty() || count >= u64::from(CARRIERS_MAX) {"), file=STARTUP),
+    dict(m("no upper bound",
+           "if count == 0 || !rest.is_empty() || count > u64::from(CARRIERS_MAX) {",
+           "if count == 0 || !rest.is_empty() {"), file=STARTUP),
+    dict(m("trailing text is accepted",
+           "if count == 0 || !rest.is_empty() || count > u64::from(CARRIERS_MAX) {",
+           "if count == 0 || count > u64::from(CARRIERS_MAX) {"), file=STARTUP),
+    dict(m("a leading sign or space is accepted",
+           "let (count, rest) = if value.to_bytes().first().is_some_and(u8::is_ascii_digit) {",
+           "let (count, rest) = if true {"), file=STARTUP),
     # The review's crash: a stop forcing a body that never ran, from another
     # carrier, resumed it there while its record named its old home.
     dict(name="a fiber that never ran keeps its old home",

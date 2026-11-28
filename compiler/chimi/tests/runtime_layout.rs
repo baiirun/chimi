@@ -25,6 +25,7 @@ const DIGESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/runtime_layout
 /// `end` after it.
 const DEFINITIONS: &[(&str, &str)] = &[
     ("typedef enum { VALUE_VOID,", "} ValueKind;"),
+    ("typedef struct {\n  const char *telemetry_path;", "} ChimiRunnerOptions;"),
     ("typedef enum { CALL_DECLARED,", "} CallableKind;"),
     ("typedef enum { HOST_PROCESS_UTF8_LINES,", "} HostFunction;"),
     ("typedef enum { CONTROL_SUCCESS,", "} ControlKind;"),

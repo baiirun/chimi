@@ -17,7 +17,7 @@ def m(name, old, new):
 
 MUTATIONS = [
     m("a given count is replaced by the default",
-      "  if (!carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);",
+      "  if (!options.carriers_given) runtime.carriers = default_carriers(runtime.virtual_clock);",
       "  runtime.carriers = default_carriers(runtime.virtual_clock);"),
     m("the virtual clock takes a carrier per core",
       "  if (!CHIMI_REQUIRES_SCHEDULER || virtual_clock) return 1;",

@@ -250,6 +250,28 @@ pub struct Runtime {
     pub trace_events_constructed: u64,
 }
 
+/// `CARRIERS_MAX`: the most carriers `--carriers` accepts; each has a wake
+/// pipe, so this bounds the descriptors they take.
+pub const CARRIERS_MAX: u32 = 256;
+
+/// `ChimiRunnerOptions`: what the runner's arguments set besides `Runtime`
+/// (startup.rs), which `chimi_rt_main` acts on.
+#[repr(C)]
+pub struct RunnerOptions {
+    pub telemetry_path: *const c_char,
+    pub outcome_path: *const c_char,
+    pub memory_report_path: *const c_char,
+    pub profile_path: *const c_char,
+    pub log_path: *const c_char,
+    pub metrics_path: *const c_char,
+    /// The test to run, or -1 for the program's entry.
+    pub test_index: i64,
+    pub benchmark_repeats: u32,
+    /// The index in `argv` of the first application argument.
+    pub first_argument: i32,
+    pub carriers_given: bool,
+}
+
 /// `ChimiSchedulerTraceEvent` (chimi_fiber.h): one event the scheduler's
 /// trace hook reports.
 #[repr(C)]
@@ -1736,6 +1758,18 @@ pub const LAYOUT: &[Fact] = facts! {
     field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "address_kind", address_kind)
     field("ChimiSchedulerTraceEvent" SchedulerTraceEvent, "outcome", outcome)
     constant("CHIMI_MAX_INJECTED_SIGNALS" MAX_INJECTED_SIGNALS)
+    size("ChimiRunnerOptions" RunnerOptions)
+    field("ChimiRunnerOptions" RunnerOptions, "telemetry_path", telemetry_path)
+    field("ChimiRunnerOptions" RunnerOptions, "outcome_path", outcome_path)
+    field("ChimiRunnerOptions" RunnerOptions, "memory_report_path", memory_report_path)
+    field("ChimiRunnerOptions" RunnerOptions, "profile_path", profile_path)
+    field("ChimiRunnerOptions" RunnerOptions, "log_path", log_path)
+    field("ChimiRunnerOptions" RunnerOptions, "metrics_path", metrics_path)
+    field("ChimiRunnerOptions" RunnerOptions, "test_index", test_index)
+    field("ChimiRunnerOptions" RunnerOptions, "benchmark_repeats", benchmark_repeats)
+    field("ChimiRunnerOptions" RunnerOptions, "first_argument", first_argument)
+    field("ChimiRunnerOptions" RunnerOptions, "carriers_given", carriers_given)
+    constant("CARRIERS_MAX" CARRIERS_MAX)
     constant("CHIMI_SCHEDULER_TRACE_TASK" Trace::FAMILY_TASK)
     constant("CHIMI_SCHEDULER_TRACE_CHANNEL" Trace::FAMILY_CHANNEL)
     constant("CHIMI_SCHEDULER_TRACE_PROCESS" Trace::FAMILY_PROCESS)

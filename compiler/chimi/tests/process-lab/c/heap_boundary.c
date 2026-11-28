@@ -47,6 +47,7 @@ const ChimiFunction CHIMI_FUNCTIONS[] = {{0}};
 const uint32_t CHIMI_FUNCTION_COUNT = 0;
 const uint32_t CHIMI_TEST_FUNCTIONS[] = {0};
 const uint32_t CHIMI_TEST_COUNT = 0;
+const char *const CHIMI_TEST_COMPUTATIONS[] = {""};
 const uint32_t CHIMI_ASSERTION_NODES[] = {0};
 const uint32_t CHIMI_ASSERTION_NODE_COUNT = 0;
 const ChimiConstructor CHIMI_CONSTRUCTORS[] = {{0}};

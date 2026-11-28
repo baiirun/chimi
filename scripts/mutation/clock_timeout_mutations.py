@@ -12,6 +12,7 @@ CRATE = "compiler/chimi"
 
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 RUNTIME = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 CLOCKS = "../../runtime/chimi-runtime/src/intrinsics/clocks.rs"
 EVAL = "../../runtime/chimi-runtime/src/eval.rs"
 
@@ -76,9 +77,9 @@ MUTATIONS = [
         "        (*shifted).shift = shift;",
         "        (*shifted).shift = 0;")]),
     # --clock-start is virtual-only.
-    clock("--clock-start is accepted with the real clock", RUNTIME, [(
-        "    if (clock_start_given && !runtime.virtual_clock) {",
-        "    if (clock_start_given && false) {")]),
+    clock("--clock-start is accepted with the real clock", STARTUP, [(
+        "            if clock_start_given && !runtime.virtual_clock {",
+        "            if clock_start_given && false {")]),
     # Scope firing is its own boundary event.
     clock("scope firing is reported as a timer fire", SCOPE, [(
         "            kind: ClockEventKind::ScopeFired,",
