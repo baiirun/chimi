@@ -1683,6 +1683,43 @@ fn native_settle_runs_woken_work_before_time_moves() {
 // waits on. Rejects deadlock detection that is off (the run would hang or
 // report the real clock's generic deadlock) and a cause without the waiters.
 #[test]
+fn native_virtual_deadlock_lists_every_waiter() {
+    let scratch = scratch_directory("native-clock-virtual-deadlock-waiters");
+    let executable = build_native(
+        &scratch,
+        "virtual-deadlock-waiters",
+        &format!(
+            "{CLOCK_IMPORTS}pub fn main() -> Int {{\n  \
+             let channel = Channel.bounded(1)\n  \
+             let keep = channel.sender\n  \
+             let receiver = channel.receiver\n  \
+             let child = Task.start(fn() -> Int {{\n    \
+             let got = Channel.receive(receiver)\n    \
+             case got {{\n      \
+             Receive.Received(value) -> value\n      \
+             Receive.Drained -> 0\n    }}\n  }})\n  \
+             Task.result(child)\n}}\n"
+        ),
+    );
+    let execution = execute_native_with(
+        &executable,
+        &scratch,
+        "virtual-deadlock-waiters",
+        "boundaries",
+        &["--clock=virtual"],
+    );
+    assert_eq!(execution.process.status.code(), Some(70));
+    assert!(
+        execution.outcome.contains(
+            "virtual-time deadlock: every task is parked and no timer is pending: \
+             task 1 waits on Task.result; task 2 waits on Channel.receive\""
+        ),
+        "{}",
+        execution.outcome
+    );
+}
+
+#[test]
 fn native_virtual_deadlock_defects_the_root_with_its_waiters() {
     let scratch = scratch_directory("native-clock-virtual-deadlock");
     let executable = build_native(

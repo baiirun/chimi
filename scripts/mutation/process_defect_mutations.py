@@ -19,6 +19,7 @@ for an end the scheduler has decided, which reports no defect.
 CRATE = "compiler/chimi"
 
 R = "runtime/native/runtime.c"
+REPORTS = "../../runtime/chimi-runtime/src/scheduler_reports.rs"
 TASK_ENTRY = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 SCOPE = "../../runtime/chimi-fiber/src/scheduler/scope.rs"
 PROCESS = "../../runtime/chimi-fiber/src/scheduler/process.rs"
@@ -32,14 +33,14 @@ def m(name, file, edits):
 MUTATIONS = [
     m("a defected body reports nothing", TASK_ENTRY, [(
         "                chimi_fiber_report_defect((*control).message);\n", "")]),
-    m("the report ignores the body's message", R, [(
-        "strdup(termination->stack_overflow ? \"Process stack overflow\" : termination->message);",
-        "strdup(termination->stack_overflow ? \"Process stack overflow\" : \"defect\");")]),
+    m("the report ignores the body's message", REPORTS, [(
+        "            text.push(CStr::from_ptr(termination.message).to_bytes());",
+        "            text.push(b\"defect\");")]),
     # The outcome event names an overflow itself; the defect report's name
     # shows in the message of a root that ends after the process defected.
-    dict(name="a stack overflow is not named", file=R, edits=[(
-        "  if (termination->stack_overflow || termination->message) {",
-        "  if (termination->message) {")], targets=["cli"],
+    dict(name="a stack overflow is not named", file=REPORTS, edits=[(
+        "        let message = if termination.stack_overflow != 0 {",
+        "        let message = if false {")], targets=["cli"],
         filter="native_a_deadlocked_root_names_the_last_process_defect"),
     m("the scheduler drops a reported message", SCOPE, [(
         "    DEFECT_MESSAGE.with(|cell| *cell.borrow_mut() = Some(copy));",

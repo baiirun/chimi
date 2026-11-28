@@ -160,7 +160,7 @@ impl Out {
 }
 
 /// The decimal digits of `value`, as `%PRIu64` writes them.
-fn unsigned_spelling(mut value: u64, output: &mut [u8; 20]) -> &[u8] {
+pub(crate) fn unsigned_spelling(mut value: u64, output: &mut [u8; 20]) -> &[u8] {
     let mut start = output.len();
     loop {
         start -= 1;

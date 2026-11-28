@@ -33,3 +33,8 @@ KILLED       a negative duration sleeps its magnitude [cli -- native_virtual_sle
 KILLED       Instant overflow unchecked [cli -- native_sleep_past_the_instant_range] (56s)
 KILLED       sleep ignores cancellation and parks again [cli -- native_cancelling_a_sleeping_task] (56s)
 # result: every mutant killed
+
+# 2026-11-28 scheduler report messages to Rust (CHI-305 phase 8, tenth PR): retargeted mutants
+BASELINE ok  [cli -- native_] (89s)
+KILLED       deadlock waiters dropped from the root's cause [cli -- native_] (87s)
+# result: every mutant killed

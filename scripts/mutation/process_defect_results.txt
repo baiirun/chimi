@@ -14,3 +14,10 @@ KILLED       the termination record carries no message [cli -- native_process_st
 BASELINE ok  [cli -- native_process_stack_depth_and_named_defects] (163s)
 KILLED       a defected body reports nothing [cli -- native_process_stack_depth_and_named_defects] (58s)
 # result: every mutant killed
+
+# 2026-11-28 scheduler report messages to Rust (CHI-305 phase 8, tenth PR): retargeted mutants
+BASELINE ok  [cli -- native_process_stack_depth_and_named_defects] (61s)
+BASELINE ok  [cli -- native_a_deadlocked_root_names_the_last_process_defect] (1s)
+KILLED       the report ignores the body's message [cli -- native_process_stack_depth_and_named_defects] (62s)
+KILLED       a stack overflow is not named [cli -- native_a_deadlocked_root_names_the_last_process_defect] (62s)
+# result: every mutant killed

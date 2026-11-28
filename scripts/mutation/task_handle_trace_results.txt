@@ -21,3 +21,8 @@ BASELINE ok  [trace_show -- a_process_body_is_listed_under_its_incarnation] (160
 KILLED       a process body writes no start span [trace_show -- a_process_body_is_listed_under_its_incarnation] (58s)
 KILLED       a process body's span names no incarnation [trace_show -- a_process_body_is_listed_under_its_incarnation] (58s)
 # result: every mutant killed
+
+# 2026-11-28 scheduler report messages to Rust (CHI-305 phase 8, tenth PR): retargeted mutants
+BASELINE ok  [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (62s)
+KILLED       the runtime words a task violation like a channel one [cli -- native_backstop_a_task_handle_hidden_in_an_interface_value_defects_its_reader] (58s)
+# result: every mutant killed

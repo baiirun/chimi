@@ -30,6 +30,8 @@ pub mod outcome;
 pub mod reports;
 #[cfg(all(feature = "runtime-c", unix))]
 pub mod scheduler;
+#[cfg(all(feature = "runtime-c", unix))]
+pub mod scheduler_reports;
 pub mod files;
 pub mod float;
 mod float_abi;
