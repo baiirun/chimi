@@ -4267,6 +4267,26 @@ fn a_function_configured_with_constant_providers_is_a_constant() {
 }
 
 #[test]
+fn constant_functions_keep_their_bound_providers() {
+    let outcome = run_both(
+        "constant-bound-providers",
+        concat!(
+            "interface Greeter {\n  greet: fn(Int) -> Int\n}\n",
+            "const doubler = { greet: fn(n: Int) -> Int { n * 2 } }\n",
+            "fn greet_seven() -> Int needs { greeter: Greeter } { greeter.greet(7) }\n",
+            "const configured = greet_seven using { greeter: doubler }\n",
+            "const later = (fn() -> Int needs { greeter: Greeter } { greeter.greet(5) + 1 }) using {\n",
+            "  greeter: doubler,\n",
+            "}\n",
+            "pub fn main() -> Int {\n",
+            "  configured() * 100 + later()\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(outcome, "\"outcome\":\"success\",\"value\":1411");
+}
+
+#[test]
 fn a_module_let_carries_the_edit_to_const() {
     let module = ProjectSource::new(
         "main",
