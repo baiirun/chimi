@@ -9,10 +9,10 @@ Each mutant runs tests/testing.rs (or the named unit tests); it must turn one re
 CRATE = "compiler/chimi"
 
 T = "src/testing.rs"
-C = "runtime/native/runtime.c"
 ASSERTIONS = "../../runtime/chimi-runtime/src/intrinsics/assertions.rs"
 I = "src/execution/core_operations.rs"
 B = "src/backend.rs"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 
 
 def runner(name, file, edits, targets=("testing",), filter=""):
@@ -64,9 +64,9 @@ MUTATIONS = [
         "        core.entry = entry;\n",
         "        let _ = entry;\n",
     )]),
-    runner("native: --test is ignored", C, [(
-        "  if (test_index >= 0) {\n    entry_function",
-        "  if (test_index >= 0 && false) {\n    entry_function",
+    runner("native: --test is ignored", STARTUP, [(
+        "        let found = if options.test_index >= 0 {",
+        "        let found = if options.test_index >= 0 && false {",
     )]),
     runner("native: assert_equal passes on unequal values", ASSERTIONS, [(
         "if (compare(arguments[0], arguments[1]) == 0) == wanted {",

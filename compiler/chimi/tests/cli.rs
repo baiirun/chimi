@@ -1470,6 +1470,91 @@ fn native_deadlocked_tasks_defect_the_root() {
     std::fs::remove_dir_all(scratch).unwrap();
 }
 
+// How the root task's end becomes the program's (task_entry.rs, root_control):
+// the root's own defect keeps its message, and a root parked under the real
+// clock with nothing left to wake it ends with the stuck-root defect.
+#[test]
+fn native_the_root_ends_with_its_own_defect_or_as_stuck() {
+    let scratch = scratch_directory("native-root-ends");
+    let prelude = concat!(
+        "import std/channel as Channel\n",
+        "import std/channel.{Receive}\n",
+        "import std/task as Task\n",
+    );
+    let defected = build_native(
+        &scratch,
+        "root-defect",
+        &format!(
+            "{prelude}pub fn main() -> Int {{\n  \
+             let child = Task.start(fn() -> Int {{ 0 }})\n  \
+             let zero = Task.result(child)\n  \
+             1 / zero\n}}\n"
+        ),
+    );
+    let execution = execute_native(&defected, &scratch, "root-defect", "off");
+    assert_eq!(execution.process.status.code(), Some(70), "{}", execution.outcome);
+    assert!(
+        execution.outcome.contains("\"outcome\":\"defect\"")
+            && execution.outcome.contains("integer division by zero"),
+        "{}",
+        execution.outcome
+    );
+    let stuck = build_native(
+        &scratch,
+        "root-stuck",
+        &format!(
+            "{prelude}pub fn main() -> Int {{\n  \
+             let channel = Channel.bounded(1)\n  \
+             let keep = channel.sender\n  \
+             let got = Channel.receive(channel.receiver)\n  \
+             case got {{\n    \
+             Receive.Received(value) -> value\n    \
+             Receive.Drained -> 0\n  }}\n}}\n"
+        ),
+    );
+    let execution = execute_native(&stuck, &scratch, "root-stuck", "off");
+    assert_eq!(execution.process.status.code(), Some(70), "{}", execution.outcome);
+    assert!(
+        execution.outcome.contains(
+            "\"message\":\"Task scheduler defected: the root task could not finish, \
+             because every task is parked (deadlock) or the scheduler failed"
+        ),
+        "{}",
+        execution.outcome
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// The native runner finds the entry among the program's functions, and a
+// zero-input main refuses application arguments with the interpreter's
+// message (startup.rs, chimi_runtime_program_entry_v1).
+#[test]
+fn native_the_entry_is_main_and_refuses_arguments_it_cannot_take() {
+    let scratch = scratch_directory("native-entry");
+    let executable = build_native(
+        &scratch,
+        "entry",
+        "fn helper(value: Int) -> Int {\n  value + 1\n}\npub fn main() -> Int {\n  helper(41)\n}\n",
+    );
+    let execution = execute_native(&executable, &scratch, "entry", "off");
+    assert_eq!(execution.process.status.code(), Some(0), "{}", execution.outcome);
+    assert_eq!(
+        execution.outcome,
+        "{\"schema\":\"chimi.runtime.v1\",\"outcome\":\"success\",\"value\":42}\n"
+    );
+    let refused = Command::new(&executable)
+        .args(["--chimi-runner", "--", "extra"])
+        .output()
+        .expect("run the entry program with an argument");
+    assert_eq!(refused.status.code(), Some(64));
+    assert!(refused.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "program entry does not accept application arguments\n"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // ----- Clock.sleep and the virtual clock (ts-6ccbc9 decision 6) ----------
 
 const CLOCK_IMPORTS: &str = concat!(

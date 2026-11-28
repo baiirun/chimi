@@ -9,7 +9,7 @@ CRATE = "compiler/chimi"
 
 T = "src/testing.rs"
 M = "src/main.rs"
-C = "runtime/native/runtime.c"
+STARTUP = "../../runtime/chimi-runtime/src/startup.rs"
 
 
 def mutant(name, file, edits, targets=("testing",), filter="trace_"):
@@ -17,8 +17,8 @@ def mutant(name, file, edits, targets=("testing",), filter="trace_"):
 
 
 MUTATIONS = [
-    mutant("native root computation stays test 0", C, [(
-        "    runtime.computation = CHIMI_TEST_COMPUTATIONS[test_index];\n",
+    mutant("native root computation stays test 0", STARTUP, [(
+        "            (*runtime).computation = *(&raw const CHIMI_TEST_COMPUTATIONS).cast::<*const c_char>().add(index);\n",
         "",
     )]),
     mutant("native gets no telemetry file", T, [(

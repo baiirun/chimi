@@ -8,9 +8,9 @@ Each mutant must turn the cli regression test red.
 
 CRATE = "compiler/chimi"
 
-RUNTIME = "runtime/native/runtime.c"
+RUNTIME = "../../runtime/chimi-runtime/src/intrinsics/task_entry.rs"
 TEST = "native_a_root_overflowing_inside_a_loop_ends_with_a_stack_overflow_defect"
-RESTORE = "  main_heap.innermost = entry_scope;\n"
+RESTORE = "        (*main_heap).innermost = entry_scope;\n"
 
 MUTATIONS = [
     dict(
@@ -23,14 +23,14 @@ MUTATIONS = [
     dict(
         name="only a root that succeeded drops its regions",
         file=RUNTIME,
-        edits=[(RESTORE, "  if (outcome.state == CHIMI_FIBER_SUCCEEDED) main_heap.innermost = entry_scope;\n")],
+        edits=[(RESTORE, "        if outcome.state == FiberResult::SUCCEEDED {\n            (*main_heap).innermost = entry_scope;\n        }\n")],
         targets=["cli"],
         filter=TEST,
     ),
     dict(
         name="only a root that defected drops its regions",
         file=RUNTIME,
-        edits=[(RESTORE, "  if (outcome.state == CHIMI_FIBER_DEFECTED) main_heap.innermost = entry_scope;\n")],
+        edits=[(RESTORE, "        if outcome.state == FiberResult::DEFECTED {\n            (*main_heap).innermost = entry_scope;\n        }\n")],
         targets=["cli"],
         filter=TEST,
     ),

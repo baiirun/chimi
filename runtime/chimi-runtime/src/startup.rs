@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char, c_void};
 
 use crate::heap::layout::{
-    CARRIERS_MAX, Constructor, Control, ControlKind, InjectedSignal, MAX_INJECTED_SIGNALS, Runtime, RunnerOptions,
-    ValueKind,
+    CARRIERS_MAX, Constructor, Control, ControlKind, Environment, Function, InjectedSignal, MAX_INJECTED_SIGNALS, Runtime,
+    RunnerOptions, ValueKind,
 };
 use crate::intrinsics::console_io::chimi_runtime_console_set_v1;
 use crate::intrinsics::signals::{chimi_runtime_end_by_signal_v1, chimi_runtime_stop_signal_v1};
@@ -19,15 +19,27 @@ use crate::intrinsics::standard::{string, symbol};
 use crate::reports::{open_report, report_open_failure};
 use crate::telemetry::unsigned_spelling;
 
+/// `ChimiNodeFn`: a node's compiled function.
+type NodeFn = unsafe extern "C" fn(*mut Runtime, *mut Environment, u64) -> *mut Control;
+
 unsafe extern "C" {
     static CHIMI_CONSTRUCTORS: [Constructor; 0];
     static CHIMI_TEST_COUNT: u32;
+    static CHIMI_FUNCTIONS: [Function; 0];
+    static CHIMI_FUNCTION_COUNT: u32;
+    static CHIMI_NODE_FUNCTIONS: [Option<NodeFn>; 0];
+    static CHIMI_TEST_FUNCTIONS: [u32; 0];
+    static CHIMI_TEST_COMPUTATIONS: [*const c_char; 0];
     fn chimi_runtime_random_seed_v1(seed: u64);
     fn chimi_timestamp_parse_v1(text: *const u8, length: usize, nanoseconds: *mut i64) -> bool;
 }
 
 /// The exit status of a run refused for its arguments (EX_USAGE).
 const USAGE: i32 = 64;
+
+/// The exit status of a run the runtime itself cannot carry out
+/// (EX_SOFTWARE).
+const SOFTWARE: i32 = 70;
 
 #[cfg(target_os = "linux")]
 fn errno() -> *mut i32 {
@@ -480,6 +492,52 @@ pub unsafe extern "C" fn chimi_runtime_open_reports_v1(runtime: *mut Runtime, op
                 }
             }
         }
+        0
+    }
+}
+
+/// Finds the function the run starts from: the selected test's, whose
+/// computation the run then takes, or else the one whose body compiles to
+/// `entry`. An entry without a parameter refuses application arguments.
+/// Gives 0 with the function in `*function`, or the exit status.
+///
+/// # Safety
+/// `runtime`, `options` and `function` are live, `options` as
+/// [`chimi_runtime_parse_runner_v1`] left it for `argc` arguments, and the
+/// program data is linked.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn chimi_runtime_program_entry_v1(
+    runtime: *mut Runtime,
+    entry: NodeFn,
+    options: *const RunnerOptions,
+    argc: i32,
+    function: *mut *const Function,
+) -> i32 {
+    // SAFETY: the caller's contract; a selected test's index is below
+    // CHIMI_TEST_COUNT, and every function's body is a node.
+    unsafe {
+        let options = &*options;
+        let functions = (&raw const CHIMI_FUNCTIONS).cast::<Function>();
+        let found = if options.test_index >= 0 {
+            let index = options.test_index as usize;
+            (*runtime).computation = *(&raw const CHIMI_TEST_COMPUTATIONS).cast::<*const c_char>().add(index);
+            functions.add(*(&raw const CHIMI_TEST_FUNCTIONS).cast::<u32>().add(index) as usize)
+        } else {
+            let nodes = (&raw const CHIMI_NODE_FUNCTIONS).cast::<Option<NodeFn>>();
+            (0..CHIMI_FUNCTION_COUNT as usize)
+                .map(|index| functions.add(index))
+                .find(|&candidate| {
+                    (*nodes.add((*candidate).body as usize)).is_some_and(|body| core::ptr::fn_addr_eq(body, entry))
+                })
+                .unwrap_or(core::ptr::null())
+        };
+        if found.is_null() {
+            return SOFTWARE;
+        }
+        if (*found).parameters_length == 0 && options.first_argument < argc {
+            return refuse(&[b"program entry does not accept application arguments"]);
+        }
+        *function = found;
         0
     }
 }
